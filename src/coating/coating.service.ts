@@ -1,26 +1,56 @@
 import { Injectable } from '@nestjs/common';
-import { CreateCoatingDto } from './dto/create-coating.dto';
-import { UpdateCoatingDto } from './dto/update-coating.dto';
+import { Prisma, Coating } from '@prisma/client';
+import { PrismaService } from 'src/prisma/prisma.service';
 
 @Injectable()
 export class CoatingService {
-  create(createCoatingDto: CreateCoatingDto) {
-    return 'This action adds a new coating';
+  constructor(private prisma: PrismaService) { }
+
+  async coating(
+    coatingWhereUniqueInput: Prisma.CoatingWhereUniqueInput
+  ): Promise<Coating | null> {
+    return this.prisma.coating.findUnique({
+      where: coatingWhereUniqueInput,
+    });
   }
 
-  findAll() {
-    return `This action returns all coating`;
+  async coatings(params: {
+    skip?: number;
+    take?: number;
+    cursor?: Prisma.CoatingWhereUniqueInput;
+    where?: Prisma.CoatingWhereInput;
+    orderBy?: Prisma.CoatingOrderByWithRelationInput;
+  }): Promise<Coating[]> {
+    const { skip, take, cursor, where, orderBy } = params;
+    return this.prisma.coating.findMany({
+      skip,
+      take,
+      cursor,
+      where,
+      orderBy,
+    });
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} coating`;
+  async createCoating(data: Prisma.CoatingCreateInput): Promise<Coating> {
+    return this.prisma.coating.create({
+      data,
+    });
   }
 
-  update(id: number, updateCoatingDto: UpdateCoatingDto) {
-    return `This action updates a #${id} coating`;
+  async updateCoating(params: {
+    where: Prisma.CoatingWhereUniqueInput;
+    data: Prisma.CoatingUpdateInput;
+  }): Promise<Coating> {
+    const { where, data } = params;
+    return this.prisma.coating.update({
+      data,
+      where
+    });
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} coating`;
+  async deleteCoating(where: Prisma.CoatingWhereUniqueInput): Promise<Coating> {
+    return this.prisma.coating.delete({
+      where,
+    });
   }
 }

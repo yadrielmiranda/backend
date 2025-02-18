@@ -61,5 +61,10 @@ model Tint {
   color  String  
 }
 
+model Coating { 
+  id Int @default(autoincrement()) @id    
+  name  String  
+}
+
 
 
