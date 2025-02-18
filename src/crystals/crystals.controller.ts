@@ -5,7 +5,7 @@ import { UpdateCrystalDto } from './dto/update-crystal.dto';
 
 @Controller('crystals')
 export class CrystalsController {
-  constructor(private readonly crystalsService: CrystalsService) {}
+  constructor(private readonly crystalsService: CrystalsService) { }
 
   @Post()
   create(@Body() createCrystalDto: CreateCrystalDto) {

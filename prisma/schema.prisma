@@ -25,10 +25,11 @@ model User {
   admin Boolean
 }
 
-model Product {
+model Product { 
   id Int @default(autoincrement()) @id    
   name  String 
   systems System[]
+  configs Config[]
 }
 
 model System {
@@ -37,5 +38,19 @@ model System {
   prod Product @relation(fields: [idProduct], references: [id])
   idProduct Int
 }
+
+model Config {
+  id Int @default(autoincrement()) @id
+  conf String
+  prod Product @relation(fields: [idProduct], references: [id])
+  idProduct Int
+}
+
+model FrameColor { 
+  id Int @default(autoincrement()) @id    
+  color  String  
+}
+
+
 
 

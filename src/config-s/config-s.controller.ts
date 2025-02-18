@@ -2,33 +2,48 @@ import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/commo
 import { ConfigSService } from './config-s.service';
 import { CreateConfigDto } from './dto/create-config-.dto';
 import { UpdateConfigDto } from './dto/update-config-.dto';
+import { Config as ConfigModel } from '@prisma/client';
 
-@Controller('config-s')
+@Controller('configs')
 export class ConfigSController {
-  constructor(private readonly configSService: ConfigSService) {}
+  constructor(private readonly configSService: ConfigSService) { }
 
   @Post()
-  create(@Body() createConfigDto: CreateConfigDto) {
-    return this.configSService.create(createConfigDto);
+  async createConfig(
+    @Body() confData: CreateConfigDto,
+  ): Promise<ConfigModel> {
+    const { conf, idProduct } = confData;
+    return this.configSService.createConfig({  //Aqui es donde se verifica que exista ese idProduct en la tabla product
+      conf,
+      prod: {
+        connect: { id: idProduct },
+      },
+    });
   }
 
   @Get()
-  findAll() {
-    return this.configSService.findAll();
+  async getAllConfigs(): Promise<ConfigModel[]> {
+    return this.configSService.configs({});
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.configSService.findOne(+id);
+  async getConfig(@Param('id') id: string): Promise<ConfigModel> {
+    return this.configSService.config({ id: Number(id) });
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateConfigDto: UpdateConfigDto) {
-    return this.configSService.update(+id, updateConfigDto);
+  async updateConfig(
+    @Param('id') id: string,
+    @Body() confData: UpdateConfigDto,
+  ): Promise<ConfigModel> {
+    return this.configSService.updateConfig({
+      where: { id: Number(id) },
+      data: confData,
+    });
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.configSService.remove(+id);
+  async deleteConfig(@Param('id') id: string): Promise<ConfigModel> {
+    return this.configSService.deleteConfig({ id: Number(id) });
   }
 }

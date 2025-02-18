@@ -1,26 +1,58 @@
 import { Injectable } from '@nestjs/common';
-import { CreateConfigDto } from './dto/create-config-.dto';
-import { UpdateConfigDto } from './dto/update-config-.dto';
+import { PrismaService } from 'src/prisma/prisma.service';
+import { Config, Prisma } from '@prisma/client';
 
 @Injectable()
 export class ConfigSService {
-  create(createConfigDto: CreateConfigDto) {
-    return 'This action adds a new config';
+  constructor(private prisma: PrismaService) { }
+
+
+  async config(
+    configWhereUniqueInput: Prisma.ConfigWhereUniqueInput
+  ): Promise<Config | null> {
+    return this.prisma.config.findUnique({
+      where: configWhereUniqueInput,
+    });
   }
 
-  findAll() {
-    return `This action returns all configS`;
+  async configs(params: {
+    skip?: number;
+    take?: number;
+    cursor?: Prisma.ConfigWhereUniqueInput;
+    where?: Prisma.ConfigWhereInput;
+    orderBy?: Prisma.ConfigOrderByWithRelationInput;
+  }): Promise<Config[]> {
+    const { skip, take, cursor, where, orderBy } = params;
+    return this.prisma.config.findMany({
+      skip,
+      take,
+      cursor,
+      where,
+      orderBy,
+    });
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} config`;
+  async createConfig(data: Prisma.ConfigCreateInput): Promise<Config> {
+    return this.prisma.config.create({
+      data,
+    });
   }
 
-  update(id: number, updateConfigDto: UpdateConfigDto) {
-    return `This action updates a #${id} config`;
+  async updateConfig(params: {
+    where: Prisma.ConfigWhereUniqueInput;
+    data: Prisma.ConfigUpdateInput;
+  }): Promise<Config> {
+    const { where, data } = params;
+    return this.prisma.config.update({
+      data,
+      where
+    });
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} config`;
+  async deleteConfig(where: Prisma.ConfigWhereUniqueInput): Promise<Config> {
+    return this.prisma.config.delete({
+      where,
+    });
   }
+
 }

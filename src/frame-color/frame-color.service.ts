@@ -1,26 +1,58 @@
 import { Injectable } from '@nestjs/common';
-import { CreateFrameColorDto } from './dto/create-frame-color.dto';
-import { UpdateFrameColorDto } from './dto/update-frame-color.dto';
+import { PrismaService } from 'src/prisma/prisma.service';
+import { FrameColor, Prisma, } from '@prisma/client';
 
 @Injectable()
 export class FrameColorService {
-  create(createFrameColorDto: CreateFrameColorDto) {
-    return 'This action adds a new frameColor';
+
+  constructor(private prisma: PrismaService) { }
+
+
+  async color(
+    frameColorWhereUniqueInput: Prisma.FrameColorWhereUniqueInput
+  ): Promise<FrameColor | null> {
+    return this.prisma.frameColor.findUnique({
+      where: frameColorWhereUniqueInput,
+    });
   }
 
-  findAll() {
-    return `This action returns all frameColor`;
+  async colors(params: {
+    skip?: number;
+    take?: number;
+    cursor?: Prisma.FrameColorWhereUniqueInput;
+    where?: Prisma.FrameColorWhereInput;
+    orderBy?: Prisma.FrameColorOrderByWithRelationInput;
+  }): Promise<FrameColor[]> {
+    const { skip, take, cursor, where, orderBy } = params;
+    return this.prisma.frameColor.findMany({
+      skip,
+      take,
+      cursor,
+      where,
+      orderBy,
+    });
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} frameColor`;
+  async createColor(data: Prisma.FrameColorCreateInput): Promise<FrameColor> {
+    return this.prisma.frameColor.create({
+      data,
+    });
   }
 
-  update(id: number, updateFrameColorDto: UpdateFrameColorDto) {
-    return `This action updates a #${id} frameColor`;
+  async updateColor(params: {
+    where: Prisma.FrameColorWhereUniqueInput;
+    data: Prisma.FrameColorUpdateInput;
+  }): Promise<FrameColor> {
+    const { where, data } = params;
+    return this.prisma.frameColor.update({
+      data,
+      where
+    });
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} frameColor`;
+  async deleteColor(where: Prisma.FrameColorWhereUniqueInput): Promise<FrameColor> {
+    return this.prisma.frameColor.delete({
+      where,
+    });
   }
 }
