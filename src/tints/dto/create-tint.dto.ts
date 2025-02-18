@@ -4,5 +4,5 @@ export class CreateTintDto {
 
     @IsString()
     @IsNotEmpty()
-    tint: string;
+    color: string;
 }

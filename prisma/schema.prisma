@@ -56,6 +56,10 @@ model Crystal {
   glass  String  
 }
 
+model Tint { 
+  id Int @default(autoincrement()) @id    
+  color  String  
+}
 
 
 

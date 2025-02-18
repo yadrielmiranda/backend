@@ -2,33 +2,42 @@ import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/commo
 import { TintsService } from './tints.service';
 import { CreateTintDto } from './dto/create-tint.dto';
 import { UpdateTintDto } from './dto/update-tint.dto';
+import { Tint as TintModel } from '@prisma/client';
 
 @Controller('tints')
 export class TintsController {
-  constructor(private readonly tintsService: TintsService) {}
+  constructor(private readonly tintsService: TintsService) { }
 
   @Post()
-  create(@Body() createTintDto: CreateTintDto) {
-    return this.tintsService.create(createTintDto);
+  async createTint(
+    @Body() tintData: CreateTintDto,
+  ): Promise<TintModel> {
+    return this.tintsService.createTint(tintData);
   }
 
   @Get()
-  findAll() {
-    return this.tintsService.findAll();
+  async getAllTints(): Promise<TintModel[]> {
+    return this.tintsService.tints({});
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.tintsService.findOne(+id);
+  async getTint(@Param('id') id: string): Promise<TintModel> {
+    return this.tintsService.tint({ id: Number(id) });
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateTintDto: UpdateTintDto) {
-    return this.tintsService.update(+id, updateTintDto);
+  async updateTint(
+    @Param('id') id: string,
+    @Body() tintData: UpdateTintDto,
+  ): Promise<TintModel> {
+    return this.tintsService.updateTint({
+      where: { id: Number(id) },
+      data: tintData,
+    });
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.tintsService.remove(+id);
+  async deleteTint(@Param('id') id: string): Promise<TintModel> {
+    return this.tintsService.deleteTint({ id: Number(id) });
   }
 }

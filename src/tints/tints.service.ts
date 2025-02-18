@@ -1,26 +1,57 @@
 import { Injectable } from '@nestjs/common';
-import { CreateTintDto } from './dto/create-tint.dto';
-import { UpdateTintDto } from './dto/update-tint.dto';
+import { Prisma, Tint } from '@prisma/client';
+import { PrismaService } from 'src/prisma/prisma.service';
 
 @Injectable()
 export class TintsService {
-  create(createTintDto: CreateTintDto) {
-    return 'This action adds a new tint';
+
+  constructor(private prisma: PrismaService) { }
+
+  async tint(
+    tintWhereUniqueInput: Prisma.TintWhereUniqueInput
+  ): Promise<Tint | null> {
+    return this.prisma.tint.findUnique({
+      where: tintWhereUniqueInput,
+    });
   }
 
-  findAll() {
-    return `This action returns all tints`;
+  async tints(params: {
+    skip?: number;
+    take?: number;
+    cursor?: Prisma.TintWhereUniqueInput;
+    where?: Prisma.TintWhereInput;
+    orderBy?: Prisma.TintOrderByWithRelationInput;
+  }): Promise<Tint[]> {
+    const { skip, take, cursor, where, orderBy } = params;
+    return this.prisma.tint.findMany({
+      skip,
+      take,
+      cursor,
+      where,
+      orderBy,
+    });
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} tint`;
+  async createTint(data: Prisma.TintCreateInput): Promise<Tint> {
+    return this.prisma.tint.create({
+      data,
+    });
   }
 
-  update(id: number, updateTintDto: UpdateTintDto) {
-    return `This action updates a #${id} tint`;
+  async updateTint(params: {
+    where: Prisma.TintWhereUniqueInput;
+    data: Prisma.TintUpdateInput;
+  }): Promise<Tint> {
+    const { where, data } = params;
+    return this.prisma.tint.update({
+      data,
+      where
+    });
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} tint`;
+  async deleteTint(where: Prisma.TintWhereUniqueInput): Promise<Tint> {
+    return this.prisma.tint.delete({
+      where,
+    });
   }
 }
