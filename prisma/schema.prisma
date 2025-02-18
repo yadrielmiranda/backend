@@ -51,6 +51,11 @@ model FrameColor {
   color  String  
 }
 
+model Crystal { 
+  id Int @default(autoincrement()) @id    
+  glass  String  
+}
+
 
 
 

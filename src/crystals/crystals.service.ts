@@ -1,26 +1,57 @@
 import { Injectable } from '@nestjs/common';
-import { CreateCrystalDto } from './dto/create-crystal.dto';
-import { UpdateCrystalDto } from './dto/update-crystal.dto';
+import { PrismaService } from 'src/prisma/prisma.service';
+import { Crystal, Prisma } from '@prisma/client';
 
 @Injectable()
 export class CrystalsService {
-  create(createCrystalDto: CreateCrystalDto) {
-    return 'This action adds a new crystal';
+
+  constructor(private prisma: PrismaService) { }
+
+  async crystal(
+    crystalWhereUniqueInput: Prisma.CrystalWhereUniqueInput
+  ): Promise<Crystal | null> {
+    return this.prisma.crystal.findUnique({
+      where: crystalWhereUniqueInput,
+    });
   }
 
-  findAll() {
-    return `This action returns all crystals`;
+  async crystals(params: {
+    skip?: number;
+    take?: number;
+    cursor?: Prisma.CrystalWhereUniqueInput;
+    where?: Prisma.CrystalWhereInput;
+    orderBy?: Prisma.CrystalOrderByWithRelationInput;
+  }): Promise<Crystal[]> {
+    const { skip, take, cursor, where, orderBy } = params;
+    return this.prisma.crystal.findMany({
+      skip,
+      take,
+      cursor,
+      where,
+      orderBy,
+    });
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} crystal`;
+  async createCrystal(data: Prisma.CrystalCreateInput): Promise<Crystal> {
+    return this.prisma.crystal.create({
+      data,
+    });
   }
 
-  update(id: number, updateCrystalDto: UpdateCrystalDto) {
-    return `This action updates a #${id} crystal`;
+  async updateCrystal(params: {
+    where: Prisma.CrystalWhereUniqueInput;
+    data: Prisma.CrystalUpdateInput;
+  }): Promise<Crystal> {
+    const { where, data } = params;
+    return this.prisma.crystal.update({
+      data,
+      where
+    });
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} crystal`;
+  async deleteCrystal(where: Prisma.CrystalWhereUniqueInput): Promise<Crystal> {
+    return this.prisma.crystal.delete({
+      where,
+    });
   }
 }

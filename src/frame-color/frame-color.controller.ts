@@ -16,7 +16,7 @@ export class FrameColorController {
   }
 
   @Get()
-  async getAllFColorss(): Promise<FrameColorModel[]> {
+  async getAllFColors(): Promise<FrameColorModel[]> {
     return this.frameColorService.colors({});
   }
 
