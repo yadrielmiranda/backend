@@ -34,11 +34,11 @@ export class SystemsController {
   @Patch(':id')
   async updateSystem(
     @Param('id') id: string,
-    @Body() userData: UpdateSystemDto,
+    @Body() systemData: UpdateSystemDto,
   ): Promise<SystemModel> {
     return this.systemsService.updateSystem({
       where: { id: Number(id) },
-      data: userData,
+      data: systemData,
     });
   }
 

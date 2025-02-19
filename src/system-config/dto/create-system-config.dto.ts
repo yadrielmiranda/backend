@@ -1,12 +1,12 @@
-import { IsNotEmpty, IsString } from "class-validator";
+import { IsNotEmpty, IsNumber} from "class-validator";
 
 export class CreateSystemConfigDto {
 
-    @IsString()
+    @IsNumber()
     @IsNotEmpty()
-    idSys: string;
+    idSys: number;
 
-    @IsString()
+    @IsNumber()
     @IsNotEmpty()
-    idConf: string;
+    idConf: number;
 }

@@ -1,34 +1,51 @@
 import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
 import { SystemConfigService } from './system-config.service';
 import { CreateSystemConfigDto } from './dto/create-system-config.dto';
+import { SysConf as SysConfModel } from '@prisma/client';
 import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 
-@Controller('system-config')
+@Controller('systemconfigs')
 export class SystemConfigController {
-  constructor(private readonly systemConfigService: SystemConfigService) {}
+  constructor(private readonly systemConfigService: SystemConfigService) { }
 
   @Post()
-  create(@Body() createSystemConfigDto: CreateSystemConfigDto) {
-    return this.systemConfigService.create(createSystemConfigDto);
+  async createSysConf(
+    @Body() sysConfData: CreateSystemConfigDto,
+  ): Promise<SysConfModel> {
+    const { idSys, idConf } = sysConfData;
+    return this.systemConfigService.createSysConf({
+      syst: {
+        connect: { id: idSys },  //Aqui es donde se verifica que exista ese idSys en la tabla System
+      },
+      config: {
+        connect: { id: idConf },    //Aqui es donde se verifica que exista ese id en la tabla SysConf
+      },
+    });
   }
 
   @Get()
-  findAll() {
-    return this.systemConfigService.findAll();
+  async getAllSysConf(): Promise<SysConfModel[]> {
+    return this.systemConfigService.sysConfs({});
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.systemConfigService.findOne(+id);
+  async getSysConf(@Param('id') id: string): Promise<SysConfModel> {
+    return this.systemConfigService.sysConf({ id: Number(id) });
   }
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateSystemConfigDto: UpdateSystemConfigDto) {
-    return this.systemConfigService.update(+id, updateSystemConfigDto);
-  }
+    @Patch(':id')
+    async updateSystem(
+      @Param('id') id: string,
+      @Body() sysConfData: UpdateSystemConfigDto,
+    ): Promise<SysConfModel> {
+      
+      return this.systemConfigService.updateSysConf({
+        where: { id: Number(id) },
+        data: sysConfData});
+    }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.systemConfigService.remove(+id);
+  async deleteSysConf(@Param('id') id: string): Promise<SysConfModel> {
+    return this.systemConfigService.deleteSysConf({ id: Number(id) });
   }
 }

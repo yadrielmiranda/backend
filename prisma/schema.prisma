@@ -37,6 +37,7 @@ model System {
   name  String 
   prod Product @relation(fields: [idProduct], references: [id])
   idProduct Int
+  sysconfs SysConf[]
 }
 
 model Config {
@@ -44,6 +45,15 @@ model Config {
   conf String
   prod Product @relation(fields: [idProduct], references: [id])
   idProduct Int
+  sysconfs SysConf[]
+}
+
+model SysConf { 
+  id Int @default(autoincrement()) @id   
+  syst System @relation(fields: [idSys], references: [id]) 
+  idSys  Int
+  config Config @relation(fields: [idConf], references: [id])
+  idConf Int  
 }
 
 model FrameColor { 
@@ -66,5 +76,8 @@ model Coating {
   name  String  
 }
 
+
+
+  
 
 

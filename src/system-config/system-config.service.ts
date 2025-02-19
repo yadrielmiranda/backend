@@ -1,26 +1,58 @@
 import { Injectable } from '@nestjs/common';
-import { CreateSystemConfigDto } from './dto/create-system-config.dto';
+import { Prisma, SysConf } from '@prisma/client';
+import { PrismaService } from 'src/prisma/prisma.service';
 import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
+
 
 @Injectable()
 export class SystemConfigService {
-  create(createSystemConfigDto: CreateSystemConfigDto) {
-    return 'This action adds a new systemConfig';
+  constructor(private prisma: PrismaService) { }
+
+  async sysConf(
+    sysConfWhereUniqueInput: Prisma.SysConfWhereUniqueInput
+  ): Promise<SysConf | null> {
+    return this.prisma.sysConf.findUnique({
+      where: sysConfWhereUniqueInput,
+    });
   }
 
-  findAll() {
-    return `This action returns all systemConfig`;
+  async sysConfs(params: {
+    skip?: number;
+    take?: number;
+    cursor?: Prisma.SysConfWhereUniqueInput;
+    where?: Prisma.SysConfWhereInput;
+    orderBy?: Prisma.SysConfOrderByWithRelationInput;
+  }): Promise<SysConf[]> {
+    const { skip, take, cursor, where, orderBy } = params;
+    return this.prisma.sysConf.findMany({
+      skip,
+      take,
+      cursor,
+      where,
+      orderBy,
+    });
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} systemConfig`;
+  async createSysConf(data: Prisma.SysConfCreateInput): Promise<SysConf> {
+    return this.prisma.sysConf.create({
+      data,
+    });
   }
 
-  update(id: number, updateSystemConfigDto: UpdateSystemConfigDto) {
-    return `This action updates a #${id} systemConfig`;
+  async updateSysConf(params: {
+    where: Prisma.SysConfWhereUniqueInput;
+    data: UpdateSystemConfigDto;
+  }): Promise<SysConf> {
+    const { where, data } = params;
+    return this.prisma.sysConf.update({
+      data,
+      where
+    });
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} systemConfig`;
+  async deleteSysConf(where: Prisma.SysConfWhereUniqueInput): Promise<SysConf> {
+    return this.prisma.sysConf.delete({
+      where,
+    });
   }
 }

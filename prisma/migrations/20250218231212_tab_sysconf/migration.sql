@@ -1,0 +1,14 @@
+-- CreateTable
+CREATE TABLE `SysConf` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `idSys` INTEGER NOT NULL,
+    `idConf` INTEGER NOT NULL,
+
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- AddForeignKey
+ALTER TABLE `SysConf` ADD CONSTRAINT `SysConf_idSys_fkey` FOREIGN KEY (`idSys`) REFERENCES `System`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `SysConf` ADD CONSTRAINT `SysConf_idConf_fkey` FOREIGN KEY (`idConf`) REFERENCES `Config`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;

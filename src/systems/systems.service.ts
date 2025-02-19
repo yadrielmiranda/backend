@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, System } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { UpdateSystemDto } from './dto/update-system.dto';
 
 @Injectable()
 export class SystemsService {
@@ -40,7 +41,7 @@ export class SystemsService {
 
   async updateSystem(params: {
     where: Prisma.SystemWhereUniqueInput;
-    data: Prisma.SystemUpdateInput;
+    data: UpdateSystemDto;
   }): Promise<System> {
     const { where, data } = params;
     return this.prisma.system.update({
