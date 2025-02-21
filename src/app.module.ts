@@ -15,10 +15,11 @@ import { TintsModule } from './tints/tints.module';
 import { ConfigSModule } from './config-s/config-s.module';
 import { SystemConfigModule } from './system-config/system-config.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { AuthModule } from './auth/auth.module';
 
 
 @Module({
-  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, CoatingModule, CrystalsModule, TintsModule, ConfigSModule, SystemConfigModule],
+  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, CoatingModule, CrystalsModule, TintsModule, ConfigSModule, SystemConfigModule, AuthModule],
   controllers: [AppController],
   providers: [AppService],
 })
