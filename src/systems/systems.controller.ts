@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
 import { SystemsService } from './systems.service';
 import { CreateSystemDto } from './dto/create-system.dto';
 import { UpdateSystemDto } from './dto/update-system.dto';
@@ -20,14 +20,29 @@ export class SystemsController {
       },
     });
   }
+  /*
+    @Get()
+    async getAllSystems(): Promise<SystemModel[]> {
+      return this.systemsService.systems({});
+    }
+  
+    @Get('product') //en esta ruta busco los sistemas que tienen el id de producto que les paso en la query ejem: ?product=1
+    async getSystemsByProd(@Query('product') idP?: any): Promise<SystemModel[]> {
+      return this.systemsService.systems({ where: { idProduct: Number(idP) } });
+    }
+  */
+  @Get() //en esta ruta busco todos los systems o los systems que tienen el id de producto que les paso en la query ejem: ?product=1
+  async getSystems(@Query('product') idP?: string): Promise<SystemModel[]> {
+    if (idP) { // si hay query  
+      return this.systemsService.systems({ where: { idProduct: Number(idP) } });  //devuelvo los systems que tienen ese id 
+    } else { // si no hay query
+      return this.systemsService.systems({}); // devuelvo todos los systems
+    }
 
-  @Get()
-  async getAllUsers(): Promise<SystemModel[]> {
-    return this.systemsService.systems({});
   }
 
   @Get(':id')
-  async getUser(@Param('id') id: string): Promise<SystemModel> {
+  async getSystem(@Param('id') id: string): Promise<SystemModel> {
     return this.systemsService.system({ id: Number(id) });
   }
 

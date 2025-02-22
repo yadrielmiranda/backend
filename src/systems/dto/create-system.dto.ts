@@ -8,5 +8,5 @@ export class CreateSystemDto {
 
     @IsNumber()
     @IsNotEmpty()
-    idProduct: number;  // es el id del producto al que pertenece este sistema
+    idProduct: number;  //es el id del producto al que pertenece este sistema
 }
