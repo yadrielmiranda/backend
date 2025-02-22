@@ -17,10 +17,11 @@ import { SystemConfigModule } from './system-config/system-config.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { EstimatesModule } from './estimates/estimates.module';
+import { PiecesModule } from './pieces/pieces.module';
 
 
 @Module({
-  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, CoatingModule, CrystalsModule, TintsModule, ConfigSModule, SystemConfigModule, AuthModule, EstimatesModule],
+  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, CoatingModule, CrystalsModule, TintsModule, ConfigSModule, SystemConfigModule, AuthModule, EstimatesModule, PiecesModule],
   controllers: [AppController],
   providers: [AppService],
 })
