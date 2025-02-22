@@ -6,7 +6,7 @@ import { UpdateSystemDto } from './dto/update-system.dto';
 @Injectable()
 export class SystemsService {
 
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) { } 
 
   async system(
     systemWhereUniqueInput: Prisma.SystemWhereUniqueInput
@@ -52,7 +52,7 @@ export class SystemsService {
 
   async deleteSystem(where: Prisma.SystemWhereUniqueInput): Promise<System> {
     return this.prisma.system.delete({
-      where,
+      where
     });
   }
 

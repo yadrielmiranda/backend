@@ -23,6 +23,7 @@ model User {
   password String 
   address String
   admin Boolean
+  estimates Estimate[]
 }
 
 model Product { 
@@ -51,29 +52,41 @@ model Config {
 model SysConf { 
   id Int @default(autoincrement()) @id   
   syst System @relation(fields: [idSys], references: [id]) 
-  idSys  Int
+  idSys Int
   config Config @relation(fields: [idConf], references: [id])
   idConf Int  
 }
 
 model FrameColor { 
   id Int @default(autoincrement()) @id    
-  color  String  
+  color String  
 }
 
 model Crystal { 
   id Int @default(autoincrement()) @id    
-  glass  String  
+  glass String  
 }
 
 model Tint { 
   id Int @default(autoincrement()) @id    
-  color  String  
+  color String  
 }
 
 model Coating { 
   id Int @default(autoincrement()) @id    
-  name  String  
+  name String  
+}
+
+model Estimate {
+  id Int @default(autoincrement()) @id    
+  code String 
+  name String
+  date DateTime @default(now())
+  units Int
+  total Decimal
+  user User @relation(fields: [idUser], references: [id])
+  idUser Int  
+  active Boolean
 }
 
 
