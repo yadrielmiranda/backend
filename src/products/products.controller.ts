@@ -16,10 +16,10 @@ export class ProductsController {
     return this.productsService.createProduct(productData);
   }
 
-  @UseGuards(AuthGuard)
+  //@UseGuards(AuthGuard)
   @Get()
   async getAllProducts(): Promise<ProductModel[]> {
-    return this.productsService.products({});
+    return this.productsService.products({}); 
   }
 
   @Get(':id')
@@ -39,7 +39,7 @@ export class ProductsController {
   }
 
   @Delete(':id')
-  async deleteUser(@Param('id') id: string): Promise<ProductModel> {
+  async deleteProduct(@Param('id') id: string): Promise<ProductModel> {
     return this.productsService.deleteProduct({ id: Number(id) });
   }
   

@@ -12,11 +12,14 @@ export class SystemsController {
   async createSystem(
     @Body() systemData: CreateSystemDto,
   ): Promise<SystemModel> {
-    const { name, idProduct } = systemData;
+    const { name, idProduct, idBrand } = systemData;
     return this.systemsService.createSystem({  //Aqui es donde se verifica que exista ese id en la tabla product
       name,
       prod: {
         connect: { id: idProduct },
+      },
+      bran: {
+        connect: { id: idBrand },    //Aqui es donde se verifica que exista ese id en la tabla SysConf
       },
     });
   }
@@ -32,9 +35,9 @@ export class SystemsController {
     }
   */
   @Get() //en esta ruta busco todos los systems o los systems que tienen el id de producto que les paso en la query ejem: ?product=1
-  async getSystems(@Query('product') idP?: string): Promise<SystemModel[]> {
+  async getSystems(@Query('product') idP?: string, @Query('brand') idB?: string): Promise<SystemModel[]> {
     if (idP) { // si hay query  
-      return this.systemsService.systems({ where: { idProduct: Number(idP) } });  //devuelvo los systems que tienen ese id 
+      return this.systemsService.systems({ where: { idProduct: Number(idP), idBrand: Number(idB) } });  //devuelvo los systems que tienen esos id 
     } else { // si no hay query
       return this.systemsService.systems({}); // devuelvo todos los systems
     }

@@ -12,6 +12,10 @@ export class CreatePieceDto {
 
     @IsNumber()
     @IsNotEmpty()
+    idBrand: number; 
+
+    @IsNumber()
+    @IsNotEmpty()
     idSyst: number;
 
     @IsNumber()

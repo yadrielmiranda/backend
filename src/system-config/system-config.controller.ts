@@ -33,16 +33,17 @@ export class SystemConfigController {
     return this.systemConfigService.sysConf({ id: Number(id) });
   }
 
-    @Patch(':id')
-    async updateSystem(
-      @Param('id') id: string,
-      @Body() sysConfData: UpdateSystemConfigDto,
-    ): Promise<SysConfModel> {
-      
-      return this.systemConfigService.updateSysConf({
-        where: { id: Number(id) },
-        data: sysConfData});
-    }
+  @Patch(':id')
+  async updateSystem(
+    @Param('id') id: string,
+    @Body() sysConfData: UpdateSystemConfigDto,
+  ): Promise<SysConfModel> {
+
+    return this.systemConfigService.updateSysConf({
+      where: { id: Number(id) },
+      data: sysConfData
+    });
+  }
 
   @Delete(':id')
   async deleteSysConf(@Param('id') id: string): Promise<SysConfModel> {

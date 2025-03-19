@@ -12,13 +12,16 @@ export class PiecesController {
    async createPiece(
      @Body() pieceData: CreatePieceDto,
    ): Promise<PieceModel> {
-     const { idEst, idProd, idSyst, idConf, idFC, width, height, idCryst, idTint, privacy, idCoat, screen, muntin, price } = pieceData;
+     const { idEst, idProd, idBrand, idSyst, idConf, idFC, width, height, idCryst, idTint, privacy, idCoat, screen, muntin, price } = pieceData;
      return this.piecesService.createPiece({
       estim: {
         connect:{id: idEst}
       },
       prod:{
         connect:{ id: idProd}
+      },
+      bran:{
+        connect:{ id: idBrand}
       },
        syst: {
          connect: { id: idSyst }  //Aqui es donde se verifica que exista ese idSys en la tabla System

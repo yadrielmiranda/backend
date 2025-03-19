@@ -26,6 +26,13 @@ model User {
   estimates Estimate[]
 }
 
+model Brand{
+  id Int @default(autoincrement()) @id    
+  name  String 
+  systems System[]  
+  pieces Piece[]  
+}
+
 model Product { 
   id Int @default(autoincrement()) @id    
   name  String 
@@ -39,6 +46,8 @@ model System {
   name  String 
   prod Product @relation(fields: [idProduct], references: [id])
   idProduct Int
+  bran Brand @relation(fields: [idBrand], references: [id])
+  idBrand Int
   sysconfs SysConf[]
   pieces Piece[]
 }
@@ -103,6 +112,8 @@ model Piece {
   idEst Int
   prod Product @relation(fields: [idProd], references: [id])
   idProd Int 
+  bran Brand @relation(fields: [idBrand], references: [id])
+  idBrand Int
   syst System @relation(fields: [idSyst], references: [id])
   idSyst Int
   conf Config @relation(fields: [idConf], references: [id])

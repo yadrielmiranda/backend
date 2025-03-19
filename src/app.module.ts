@@ -18,10 +18,11 @@ import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { EstimatesModule } from './estimates/estimates.module';
 import { PiecesModule } from './pieces/pieces.module';
+import { BrandsModule } from './brands/brands.module';
 
 
 @Module({
-  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, CoatingModule, CrystalsModule, TintsModule, ConfigSModule, SystemConfigModule, AuthModule, EstimatesModule, PiecesModule],
+  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, CoatingModule, CrystalsModule, TintsModule, ConfigSModule, SystemConfigModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule],
   controllers: [AppController],
   providers: [AppService],
 })
