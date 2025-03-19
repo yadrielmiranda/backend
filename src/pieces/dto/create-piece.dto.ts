@@ -56,9 +56,30 @@ export class CreatePieceDto {
 
     @IsBoolean()
     @IsNotEmpty()
-    muntin: boolean;
+    muntin: boolean;    
 
     @IsNumber()
     @IsNotEmpty()
+    qty: number; 
+    
+    @IsNumber()
+    @IsNotEmpty()
     price: number;
+
+    @IsNumber()
+    @IsNotEmpty()
+    rate: number;
+
+    @IsNumber()
+    @IsNotEmpty()
+    markup: number; 
+
+    @IsNumber()
+    @IsNotEmpty()
+    subtotal: number;
+
+    @IsNumber()
+    @IsNotEmpty()
+    netProfit: number; 
+    
 }

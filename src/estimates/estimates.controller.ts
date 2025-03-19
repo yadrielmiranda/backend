@@ -12,12 +12,15 @@ export class EstimatesController {
   async createEstimate(
     @Body() estimateData: CreateEstimateDto,
   ): Promise<EstimateModel> {
-    const { code, name, units, total, idUser, active } = estimateData;
+    const { number, name, project, units, priceT, rateT, netProfit, idUser, active } = estimateData;
     return this.estimatesService.createEstimate({  //Aqui es donde se verifica que exista ese id en la tabla product
-      code,
+      number,
       name,
+      project,
       units,
-      total,
+      priceT,
+      rateT,
+      netProfit,
       user: {
         connect: { id: idUser },
       },

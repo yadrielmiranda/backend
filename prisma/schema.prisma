@@ -95,11 +95,14 @@ model Coating {
 
 model Estimate {
   id Int @default(autoincrement()) @id    
-  code String 
+  number String 
   name String
+  project String
   date DateTime @default(now())
   units Int
-  total Decimal
+  rateT Decimal
+  priceT Decimal
+  netProfit Int
   user User @relation(fields: [idUser], references: [id])
   idUser Int  
   active Boolean
@@ -110,6 +113,7 @@ model Piece {
   id Int @default(autoincrement()) @id    
   estim Estimate @relation(fields: [idEst], references: [id])
   idEst Int
+  mark String
   prod Product @relation(fields: [idProd], references: [id])
   idProd Int 
   bran Brand @relation(fields: [idBrand], references: [id])
@@ -131,7 +135,12 @@ model Piece {
   idCoat Int
   screen Boolean
   muntin Boolean
+  qty Int   
+  rate Decimal
   price Decimal
+  markup Int
+  subtotal Decimal
+  netProfit Decimal
 }
 
 

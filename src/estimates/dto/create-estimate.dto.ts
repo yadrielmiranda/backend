@@ -4,11 +4,15 @@ export class CreateEstimateDto {
 
     @IsNotEmpty()
     @IsString()
-    code: string;
+    number: string;
 
     @IsNotEmpty()
     @IsString()
     name: string;
+
+    @IsNotEmpty()
+    @IsString()
+    project: string;
 
     @IsNumber()
     @IsNotEmpty()
@@ -16,7 +20,15 @@ export class CreateEstimateDto {
 
     @IsNumber()
     @IsNotEmpty()
-    total: number;
+    rateT: number;
+
+    @IsNumber()
+    @IsNotEmpty()
+    priceT: number;
+
+    @IsNumber()
+    @IsNotEmpty()
+    netProfit: number;
 
     @IsNumber()
     @IsNotEmpty()
@@ -24,6 +36,5 @@ export class CreateEstimateDto {
 
     @IsBoolean()
     @IsNotEmpty()
-    active: boolean  
-  
+    active: boolean    
 }
