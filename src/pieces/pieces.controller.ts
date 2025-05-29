@@ -12,7 +12,7 @@ export class PiecesController {
    async createPiece(
      @Body() pieceData: CreatePieceDto,
    ): Promise<PieceModel> {
-     const { idEst, idProd, idBrand, idSyst, idConf, idFC, width, height, idCryst, idTint, privacy, idCoat, screen, muntin, price } = pieceData;
+     const { idEst, mark, idProd, idBrand, idSyst, idConf, idFC, width, height, idCryst, idTint, privacy, idCoat, screen, muntin, qty, price, rate, markup, subtotal, netProfit } = pieceData;
      return this.piecesService.createPiece({
       estim: {
         connect:{id: idEst}
@@ -41,6 +41,12 @@ export class PiecesController {
        coat:{
         connect: {id: idCoat}
        },
+       mark,
+       qty,
+       rate, 
+       markup, 
+       subtotal, 
+       netProfit,
        width,
        height,       
        muntin,

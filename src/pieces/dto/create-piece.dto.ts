@@ -6,13 +6,17 @@ export class CreatePieceDto {
     @IsNotEmpty()
     idEst: number;
 
+    @IsString()
+    @IsNotEmpty()
+    mark: string;
+
     @IsNumber()
     @IsNotEmpty()
     idProd: number; 
 
     @IsNumber()
     @IsNotEmpty()
-    idBrand: number; 
+    idBrand: number;  
 
     @IsNumber()
     @IsNotEmpty()
