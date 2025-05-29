@@ -8,7 +8,7 @@ async function bootstrap() {
   app.setGlobalPrefix('api')
   app.useGlobalPipes(new ValidationPipe());
 
-   const config = new DocumentBuilder()
+  const config = new DocumentBuilder()
     .setTitle('Impact PLUS')
     .setDescription('The Impact PLUS API description')
     .setVersion('1.0')
@@ -16,7 +16,7 @@ async function bootstrap() {
     .build();
   const documentFactory = () => SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api', app, documentFactory);
-
+  
   app.enableCors();
 
   await app.listen(process.env.PORT ?? 4000);
