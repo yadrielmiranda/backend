@@ -30,7 +30,8 @@ model Brand{
   id Int @default(autoincrement()) @id    
   name  String 
   systems System[]  
-  pieces Piece[]  
+  pieces Piece[]
+  brandProducts BrandProduct[]  
 }
 
 model Product { 
@@ -39,6 +40,18 @@ model Product {
   systems System[]
   configs Config[]
   pieces Piece[]
+  brandProducts BrandProduct[]
+}
+
+model BrandProduct {
+ 
+  brand Brand @relation(fields: [idBrand], references: [id])  
+  idBrand Int  
+  product Product @relation(fields: [idProduct], references: [id])   
+  idProduct Int
+
+  @@id([idBrand, idProduct]) 
+  @@map("brand_product") 
 }
 
 model System {

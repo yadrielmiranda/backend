@@ -54,4 +54,67 @@ export class BrandsService {
       where,
     });
   }
+
+
+  // Obtener los productos asociados a una marca
+  async getBrandwithProducts(
+  brandWhereUniqueInput: Prisma.BrandWhereUniqueInput
+): Promise<Brand | null> {
+  return this.prisma.brand.findUnique({
+    where: brandWhereUniqueInput,
+    include: {
+      brandProducts: { // Incluye las entradas de la tabla de unión
+        include: { // Y también incluye los detalles reales del producto a través de la tabla de unión
+          product: true,
+        },
+      },
+    },
+  });
+}
+
+// Este método te permite vincular un producto existente a una marca existente
+
+async addProductToBrand(brandId: number, productId: number): Promise<Brand> {
+  
+  return this.prisma.brand.update({
+    where: { id: brandId }, // Actualiza la marca específica
+    data: {
+      brandProducts: {
+        create: {
+          idProduct: productId, // Crea una nueva entrada en BrandProduct
+        },
+      },
+    },
+    include: {
+      brandProducts: {
+        include: { product: true }, // Incluye la asociación actualizada en la respuesta
+      },
+    },
+  });
+}
+
+
+// Este método te permite eliminar un vínculo entre un producto y una marca.
+async removeProductFromBrand(brandId: number, productId: number): Promise<Brand> {
+  return this.prisma.brand.update({
+    where: { id: brandId },
+    data: {
+      brandProducts: {
+        delete: {
+          
+          idBrand_idProduct: { 
+            idBrand: brandId,
+            idProduct: productId,
+          },
+        },
+      },
+    },
+    include: {
+      brandProducts: {
+        include: { product: true },
+      },
+    },
+  });
+}
+
 }
