@@ -16,6 +16,17 @@ export class UsersService {
     });
   }
 
+  async findOneByIdentifier(identifier: string): Promise<User | null> {
+    return this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { username: identifier },
+          { email: identifier },
+        ],
+      },
+    });
+  }
+
   async users(params: {
     skip?: number;
     take?: number;
@@ -61,6 +72,8 @@ export class UsersService {
       where,
     });
   }
+
+
 
 
 }
