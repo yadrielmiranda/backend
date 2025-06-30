@@ -1,39 +1,31 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, ParseIntPipe } from '@nestjs/common';
 import { SystemsService } from './systems.service';
 import { CreateSystemDto } from './dto/create-system.dto';
 import { UpdateSystemDto } from './dto/update-system.dto';
 import { System as SystemModel } from '@prisma/client';
+
 
 @Controller('systems')
 export class SystemsController {
   constructor(private readonly systemsService: SystemsService) { }
 
   @Post()
-  async createSystem(
-    @Body() systemData: CreateSystemDto,
-  ): Promise<SystemModel> {
-    const { name, idProduct, idBrand } = systemData;
-    return this.systemsService.createSystem({  //Aqui es donde se verifica que exista ese id en la tabla product
-      name,
-      prod: {
-        connect: { id: idProduct },
-      },
-      bran: {
-        connect: { id: idBrand },    //Aqui es donde se verifica que exista ese id en la tabla SysConf
-      },
-    });
-  }
-  /*
-    @Get()
-    async getAllSystems(): Promise<SystemModel[]> {
-      return this.systemsService.systems({});
+    async createSystem(
+        @Body() systemData: CreateSystemDto, // Recibimos el DTO completo
+    ): Promise<SystemModel> {
+        // Simplemente pasamos todos los datos al servicio.
+        // El servicio se encarga de la validación y la lógica de conexión.
+        return this.systemsService.createSystem(systemData);
     }
-  
-    @Get('product') //en esta ruta busco los sistemas que tienen el id de producto que les paso en la query ejem: ?product=1
-    async getSystemsByProd(@Query('product') idP?: any): Promise<SystemModel[]> {
-      return this.systemsService.systems({ where: { idProduct: Number(idP) } });
+
+       @Post(':id/configs/:configId')
+    async addConfigToSystem(
+        @Param('id', ParseIntPipe) id: number,
+        @Param('configId', ParseIntPipe) configId: number
+    ) {
+        return this.systemsService.addConfigToSystem(id, configId);
     }
-  */
+
   @Get() //en esta ruta busco todos los systems o los systems que tienen el id de producto que les paso en la query ejem: ?product=1
   async getSystems(@Query('product') idP?: string, @Query('brand') idB?: string): Promise<SystemModel[]> {
     if (idP) {
@@ -55,6 +47,16 @@ export class SystemsController {
     return this.systemsService.system({ id: Number(id) });
   }
 
+    @Get(':id/configs')
+    async getSystemConfigs(@Param('id', ParseIntPipe) id: number) {
+        return this.systemsService.getSystemWithConfigs(id);
+    }
+
+@Get(':id/available-configs')
+    async getAvailableConfigs(@Param('id', ParseIntPipe) id: number) {
+        return this.systemsService.getAvailableConfigsForSystem(id);
+    }
+
   @Patch(':id')
   async updateSystem(
     @Param('id') id: string,
@@ -70,5 +72,13 @@ export class SystemsController {
   async deleteSystem(@Param('id') id: string): Promise<SystemModel> {
     return this.systemsService.deleteSystem({ id: Number(id) });
   }
+
+    @Delete(':id/configs/:configId')
+    async removeConfigFromSystem(
+        @Param('id', ParseIntPipe) id: number,
+        @Param('configId', ParseIntPipe) configId: number
+    ) {
+        return this.systemsService.removeConfigFromSystem(id, configId);
+    }
 
 }

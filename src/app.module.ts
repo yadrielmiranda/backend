@@ -13,7 +13,6 @@ import { CoatingModule } from './coating/coating.module';
 import { CrystalsModule } from './crystals/crystals.module';
 import { TintsModule } from './tints/tints.module';
 import { ConfigSModule } from './config-s/config-s.module';
-import { SystemConfigModule } from './system-config/system-config.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { EstimatesModule } from './estimates/estimates.module';
@@ -22,7 +21,7 @@ import { BrandsModule } from './brands/brands.module';
 
 
 @Module({
-  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, CoatingModule, CrystalsModule, TintsModule, ConfigSModule, SystemConfigModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule],
+  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, CoatingModule, CrystalsModule, TintsModule, ConfigSModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule],
   controllers: [AppController],
   providers: [AppService],
 })

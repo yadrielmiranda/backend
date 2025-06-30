@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseIntPipe } from '@nestjs/common';
 import { ConfigSService } from './config-s.service';
 import { CreateConfigDto } from './dto/create-config-.dto';
 import { UpdateConfigDto } from './dto/update-config-.dto';
@@ -12,14 +12,14 @@ export class ConfigSController {
   async createConfig(
     @Body() confData: CreateConfigDto,
   ): Promise<ConfigModel> {
-    const { conf, idProduct } = confData;
-    return this.configSService.createConfig({  //Aqui es donde se verifica que exista ese idProduct en la tabla product
-      conf,
+    return this.configSService.createConfig({
+      conf: confData.conf,
       prod: {
-        connect: { id: idProduct },
+        connect: { id: confData.idProduct },
       },
     });
   }
+
 
   @Get()
   async getAllConfigs(): Promise<ConfigModel[]> {
@@ -27,23 +27,29 @@ export class ConfigSController {
   }
 
   @Get(':id')
-  async getConfig(@Param('id') id: string): Promise<ConfigModel> {
-    return this.configSService.config({ id: Number(id) });
+  async getConfig(@Param('id', ParseIntPipe) id: number): Promise<ConfigModel | null> {
+    return this.configSService.config({ id });
+  }
+
+  
+  @Get(':id/product')
+  async getConfigWithProduct(@Param('id', ParseIntPipe) id: number): Promise<ConfigModel | null> {
+    return this.configSService.getConfigWithProduct({ id });
   }
 
   @Patch(':id')
   async updateConfig(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() confData: UpdateConfigDto,
   ): Promise<ConfigModel> {
     return this.configSService.updateConfig({
-      where: { id: Number(id) },
+      where: { id: id },
       data: confData,
     });
   }
 
   @Delete(':id')
-  async deleteConfig(@Param('id') id: string): Promise<ConfigModel> {
-    return this.configSService.deleteConfig({ id: Number(id) });
+  async deleteConfig(@Param('id', ParseIntPipe) id: number): Promise<ConfigModel> {
+    return this.configSService.deleteConfig({ id: id });
   }
 }

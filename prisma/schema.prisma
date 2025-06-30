@@ -28,58 +28,56 @@ model User {
 
 model Brand{
   id Int @default(autoincrement()) @id    
-  name  String 
-  systems System[]  
+  name  String  
   pieces Piece[]
   brandProducts BrandProduct[]  
 }
 
 model Product { 
   id Int @default(autoincrement()) @id    
-  name  String 
-  systems System[]
+  name  String   
   configs Config[]
   pieces Piece[]
   brandProducts BrandProduct[]
 }
 
 model BrandProduct {
- 
-  brand Brand @relation(fields: [idBrand], references: [id])  
-  idBrand Int  
-  product Product @relation(fields: [idProduct], references: [id])   
-  idProduct Int
-
-  @@id([idBrand, idProduct]) 
-  @@map("brand_product") 
+  brand     Brand   @relation(fields: [idBrand], references: [id])
+  idBrand   Int
+  product   Product @relation(fields: [idProduct], references: [id])
+  idProduct Int  
+  systems   System[] 
+  @@id([idBrand, idProduct])
+  @@map("brand_product")
 }
 
 model System {
-  id Int @default(autoincrement()) @id    
-  name  String 
-  prod Product @relation(fields: [idProduct], references: [id])
-  idProduct Int
-  bran Brand @relation(fields: [idBrand], references: [id])
-  idBrand Int
-  sysconfs SysConf[]
-  pieces Piece[]
+  id           Int          @id @default(autoincrement())
+  name         String
+  brandProduct BrandProduct @relation(fields: [idBrand, idProduct], references: [idBrand, idProduct])
+  idBrand      Int
+  idProduct    Int
+  sysconfs     SysConf[] 
+  pieces       Piece[]
 }
 
 model Config {
-  id Int @default(autoincrement()) @id
-  conf String
-  prod Product @relation(fields: [idProduct], references: [id])
+  id        Int       @id @default(autoincrement())
+  conf      String
+  prod      Product   @relation(fields: [idProduct], references: [id])
   idProduct Int
-  sysconfs SysConf[]
-  pieces Piece[]
+  sysconfs  SysConf[] 
+  pieces    Piece[]
 }
 
-model SysConf { 
-  id Int @default(autoincrement()) @id   
-  syst System @relation(fields: [idSys], references: [id]) 
-  idSys Int
-  config Config @relation(fields: [idConf], references: [id])
-  idConf Int  
+model SysConf {
+  system   System @relation(fields: [idSystem], references: [id])
+  idSystem Int
+  config   Config @relation(fields: [idConfig], references: [id])
+  idConfig Int
+
+  @@id([idSystem, idConfig]) // Clave primaria compuesta
+  @@map("sys_conf")          // Nombre de la tabla en la base de datos
 }
 
 model FrameColor { 

@@ -6,7 +6,6 @@ import { Config, Prisma } from '@prisma/client';
 export class ConfigSService {
   constructor(private prisma: PrismaService) { }
 
-
   async config(
     configWhereUniqueInput: Prisma.ConfigWhereUniqueInput
   ): Promise<Config | null> {
@@ -29,9 +28,24 @@ export class ConfigSService {
       cursor,
       where,
       orderBy,
+      include: {
+        prod: true, // Incluye el producto para la vista de tabla
+      },
     });
   }
 
+  async getConfigWithProduct(
+    configWhereUniqueInput: Prisma.ConfigWhereUniqueInput
+  ): Promise<Config | null> {
+    return this.prisma.config.findUnique({
+      where: configWhereUniqueInput,
+      include: {
+        prod: true,
+      },
+    });
+  }
+
+  // Los métodos de creación, actualización y eliminación no cambian.
   async createConfig(data: Prisma.ConfigCreateInput): Promise<Config> {
     return this.prisma.config.create({
       data,
@@ -47,12 +61,11 @@ export class ConfigSService {
       data,
       where
     });
-  }
-
+  } 
+  
   async deleteConfig(where: Prisma.ConfigWhereUniqueInput): Promise<Config> {
     return this.prisma.config.delete({
       where,
     });
   }
-
 }
