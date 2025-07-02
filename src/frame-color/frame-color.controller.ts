@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseIntPipe } from '@nestjs/common';
 import { FrameColorService } from './frame-color.service';
 import { CreateFrameColorDto } from './dto/create-frame-color.dto';
 import { UpdateFrameColorDto } from './dto/update-frame-color.dto';
@@ -21,24 +21,24 @@ export class FrameColorController {
   }
 
   @Get(':id')
-  async getFColor(@Param('id') id: string): Promise<FrameColorModel> {
-    return this.frameColorService.color({ id: Number(id) });
+  async getFColor(@Param('id', ParseIntPipe) id: number): Promise<FrameColorModel> {
+    return this.frameColorService.color({ id});
   }
 
   @Patch(':id')
   async updateFColor(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() colorData: UpdateFrameColorDto,
   ): Promise<FrameColorModel> {
     return this.frameColorService.updateColor({
-      where: { id: Number(id) },
+      where: { id },
       data: colorData,
     });
   }
 
   @Delete(':id')
-  async deleteFColor(@Param('id') id: string): Promise<FrameColorModel> {
-    return this.frameColorService.deleteColor({ id: Number(id) });
+  async deleteFColor(@Param('id', ParseIntPipe) id: number): Promise<FrameColorModel> {
+    return this.frameColorService.deleteColor({ id });
   }
 
 }

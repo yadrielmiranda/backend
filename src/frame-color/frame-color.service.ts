@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { FrameColor, Prisma, } from '@prisma/client';
 
@@ -9,11 +9,20 @@ export class FrameColorService {
 
 
   async color(
-    frameColorWhereUniqueInput: Prisma.FrameColorWhereUniqueInput
-  ): Promise<FrameColor | null> {
-    return this.prisma.frameColor.findUnique({
+    frameColorWhereUniqueInput: Prisma.FrameColorWhereUniqueInput,
+  ): Promise<FrameColor> {
+    const color = await this.prisma.frameColor.findUnique({
       where: frameColorWhereUniqueInput,
     });
+
+    //  Si no se encuentra el color, lanza un error 404.
+    if (!color) {
+      throw new NotFoundException(
+        `FrameColor with ID #${frameColorWhereUniqueInput.id} not found`,
+      );
+    }
+
+    return color;
   }
 
   async colors(params: {
@@ -39,20 +48,33 @@ export class FrameColorService {
     });
   }
 
-  async updateColor(params: {
+ async updateColor(params: {
     where: Prisma.FrameColorWhereUniqueInput;
     data: Prisma.FrameColorUpdateInput;
   }): Promise<FrameColor> {
     const { where, data } = params;
-    return this.prisma.frameColor.update({
-      data,
-      where
-    });
+    
+    //  Verifica que el color exista antes de intentar actualizarlo.
+    try {
+      return await this.prisma.frameColor.update({
+        data,
+        where,
+      });
+    } catch (error) {
+      // Prisma lanza un error si el registro a actualizar no existe.
+      throw new NotFoundException(`FrameColor with ID #${where.id} not found`);
+    }
   }
 
-  async deleteColor(where: Prisma.FrameColorWhereUniqueInput): Promise<FrameColor> {
-    return this.prisma.frameColor.delete({
-      where,
-    });
+   async deleteColor(where: Prisma.FrameColorWhereUniqueInput): Promise<FrameColor> {
+    // Verifica que el color exista antes de intentar borrarlo.
+    try {
+      return await this.prisma.frameColor.delete({
+        where,
+      });
+    } catch (error) {
+      // Prisma lanza un error si el registro a borrar no existe.
+      throw new NotFoundException(`FrameColor with ID #${where.id} not found`);
+    }
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, Coating } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -8,10 +8,19 @@ export class CoatingService {
 
   async coating(
     coatingWhereUniqueInput: Prisma.CoatingWhereUniqueInput
-  ): Promise<Coating | null> {
-    return this.prisma.coating.findUnique({
+  ): Promise<Coating> {
+    const coating = await this.prisma.coating.findUnique({
       where: coatingWhereUniqueInput,
     });
+
+    // Si no se encuentra el coating, lanza un error 404.
+    if (!coating) {
+      throw new NotFoundException(
+        `Coating with ID #${coatingWhereUniqueInput.id} not found`,
+      );
+    }
+
+    return coating;
   }
 
   async coatings(params: {
@@ -42,15 +51,28 @@ export class CoatingService {
     data: Prisma.CoatingUpdateInput;
   }): Promise<Coating> {
     const { where, data } = params;
-    return this.prisma.coating.update({
-      data,
-      where
-    });
+
+    // Verifica que el coating exista antes de intentar actualizarlo.
+    try {
+      return await this.prisma.coating.update({
+        data,
+        where,
+      });
+    } catch (error) {
+      // Prisma lanza un error si el registro a actualizar no existe.
+      throw new NotFoundException(`Coating with ID #${where.id} not found`);
+    }
   }
 
   async deleteCoating(where: Prisma.CoatingWhereUniqueInput): Promise<Coating> {
-    return this.prisma.coating.delete({
-      where,
-    });
+    // Verifica que el coating exista antes de intentar borrarlo.
+    try {
+      return await this.prisma.coating.delete({
+        where,
+      });
+    } catch (error) {
+      // Prisma lanza un error si el registro a borrar no existe.
+      throw new NotFoundException(`Coating with ID #${where.id} not found`);
+    }
   }
 }

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseIntPipe } from '@nestjs/common';
 import { CoatingService } from './coating.service';
 import { CreateCoatingDto } from './dto/create-coating.dto';
 import { UpdateCoatingDto } from './dto/update-coating.dto';
@@ -16,28 +16,28 @@ export class CoatingController {
   }
 
   @Get()
-  async getAllCoating(): Promise<CoatingModel[]> {
+  async getAllCoatings(): Promise<CoatingModel[]> {
     return this.coatingService.coatings({});
   }
 
   @Get(':id')
-  async getCoating(@Param('id') id: string): Promise<CoatingModel> {
-    return this.coatingService.coating({ id: Number(id) });
+  async getCoatingById(@Param('id', ParseIntPipe) id: number): Promise<CoatingModel> {
+    return this.coatingService.coating({ id });
   }
 
   @Patch(':id')
   async updateCoating(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() coatingData: UpdateCoatingDto,
   ): Promise<CoatingModel> {
     return this.coatingService.updateCoating({
-      where: { id: Number(id) },
+      where: { id },
       data: coatingData,
     });
   }
 
   @Delete(':id')
-  async deleteCoating(@Param('id') id: string): Promise<CoatingModel> {
-    return this.coatingService.deleteCoating({ id: Number(id) });
+  async deleteCoating(@Param('id', ParseIntPipe) id: number): Promise<CoatingModel> {
+    return this.coatingService.deleteCoating({ id });
   }
 }

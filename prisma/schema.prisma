@@ -153,9 +153,3 @@ model Piece {
   subtotal Decimal
   netProfit Decimal
 }
-
-
-
-  
-
-
