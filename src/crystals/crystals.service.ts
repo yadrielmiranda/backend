@@ -1,18 +1,24 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma, Crystal } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { Crystal, Prisma } from '@prisma/client';
 
 @Injectable()
-export class CrystalsService {
-
+export class CrystalService {
   constructor(private prisma: PrismaService) { }
 
   async crystal(
     crystalWhereUniqueInput: Prisma.CrystalWhereUniqueInput
-  ): Promise<Crystal | null> {
-    return this.prisma.crystal.findUnique({
+  ): Promise<Crystal> {
+    const crystal = await this.prisma.crystal.findUnique({
       where: crystalWhereUniqueInput,
     });
+
+    if (!crystal) {
+      throw new NotFoundException(
+        `Crystal with ID #${crystalWhereUniqueInput.id} not found`,
+      );
+    }
+    return crystal;
   }
 
   async crystals(params: {
@@ -43,15 +49,23 @@ export class CrystalsService {
     data: Prisma.CrystalUpdateInput;
   }): Promise<Crystal> {
     const { where, data } = params;
-    return this.prisma.crystal.update({
-      data,
-      where
-    });
+    try {
+      return await this.prisma.crystal.update({
+        data,
+        where,
+      });
+    } catch (error) {
+      throw new NotFoundException(`Crystal with ID #${where.id} not found`);
+    }
   }
 
   async deleteCrystal(where: Prisma.CrystalWhereUniqueInput): Promise<Crystal> {
-    return this.prisma.crystal.delete({
-      where,
-    });
+    try {
+      return await this.prisma.crystal.delete({
+        where,
+      });
+    } catch (error) {
+      throw new NotFoundException(`Crystal with ID #${where.id} not found`);
+    }
   }
 }

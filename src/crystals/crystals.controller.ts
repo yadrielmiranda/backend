@@ -1,43 +1,44 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
-import { CrystalsService } from './crystals.service';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseIntPipe } from '@nestjs/common';
+import { CrystalService } from './crystals.service';
 import { CreateCrystalDto } from './dto/create-crystal.dto';
 import { UpdateCrystalDto } from './dto/update-crystal.dto';
 import { Crystal as CrystalModel } from '@prisma/client';
 
+
 @Controller('crystals')
-export class CrystalsController {
-  constructor(private readonly crystalsService: CrystalsService) { }
+export class CrystalController {
+  constructor(private readonly crystalService: CrystalService) { }
 
   @Post()
   async createCrystal(
     @Body() crystalData: CreateCrystalDto,
   ): Promise<CrystalModel> {
-    return this.crystalsService.createCrystal(crystalData);
+    return this.crystalService.createCrystal(crystalData);
   }
 
   @Get()
   async getAllCrystals(): Promise<CrystalModel[]> {
-    return this.crystalsService.crystals({});
+    return this.crystalService.crystals({});
   }
 
   @Get(':id')
-  async getCrystal(@Param('id') id: string): Promise<CrystalModel> {
-    return this.crystalsService.crystal({ id: Number(id) });
+  async getCrystalById(@Param('id', ParseIntPipe) id: number): Promise<CrystalModel> {
+    return this.crystalService.crystal({ id });
   }
 
   @Patch(':id')
   async updateCrystal(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() crystalData: UpdateCrystalDto,
   ): Promise<CrystalModel> {
-    return this.crystalsService.updateCrystal({
-      where: { id: Number(id) },
+    return this.crystalService.updateCrystal({
+      where: { id },
       data: crystalData,
     });
   }
 
   @Delete(':id')
-  async deleteCrystal(@Param('id') id: string): Promise<CrystalModel> {
-    return this.crystalsService.deleteCrystal({ id: Number(id) });
+  async deleteCrystal(@Param('id', ParseIntPipe) id: number): Promise<CrystalModel> {
+    return this.crystalService.deleteCrystal({ id });
   }
 }
