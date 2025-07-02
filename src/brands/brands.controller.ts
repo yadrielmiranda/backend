@@ -9,51 +9,39 @@ export class BrandsController {
   constructor(private readonly brandsService: BrandsService) { }
 
   @Post()
-  async createBrand(
-    @Body() brandData: CreateBrandDto,
-  ): Promise<BrandModel> {
+  async createBrand(@Body() brandData: CreateBrandDto): Promise<BrandModel> {
     return this.brandsService.createBrand(brandData);
   }
 
-  //@UseGuards(AuthGuard)
   @Get()
   async getAllBrands(): Promise<BrandModel[]> {
     return this.brandsService.brands({});
   }
 
   @Get(':id')
-  async getBrand(@Param('id', ParseIntPipe) id: number): Promise<BrandModel> {
+  async getBrandById(@Param('id', ParseIntPipe) id: number): Promise<BrandModel> {
     return this.brandsService.brand({ id });
   }
 
   @Patch(':id')
   async updateBrand(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() brandData: UpdateBrandDto,
   ): Promise<BrandModel> {
-    return this.brandsService.updateBrand({
-      where: { id: Number(id) },
-      data: brandData,
-    });
+    return this.brandsService.updateBrand({ where: { id }, data: brandData });
   }
 
   @Delete(':id')
-  async deleteBrand(@Param('id') id: string): Promise<BrandModel> {
-    return this.brandsService.deleteBrand({ id: Number(id) });
+  async deleteBrand(@Param('id', ParseIntPipe) id: number): Promise<BrandModel> {
+    return this.brandsService.deleteBrand({ id });
   }
 
-
-
-  @Get(':id/products') // Nueva ruta para los productos de una marca específica
-  async getBrandProducts(@Param('id', ParseIntPipe) id: number): Promise<BrandModel | null> {
-
-    return this.brandsService.getBrandwithProducts({ id: id });
-
+  @Get(':id/products')
+  async getBrandProducts(@Param('id', ParseIntPipe) id: number): Promise<BrandModel> {
+    return this.brandsService.getBrandWithProducts({ id });
   }
 
-
-
-  @Post(':brandId/products/:productId') // Ruta para asociar un producto con una marca
+  @Post(':brandId/products/:productId')
   async addProductToBrand(
     @Param('brandId', ParseIntPipe) brandId: number,
     @Param('productId', ParseIntPipe) productId: number,
@@ -61,9 +49,7 @@ export class BrandsController {
     return this.brandsService.addProductToBrand(brandId, productId);
   }
 
-
-
-  @Delete(':brandId/products/:productId') // Ruta para desasociar un producto de una marca
+  @Delete(':brandId/products/:productId')
   async removeProductFromBrand(
     @Param('brandId', ParseIntPipe) brandId: number,
     @Param('productId', ParseIntPipe) productId: number,
