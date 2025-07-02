@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, ParseIntPipe } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -19,28 +19,27 @@ export class ProductsController {
   //@UseGuards(AuthGuard)
   @Get()
   async getAllProducts(): Promise<ProductModel[]> {
-    return this.productsService.products({}); 
+    return this.productsService.products({});
   }
 
   @Get(':id')
-  async getProduct(@Param('id') id: string): Promise<ProductModel> {
-    return this.productsService.product({ id: Number(id) });
+  async getProductById(@Param('id', ParseIntPipe) id: number): Promise<ProductModel> {
+    return this.productsService.product({ id });
   }
 
   @Patch(':id')
   async updateProduct(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() productData: UpdateProductDto,
   ): Promise<ProductModel> {
     return this.productsService.updateProduct({
-      where: { id: Number(id) },
+      where: { id },
       data: productData,
     });
   }
 
   @Delete(':id')
-  async deleteProduct(@Param('id') id: string): Promise<ProductModel> {
-    return this.productsService.deleteProduct({ id: Number(id) });
+  async deleteProduct(@Param('id', ParseIntPipe) id: number): Promise<ProductModel> {
+    return this.productsService.deleteProduct({ id });
   }
-  
 }

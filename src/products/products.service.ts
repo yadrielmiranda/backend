@@ -1,18 +1,24 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { Prisma, Product } from '@prisma/client';
 
 @Injectable()
 export class ProductsService {
-
   constructor(private prisma: PrismaService) { }
 
   async product(
     productWhereUniqueInput: Prisma.ProductWhereUniqueInput
-  ): Promise<Product | null> {
-    return this.prisma.product.findUnique({
+  ): Promise<Product> {
+    const product = await this.prisma.product.findUnique({
       where: productWhereUniqueInput,
     });
+
+    if (!product) {
+      throw new NotFoundException(
+        `Product with ID #${productWhereUniqueInput.id} not found`,
+      );
+    }
+    return product;
   }
 
   async products(params: {
@@ -43,15 +49,23 @@ export class ProductsService {
     data: Prisma.ProductUpdateInput;
   }): Promise<Product> {
     const { where, data } = params;
-    return this.prisma.product.update({
-      data,
-      where
-    });
+    try {
+      return await this.prisma.product.update({
+        data,
+        where,
+      });
+    } catch (error) {
+      throw new NotFoundException(`Product with ID #${where.id} not found`);
+    }
   }
 
   async deleteProduct(where: Prisma.ProductWhereUniqueInput): Promise<Product> {
-    return this.prisma.product.delete({
-      where,
-    });
+    try {
+      return await this.prisma.product.delete({
+        where,
+      });
+    } catch (error) {
+      throw new NotFoundException(`Product with ID #${where.id} not found`);
+    }
   }
 }
