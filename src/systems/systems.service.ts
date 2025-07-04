@@ -133,8 +133,7 @@ export class SystemsService {
     });
     const associatedConfigIds = associatedConfigs.map(c => c.idConfig);
 
-    // Finalmente, buscamos todas las configuraciones que pertenecen al mismo producto
-    // PERO que NO están en la lista de las ya asociadas.
+    
     return this.prisma.config.findMany({
       where: {
         idProduct: system.idProduct, // Deben ser del mismo producto

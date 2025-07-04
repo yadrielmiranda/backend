@@ -106,7 +106,7 @@ model Coating {
 
 model Estimate {
   id Int @default(autoincrement()) @id    
-  number String 
+  number String @unique
   name String
   project String
   date DateTime @default(now())

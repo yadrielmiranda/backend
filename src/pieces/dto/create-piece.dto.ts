@@ -1,10 +1,8 @@
+// src/pieces/dto/create-piece.dto.ts
+
 import { IsBoolean, IsNotEmpty, IsNumber, IsString } from "class-validator";
 
 export class CreatePieceDto {
-
-    @IsNumber()
-    @IsNotEmpty()
-    idEst: number;
 
     @IsString()
     @IsNotEmpty()
@@ -47,43 +45,23 @@ export class CreatePieceDto {
     idTint: number;
 
     @IsBoolean()
-    @IsNotEmpty()
-    privacy: boolean;
+    privacy: boolean; // IsNotEmpty no es ideal para booleans, puede que quieras permitir false
 
     @IsNumber()
     @IsNotEmpty()
     idCoat: number;
 
     @IsBoolean()
-    @IsNotEmpty()
     screen: boolean;
 
     @IsBoolean()
-    @IsNotEmpty()
-    muntin: boolean;    
+    muntin: boolean;     
 
     @IsNumber()
     @IsNotEmpty()
     qty: number; 
     
-    @IsNumber()
-    @IsNotEmpty()
-    price: number;
-
-    @IsNumber()
-    @IsNotEmpty()
-    rate: number;
-
-    @IsNumber()
-    @IsNotEmpty()
-    markup: number; 
-
-    @IsNumber()
-    @IsNotEmpty()
-    subtotal: number;
-
-    @IsNumber()
-    @IsNotEmpty()
-    netProfit: number; 
-    
+    // CAMPOS ELIMINADOS:
+    // idEst (Prisma lo añade)
+    // price, rate, markup, subtotal, netProfit (El backend los calcula)
 }

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseIntPipe } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { User as UserModel } from '@prisma/client';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -15,11 +15,11 @@ export class UsersController {
 
   @Patch(':id')
   async updateUser(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() userData: UpdateUserDto,
   ): Promise<UserModel> {
     return this.usersService.updateUser({
-      where: { id: Number(id) },
+      where: { id },
       data: userData,
     });
   }
@@ -30,13 +30,12 @@ export class UsersController {
   }
 
   @Get(':id')
-  async getUser(@Param('id') id: string): Promise<UserModel> {
-    return this.usersService.user({ id: Number(id) });
+  async getUser(@Param('id', ParseIntPipe) id: number): Promise<UserModel> {
+    return this.usersService.user({ id });
   }
 
   @Delete(':id')
-  async deleteUser(@Param('id') id: string): Promise<UserModel> {
-    return this.usersService.deleteUser({ id: Number(id) });
+  async deleteUser(@Param('id', ParseIntPipe) id: number): Promise<UserModel> {
+    return this.usersService.deleteUser({ id });
   }
-
 }

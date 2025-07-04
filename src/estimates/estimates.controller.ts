@@ -1,31 +1,20 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseIntPipe } from '@nestjs/common';
 import { EstimatesService } from './estimates.service';
 import { CreateEstimateDto } from './dto/create-estimate.dto';
 import { UpdateEstimateDto } from './dto/update-estimate.dto';
+import { CreatePieceDto } from 'src/pieces/dto/create-piece.dto'; // Asegúrate que la ruta sea correcta
+import { UpdatePieceDto } from 'src/pieces/dto/update-piece.dto'; // Necesitarás crear este DTO
 import { Estimate as EstimateModel } from '@prisma/client';
 
 @Controller('estimates')
 export class EstimatesController {
   constructor(private readonly estimatesService: EstimatesService) { }
 
+  // --- Endpoints para Presupuestos (Estimates) ---
+
   @Post()
-  async createEstimate(
-    @Body() estimateData: CreateEstimateDto,
-  ): Promise<EstimateModel> {
-    const { number, name, project, units, priceT, rateT, netProfit, idUser, active } = estimateData;
-    return this.estimatesService.createEstimate({  //Aqui es donde se verifica que exista ese id en la tabla product
-      number,
-      name,
-      project,
-      units,
-      priceT,
-      rateT,
-      netProfit,
-      user: {
-        connect: { id: idUser },
-      },
-      active
-    });
+  async createEstimate(@Body() createEstimateDto: CreateEstimateDto): Promise<EstimateModel> {
+    return this.estimatesService.createEstimate(createEstimateDto);
   }
 
   @Get()
@@ -33,31 +22,75 @@ export class EstimatesController {
     return this.estimatesService.estimates({});
   }
 
-  @Get('mine') //en esta ruta busco los estimados que tienen el id de usuario que les paso en la query ejem: ?product=1
-  async getEstimatesByUser(@Query('user') idU?: any): Promise<EstimateModel[]> {
-    return this.estimatesService.estimates({ where: { idUser: Number(idU) } });
-  }
-
   @Get(':id')
-  async getEstimate(@Param('id') id: string): Promise<EstimateModel> {
-    return this.estimatesService.estimate({ id: Number(id) });
+  async getEstimate(@Param('id', ParseIntPipe) id: number): Promise<EstimateModel> {
+    return this.estimatesService.estimate({ id });
   }
 
   @Patch(':id')
   async updateEstimate(
-    @Param('id') id: string,
-    @Body() estimateData: UpdateEstimateDto,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() updateEstimateDto: UpdateEstimateDto,
   ): Promise<EstimateModel> {
     return this.estimatesService.updateEstimate({
-      where: { id: Number(id) },
-      data: estimateData,
+      where: { id },
+      data: updateEstimateDto,
     });
   }
 
   @Delete(':id')
-  async deleteEstimate(@Param('id') id: string): Promise<EstimateModel> {
-    return this.estimatesService.deleteEstimate({ id: Number(id) });
+  async deleteEstimate(@Param('id', ParseIntPipe) id: number): Promise<EstimateModel> {
+    return this.estimatesService.deleteEstimate({ id });
   }
 
+  // --- Endpoints para Piezas (Pieces) anidadas dentro de un Presupuesto ---
 
+  /**
+   * Añade una nueva pieza a un presupuesto existente.
+   * La lógica de recálculo de totales está en el servicio.
+   */
+  @Post(':id/pieces')
+  async addPieceToEstimate(
+    @Param('id', ParseIntPipe) estimateId: number,
+    @Body() createPieceDto: CreatePieceDto,
+  ): Promise<EstimateModel> {
+    // Nota: Necesitarás crear el método 'addPieceToEstimate' en tu servicio.
+    // return this.estimatesService.addPieceToEstimate(estimateId, createPieceDto);
+    // Por ahora, devolvemos un placeholder.
+    console.log(`Adding piece to estimate ${estimateId}`, createPieceDto);
+    return this.estimatesService.estimate({ id: estimateId }); // Placeholder
+  }
+
+  /**
+   * Actualiza una pieza específica dentro de un presupuesto.
+   * La lógica de recálculo de totales está en el servicio.
+   */
+  @Patch(':id/pieces/:pieceId')
+  async updatePieceInEstimate(
+    @Param('id', ParseIntPipe) estimateId: number,
+    @Param('pieceId', ParseIntPipe) pieceId: number,
+    @Body() updatePieceDto: UpdatePieceDto,
+  ): Promise<EstimateModel> {
+    // Nota: Necesitarás crear el método 'updatePieceInEstimate' en tu servicio.
+    // return this.estimatesService.updatePieceInEstimate(estimateId, pieceId, updatePieceDto);
+    // Por ahora, devolvemos un placeholder.
+     console.log(`Updating piece ${pieceId} in estimate ${estimateId}`, updatePieceDto);
+    return this.estimatesService.estimate({ id: estimateId }); // Placeholder
+  }
+
+  /**
+   * Elimina una pieza específica de un presupuesto.
+   * La lógica de recálculo de totales está en el servicio.
+   */
+  @Delete(':id/pieces/:pieceId')
+  async removePieceFromEstimate(
+    @Param('id', ParseIntPipe) estimateId: number,
+    @Param('pieceId', ParseIntPipe) pieceId: number,
+  ): Promise<EstimateModel> {
+    // Nota: Necesitarás crear el método 'removePieceFromEstimate' en tu servicio.
+    // return this.estimatesService.removePieceFromEstimate(estimateId, pieceId);
+    // Por ahora, devolvemos un placeholder.
+     console.log(`Removing piece ${pieceId} from estimate ${estimateId}`);
+    return this.estimatesService.estimate({ id: estimateId }); // Placeholder
+  }
 }

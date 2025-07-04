@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
-import { TintsService } from './tints.service';
-import { TintsController } from './tints.controller';
+import { TintService } from './tints.service';
+import { TintController } from './tints.controller';
 import { PrismaModule } from 'src/prisma/prisma.module';
 
 @Module({
   imports: [PrismaModule],
-  controllers: [TintsController],
-  providers: [TintsService],
+  controllers: [TintController],
+  providers: [TintService],
 })
 export class TintsModule { }

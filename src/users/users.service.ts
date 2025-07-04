@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { User, Prisma } from '@prisma/client';
 import * as bcrypt from "bcrypt";
@@ -45,35 +45,43 @@ export class UsersService {
   }
 
   async createUser(data: Prisma.UserCreateInput): Promise<User> {
-
     const saltRounds = 10;
-    const salt = await bcrypt.genSalt(saltRounds);
-    const passw = (await bcrypt.hash(data.password, salt));
-    data.password = passw.toString();
+    data.password = await bcrypt.hash(data.password, saltRounds);
 
     return this.prisma.user.create({
       data,
     });
   }
 
-  async updateUser(params: {
-    where: Prisma.UserWhereUniqueInput;
-    data: Prisma.UserUpdateInput;
-  }): Promise<User> {
-    const { where, data } = params;
-    return this.prisma.user.update({
-      data,
-      where
-    });
-  }
+async updateUser(params: {
+  where: Prisma.UserWhereUniqueInput;
+  data: Prisma.UserUpdateInput;
+}): Promise<User> {
+  const { where, data } = params;
 
-  async deleteUser(where: Prisma.UserWhereUniqueInput): Promise<User> {
-    return this.prisma.user.delete({
+  // Se asume que la contraseña NO se actualiza aquí,
+  // ya que habrá un método dedicado para ello.
+
+  try {
+    return await this.prisma.user.update({
+      data,
       where,
     });
+  } catch (error) {
+    // Manejo del error 404 por si el usuario no existe.
+    throw new NotFoundException(`User with ID #${where.id} not found`);
   }
+}
 
-
-
-
+  async deleteUser(where: Prisma.UserWhereUniqueInput): Promise<User> {
+    try {
+      return await this.prisma.user.delete({
+        where,
+      });
+    } catch (error) {
+      // Si Prisma no encuentra el registro para borrar, lanza un error.
+      // Lo capturamos y devolvemos un 404.
+      throw new NotFoundException(`User with ID #${where.id} not found`);
+    }
+  }
 }

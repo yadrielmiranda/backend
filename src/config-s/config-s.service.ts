@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { Config, Prisma } from '@prisma/client';
 
@@ -8,44 +8,29 @@ export class ConfigSService {
 
   async config(
     configWhereUniqueInput: Prisma.ConfigWhereUniqueInput
-  ): Promise<Config | null> {
-    return this.prisma.config.findUnique({
+  ): Promise<Config> {
+    const config = await this.prisma.config.findUnique({
       where: configWhereUniqueInput,
     });
+
+    if (!config) {
+      throw new NotFoundException(`Config with ID #${configWhereUniqueInput.id} not found.`);
+    }
+    return config;
   }
 
   async configs(params: {
-    skip?: number;
-    take?: number;
-    cursor?: Prisma.ConfigWhereUniqueInput;
-    where?: Prisma.ConfigWhereInput;
-    orderBy?: Prisma.ConfigOrderByWithRelationInput;
+    // ... tus parámetros ...
   }): Promise<Config[]> {
-    const { skip, take, cursor, where, orderBy } = params;
+    // ... tu lógica findMany ...
     return this.prisma.config.findMany({
-      skip,
-      take,
-      cursor,
-      where,
-      orderBy,
-      include: {
-        prod: true, // Incluye el producto para la vista de tabla
-      },
-    });
-  }
-
-  async getConfigWithProduct(
-    configWhereUniqueInput: Prisma.ConfigWhereUniqueInput
-  ): Promise<Config | null> {
-    return this.prisma.config.findUnique({
-      where: configWhereUniqueInput,
+      ...params,
       include: {
         prod: true,
       },
     });
   }
 
-  // Los métodos de creación, actualización y eliminación no cambian.
   async createConfig(data: Prisma.ConfigCreateInput): Promise<Config> {
     return this.prisma.config.create({
       data,
@@ -57,15 +42,40 @@ export class ConfigSService {
     data: Prisma.ConfigUpdateInput;
   }): Promise<Config> {
     const { where, data } = params;
-    return this.prisma.config.update({
-      data,
-      where
-    });
-  } 
-  
+    try {
+      return await this.prisma.config.update({
+        data,
+        where,
+      });
+    } catch (error) {
+      throw new NotFoundException(`Config with ID #${where.id} not found.`);
+    }
+  }
+
   async deleteConfig(where: Prisma.ConfigWhereUniqueInput): Promise<Config> {
-    return this.prisma.config.delete({
-      where,
+    try {
+      return await this.prisma.config.delete({
+        where,
+      });
+    } catch (error) {
+      throw new NotFoundException(`Config with ID #${where.id} not found.`);
+    }
+  }
+
+  
+  async getConfigWithProduct(
+    configWhereUniqueInput: Prisma.ConfigWhereUniqueInput
+  ): Promise<Config | null> {
+    const config = await this.prisma.config.findUnique({
+      where: configWhereUniqueInput,
+      include: {
+        prod: true,
+      },
     });
+
+    if (!config) {
+        throw new NotFoundException(`Config with ID #${configWhereUniqueInput.id} not found.`);
+    }
+    return config;
   }
 }

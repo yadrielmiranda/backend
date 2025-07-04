@@ -1,5 +1,4 @@
-import { Injectable } from '@nestjs/common';
-import { UpdatePieceDto } from './dto/update-piece.dto';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { Piece, Prisma } from '@prisma/client';
 
@@ -7,14 +6,26 @@ import { Piece, Prisma } from '@prisma/client';
 export class PiecesService {
   constructor(private prisma: PrismaService) { }
 
+  /**
+   * Encuentra una única pieza por su ID.
+   * Lanza un error 404 si no se encuentra.
+   */
   async piece(
     pieceWhereUniqueInput: Prisma.PieceWhereUniqueInput
-  ): Promise<Piece | null> {
-    return this.prisma.piece.findUnique({
+  ): Promise<Piece> {
+    const piece = await this.prisma.piece.findUnique({
       where: pieceWhereUniqueInput,
     });
+
+    if (!piece) {
+      throw new NotFoundException(`Piece with ID #${pieceWhereUniqueInput.id} not found.`);
+    }
+    return piece;
   }
 
+  /**
+   * Encuentra una lista de piezas, con opciones para paginación y filtrado.
+   */
   async pieces(params: {
     skip?: number;
     take?: number;
@@ -29,29 +40,6 @@ export class PiecesService {
       cursor,
       where,
       orderBy,
-    });
-  }
-
-  async createPiece(data: Prisma.PieceCreateInput): Promise<Piece> {
-    return this.prisma.piece.create({
-      data,
-    });
-  }
-
-  async updatePiece(params: {
-    where: Prisma.PieceWhereUniqueInput;
-    data: UpdatePieceDto;
-  }): Promise<Piece> {
-    const { where, data } = params;
-    return this.prisma.piece.update({
-      data,
-      where
-    });
-  }
-
-  async deletePiece(where: Prisma.PieceWhereUniqueInput): Promise<Piece> {
-    return this.prisma.piece.delete({
-      where,
     });
   }
 }
