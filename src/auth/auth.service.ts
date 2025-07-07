@@ -9,7 +9,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { UsersService } from 'src/users/users.service';
 import { RegisterUserDto } from './dto/register-user.dto';
 import * as bcrypt from 'bcrypt';
-import { User, Prisma } from '@prisma/client'; // Importa Prisma para acceder a los tipos de payload
+import { User, Prisma } from '@prisma/client'; 
 
 @Injectable()
 export class AuthService {
@@ -28,8 +28,6 @@ export class AuthService {
       include: { role: true };
     }>;
 
-    // El resultado de findOneByIdentifier ya incluye el rol,
-    // así que podemos hacer un casting seguro a nuestro tipo de payload.
     const user = (await this.usersService.findOneByIdentifier(identifier)) as UserWithRolePayload;
 
     if (!user) {
@@ -44,7 +42,7 @@ export class AuthService {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { password, ...result } = user;
     // Ahora 'user.role' es reconocido correctamente por TypeScript
-    const payload = { sub: user.id, username: user.username, role: user.role };
+    const payload = { sub: user.id, username: user.username, firstName: user.firstName, lastName: user.lastName, email: user.email, role: user.role};
 
     return {
       access_token: await this.jwtService.signAsync(payload),

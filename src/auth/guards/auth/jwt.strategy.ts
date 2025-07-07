@@ -6,11 +6,7 @@ import { jwtConstants } from 'src/auth/constantesw';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
-  /**
-   * ✅ CORRECCIÓN:
-   * Se elimina la inyección de ConfigService.
-   * La clave secreta se toma directamente de las constantes importadas.
-   */
+
   constructor() {
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([
