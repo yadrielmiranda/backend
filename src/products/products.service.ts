@@ -68,4 +68,21 @@ export class ProductsService {
       throw new NotFoundException(`Product with ID #${where.id} not found`);
     }
   }
+
+  /**
+   * ✅ NUEVO MÉTODO AÑADIDO
+   * Obtiene todos los productos e incluye las marcas asociadas a cada uno.
+   * Esto es para la precarga de datos en el frontend.
+   */
+  async findAllWithBrands(): Promise<Product[]> {
+    return this.prisma.product.findMany({
+      include: {
+        brandProducts: {
+          include: {
+            brand: true, // Incluye el objeto completo de la marca
+          },
+        },
+      },
+    });
+  }
 }

@@ -1,11 +1,23 @@
 import { PartialType, OmitType } from '@nestjs/mapped-types';
 import { CreateEstimateDto } from './create-estimate.dto';
+import { CreatePieceDto } from 'src/pieces/dto/create-piece.dto';
+import { IsArray, ValidateNested, IsOptional, IsInt } from 'class-validator';
+import { Type } from 'class-transformer';
 
-// 1. Omitimos tanto 'idUser' como 'pieces' del DTO base.
-class CreateEstimateDataDto extends OmitType(CreateEstimateDto, [
-  'idUser', 
-  'pieces'
-] as const) {}
+export class UpsertPieceDto extends CreatePieceDto {
+    @IsOptional()
+    @IsInt()
+    id?: number;
 
-// 2. UpdateEstimateDto hereda del resultado, sin las propiedades problemáticas.
-export class UpdateEstimateDto extends PartialType(CreateEstimateDataDto) {}
+    @IsOptional()
+    @IsInt()
+    idEst?: number;
+}
+
+export class UpdateEstimateDto extends PartialType(OmitType(CreateEstimateDto, ['pieces'] as const)) {
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => UpsertPieceDto)
+    pieces?: UpsertPieceDto[];
+}

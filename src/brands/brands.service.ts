@@ -78,6 +78,18 @@ export class BrandsService {
     return brand;
   }
 
+  async findAllWithProducts(): Promise<Brand[]> {
+  return this.prisma.brand.findMany({
+    include: {
+      brandProducts: { 
+        include: {
+          product: true, 
+        },
+      },
+    },
+  });
+}
+
   async addProductToBrand(brandId: number, productId: number): Promise<Brand> {
     return this.prisma.brand.update({
       where: { id: brandId },

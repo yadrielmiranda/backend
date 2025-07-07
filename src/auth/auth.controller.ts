@@ -1,16 +1,20 @@
-// src/auth/auth.controller.ts
-
 import {
   Controller,
   Post,
   Body,
   HttpCode,
   HttpStatus,
-  Res
+  Res,
+  UseGuards,
+  Get,
+  Req,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
-import { Response } from 'express';
+import { Response, Request } from 'express';
+import { RegisterUserDto } from './dto/register-user.dto';
+import { JwtAuthGuard } from './guards/auth/auth.guard';
+import { User } from '@prisma/client';
 
 @Controller('auth')
 export class AuthController {
@@ -19,31 +23,32 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('login')
   async login(
-    @Body() loginDto: LoginDto, // Usa el DTO con 'identifier'
+    @Body() loginDto: LoginDto,
     @Res({ passthrough: true }) response: Response,
   ) {
-    
-    // Llamamos al método 'validateAndSignIn' y le pasamos el 'identifier'.
     const { access_token } = await this.authService.validateAndSignIn(
-      loginDto.identifier, 
-      loginDto.password
+      loginDto.identifier,
+      loginDto.password,
     );
 
-    // Lógica de cookies 
     response.cookie('access_token', access_token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict', // 'strict' es generalmente más seguro que 'lax'
+      sameSite: 'strict',
       maxAge: 3600000 * 24, // 24 horas
       path: '/',
     });
 
-    
     return {
       message: 'Inicio de sesión exitoso',
     };
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get('profile')
+  getProfile(@Req() req: Request) {
+    return req.user;
+  }
 
   @HttpCode(HttpStatus.OK)
   @Post('logout')
@@ -55,7 +60,17 @@ export class AuthController {
       expires: new Date(0),
       path: '/',
     });
-    
+
     return { message: 'Sesión cerrada exitosamente' };
+  }
+
+  @Post('register')
+  @HttpCode(HttpStatus.CREATED)
+  async register(@Body() registerUserDto: RegisterUserDto): Promise<Omit<User, 'password'>> {
+    const user = await this.authService.registerUser(registerUserDto);
+    // Excluimos la contraseña de la respuesta por seguridad.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { password, ...result } = user;
+    return result;
   }
 }

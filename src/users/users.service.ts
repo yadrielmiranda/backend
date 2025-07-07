@@ -1,30 +1,35 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { User, Prisma } from '@prisma/client';
-import * as bcrypt from "bcrypt";
+import {  Prisma, User } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
+import { CreateUserDto } from './dto/create-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 
 @Injectable()
 export class UsersService {
-
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
   async user(
     userWhereUniqueInput: Prisma.UserWhereUniqueInput,
   ): Promise<User | null> {
     return this.prisma.user.findUnique({
-      where: userWhereUniqueInput,
+      where: userWhereUniqueInput,     
+      include: {
+        role: true,
+      },
     });
   }
 
   async findOneByIdentifier(identifier: string): Promise<User | null> {
-    return this.prisma.user.findFirst({
+    const user = this.prisma.user.findFirst({
       where: {
-        OR: [
-          { username: identifier },
-          { email: identifier },
-        ],
+        OR: [{ username: identifier }, { email: identifier }],
+      },      
+      include: {
+        role: true,
       },
     });
+    return user;
   }
 
   async users(params: {
@@ -41,37 +46,66 @@ export class UsersService {
       cursor,
       where,
       orderBy,
+      // ✅ CORRECCIÓN: Se añade 'include' para traer los datos del rol de cada usuario.
+      include: {
+        role: true,
+      },
     });
   }
 
-  async createUser(data: Prisma.UserCreateInput): Promise<User> {
+  async createUser(userData: CreateUserDto): Promise<User> {
+    const { idRole, ...restOfUserData } = userData;
     const saltRounds = 10;
-    data.password = await bcrypt.hash(data.password, saltRounds);
-
+    const hashedPassword = await bcrypt.hash(
+      restOfUserData.password,
+      saltRounds,
+    );
+    const dataForPrisma: Prisma.UserCreateInput = {
+      ...restOfUserData,
+      password: hashedPassword,
+      role: {
+        connect: {
+          id: idRole,
+        },
+      },
+    };
     return this.prisma.user.create({
-      data,
+      data: dataForPrisma,
     });
   }
 
-async updateUser(params: {
-  where: Prisma.UserWhereUniqueInput;
-  data: Prisma.UserUpdateInput;
-}): Promise<User> {
-  const { where, data } = params;
-
-  // Se asume que la contraseña NO se actualiza aquí,
-  // ya que habrá un método dedicado para ello.
-
-  try {
-    return await this.prisma.user.update({
-      data,
-      where,
-    });
-  } catch (error) {
-    // Manejo del error 404 por si el usuario no existe.
-    throw new NotFoundException(`User with ID #${where.id} not found`);
+  async updateUser(params: {
+    where: Prisma.UserWhereUniqueInput;
+    data: UpdateUserDto;
+  }): Promise<User> {
+    const { where, data: userData } = params;
+    const { idRole, ...restOfUserData } = userData;
+    const dataForPrisma: Prisma.UserUpdateInput = {
+      ...restOfUserData,
+    };
+    if (restOfUserData.password) {
+      const saltRounds = 10;
+      dataForPrisma.password = await bcrypt.hash(
+        restOfUserData.password,
+        saltRounds,
+      );
+    }
+    if (idRole) {
+      dataForPrisma.role = {
+        connect: {
+          id: idRole,
+        },
+      };
+    }
+    try {
+      return await this.prisma.user.update({
+        data: dataForPrisma,
+        where,
+      });
+    } catch (error) {
+      throw new NotFoundException(`User with ID #${where.id} not found`);
+    }
   }
-}
 
   async deleteUser(where: Prisma.UserWhereUniqueInput): Promise<User> {
     try {
@@ -79,8 +113,6 @@ async updateUser(params: {
         where,
       });
     } catch (error) {
-      // Si Prisma no encuentra el registro para borrar, lanza un error.
-      // Lo capturamos y devolvemos un 404.
       throw new NotFoundException(`User with ID #${where.id} not found`);
     }
   }

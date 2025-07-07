@@ -1,46 +1,90 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  ConflictException,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import * as bcrypt from 'bcrypt';
+import { PrismaService } from 'src/prisma/prisma.service';
 import { UsersService } from 'src/users/users.service';
+import { RegisterUserDto } from './dto/register-user.dto';
+import * as bcrypt from 'bcrypt';
+import { User, Prisma } from '@prisma/client'; // Importa Prisma para acceder a los tipos de payload
 
 @Injectable()
 export class AuthService {
-
   constructor(
     private usersService: UsersService,
-    private jwtService: JwtService
-  ) { }
+    private prisma: PrismaService,
+    private jwtService: JwtService,
+  ) {}
 
-  async validateAndSignIn(identifier: string, pass: string): Promise<{ access_token: string }> {
-    // 1. Usamos la nueva función 'findOneByIdentifier' que busca por username O email.
-    const user = await this.usersService.findOneByIdentifier(identifier);
+  async validateAndSignIn(
+    identifier: string,
+    pass: string,
+  ): Promise<{ access_token: string }> {
+    // Define el tipo de payload esperado para el usuario con el rol incluido
+    type UserWithRolePayload = Prisma.UserGetPayload<{
+      include: { role: true };
+    }>;
 
-    // 2. (MUY IMPORTANTE) Verificamos si el usuario existe ANTES de intentar comparar la contraseña.
-    //    Si no existe, lanzamos el mismo error para no dar pistas a posibles atacantes.
+    // El resultado de findOneByIdentifier ya incluye el rol,
+    // así que podemos hacer un casting seguro a nuestro tipo de payload.
+    const user = (await this.usersService.findOneByIdentifier(identifier)) as UserWithRolePayload;
+
     if (!user) {
-      throw new UnauthorizedException('Incorrect credentials');
+      throw new UnauthorizedException('Credenciales inválidas.');
     }
 
-    // 3. Comparamos la contraseña que nos llega con la hasheada en la BD.
-    const isMatch = await bcrypt.compare(pass, user.password);
-
-    // 4. Si la contraseña no coincide, lanzamos el error.
-    if (!isMatch) {
-      throw new UnauthorizedException('Incorrect credentials');
+    const isPasswordMatching = await bcrypt.compare(pass, user.password);
+    if (!isPasswordMatching) {
+      throw new UnauthorizedException('Credenciales inválidas.');
     }
 
-    // 5. Creamos el payload para el JWT. Es buena práctica usar 'sub' para el ID de usuario.
-   const payload = { 
-    sub: user.id, 
-    username: user.username, 
-    email: user.email,
-    firstName: user.firstName, 
-    lastName: user.lastName,  
-};
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { password, ...result } = user;
+    // Ahora 'user.role' es reconocido correctamente por TypeScript
+    const payload = { sub: user.id, username: user.username, role: user.role };
 
-    // 6. Firmamos y devolvemos el token para que el AuthController lo pueda poner en una cookie.
     return {
       access_token: await this.jwtService.signAsync(payload),
     };
+  }
+
+  async registerUser(registerUserDto: RegisterUserDto): Promise<User> {
+    const { password, ...userData } = registerUserDto;
+
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    const clientRole = await this.prisma.role.findUnique({
+      where: { name: 'client' },
+    });
+    if (!clientRole) {
+      throw new InternalServerErrorException(
+        "El rol por defecto 'client' no fue encontrado.",
+      );
+    }
+
+    try {
+      const user = await this.prisma.user.create({
+        data: {
+          ...userData,
+          password: hashedPassword,
+          role: {
+            connect: { id: clientRole.id },
+          },
+        },
+        include: {
+          role: true, // Incluye el rol en la respuesta
+        },
+      });
+      return user;
+    } catch (error) {
+      if (error.code === 'P2002') {
+        throw new ConflictException('El nombre de usuario o el email ya existen.');
+      }
+      throw new InternalServerErrorException('No se pudo crear el usuario.');
+    }
   }
 }

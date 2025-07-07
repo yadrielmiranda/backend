@@ -51,10 +51,25 @@ export class SystemsService {
     });
   }
 
+  /**
+   * ✅ NUEVO MÉTODO
+   * Obtiene todos los sistemas y precarga las configuraciones asociadas a cada uno.
+   */
+  async findAllWithConfigs(): Promise<System[]> {
+    return this.prisma.system.findMany({
+      include: {
+        sysconfs: {
+          include: {
+            config: true,
+          },
+        },
+      },
+    });
+  }
+
   async createSystem(systemData: CreateSystemDto): Promise<System> {
     const { name, idBrand, idProduct } = systemData;
-
-   
+    
     const brandProductExists = await this.prisma.brandProduct.findUnique({
       where: {
         idBrand_idProduct: {
@@ -68,14 +83,11 @@ export class SystemsService {
       throw new NotFoundException(`La combinación de la marca con ID ${idBrand} y el producto con ID ${idProduct} no existe.`);
     }
 
-
-    //Creamos el sistema pasando los IDs directamente.
-
     return this.prisma.system.create({
       data: {
         name,
-        idBrand,   // Pasamos el ID de la marca directamente
-        idProduct, // Pasamos el ID del producto directamente
+        idBrand,
+        idProduct,
       }
     });
   }
@@ -101,12 +113,12 @@ export class SystemsService {
     return this.prisma.system.findUnique({
       where: { id: systemId },
       include: {
-        sysconfs: { // Incluye las entradas de la tabla de unión
+        sysconfs: {
           include: {
-            config: true, // Y dentro, los datos de la configuración
+            config: true,
           },
         },
-        brandProduct: { // También incluimos esto para saber a qué producto pertenece
+        brandProduct: {
           include: {
             product: true,
           }
@@ -116,17 +128,15 @@ export class SystemsService {
   }
 
   async getAvailableConfigsForSystem(systemId: number): Promise<Config[]> {
-    // Primero, encontramos el producto al que pertenece el sistema
     const system = await this.prisma.system.findUnique({
       where: { id: systemId },
-      select: { idProduct: true } // Solo necesitamos el id del producto
+      select: { idProduct: true }
     });
 
     if (!system) {
       throw new NotFoundException(`Sistema con ID ${systemId} no encontrado.`);
     }
 
-    // Luego, encontramos los IDs de las configuraciones ya asociadas
     const associatedConfigs = await this.prisma.sysConf.findMany({
       where: { idSystem: systemId },
       select: { idConfig: true }
@@ -136,34 +146,33 @@ export class SystemsService {
     
     return this.prisma.config.findMany({
       where: {
-        idProduct: system.idProduct, // Deben ser del mismo producto
+        idProduct: system.idProduct,
         id: {
-          notIn: associatedConfigIds // Y no deben estar ya asociadas
+          notIn: associatedConfigIds
         }
       }
     });
   }
 
   async addConfigToSystem(systemId: number, configId: number): Promise<System> {
-    // Prisma se encarga de verificar que ambos IDs existan antes de crear la relación
     await this.prisma.sysConf.create({
       data: {
         idSystem: systemId,
         idConfig: configId,
       }
     });
-    return this.getSystemWithConfigs(systemId); // Devuelve el sistema actualizado
+    return this.getSystemWithConfigs(systemId);
   }
 
   async removeConfigFromSystem(systemId: number, configId: number): Promise<System> {
     await this.prisma.sysConf.delete({
       where: {
-        idSystem_idConfig: { // Usamos la clave compuesta para encontrar el registro a borrar
+        idSystem_idConfig: {
           idSystem: systemId,
           idConfig: configId,
         }
       }
     });
-    return this.getSystemWithConfigs(systemId); // Devuelve el sistema actualizado
+    return this.getSystemWithConfigs(systemId);
   }
 }

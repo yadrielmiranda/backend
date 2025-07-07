@@ -1,96 +1,85 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, ParseIntPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  ParseIntPipe,
+  UseGuards,
+  Req,
+  NotFoundException,
+} from '@nestjs/common';
 import { EstimatesService } from './estimates.service';
 import { CreateEstimateDto } from './dto/create-estimate.dto';
 import { UpdateEstimateDto } from './dto/update-estimate.dto';
-import { CreatePieceDto } from 'src/pieces/dto/create-piece.dto'; // Asegúrate que la ruta sea correcta
-import { UpdatePieceDto } from 'src/pieces/dto/update-piece.dto'; // Necesitarás crear este DTO
-import { Estimate as EstimateModel } from '@prisma/client';
+import { JwtAuthGuard } from 'src/auth/guards/auth/auth.guard';
+import { Request } from 'express';
 
+// ✅ Se aplica el guard a todas las rutas del controlador
+@UseGuards(JwtAuthGuard)
 @Controller('estimates')
 export class EstimatesController {
-  constructor(private readonly estimatesService: EstimatesService) { }
-
-  // --- Endpoints para Presupuestos (Estimates) ---
+  constructor(private readonly estimatesService: EstimatesService) {}
 
   @Post()
-  async createEstimate(@Body() createEstimateDto: CreateEstimateDto): Promise<EstimateModel> {
-    return this.estimatesService.createEstimate(createEstimateDto);
+  create(
+    @Body() createEstimateDto: CreateEstimateDto,
+    @Req() req: Request,
+  ) {
+    // El tipo 'user' se infiere del payload del JWT que se adjunta a la request
+    const user = req.user as { id: number; username: string };
+    return this.estimatesService.createEstimate(createEstimateDto, user.id);
   }
 
   @Get()
-  async getAllEstimates(): Promise<EstimateModel[]> {
-    return this.estimatesService.estimates({});
-  }
-
-  @Get(':id')
-  async getEstimate(@Param('id', ParseIntPipe) id: number): Promise<EstimateModel> {
-    return this.estimatesService.estimate({ id });
-  }
-
-  @Patch(':id')
-  async updateEstimate(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() updateEstimateDto: UpdateEstimateDto,
-  ): Promise<EstimateModel> {
-    return this.estimatesService.updateEstimate({
-      where: { id },
-      data: updateEstimateDto,
+  findAll(@Req() req: Request) {
+    const user = req.user as { id: number };
+    // ✅ Se asegura de que solo se devuelvan los presupuestos del usuario logueado.
+    return this.estimatesService.estimates({
+      where: { idUser: user.id },
     });
   }
 
+  @Get(':id')
+  async findOne(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    const user = req.user as { id: number };
+    const estimate = await this.estimatesService.estimate({ id });
+
+    // ✅ CAPA DE SEGURIDAD ADICIONAL:
+    // Aunque el servicio encuentra el presupuesto, aquí nos aseguramos de que pertenezca al usuario.
+    if (estimate.idUser !== user.id) {
+      throw new NotFoundException(`Estimate with ID #${id} not found or access denied.`);
+    }
+
+    return estimate;
+  }
+
+  @Patch(':id')
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() updateEstimateDto: UpdateEstimateDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as { id: number };
+    
+    // ✅ Se llama al método de servicio corregido, que maneja toda la lógica
+    // de actualización (incluyendo piezas) y la verificación de permisos.
+    return this.estimatesService.updateEstimate(id, updateEstimateDto, user.id);
+  }
+
   @Delete(':id')
-  async deleteEstimate(@Param('id', ParseIntPipe) id: number): Promise<EstimateModel> {
+  async remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    const user = req.user as { id: number };
+    
+    // ✅ Se añade una capa de seguridad para verificar la propiedad antes de borrar.
+    // El servicio también lo verifica, pero es una buena práctica ser explícito.
+    const estimate = await this.estimatesService.estimate({ id });
+    if (estimate.idUser !== user.id) {
+        throw new NotFoundException(`Estimate with ID #${id} not found or access denied.`);
+    }
+
     return this.estimatesService.deleteEstimate({ id });
-  }
-
-  // --- Endpoints para Piezas (Pieces) anidadas dentro de un Presupuesto ---
-
-  /**
-   * Añade una nueva pieza a un presupuesto existente.
-   * La lógica de recálculo de totales está en el servicio.
-   */
-  @Post(':id/pieces')
-  async addPieceToEstimate(
-    @Param('id', ParseIntPipe) estimateId: number,
-    @Body() createPieceDto: CreatePieceDto,
-  ): Promise<EstimateModel> {
-    // Nota: Necesitarás crear el método 'addPieceToEstimate' en tu servicio.
-    // return this.estimatesService.addPieceToEstimate(estimateId, createPieceDto);
-    // Por ahora, devolvemos un placeholder.
-    console.log(`Adding piece to estimate ${estimateId}`, createPieceDto);
-    return this.estimatesService.estimate({ id: estimateId }); // Placeholder
-  }
-
-  /**
-   * Actualiza una pieza específica dentro de un presupuesto.
-   * La lógica de recálculo de totales está en el servicio.
-   */
-  @Patch(':id/pieces/:pieceId')
-  async updatePieceInEstimate(
-    @Param('id', ParseIntPipe) estimateId: number,
-    @Param('pieceId', ParseIntPipe) pieceId: number,
-    @Body() updatePieceDto: UpdatePieceDto,
-  ): Promise<EstimateModel> {
-    // Nota: Necesitarás crear el método 'updatePieceInEstimate' en tu servicio.
-    // return this.estimatesService.updatePieceInEstimate(estimateId, pieceId, updatePieceDto);
-    // Por ahora, devolvemos un placeholder.
-     console.log(`Updating piece ${pieceId} in estimate ${estimateId}`, updatePieceDto);
-    return this.estimatesService.estimate({ id: estimateId }); // Placeholder
-  }
-
-  /**
-   * Elimina una pieza específica de un presupuesto.
-   * La lógica de recálculo de totales está en el servicio.
-   */
-  @Delete(':id/pieces/:pieceId')
-  async removePieceFromEstimate(
-    @Param('id', ParseIntPipe) estimateId: number,
-    @Param('pieceId', ParseIntPipe) pieceId: number,
-  ): Promise<EstimateModel> {
-    // Nota: Necesitarás crear el método 'removePieceFromEstimate' en tu servicio.
-    // return this.estimatesService.removePieceFromEstimate(estimateId, pieceId);
-    // Por ahora, devolvemos un placeholder.
-     console.log(`Removing piece ${pieceId} from estimate ${estimateId}`);
-    return this.estimatesService.estimate({ id: estimateId }); // Placeholder
   }
 }

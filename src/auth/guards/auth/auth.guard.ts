@@ -1,38 +1,6 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { Request } from 'express';
-import { jwtConstants } from 'src/auth/constantesw';
+import { Injectable } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 
+// Usamos el nombre 'jwt' que definimos en la estrategia
 @Injectable()
-export class AuthGuard implements CanActivate {
-
-  constructor(private jwtService: JwtService) { }
-
-  async canActivate(context: ExecutionContext): Promise<boolean> {
-      const request = context.switchToHttp().getRequest();
-      const token = this.extractTokenFromHeader(request);
-      if (!token) {
-          throw new UnauthorizedException();
-      }
-      try {
-          const payload = await this.jwtService.verifyAsync(
-              token,
-              {
-                  secret: jwtConstants.secret
-              }
-          );
-          // 💡 We're assigning the payload to the request object here
-          // so that we can access it in our route handlers
-          request['user'] = payload;
-      } catch {
-          throw new UnauthorizedException();
-      }
-      return true;
-  }
-
-  private extractTokenFromHeader(request: Request): string | undefined {
-      const [type, token] = request.headers.authorization?.split(' ') ?? []; // si !== null & !== undefined devuelvo el resultado del metodo split, sino devuelvo [] 
-      return type === 'Bearer' ? token : undefined; // si se cumple la condicion devuelvo token, sino devuelvo undefined
-  }
-
-}
+export class JwtAuthGuard extends AuthGuard('jwt') {}

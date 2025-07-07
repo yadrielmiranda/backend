@@ -18,6 +18,19 @@ export class BrandsController {
     return this.brandsService.brands({});
   }
 
+  /**
+   * ✅ RUTA CORREGIDA
+   * Se ha movido esta ruta específica ANTES de la ruta con parámetro ':id'
+   * para evitar conflictos.
+   */
+  @Get('with-products')
+  findAllWithProducts() {
+    return this.brandsService.findAllWithProducts();
+  }
+
+  /**
+   * Esta ruta con parámetro ahora está después de las rutas específicas.
+   */
   @Get(':id')
   async getBrandById(@Param('id', ParseIntPipe) id: number): Promise<BrandModel> {
     return this.brandsService.brand({ id });

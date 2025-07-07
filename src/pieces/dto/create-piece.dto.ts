@@ -45,7 +45,7 @@ export class CreatePieceDto {
     idTint: number;
 
     @IsBoolean()
-    privacy: boolean; // IsNotEmpty no es ideal para booleans, puede que quieras permitir false
+    privacy: boolean; // IsNotEmpty no es ideal para booleans, puede que se quiera permitir false
 
     @IsNumber()
     @IsNotEmpty()

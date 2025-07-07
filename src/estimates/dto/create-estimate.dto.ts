@@ -1,15 +1,12 @@
-// src/estimates/dto/create-estimate.dto.ts
-
-import { IsNotEmpty, IsString, IsNumber, IsArray, ValidateNested } from "class-validator";
+import { IsNotEmpty, IsString, IsArray, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
-import { CreatePieceDto } from "src/pieces/dto/create-piece.dto"; // Asegúrate que la ruta sea correcta
+import { CreatePieceDto } from "src/pieces/dto/create-piece.dto";
 
 export class CreateEstimateDto {
     @IsNotEmpty() @IsString() number: string;
     @IsNotEmpty() @IsString() name: string;
-    @IsNotEmpty() @IsString() project: string;
-    @IsNotEmpty() @IsNumber() idUser: number;
-    
+    @IsNotEmpty() @IsString() project: string;    
+     
     @IsArray()
     @ValidateNested({ each: true })
     @Type(() => CreatePieceDto)

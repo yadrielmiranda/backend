@@ -23,6 +23,15 @@ export class SystemsController {
     return this.systemsService.addConfigToSystem(id, configId);
   }
 
+  /**
+   * ✅ NUEVA RUTA
+   * Se coloca antes de las rutas con parámetros para evitar conflictos.
+   */
+  @Get('with-configs')
+  findAllWithConfigs() {
+    return this.systemsService.findAllWithConfigs();
+  }
+
   @Get()
   async getSystems(@Query('product') idP?: string, @Query('brand') idB?: string): Promise<SystemModel[]> {
     const where: any = {};

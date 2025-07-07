@@ -1,37 +1,37 @@
-import { IsBoolean, IsEmail, IsNotEmpty, IsPhoneNumber, IsString } from "class-validator";
+import { IsEmail, IsNotEmpty, IsNumber, IsPhoneNumber, IsPositive, IsString } from "class-validator";
 
 export class CreateUserDto {
 
     @IsNotEmpty()
-    @IsString()                  
-    username: string;  
-    
-    @IsNotEmpty()
-    @IsString()                  
-    firstName: string; 
+    @IsString()
+    username: string;
 
     @IsNotEmpty()
-    @IsString()                  
-    lastName: string; 
+    @IsString()
+    firstName: string;
 
     @IsNotEmpty()
-    @IsEmail()                      
-    email: string;  
-
-    @IsNotEmpty()     
-    @IsPhoneNumber('US')                
-    phone: string; 
-    
-    @IsNotEmpty()
-    @IsString()                  
-    password: string; 
+    @IsString()
+    lastName: string;
 
     @IsNotEmpty()
-    @IsString()                  
-    address: string; 
-    
+    @IsEmail()
+    email: string;
+
     @IsNotEmpty()
-    @IsBoolean()                  
-    admin: boolean;
- 
+    @IsPhoneNumber('US') // Puedes ajustar el código de país según tus necesidades
+    phone: string;
+
+    @IsNotEmpty()
+    @IsString()
+    password: string;
+
+    @IsNotEmpty()
+    @IsString()
+    address: string;
+
+    @IsNotEmpty()
+    @IsNumber()
+    @IsPositive()
+    idRole: number;
 }

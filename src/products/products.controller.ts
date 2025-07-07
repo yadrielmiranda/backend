@@ -3,7 +3,7 @@ import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { Product as ProductModel } from '@prisma/client';
-import { AuthGuard } from 'src/auth/guards/auth/auth.guard';
+
 
 @Controller('products')
 export class ProductsController {
@@ -16,10 +16,20 @@ export class ProductsController {
     return this.productsService.createProduct(productData);
   }
 
-  //@UseGuards(AuthGuard)
+  
   @Get()
   async getAllProducts(): Promise<ProductModel[]> {
     return this.productsService.products({});
+  }
+
+  /**
+   * ✅ NUEVA RUTA AÑADIDA
+   * Expone el método para obtener todos los productos con sus marcas.
+   * Se coloca antes de la ruta ':id' para que NestJS la encuentre primero.
+   */
+  @Get('with-brands')
+  findAllWithBrands() {
+    return this.productsService.findAllWithBrands();
   }
 
   @Get(':id')

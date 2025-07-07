@@ -14,10 +14,11 @@ import { EstimatesModule } from './estimates/estimates.module';
 import { PiecesModule } from './pieces/pieces.module';
 import { BrandsModule } from './brands/brands.module';
 import { ConfigSModule } from './config-s/config-s.module';
+import { RolesModule } from './roles/roles.module';
 
 
 @Module({
-  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, ConfigSModule, CoatingModule, CrystalsModule, TintsModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule],
+  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, ConfigSModule, CoatingModule, CrystalsModule, TintsModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule, RolesModule],
   controllers: [AppController],
   providers: [AppService],
 })
