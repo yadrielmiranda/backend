@@ -6,7 +6,6 @@ import { jwtConstants } from 'src/auth/constantesw';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
-
   constructor() {
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([
@@ -15,12 +14,18 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
         },
       ]),
       ignoreExpiration: false,
-      // ✅ Se usa la clave secreta de tu archivo de constantes
       secretOrKey: jwtConstants.secret,
     });
   }
 
-  async validate(payload: any) {
-    return { id: payload.sub, username: payload.username, email: payload.email };
+  async validate(payload: any) {    
+    return {
+      id: payload.sub,
+      username: payload.username,
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      email: payload.email,
+      role: payload.role,
+    };
   }
 }

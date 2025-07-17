@@ -10,6 +10,8 @@ import { UsersService } from 'src/users/users.service';
 import { RegisterUserDto } from './dto/register-user.dto';
 import * as bcrypt from 'bcrypt';
 import { User, Prisma } from '@prisma/client'; 
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 @Injectable()
 export class AuthService {
@@ -84,5 +86,34 @@ export class AuthService {
       }
       throw new InternalServerErrorException('No se pudo crear el usuario.');
     }
+  }
+
+   async updateProfile(userId: number, data: UpdateProfileDto): Promise<User> {
+    // Reutiliza la lógica de tu UsersService para mantener todo consistente
+    return this.usersService.updateUser({
+      where: { id: userId },
+      data,
+    });
+  }
+
+  async changePassword(userId: number, changePasswordDto: ChangePasswordDto) {
+    const user = await this.usersService.user({ id: userId });
+
+    const isPasswordMatching = await bcrypt.compare(
+      changePasswordDto.currentPassword,
+      user.password,
+    );
+
+    if (!isPasswordMatching) {
+      throw new UnauthorizedException('La contraseña actual es incorrecta.');
+    }
+
+    // Reutilizamos la lógica de updateUser que ya hashea la contraseña
+    await this.usersService.updateUser({
+      where: { id: userId },
+      data: { password: changePasswordDto.newPassword },
+    });
+
+    return { message: 'Contraseña actualizada exitosamente.' };
   }
 }
