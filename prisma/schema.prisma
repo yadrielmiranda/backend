@@ -13,8 +13,8 @@ datasource db {
 
 model Role {
   id    Int    @id @default(autoincrement())
-  name  String @unique 
-  users User[] // Relación inversa para ver todos los usuarios de un rol
+  name  String @unique
+  users User[]
 }
 
 model User {
@@ -25,10 +25,11 @@ model User {
   email     String   @unique
   phone     String   @unique
   password  String
-  address   String    
+  address   String
   role      Role     @relation(fields: [idRole], references: [id])
   idRole    Int
   estimates Estimate[]
+  orders    Order[]
 }
 
 model Brand {
@@ -105,57 +106,81 @@ model Tint {
 }
 
 model Coating {
-  id     Int     @default(autoincrement()) @id
+  id     Int    @default(autoincrement()) @id
   name   String
   pieces Piece[]
 }
 
 model Estimate {
-  id        Int      @default(autoincrement()) @id
+  id        Int      @default(autoincrement()) @id   
   number    String   @unique
-  name      String
-  project   String
+  name      String 
   date      DateTime @default(now())
   units     Int
   rateT     Decimal
   priceT    Decimal
   netProfit Decimal
+  total     Decimal
+  netProfitD Decimal
   user      User     @relation(fields: [idUser], references: [id])
   idUser    Int
   active    Boolean
   pieces    Piece[]
+  order     Order?
 }
 
 model Piece {
-  id      Int        @default(autoincrement()) @id
-  estim   Estimate   @relation(fields: [idEst], references: [id])
-  idEst   Int
-  mark    String
-  prod    Product    @relation(fields: [idProd], references: [id])
-  idProd  Int
-  bran    Brand      @relation(fields: [idBrand], references: [id])
-  idBrand Int
-  syst    System     @relation(fields: [idSyst], references: [id])
-  idSyst  Int
-  conf    Config     @relation(fields: [idConf], references: [id])
-  idConf  Int
-  fColor  FrameColor @relation(fields: [idFC], references: [id])
-  idFC    Int
-  width   String
-  height  String
-  cryst   Crystal    @relation(fields: [idCryst], references: [id])
-  idCryst Int
-  tin     Tint       @relation(fields: [idTint], references: [id])
-  idTint  Int
-  privacy Boolean
-  coat    Coating    @relation(fields: [idCoat], references: [id])
-  idCoat  Int
-  screen  Boolean
-  muntin  Boolean
-  qty     Int
-  rate    Decimal
-  price   Decimal
-  markup  Int
-  subtotal Decimal
+  id        Int      @default(autoincrement()) @id
+  estim     Estimate @relation(fields: [idEst], references: [id])
+  idEst     Int
+  mark      String
+  prod      Product  @relation(fields: [idProd], references: [id])
+  idProd    Int
+  bran      Brand    @relation(fields: [idBrand], references: [id])
+  idBrand   Int
+  syst      System   @relation(fields: [idSyst], references: [id])
+  idSyst    Int
+  conf      Config   @relation(fields: [idConf], references: [id])
+  idConf    Int
+  fColor    FrameColor @relation(fields: [idFC], references: [id])
+  idFC      Int
+  width     String
+  height    String
+  cryst     Crystal  @relation(fields: [idCryst], references: [id])
+  idCryst   Int
+  tin       Tint     @relation(fields: [idTint], references: [id])
+  idTint    Int
+  privacy   Boolean
+  coat      Coating  @relation(fields: [idCoat], references: [id])
+  idCoat    Int
+  screen    Boolean
+  muntin    Boolean
+  qty       Int
+  rate      Decimal
+  price     Decimal
+  markup    Int
+  subtotal  Decimal
   netProfit Decimal
+  markupD   Decimal
+  netProfitD Decimal
+}
+
+model OrderStatus {
+  id     Int     @id @default(autoincrement())
+  name   String  @unique
+  orders Order[]
+}
+
+model Order {
+  id         Int         @id @default(autoincrement())  
+  number     String      @unique
+  date       DateTime    @default(now())
+  units      Int
+  amount     Decimal  
+  estimate   Estimate    @relation(fields: [idEst], references: [id])
+  idEst Int   @unique  
+  status     OrderStatus @relation(fields: [statusId], references: [id])
+  statusId   Int  
+  user       User        @relation(fields: [userId], references: [id])
+  userId     Int
 }

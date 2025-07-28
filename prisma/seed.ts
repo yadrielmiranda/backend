@@ -7,9 +7,7 @@ const prisma = new PrismaClient();
 async function main() {
   console.log(`Start seeding ...`);
 
-  // 1. Crear o actualizar los roles usando upsert
-  // Esto es más robusto que createMany, ya que no depende del orden
-  // y permite añadir o quitar roles fácilmente en el futuro.
+  // 1. Crear o actualizar los roles
   const rolesToCreate = ['admin', 'client', 'deler'];
   console.log('Upserting roles...');
   for (const roleName of rolesToCreate) {
@@ -21,11 +19,22 @@ async function main() {
   }
   console.log('Roles are up to date.');
 
-  // 2. Crear un usuario administrador por defecto
+  // 2. Crear los estados de las órdenes (NUEVO)
+  const orderStatusesToCreate = ['In production', 'Ready to pick up', 'Delivered'];
+  console.log('Upserting order statuses...');
+  for (const statusName of orderStatusesToCreate) {
+    await prisma.orderStatus.upsert({
+      where: { name: statusName },
+      update: {},
+      create: { name: statusName },
+    });
+  }
+  console.log('Order statuses are up to date.');
+
+  // 3. Crear un usuario administrador por defecto
   const saltRounds = 10;
   const hashedPassword = await bcrypt.hash('admin123', saltRounds); // ¡IMPORTANTE: Cambiar esta contraseña en producción!
 
-  // Buscamos el rol de admin para obtener su ID dinámicamente
   const adminRole = await prisma.role.findUnique({
     where: { name: 'admin' },
   });
@@ -35,10 +44,9 @@ async function main() {
     return;
   }
 
-  // Usamos 'upsert' para crear el usuario solo si no existe.
   await prisma.user.upsert({
-    where: { username: 'admin' }, // Criterio para buscar si el usuario ya existe
-    update: {}, // No hacemos nada si ya existe
+    where: { username: 'admin' },
+    update: {},
     create: {
       username: 'admin',
       firstName: 'Admin',
@@ -47,7 +55,7 @@ async function main() {
       phone: '1234567890',
       address: '123 Admin Street',
       password: hashedPassword,
-      idRole: adminRole.id, // Asignamos el ID del rol de 'admin' dinámicamente
+      idRole: adminRole.id,
     },
   });
 

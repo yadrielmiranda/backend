@@ -15,10 +15,11 @@ import { PiecesModule } from './pieces/pieces.module';
 import { BrandsModule } from './brands/brands.module';
 import { ConfigSModule } from './config-s/config-s.module';
 import { RolesModule } from './roles/roles.module';
+import { OrdersModule } from './orders/orders.module';
 
 
 @Module({
-  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, ConfigSModule, CoatingModule, CrystalsModule, TintsModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule, RolesModule],
+  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, ConfigSModule, CoatingModule, CrystalsModule, TintsModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule, RolesModule, OrdersModule],
   controllers: [AppController],
   providers: [AppService],
 })

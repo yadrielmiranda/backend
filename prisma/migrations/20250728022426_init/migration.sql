@@ -113,12 +113,13 @@ CREATE TABLE `Estimate` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
     `number` VARCHAR(191) NOT NULL,
     `name` VARCHAR(191) NOT NULL,
-    `project` VARCHAR(191) NOT NULL,
     `date` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `units` INTEGER NOT NULL,
     `rateT` DECIMAL(65, 30) NOT NULL,
     `priceT` DECIMAL(65, 30) NOT NULL,
     `netProfit` DECIMAL(65, 30) NOT NULL,
+    `total` DECIMAL(65, 30) NOT NULL,
+    `netProfitD` DECIMAL(65, 30) NOT NULL,
     `idUser` INTEGER NOT NULL,
     `active` BOOLEAN NOT NULL,
 
@@ -150,7 +151,34 @@ CREATE TABLE `Piece` (
     `markup` INTEGER NOT NULL,
     `subtotal` DECIMAL(65, 30) NOT NULL,
     `netProfit` DECIMAL(65, 30) NOT NULL,
+    `markupD` DECIMAL(65, 30) NOT NULL,
+    `netProfitD` DECIMAL(65, 30) NOT NULL,
 
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE `OrderStatus` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `name` VARCHAR(191) NOT NULL,
+
+    UNIQUE INDEX `OrderStatus_name_key`(`name`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE `Order` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `number` VARCHAR(191) NOT NULL,
+    `date` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `units` INTEGER NOT NULL,
+    `amount` DECIMAL(65, 30) NOT NULL,
+    `idEst` INTEGER NOT NULL,
+    `statusId` INTEGER NOT NULL,
+    `userId` INTEGER NOT NULL,
+
+    UNIQUE INDEX `Order_number_key`(`number`),
+    UNIQUE INDEX `Order_idEst_key`(`idEst`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -204,3 +232,12 @@ ALTER TABLE `Piece` ADD CONSTRAINT `Piece_idTint_fkey` FOREIGN KEY (`idTint`) RE
 
 -- AddForeignKey
 ALTER TABLE `Piece` ADD CONSTRAINT `Piece_idCoat_fkey` FOREIGN KEY (`idCoat`) REFERENCES `Coating`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `Order` ADD CONSTRAINT `Order_idEst_fkey` FOREIGN KEY (`idEst`) REFERENCES `Estimate`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `Order` ADD CONSTRAINT `Order_statusId_fkey` FOREIGN KEY (`statusId`) REFERENCES `OrderStatus`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `Order` ADD CONSTRAINT `Order_userId_fkey` FOREIGN KEY (`userId`) REFERENCES `User`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;

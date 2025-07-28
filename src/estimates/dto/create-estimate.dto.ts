@@ -3,9 +3,8 @@ import { Type } from "class-transformer";
 import { CreatePieceDto } from "src/pieces/dto/create-piece.dto";
 
 export class CreateEstimateDto {
-    @IsNotEmpty() @IsString() number: string;
-    @IsNotEmpty() @IsString() name: string;
-    @IsNotEmpty() @IsString() project: string;    
+
+    @IsNotEmpty() @IsString() name: string;     
      
     @IsArray()
     @ValidateNested({ each: true })

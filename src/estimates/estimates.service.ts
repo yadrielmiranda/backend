@@ -14,10 +14,9 @@ export class EstimatesService {
       where,
       include: {
         user: true,
-        // ✅ CORRECCIÓN: Se incluyen todos los detalles anidados de cada pieza.
         pieces: {
           orderBy: {
-            id: 'asc', // Opcional: ordenar las piezas
+            id: 'asc',
           },
           include: {
             prod: true,
@@ -34,14 +33,10 @@ export class EstimatesService {
     });
 
     if (!estimate) {
-      // Devolvemos null en lugar de lanzar una excepción directamente aquí
-      // para que el controlador pueda manejar el 404.
       return null;
     }
     return estimate;
   }
-
-  // ... (el resto de tu servicio permanece igual)
 
   async estimates(params: {
     where?: Prisma.EstimateWhereInput;
@@ -56,40 +51,57 @@ export class EstimatesService {
     dto: CreateEstimateDto,
     userId: number,
   ): Promise<Estimate> {
-    const { pieces, ...estimateHeaderData } = dto;
+    return this.prisma.$transaction(async (tx) => {
+      const lastEstimate = await tx.estimate.findFirst({
+        orderBy: { number: 'desc' },
+      });
 
-    const piecesData = pieces.map((p) => {
-      const metrics = this.calculatePieceMetrics(p);
-      return { ...p, ...metrics };
-    });
+      let nextNumber: string;
+      if (!lastEstimate) {
+        nextNumber = '190909';
+      } else {
+        const lastNumber = parseInt(lastEstimate.number, 10);
+        nextNumber = String(lastNumber + 1);
+      }
 
-    const estimateTotals = this.calculateEstimateTotals(piecesData);
-    const totalUnits = pieces.reduce((sum, p) => sum + p.qty, 0);
+      const { pieces, ...estimateHeaderData } = dto;
 
-    return this.prisma.estimate.create({
-      data: {
-        ...estimateHeaderData,
-        ...estimateTotals,
-        units: totalUnits,
-        active: true,
-        user: { connect: { id: userId } },
-        pieces: {
-          create: piecesData.map(
-            ({ idProd, idBrand, idSyst, idConf, idFC, idCryst, idTint, idCoat, ...rest }) => ({
-              ...rest,
-              prod: { connect: { id: idProd } },
-              bran: { connect: { id: idBrand } },
-              syst: { connect: { id: idSyst } },
-              conf: { connect: { id: idConf } },
-              fColor: { connect: { id: idFC } },
-              cryst: { connect: { id: idCryst } },
-              tin: { connect: { id: idTint } },
-              coat: { connect: { id: idCoat } },
-            }),
-          ),
+      const piecesData = pieces.map((p) => {
+        const metrics = this.calculatePieceMetrics(p);
+        return { ...p, ...metrics };
+      });
+
+      const estimateTotals = this.calculateEstimateTotals(piecesData);
+      const totalUnits = pieces.reduce((sum, p) => sum + p.qty, 0);
+
+      const newEstimate = await tx.estimate.create({
+        data: {
+          number: nextNumber,
+          ...estimateHeaderData,
+          ...estimateTotals,
+          units: totalUnits,
+          active: true,
+          user: { connect: { id: userId } },
+          pieces: {
+            create: piecesData.map(
+              ({ idProd, idBrand, idSyst, idConf, idFC, idCryst, idTint, idCoat, ...rest }) => ({
+                ...rest,
+                prod: { connect: { id: idProd } },
+                bran: { connect: { id: idBrand } },
+                syst: { connect: { id: idSyst } },
+                conf: { connect: { id: idConf } },
+                fColor: { connect: { id: idFC } },
+                cryst: { connect: { id: idCryst } },
+                tin: { connect: { id: idTint } },
+                coat: { connect: { id: idCoat } },
+              }),
+            ),
+          },
         },
-      },
-      include: { pieces: true, user: true },
+        include: { pieces: true, user: true },
+      });
+      
+      return newEstimate;
     });
   }
 
@@ -182,6 +194,8 @@ export class EstimatesService {
     netProfit: Prisma.Decimal;
     rate: Prisma.Decimal;
     markup: number;
+    markupD: Prisma.Decimal;
+    netProfitD: Prisma.Decimal;
   } {
     let priceNumber = 100.0;
     if (pieceDto.screen) priceNumber += 20;
@@ -189,6 +203,8 @@ export class EstimatesService {
 
     const subtotalNumber = priceNumber * pieceDto.qty;
     const netProfitNumber = subtotalNumber * 0.2;
+    const markupDNumber = subtotalNumber * 0.3;
+    const netProfitDNumber = subtotalNumber * 0.25;
 
     return {
       price: new Prisma.Decimal(priceNumber),
@@ -196,6 +212,8 @@ export class EstimatesService {
       netProfit: new Prisma.Decimal(netProfitNumber),
       rate: new Prisma.Decimal(0),
       markup: 0,
+      markupD: new Prisma.Decimal(markupDNumber),
+      netProfitD: new Prisma.Decimal(netProfitDNumber),
     };
   }
 
@@ -203,18 +221,24 @@ export class EstimatesService {
     priceT: Prisma.Decimal;
     netProfit: Prisma.Decimal;
     rateT: Prisma.Decimal;
+    total: Prisma.Decimal;
+    netProfitD: Prisma.Decimal;
   } {
     const totals = pieces.reduce(
       (acc, piece) => {
         const subtotal = new Prisma.Decimal(piece.subtotal);
         const netProfit = new Prisma.Decimal(piece.netProfit);
+        const netProfitD = new Prisma.Decimal(piece.netProfitD);
+
         acc.priceT = acc.priceT.add(subtotal);
         acc.netProfit = acc.netProfit.add(netProfit);
+        acc.netProfitD = acc.netProfitD.add(netProfitD);
         return acc;
       },
       {
         priceT: new Prisma.Decimal(0),
         netProfit: new Prisma.Decimal(0),
+        netProfitD: new Prisma.Decimal(0),
       },
     );
 
@@ -222,6 +246,8 @@ export class EstimatesService {
       priceT: totals.priceT,
       netProfit: totals.netProfit,
       rateT: new Prisma.Decimal(0),
+      total: totals.priceT,
+      netProfitD: totals.netProfitD,
     };
   }
 }

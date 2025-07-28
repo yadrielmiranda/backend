@@ -45,7 +45,7 @@ export class CreatePieceDto {
     idTint: number;
 
     @IsBoolean()
-    privacy: boolean; // IsNotEmpty no es ideal para booleans, puede que se quiera permitir false
+    privacy: boolean; 
 
     @IsNumber()
     @IsNotEmpty()
@@ -59,9 +59,6 @@ export class CreatePieceDto {
 
     @IsNumber()
     @IsNotEmpty()
-    qty: number; 
-    
-    // CAMPOS ELIMINADOS:
-    // idEst (Prisma lo añade)
-    // price, rate, markup, subtotal, netProfit (El backend los calcula)
+    qty: number;         
+ 
 }
