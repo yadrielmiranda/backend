@@ -8,18 +8,22 @@ async function main() {
   console.log(`Start seeding ...`);
 
   // 1. Crear o actualizar los roles
-  const rolesToCreate = ['admin', 'client', 'deler'];
+  const rolesToCreate = [
+    { name: 'admin', markup: 0.0 },  // 0%
+    { name: 'client', markup: 0.30 }, // 30%
+    { name: 'dealer', markup: 0.15 }, // 15%
+  ];
   console.log('Upserting roles...');
-  for (const roleName of rolesToCreate) {
+ for (const roleData of rolesToCreate) {
     await prisma.role.upsert({
-      where: { name: roleName },
-      update: {},
-      create: { name: roleName },
+      where: { name: roleData.name },
+      update: { markup: roleData.markup }, // Actualiza el markup si el rol ya existe
+      create: { name: roleData.name, markup: roleData.markup }, // Lo crea con el markup
     });
   }
   console.log('Roles are up to date.');
 
-  // 2. Crear los estados de las órdenes (NUEVO)
+  // 2. Crear los estados de las órdenes 
   const orderStatusesToCreate = ['In production', 'Ready to pick up', 'Delivered'];
   console.log('Upserting order statuses...');
   for (const statusName of orderStatusesToCreate) {

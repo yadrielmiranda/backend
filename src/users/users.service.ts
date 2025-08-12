@@ -1,6 +1,7 @@
+// src/users/users.service.ts
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import {  Prisma, User } from '@prisma/client';
+import { Prisma, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -13,7 +14,7 @@ export class UsersService {
     userWhereUniqueInput: Prisma.UserWhereUniqueInput,
   ): Promise<User | null> {
     return this.prisma.user.findUnique({
-      where: userWhereUniqueInput,     
+      where: userWhereUniqueInput,
       include: {
         role: true,
       },
@@ -21,15 +22,14 @@ export class UsersService {
   }
 
   async findOneByIdentifier(identifier: string): Promise<User | null> {
-    const user = this.prisma.user.findFirst({
+    return this.prisma.user.findFirst({
       where: {
         OR: [{ username: identifier }, { email: identifier }],
-      },      
+      },
       include: {
         role: true,
       },
     });
-    return user;
   }
 
   async users(params: {
@@ -46,7 +46,6 @@ export class UsersService {
       cursor,
       where,
       orderBy,
-      // ✅ CORRECCIÓN: Se añade 'include' para traer los datos del rol de cada usuario.
       include: {
         role: true,
       },
@@ -80,9 +79,12 @@ export class UsersService {
   }): Promise<User> {
     const { where, data: userData } = params;
     const { idRole, ...restOfUserData } = userData;
+    
+    // El objeto 'restOfUserData' ya contiene 'markupOverride' si se envió.
     const dataForPrisma: Prisma.UserUpdateInput = {
       ...restOfUserData,
     };
+
     if (restOfUserData.password) {
       const saltRounds = 10;
       dataForPrisma.password = await bcrypt.hash(
@@ -97,13 +99,24 @@ export class UsersService {
         },
       };
     }
+
+    // Lógica explícita para manejar el 'markupOverride'.
+    // Si la propiedad 'markupOverride' existe en el DTO que recibimos...
+    if ('markupOverride' in userData) {
+      // ...la asignamos al payload que irá a Prisma.
+      // Si el valor es un número, se guarda. Si es 'null', Prisma borrará el valor.
+      dataForPrisma.markupOverride = userData.markupOverride;
+    }
+
     try {
       return await this.prisma.user.update({
         data: dataForPrisma,
         where,
       });
     } catch (error) {
-      throw new NotFoundException(`User with ID #${where.id} not found`);
+      // Imprime el error en la consola del backend para depuración
+      console.error("Error updating user:", error);
+      throw new NotFoundException(`User with ID #${where.id} not found or update failed.`);
     }
   }
 

@@ -10,41 +10,52 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// =======================================
+//        Modelos de Autenticación y Usuarios
+// =======================================
 
 model Role {
-  id    Int    @id @default(autoincrement())
-  name  String @unique
-  users User[]
+  id     Int     @id @default(autoincrement())
+  name   String  @unique
+  markup Decimal @default(0) @db.Decimal(10, 4) // Total 10 dígitos, 4 decimales
+  users  User[]
 }
 
 model User {
-  id        Int      @default(autoincrement()) @id
-  username  String   @unique
-  firstName String
-  lastName  String
-  email     String   @unique
-  phone     String   @unique
-  password  String
-  address   String
-  role      Role     @relation(fields: [idRole], references: [id])
-  idRole    Int
-  estimates Estimate[]
-  orders    Order[]
+  id             Int        @id @default(autoincrement())
+  username       String     @unique
+  firstName      String
+  lastName       String
+  email          String     @unique
+  phone          String     @unique
+  password       String
+  address        String
+  markupOverride Decimal?   @db.Decimal(10, 4) // Total 10 dígitos, 4 decimales
+  role           Role       @relation(fields: [idRole], references: [id])
+  idRole         Int
+  estimates      Estimate[]
+  orders         Order[]
 }
 
+// =======================================
+//        Modelos de Piezas y Opciones
+// =======================================
+
 model Brand {
-  id            Int            @default(autoincrement()) @id
+  id            Int            @id @default(autoincrement())
   name          String
   pieces        Piece[]
   brandProducts BrandProduct[]
+  pricingRules  PricingRule[]
 }
 
 model Product {
-  id            Int            @default(autoincrement()) @id
+  id            Int            @id @default(autoincrement())
   name          String
   configs       Config[]
   pieces        Piece[]
   brandProducts BrandProduct[]
+  pricingRules  PricingRule[]
 }
 
 model BrandProduct {
@@ -66,15 +77,17 @@ model System {
   idProduct    Int
   sysconfs     SysConf[]
   pieces       Piece[]
+  pricingRules PricingRule[]
 }
 
 model Config {
-  id        Int       @id @default(autoincrement())
-  conf      String
-  prod      Product   @relation(fields: [idProduct], references: [id])
-  idProduct Int
-  sysconfs  SysConf[]
-  pieces    Piece[]
+  id           Int           @id @default(autoincrement())
+  conf         String
+  prod         Product       @relation(fields: [idProduct], references: [id])
+  idProduct    Int
+  sysconfs     SysConf[]
+  pieces       Piece[]
+  pricingRules PricingRule[]
 }
 
 model SysConf {
@@ -88,81 +101,126 @@ model SysConf {
 }
 
 model FrameColor {
-  id     Int     @default(autoincrement()) @id
+  id     Int     @id @default(autoincrement())
   color  String
   pieces Piece[]
 }
 
 model Crystal {
-  id     Int     @default(autoincrement()) @id
-  glass  String
-  pieces Piece[]
+  id           Int           @id @default(autoincrement())
+  glass        String
+  pieces       Piece[]
+  pricingRules PricingRule[]
 }
 
 model Tint {
-  id     Int     @default(autoincrement()) @id
+  id     Int     @id @default(autoincrement())
   color  String
   pieces Piece[]
 }
 
 model Coating {
-  id     Int    @default(autoincrement()) @id
+  id     Int     @id @default(autoincrement())
   name   String
   pieces Piece[]
 }
 
+// ==================================================
+//        Modelos para Parámetros de Cálculo
+// ==================================================
+
+enum ParameterKey {
+  SALES_TAX
+}
+
+model CalculationParameter {
+  id          Int          @id @default(autoincrement())
+  key         ParameterKey @unique
+  value       String
+  description String?
+  unit        String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model PricingRule {
+  id        Int      @id @default(autoincrement())
+  brand     Brand    @relation(fields: [idBrand], references: [id])
+  idBrand   Int
+  product   Product  @relation(fields: [idProduct], references: [id])
+  idProduct Int
+  system    System   @relation(fields: [idSystem], references: [id])
+  idSystem  Int
+  config    Config   @relation(fields: [idConfig], references: [id])
+  idConfig  Int
+  crystal   Crystal  @relation(fields: [idCrystal], references: [id])
+  idCrystal Int
+  costoA    Decimal  @db.Decimal(18, 8) // Total 18 dígitos, 8 decimales
+  costoB    Decimal  @db.Decimal(18, 8) // Total 18 dígitos, 8 decimales
+  costoC    Decimal  @db.Decimal(18, 8) // Total 18 dígitos, 8 decimales
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([idBrand, idProduct, idSystem, idConfig, idCrystal], map: "unique_pricing_rule_combination")
+  @@map("pricing_rules")
+}
+
+// =======================================
+//        Modelos de Cotizaciones y Pedidos
+// =======================================
+
 model Estimate {
-  id        Int      @default(autoincrement()) @id   
-  number    String   @unique
-  name      String 
-  date      DateTime @default(now())
-  units     Int
-  rateT     Decimal
-  priceT    Decimal
-  netProfit Decimal
-  total     Decimal
-  netProfitD Decimal
-  user      User     @relation(fields: [idUser], references: [id])
-  idUser    Int
-  active    Boolean
-  pieces    Piece[]
-  order     Order?
+  id         Int      @id @default(autoincrement())
+  number     String   @unique
+  name       String
+  date       DateTime @default(now())
+  units      Int
+  rateT      Decimal  @db.Decimal(12, 4)
+  priceT     Decimal  @db.Decimal(12, 2)
+  netProfit  Decimal  @db.Decimal(12, 4)
+  total      Decimal  @db.Decimal(12, 2)
+  netProfitD Decimal  @db.Decimal(12, 2)
+  user       User     @relation(fields: [idUser], references: [id])
+  idUser     Int
+  active     Boolean
+  pieces     Piece[]
+  order      Order?
 }
 
 model Piece {
-  id        Int      @default(autoincrement()) @id
-  estim     Estimate @relation(fields: [idEst], references: [id])
-  idEst     Int
-  mark      String
-  prod      Product  @relation(fields: [idProd], references: [id])
-  idProd    Int
-  bran      Brand    @relation(fields: [idBrand], references: [id])
-  idBrand   Int
-  syst      System   @relation(fields: [idSyst], references: [id])
-  idSyst    Int
-  conf      Config   @relation(fields: [idConf], references: [id])
-  idConf    Int
-  fColor    FrameColor @relation(fields: [idFC], references: [id])
-  idFC      Int
-  width     String
-  height    String
-  cryst     Crystal  @relation(fields: [idCryst], references: [id])
-  idCryst   Int
-  tin       Tint     @relation(fields: [idTint], references: [id])
-  idTint    Int
-  privacy   Boolean
-  coat      Coating  @relation(fields: [idCoat], references: [id])
-  idCoat    Int
-  screen    Boolean
-  muntin    Boolean
-  qty       Int
-  rate      Decimal
-  price     Decimal
-  markup    Int
-  subtotal  Decimal
-  netProfit Decimal
-  markupD   Decimal
-  netProfitD Decimal
+  id         Int        @id @default(autoincrement())
+  estim      Estimate   @relation(fields: [idEst], references: [id])
+  idEst      Int
+  mark       String
+  prod       Product    @relation(fields: [idProd], references: [id])
+  idProd     Int
+  bran       Brand      @relation(fields: [idBrand], references: [id])
+  idBrand    Int
+  syst       System     @relation(fields: [idSyst], references: [id])
+  idSyst     Int
+  conf       Config     @relation(fields: [idConf], references: [id])
+  idConf     Int
+  fColor     FrameColor @relation(fields: [idFC], references: [id])
+  idFC       Int
+  width      String
+  height     String
+  cryst      Crystal    @relation(fields: [idCryst], references: [id])
+  idCryst    Int
+  tin        Tint       @relation(fields: [idTint], references: [id])
+  idTint     Int
+  privacy    Boolean
+  coat       Coating    @relation(fields: [idCoat], references: [id])
+  idCoat     Int
+  screen     Boolean
+  muntin     Boolean
+  qty        Int
+  rate       Decimal    @db.Decimal(12, 4)
+  price      Decimal    @db.Decimal(12, 2)
+  markup     Int
+  subtotal   Decimal    @db.Decimal(12, 2)
+  netProfit  Decimal    @db.Decimal(12, 4)
+  markupD    Decimal    @db.Decimal(12, 2)
+  netProfitD Decimal    @db.Decimal(12, 2)
 }
 
 model OrderStatus {
@@ -172,15 +230,15 @@ model OrderStatus {
 }
 
 model Order {
-  id         Int         @id @default(autoincrement())  
-  number     String      @unique
-  date       DateTime    @default(now())
-  units      Int
-  amount     Decimal  
-  estimate   Estimate    @relation(fields: [idEst], references: [id])
-  idEst Int   @unique  
-  status     OrderStatus @relation(fields: [statusId], references: [id])
-  statusId   Int  
-  user       User        @relation(fields: [userId], references: [id])
-  userId     Int
+  id       Int         @id @default(autoincrement())
+  number   String      @unique
+  date     DateTime    @default(now())
+  units    Int
+  amount   Decimal     @db.Decimal(12, 2)
+  estimate Estimate    @relation(fields: [idEst], references: [id])
+  idEst    Int         @unique
+  status   OrderStatus @relation(fields: [statusId], references: [id])
+  statusId Int
+  user     User        @relation(fields: [userId], references: [id])
+  userId   Int
 }
