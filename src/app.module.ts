@@ -17,10 +17,11 @@ import { ConfigSModule } from './config-s/config-s.module';
 import { RolesModule } from './roles/roles.module';
 import { OrdersModule } from './orders/orders.module';
 import { PricingRulesModule } from './pricing-rules/pricing-rules.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 
 @Module({
-  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, ConfigSModule, CoatingModule, CrystalsModule, TintsModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule, RolesModule, OrdersModule, PricingRulesModule],
+  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, ConfigSModule, CoatingModule, CrystalsModule, TintsModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule, RolesModule, OrdersModule, PricingRulesModule, NotificationsModule],
   controllers: [AppController],
   providers: [AppService],
 })

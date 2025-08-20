@@ -4,6 +4,8 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { JwtAuthGuard } from 'src/auth/guards/auth/auth.guard';
 import { Request } from 'express';
 import { UpdateOrderDto } from './dto/update-order.dto';
+import { Roles } from 'src/auth/roles.decorator';
+import { RolesGuard } from 'src/auth/guards/roles/roles.guard';
 
 @UseGuards(JwtAuthGuard)
 @Controller('orders')
@@ -37,6 +39,8 @@ export class OrdersController {
 
   // Endpoint para actualizar una orden
   @Patch(':id')
+  @Roles('admin') // <-- 3. Especifica que SOLO el rol 'admin' puede acceder
+  @UseGuards(RolesGuard)
   update(@Param('id', ParseIntPipe) id: number, @Body() updateOrderDto: UpdateOrderDto) {
     return this.ordersService.update(id, updateOrderDto);
   }
