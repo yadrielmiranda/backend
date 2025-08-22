@@ -130,18 +130,18 @@ model Coating {
 //        Modelos para Parámetros de Cálculo
 // ==================================================
 
-enum ParameterKey {
-  SALES_TAX
+enum GlobalParameterKey {
+  SALES_TAX          // Impuesto sobre ventas de Florida  
+  // Se pueden añadir más claves aquí en el futuro
 }
 
-model CalculationParameter {
-  id          Int          @id @default(autoincrement())
-  key         ParameterKey @unique
-  value       String
+model GlobalParameter {
+  id          Int                @id @default(autoincrement())
+  key         GlobalParameterKey @unique
+  value       Decimal            @db.Decimal(10, 4) // Usar Decimal para valores financieros
   description String?
-  unit        String?
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  unit        String?            // Útil para aclarar qué es el valor (ej. "%", "USD")
+  updatedAt   DateTime           @updatedAt
 }
 
 model PricingRule {
@@ -179,6 +179,9 @@ model Estimate {
   rateT      Decimal  @db.Decimal(12, 4)
   priceT     Decimal  @db.Decimal(12, 2)
   netProfit  Decimal  @db.Decimal(12, 4)
+  taxRate    Decimal  @default(0) @db.Decimal(10, 4) // La tasa de impuesto que aplicaste (ej. 0.07).
+  taxAmount  Decimal  @default(0) @db.Decimal(12, 2) // El monto del impuesto calculado sobre priceT.
+  totalPayable  Decimal  @default(0) @db.Decimal(12, 2) // El total que te deben pagar a ti (priceT + taxAmount).
   total      Decimal  @db.Decimal(12, 2)
   netProfitD Decimal  @db.Decimal(12, 2)
   user       User     @relation(fields: [idUser], references: [id])
@@ -217,10 +220,10 @@ model Piece {
   qty        Int
   rate       Decimal    @db.Decimal(12, 4)
   price      Decimal    @db.Decimal(12, 2)
-  markup     Int
+  markup     Decimal  @default(0) @db.Decimal(10, 4)
   subtotal   Decimal    @db.Decimal(12, 2)
   netProfit  Decimal    @db.Decimal(12, 4)
-  markupD    Decimal    @db.Decimal(12, 2)
+  dealerMarkup Decimal @default(0) @db.Decimal(10, 4)
   netProfitD Decimal    @db.Decimal(12, 2)
 }
 

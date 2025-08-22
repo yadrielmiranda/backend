@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { GlobalParameterKey, PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 // Inicializa el cliente de Prisma
@@ -64,6 +64,21 @@ async function main() {
   });
 
   console.log('Default admin user is up to date.');
+
+  // 4. Crear el parámetro de impuesto sobre ventas por defecto
+  console.log('Upserting global parameters...');
+  await prisma.globalParameter.upsert({
+    where: { key: GlobalParameterKey.SALES_TAX },
+    update: {}, // No hacemos nada si ya existe
+    create: {
+      key: GlobalParameterKey.SALES_TAX,
+      value: 0.07, // Valor inicial del 7%
+      description: 'Sales tax for the state of Florida.',
+      unit: '%',
+    },
+  });
+  console.log('Global parameters are up to date.');
+
   console.log(`Seeding finished.`);
 }
 
