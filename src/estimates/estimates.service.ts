@@ -206,8 +206,8 @@ private async calculatePieceMetrics(
       throw new NotFoundException(`No pricing rule found for the combination in piece mark: ${pieceDto.mark}.`);
     }
 
-    const area = new Prisma.Decimal(width * height);
-    const perimeter = new Prisma.Decimal(2 * (width + height));
+    const area = new Prisma.Decimal((width * height) / 144); // divido por 144 porque las medidas estan en pulgadas y necesito el area en pies cuadrados 
+    const perimeter = new Prisma.Decimal((2 * (width + height)) / 12); // divido por 12 porque las medidas estan en pulgadas y necesito el perimetro en pies
     const areaCost = area.mul(rule.costoA);
     const perimeterCost = perimeter.mul(rule.costoB);
     const fixedCost = new Prisma.Decimal(rule.costoC);
