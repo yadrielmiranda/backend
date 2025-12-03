@@ -10,6 +10,7 @@ import {
   UseGuards,
   Req,
   NotFoundException,
+  Query
 } from '@nestjs/common';
 import { EstimatesService } from './estimates.service';
 import { CreateEstimateDto } from './dto/create-estimate.dto';
@@ -29,6 +30,37 @@ interface UserPayload {
 @Controller('estimates')
 export class EstimatesController {
   constructor(private readonly estimatesService: EstimatesService) {}
+  // Valida dimensiones sin guardar (pre-chequeo para la UI)
+@Post('preview-dimension')
+async previewDimension(
+  @Body()
+  body: {
+    idSyst: number;
+    idConf: number;
+    idCryst: number;
+    width: number;
+    height: number;
+    heightLeft?: number;
+    heightRight?: number;
+    legHeight?: number;
+  },
+) {
+  // (opcional) validación mínima muy básica
+  for (const [k, v] of Object.entries({
+    idSyst: body.idSyst,
+    idConf: body.idConf,
+    idCryst: body.idCryst,
+    width: body.width,
+    height: body.height,
+  })) {
+    if (!Number.isFinite(v as number)) {
+      throw new NotFoundException(`Parámetro inválido: ${k}`);
+    }
+  }
+
+  return this.estimatesService.previewDimensionValidation(body);
+}
+
 
   @Post('calculate-piece')
   calculatePieceMetrics(
@@ -66,6 +98,47 @@ export class EstimatesController {
       where: whereClause,
     });
   }
+/*
+  // Valida dimensiones sin guardar (pre-chequeo para la UI)
+@Get('validate-piece')
+async validatePiece(
+  @Query('idSyst') idSyst: string,
+  @Query('idConf') idConf: string,
+  @Query('idCryst') idCryst: string,
+  @Query('widthIn') widthIn: string,
+  @Query('heightIn') heightIn: string,
+  @Query('heightLeftIn') heightLeftIn?: string,
+  @Query('heightRightIn') heightRightIn?: string,
+  @Query('legHeightIn') legHeightIn?: string,
+) {
+  // convierte a número de forma segura
+  const payload = {
+    idSyst: Number(idSyst),
+    idConf: Number(idConf),
+    idCryst: Number(idCryst),
+    width: Number(widthIn),
+    height: Number(heightIn),
+    heightLeft: heightLeftIn != null ? Number(heightLeftIn) : undefined,
+    heightRight: heightRightIn != null ? Number(heightRightIn) : undefined,
+    legHeight: legHeightIn != null ? Number(legHeightIn) : undefined,
+  };
+
+  // (opcional) validación mínima
+  for (const [k, v] of Object.entries({
+    idSyst: payload.idSyst,
+    idConf: payload.idConf,
+    idCryst: payload.idCryst,
+    width: payload.width,
+    height: payload.height,
+  })) {
+    if (!Number.isFinite(v as number)) {
+      throw new NotFoundException(`Parámetro inválido: ${k}`);
+    }
+  }
+
+  return this.estimatesService.previewDimensionValidation(payload);
+} */
+
 
   @Get(':id')
   async findOne(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
@@ -83,6 +156,8 @@ export class EstimatesController {
 
     return estimate;
   }
+
+  
 
   @Patch(':id')
   update(

@@ -1,3 +1,4 @@
+// systems.controller.ts
 import { Controller, Get, Post, Body, Patch, Param, Delete, Query, ParseIntPipe } from '@nestjs/common';
 import { SystemsService } from './systems.service';
 import { CreateSystemDto } from './dto/create-system.dto';
@@ -23,10 +24,7 @@ export class SystemsController {
     return this.systemsService.addConfigToSystem(id, configId);
   }
 
-  /**
-   * ✅ NUEVA RUTA
-   * Se coloca antes de las rutas con parámetros para evitar conflictos.
-   */
+  // Nota: esta ruta se coloca antes de ':id' para evitar conflictos
   @Get('with-configs')
   findAllWithConfigs() {
     return this.systemsService.findAllWithConfigs();
@@ -37,7 +35,7 @@ export class SystemsController {
     const where: any = {};
     if (idB) where.idBrand = Number(idB);
     if (idP) where.idProduct = Number(idP);
-    
+
     return this.systemsService.systems({ where });
   }
 

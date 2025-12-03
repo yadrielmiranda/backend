@@ -17,6 +17,11 @@ export class ConfigSController {
       prod: {
         connect: { id: confData.idProduct },
       },
+      requiresWidth: confData.requiresWidth,
+      requiresHeight: confData.requiresHeight,
+      requiresHeightLeft: confData.requiresHeightLeft,
+      requiresHeightRight: confData.requiresHeightRight,
+      requiresLegHeight: confData.requiresLegHeight,
     });
   }
 

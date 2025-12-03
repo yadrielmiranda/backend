@@ -2,6 +2,7 @@
 CREATE TABLE `Role` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
     `name` VARCHAR(191) NOT NULL,
+    `markup` DECIMAL(10, 4) NOT NULL DEFAULT 0,
 
     UNIQUE INDEX `Role_name_key`(`name`),
     PRIMARY KEY (`id`)
@@ -17,6 +18,7 @@ CREATE TABLE `User` (
     `phone` VARCHAR(191) NOT NULL,
     `password` VARCHAR(191) NOT NULL,
     `address` VARCHAR(191) NOT NULL,
+    `markupOverride` DECIMAL(10, 4) NULL,
     `idRole` INTEGER NOT NULL,
 
     UNIQUE INDEX `User_username_key`(`username`),
@@ -109,17 +111,51 @@ CREATE TABLE `Coating` (
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- CreateTable
+CREATE TABLE `GlobalParameter` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `key` ENUM('SALES_TAX') NOT NULL,
+    `value` DECIMAL(10, 4) NOT NULL,
+    `description` VARCHAR(191) NULL,
+    `unit` VARCHAR(191) NULL,
+    `updatedAt` DATETIME(3) NOT NULL,
+
+    UNIQUE INDEX `GlobalParameter_key_key`(`key`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE `pricing_rules` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `idBrand` INTEGER NOT NULL,
+    `idProduct` INTEGER NOT NULL,
+    `idSystem` INTEGER NOT NULL,
+    `idConfig` INTEGER NOT NULL,
+    `idCrystal` INTEGER NOT NULL,
+    `costoA` DECIMAL(18, 8) NOT NULL,
+    `costoB` DECIMAL(18, 8) NOT NULL,
+    `costoC` DECIMAL(18, 8) NOT NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updatedAt` DATETIME(3) NOT NULL,
+
+    UNIQUE INDEX `unique_pricing_rule_combination`(`idBrand`, `idProduct`, `idSystem`, `idConfig`, `idCrystal`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
 CREATE TABLE `Estimate` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
     `number` VARCHAR(191) NOT NULL,
     `name` VARCHAR(191) NOT NULL,
     `date` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `units` INTEGER NOT NULL,
-    `rateT` DECIMAL(65, 30) NOT NULL,
-    `priceT` DECIMAL(65, 30) NOT NULL,
-    `netProfit` DECIMAL(65, 30) NOT NULL,
-    `total` DECIMAL(65, 30) NOT NULL,
-    `netProfitD` DECIMAL(65, 30) NOT NULL,
+    `rateT` DECIMAL(12, 4) NOT NULL,
+    `priceT` DECIMAL(12, 2) NOT NULL,
+    `netProfit` DECIMAL(12, 4) NOT NULL,
+    `taxRate` DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    `taxAmount` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    `totalPayable` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    `total` DECIMAL(12, 2) NOT NULL,
+    `netProfitD` DECIMAL(12, 2) NOT NULL,
     `idUser` INTEGER NOT NULL,
     `active` BOOLEAN NOT NULL,
 
@@ -146,13 +182,13 @@ CREATE TABLE `Piece` (
     `screen` BOOLEAN NOT NULL,
     `muntin` BOOLEAN NOT NULL,
     `qty` INTEGER NOT NULL,
-    `rate` DECIMAL(65, 30) NOT NULL,
-    `price` DECIMAL(65, 30) NOT NULL,
-    `markup` INTEGER NOT NULL,
-    `subtotal` DECIMAL(65, 30) NOT NULL,
-    `netProfit` DECIMAL(65, 30) NOT NULL,
-    `markupD` DECIMAL(65, 30) NOT NULL,
-    `netProfitD` DECIMAL(65, 30) NOT NULL,
+    `rate` DECIMAL(12, 4) NOT NULL,
+    `price` DECIMAL(12, 2) NOT NULL,
+    `markup` DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    `subtotal` DECIMAL(12, 2) NOT NULL,
+    `netProfit` DECIMAL(12, 4) NOT NULL,
+    `dealerMarkup` DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    `netProfitD` DECIMAL(12, 2) NOT NULL,
 
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -172,13 +208,25 @@ CREATE TABLE `Order` (
     `number` VARCHAR(191) NOT NULL,
     `date` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `units` INTEGER NOT NULL,
-    `amount` DECIMAL(65, 30) NOT NULL,
+    `amount` DECIMAL(12, 2) NOT NULL,
     `idEst` INTEGER NOT NULL,
     `statusId` INTEGER NOT NULL,
     `userId` INTEGER NOT NULL,
 
     UNIQUE INDEX `Order_number_key`(`number`),
     UNIQUE INDEX `Order_idEst_key`(`idEst`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE `Notification` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `message` VARCHAR(191) NOT NULL,
+    `isRead` BOOLEAN NOT NULL DEFAULT false,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `recipientId` INTEGER NOT NULL,
+
+    INDEX `Notification_recipientId_idx`(`recipientId`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -202,6 +250,21 @@ ALTER TABLE `sys_conf` ADD CONSTRAINT `sys_conf_idSystem_fkey` FOREIGN KEY (`idS
 
 -- AddForeignKey
 ALTER TABLE `sys_conf` ADD CONSTRAINT `sys_conf_idConfig_fkey` FOREIGN KEY (`idConfig`) REFERENCES `Config`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `pricing_rules` ADD CONSTRAINT `pricing_rules_idBrand_fkey` FOREIGN KEY (`idBrand`) REFERENCES `Brand`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `pricing_rules` ADD CONSTRAINT `pricing_rules_idProduct_fkey` FOREIGN KEY (`idProduct`) REFERENCES `Product`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `pricing_rules` ADD CONSTRAINT `pricing_rules_idSystem_fkey` FOREIGN KEY (`idSystem`) REFERENCES `System`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `pricing_rules` ADD CONSTRAINT `pricing_rules_idConfig_fkey` FOREIGN KEY (`idConfig`) REFERENCES `Config`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `pricing_rules` ADD CONSTRAINT `pricing_rules_idCrystal_fkey` FOREIGN KEY (`idCrystal`) REFERENCES `Crystal`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `Estimate` ADD CONSTRAINT `Estimate_idUser_fkey` FOREIGN KEY (`idUser`) REFERENCES `User`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -241,3 +304,6 @@ ALTER TABLE `Order` ADD CONSTRAINT `Order_statusId_fkey` FOREIGN KEY (`statusId`
 
 -- AddForeignKey
 ALTER TABLE `Order` ADD CONSTRAINT `Order_userId_fkey` FOREIGN KEY (`userId`) REFERENCES `User`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `Notification` ADD CONSTRAINT `Notification_recipientId_fkey` FOREIGN KEY (`recipientId`) REFERENCES `User`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;

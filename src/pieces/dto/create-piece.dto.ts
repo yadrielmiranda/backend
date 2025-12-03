@@ -1,4 +1,4 @@
-import { IsBoolean, IsNotEmpty, IsNumber, IsString, IsOptional, IsInt } from "class-validator";
+import { IsBoolean, IsNotEmpty, IsNumber, IsString, IsOptional, IsInt, IsNumberString } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
 export class CreatePieceDto {
@@ -8,8 +8,11 @@ export class CreatePieceDto {
     @ApiProperty() @IsInt() @IsNotEmpty() idSyst: number;
     @ApiProperty() @IsInt() @IsNotEmpty() idConf: number;
     @ApiProperty() @IsInt() @IsNotEmpty() idFC: number;
-    @ApiProperty() @IsString() @IsNotEmpty() width: string;
-    @ApiProperty() @IsString() @IsNotEmpty() height:string;
+    @ApiPropertyOptional() @IsOptional() @IsNumberString() width?: string;
+    @ApiPropertyOptional() @IsOptional() @IsNumberString() height?: string;
+    @ApiPropertyOptional() @IsOptional() @IsNumberString() heightLeft?: string;
+    @ApiPropertyOptional() @IsOptional() @IsNumberString() heightRight?: string;
+    @ApiPropertyOptional() @IsOptional() @IsNumberString() legHeight?: string;
     @ApiProperty() @IsInt() @IsNotEmpty() idCryst: number;
     @ApiProperty() @IsInt() @IsNotEmpty() idTint: number;
     @ApiProperty() @IsBoolean() privacy: boolean; 

@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsNumber, IsString } from "class-validator";
+import { IsBoolean, IsNotEmpty, IsNumber, IsOptional, IsString } from "class-validator";
 
 export class CreateConfigDto {
 
@@ -9,4 +9,10 @@ export class CreateConfigDto {
     @IsNumber()
     @IsNotEmpty()
     idProduct: number;
+
+    @IsOptional() @IsBoolean() requiresWidth?: boolean;
+    @IsOptional() @IsBoolean() requiresHeight?: boolean;
+    @IsOptional() @IsBoolean() requiresHeightLeft?: boolean;
+    @IsOptional() @IsBoolean() requiresHeightRight?: boolean;
+    @IsOptional() @IsBoolean() requiresLegHeight?: boolean;
 }

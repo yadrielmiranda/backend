@@ -22,20 +22,20 @@ model Role {
 }
 
 model User {
-  id             Int        @id @default(autoincrement())
-  username       String     @unique
+  id             Int            @id @default(autoincrement())
+  username       String         @unique
   firstName      String
   lastName       String
-  email          String     @unique
-  phone          String     @unique
+  email          String         @unique
+  phone          String         @unique
   password       String
   address        String
-  markupOverride Decimal?   @db.Decimal(10, 4) // Total 10 dígitos, 4 decimales
-  role           Role       @relation(fields: [idRole], references: [id])
+  markupOverride Decimal?       @db.Decimal(10, 4) // Total 10 dígitos, 4 decimales
+  role           Role           @relation(fields: [idRole], references: [id])
   idRole         Int
   estimates      Estimate[]
   orders         Order[]
-  notifications Notification[]
+  notifications  Notification[]
 }
 
 // =======================================
@@ -71,9 +71,9 @@ model BrandProduct {
 }
 
 model System {
-  id           Int          @id @default(autoincrement())
+  id           Int           @id @default(autoincrement())
   name         String
-  brandProduct BrandProduct @relation(fields: [idBrand, idProduct], references: [idBrand, idProduct])
+  brandProduct BrandProduct  @relation(fields: [idBrand, idProduct], references: [idBrand, idProduct])
   idBrand      Int
   idProduct    Int
   sysconfs     SysConf[]
@@ -82,20 +82,27 @@ model System {
 }
 
 model Config {
-  id           Int           @id @default(autoincrement())
-  conf         String
-  prod         Product       @relation(fields: [idProduct], references: [id])
-  idProduct    Int
-  sysconfs     SysConf[]
-  pieces       Piece[]
-  pricingRules PricingRule[]
+  id                  Int           @id @default(autoincrement())
+  conf                String
+  prod                Product       @relation(fields: [idProduct], references: [id])
+  idProduct           Int
+  sysconfs            SysConf[]
+  pieces              Piece[]
+  pricingRules        PricingRule[]
+  // Indican qué dimensiones son REQUERIDAS por esta configuración
+  requiresWidth       Boolean       @default(false)
+  requiresHeight      Boolean       @default(false)
+  requiresHeightLeft  Boolean       @default(false)
+  requiresHeightRight Boolean       @default(false)
+  requiresLegHeight   Boolean       @default(false)
 }
 
 model SysConf {
-  system   System @relation(fields: [idSystem], references: [id])
-  idSystem Int
-  config   Config @relation(fields: [idConfig], references: [id])
-  idConfig Int
+  system            System            @relation(fields: [idSystem], references: [id])
+  idSystem          Int
+  config            Config            @relation(fields: [idConfig], references: [id])
+  idConfig          Int
+  dimensionPolicies DimensionPolicy[] @relation("SysConfDimensionPolicies")
 
   @@id([idSystem, idConfig])
   @@map("sys_conf")
@@ -108,10 +115,11 @@ model FrameColor {
 }
 
 model Crystal {
-  id           Int           @id @default(autoincrement())
-  glass        String
-  pieces       Piece[]
-  pricingRules PricingRule[]
+  id                Int               @id @default(autoincrement())
+  glass             String
+  pieces            Piece[]
+  pricingRules      PricingRule[]
+  dimensionPolicies DimensionPolicy[] @relation("CrystalDimensionPolicies")
 }
 
 model Tint {
@@ -131,7 +139,7 @@ model Coating {
 // ==================================================
 
 enum GlobalParameterKey {
-  SALES_TAX          // Impuesto sobre ventas de Florida  
+  SALES_TAX // Impuesto sobre ventas de Florida  
   // Se pueden añadir más claves aquí en el futuro
 }
 
@@ -140,7 +148,7 @@ model GlobalParameter {
   key         GlobalParameterKey @unique
   value       Decimal            @db.Decimal(10, 4) // Usar Decimal para valores financieros
   description String?
-  unit        String?            // Útil para aclarar qué es el valor (ej. "%", "USD")
+  unit        String? // Útil para aclarar qué es el valor (ej. "%", "USD")
   updatedAt   DateTime           @updatedAt
 }
 
@@ -171,60 +179,63 @@ model PricingRule {
 // =======================================
 
 model Estimate {
-  id         Int      @id @default(autoincrement())
-  number     String   @unique
-  name       String
-  date       DateTime @default(now())
-  units      Int
-  rateT      Decimal  @db.Decimal(12, 4)
-  priceT     Decimal  @db.Decimal(12, 2)
-  netProfit  Decimal  @db.Decimal(12, 4)
-  taxRate    Decimal  @default(0) @db.Decimal(10, 4) // La tasa de impuesto que aplicaste (ej. 0.07).
-  taxAmount  Decimal  @default(0) @db.Decimal(12, 2) // El monto del impuesto calculado sobre priceT.
-  totalPayable  Decimal  @default(0) @db.Decimal(12, 2) // El total que te deben pagar a ti (priceT + taxAmount).
-  total      Decimal  @db.Decimal(12, 2)
-  netProfitD Decimal  @db.Decimal(12, 2)
-  user       User     @relation(fields: [idUser], references: [id])
-  idUser     Int
-  active     Boolean
-  pieces     Piece[]
-  order      Order?
+  id           Int      @id @default(autoincrement())
+  number       String   @unique
+  name         String
+  date         DateTime @default(now())
+  units        Int
+  rateT        Decimal  @db.Decimal(12, 4)
+  priceT       Decimal  @db.Decimal(12, 2)
+  netProfit    Decimal  @db.Decimal(12, 4)
+  taxRate      Decimal  @default(0) @db.Decimal(10, 4) // La tasa de impuesto que aplicaste (ej. 0.07).
+  taxAmount    Decimal  @default(0) @db.Decimal(12, 2) // El monto del impuesto calculado sobre priceT.
+  totalPayable Decimal  @default(0) @db.Decimal(12, 2) // El total que te deben pagar a ti (priceT + taxAmount).
+  total        Decimal  @db.Decimal(12, 2)
+  netProfitD   Decimal  @db.Decimal(12, 2)
+  user         User     @relation(fields: [idUser], references: [id])
+  idUser       Int
+  active       Boolean
+  pieces       Piece[]
+  order        Order?
 }
 
 model Piece {
-  id         Int        @id @default(autoincrement())
-  estim      Estimate   @relation(fields: [idEst], references: [id])
-  idEst      Int
-  mark       String
-  prod       Product    @relation(fields: [idProd], references: [id])
-  idProd     Int
-  bran       Brand      @relation(fields: [idBrand], references: [id])
-  idBrand    Int
-  syst       System     @relation(fields: [idSyst], references: [id])
-  idSyst     Int
-  conf       Config     @relation(fields: [idConf], references: [id])
-  idConf     Int
-  fColor     FrameColor @relation(fields: [idFC], references: [id])
-  idFC       Int
-  width      String
-  height     String
-  cryst      Crystal    @relation(fields: [idCryst], references: [id])
-  idCryst    Int
-  tin        Tint       @relation(fields: [idTint], references: [id])
-  idTint     Int
-  privacy    Boolean
-  coat       Coating    @relation(fields: [idCoat], references: [id])
-  idCoat     Int
-  screen     Boolean
-  muntin     Boolean
-  qty        Int
-  rate       Decimal    @db.Decimal(12, 4)
-  price      Decimal    @db.Decimal(12, 2)
-  markup     Decimal  @default(0) @db.Decimal(10, 4)
-  subtotal   Decimal    @db.Decimal(12, 2)
-  netProfit  Decimal    @db.Decimal(12, 4)
-  dealerMarkup Decimal @default(0) @db.Decimal(10, 4)
-  netProfitD Decimal    @db.Decimal(12, 2)
+  id           Int        @id @default(autoincrement())
+  estim        Estimate   @relation(fields: [idEst], references: [id])
+  idEst        Int
+  mark         String
+  prod         Product    @relation(fields: [idProd], references: [id])
+  idProd       Int
+  bran         Brand      @relation(fields: [idBrand], references: [id])
+  idBrand      Int
+  syst         System     @relation(fields: [idSyst], references: [id])
+  idSyst       Int
+  conf         Config     @relation(fields: [idConf], references: [id])
+  idConf       Int
+  fColor       FrameColor @relation(fields: [idFC], references: [id])
+  idFC         Int
+  width        Decimal?   @db.Decimal(10, 4)
+  height       Decimal?   @db.Decimal(10, 4)
+  heightLeft   Decimal?   @db.Decimal(10, 4)
+  heightRight  Decimal?   @db.Decimal(10, 4)
+  legHeight    Decimal?   @db.Decimal(10, 4)
+  cryst        Crystal    @relation(fields: [idCryst], references: [id])
+  idCryst      Int
+  tin          Tint       @relation(fields: [idTint], references: [id])
+  idTint       Int
+  privacy      Boolean
+  coat         Coating    @relation(fields: [idCoat], references: [id])
+  idCoat       Int
+  screen       Boolean
+  muntin       Boolean
+  qty          Int
+  rate         Decimal    @db.Decimal(12, 4)
+  price        Decimal    @db.Decimal(12, 2)
+  markup       Decimal    @default(0) @db.Decimal(10, 4)
+  subtotal     Decimal    @db.Decimal(12, 2)
+  netProfit    Decimal    @db.Decimal(12, 4)
+  dealerMarkup Decimal    @default(0) @db.Decimal(10, 4)
+  netProfitD   Decimal    @db.Decimal(12, 2)
 }
 
 model OrderStatus {
@@ -251,14 +262,72 @@ model Order {
 //   Modelo de Notificaciones
 // =======================================
 model Notification {
-  id          Int      @id @default(autoincrement())
-  message     String
-  isRead      Boolean  @default(false)
-  createdAt   DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  message   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
 
   // La única relación necesaria es con el usuario que recibe la notificación
-  recipient   User     @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  recipient   User @relation(fields: [recipientId], references: [id], onDelete: Cascade)
   recipientId Int
 
   @@index([recipientId])
 }
+
+enum DimensionSizeBasis {
+  FRAME
+  DLO
+}
+
+enum DimensionRounding {
+  ROUND_UP_TO_NEXT
+  NEAREST
+}
+
+model DimensionPolicy {
+  id Int @id @default(autoincrement())
+
+  // 🔗 Referencia a SysConf (PK compuesta)
+  idSystem Int
+  idConfig Int
+  sysConf  SysConf @relation("SysConfDimensionPolicies", fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
+
+  // 🔗 Referencia a Crystal (Int en tu esquema)
+  idCrystal Int
+  crystal   Crystal @relation("CrystalDimensionPolicies", fields: [idCrystal], references: [id], onDelete: Restrict)
+
+  // Parámetros de interpretación de la tabla
+  sizeBasis    DimensionSizeBasis @default(FRAME)
+  roundingRule DimensionRounding  @default(ROUND_UP_TO_NEXT)
+  notes        String?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rules DimensionRule[]
+
+  // Una política por combinación System+Config+Crystal
+  @@unique([idSystem, idConfig, idCrystal], map: "uq_policy_sysconf_crystal")
+  @@map("dimension_policy")
+}
+
+model DimensionRule {
+  id        Int      @id @default(autoincrement())
+  idPolicy  Int
+
+  widthIn   Decimal
+  heightIn  Decimal
+  dpPosPsf  Decimal
+  dpNegPsf  Decimal
+  screws    Int
+
+  note      String?  @db.VarChar(255)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  policy DimensionPolicy @relation(fields: [idPolicy], references: [id], onDelete: Cascade)
+
+  @@index([idPolicy, widthIn, heightIn], map: "idx_rule_policy_dims")
+}
+

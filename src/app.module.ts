@@ -19,10 +19,11 @@ import { OrdersModule } from './orders/orders.module';
 import { PricingRulesModule } from './pricing-rules/pricing-rules.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { GlobalParametersModule } from './global-parameters/global-parameters.module';
+import { DimensionPoliciesModule } from './dimension-policies/dimension-policies.module';
 
 
 @Module({
-  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, ConfigSModule, CoatingModule, CrystalsModule, TintsModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule, RolesModule, OrdersModule, PricingRulesModule, NotificationsModule, GlobalParametersModule],
+  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, ConfigSModule, CoatingModule, CrystalsModule, TintsModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule, RolesModule, OrdersModule, PricingRulesModule, NotificationsModule, GlobalParametersModule, DimensionPoliciesModule],
   controllers: [AppController],
   providers: [AppService],
 })
