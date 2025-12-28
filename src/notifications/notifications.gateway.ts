@@ -5,55 +5,94 @@ import {
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import * as cookie from 'cookie';
+import { JwtService } from '@nestjs/jwt';
 
-// Definimos los orígenes permitidos aquí, igual que en tu main.ts
-const allowedOrigins = [
-  'http://localhost:3000',
-  'http://10.0.0.4:3000',
-];
+type JwtPayload = { sub?: string | number };
 
 @WebSocketGateway({
   cors: {
     origin: (origin, callback) => {
-      // Esta función comprueba si el origen de la conexión está en nuestra lista permitida
-      if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-        callback(null, true); // Permitir conexión
-      } else {
-        callback(new Error('Origin not allowed by CORS')); // Bloquear conexión
-      }
+      const allowedOrigins = ['http://localhost:3000', 'http://10.0.0.4:3000'];
+      if (!origin || allowedOrigins.includes(origin)) callback(null, true);
+      else callback(new Error('Origin not allowed by CORS'));
     },
     credentials: true,
   },
 })
-export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class NotificationsGateway
+  implements OnGatewayConnection, OnGatewayDisconnect
+{
   @WebSocketServer()
   server: Server;
 
-  private userSocketMap = new Map<number, string>();
+  constructor(private jwtService: JwtService) {}
 
-  handleConnection(client: Socket) {
-    const userId = Number(client.handshake.query.userId);
-    if (userId) {
-      console.log(`[WS] Client connected: ${client.id}, UserID: ${userId}`);
-      this.userSocketMap.set(userId, client.id);
+  // ✅ PRO: múltiples sockets por usuario
+  private userSockets = new Map<number, Set<string>>();
+
+  private addSocket(userId: number, socketId: string) {
+    const set = this.userSockets.get(userId) ?? new Set<string>();
+    set.add(socketId);
+    this.userSockets.set(userId, set);
+  }
+
+  private removeSocket(userId: number, socketId: string) {
+    const set = this.userSockets.get(userId);
+    if (!set) return;
+    set.delete(socketId);
+    if (set.size === 0) this.userSockets.delete(userId);
+  }
+
+  private async authenticate(client: Socket): Promise<number | null> {
+    try {
+      const rawCookie = client.handshake.headers.cookie || '';
+      const parsed = cookie.parse(rawCookie);
+      const token = parsed['access_token'];
+      if (!token) return null;
+
+      // ✅ verifica con el mismo secret del JwtModule (Config -> JWT_SECRET_KEY)
+      const payload = await this.jwtService.verifyAsync<JwtPayload>(token, {
+        ignoreExpiration: false,
+      });
+
+      const userId =
+        typeof payload.sub === 'string' ? Number(payload.sub) : payload.sub;
+
+      if (!Number.isFinite(userId)) return null;
+      return userId as number;
+    } catch {
+      return null;
     }
+  }
+
+  async handleConnection(client: Socket) {
+    const userId = await this.authenticate(client);
+    if (!userId) {
+      client.disconnect(true);
+      return;
+    }
+
+    (client.data as any).userId = userId;
+
+    this.addSocket(userId, client.id);
+    console.log(`[WS] Connected socket=${client.id} userId=${userId}`);
   }
 
   handleDisconnect(client: Socket) {
-    const userId = Number(client.handshake.query.userId);
-    if (userId && this.userSocketMap.get(userId) === client.id) {
-      console.log(`[WS] Client disconnected: ${client.id}, UserID: ${userId}`);
-      this.userSocketMap.delete(userId);
-    }
+    const userId = (client.data as any)?.userId as number | undefined;
+    if (!userId) return;
+
+    this.removeSocket(userId, client.id);
+    console.log(`[WS] Disconnected socket=${client.id} userId=${userId}`);
   }
 
   sendNotificationToUser(userId: number, payload: any) {
-    const socketId = this.userSocketMap.get(userId);
-    if (socketId) {
+    const sockets = this.userSockets.get(userId);
+    if (!sockets || sockets.size === 0) return;
+
+    for (const socketId of sockets) {
       this.server.to(socketId).emit('new_notification', payload);
-      console.log(`[WS] Sent notification to UserID: ${userId}`);
-    } else {
-      console.log(`[WS] User ${userId} is not connected. Notification is saved in DB.`);
     }
   }
 }

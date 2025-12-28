@@ -1,7 +1,7 @@
-import { IsInt, IsNotEmpty } from 'class-validator';
+import { IsInt, Min } from 'class-validator';
 
 export class UpdateOrderDto {
   @IsInt()
-  @IsNotEmpty()
+  @Min(1)
   statusId: number;
 }

@@ -4,19 +4,13 @@ import { PrismaService } from 'src/prisma/prisma.service';
 
 @Injectable()
 export class CrystalService {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
-  async crystal(
-    crystalWhereUniqueInput: Prisma.CrystalWhereUniqueInput
-  ): Promise<Crystal> {
-    const crystal = await this.prisma.crystal.findUnique({
-      where: crystalWhereUniqueInput,
-    });
+  async crystal(where: Prisma.CrystalWhereUniqueInput): Promise<Crystal> {
+    const crystal = await this.prisma.crystal.findUnique({ where });
 
     if (!crystal) {
-      throw new NotFoundException(
-        `Crystal with ID #${crystalWhereUniqueInput.id} not found`,
-      );
+      throw new NotFoundException(`Crystal with ID #${where.id} not found.`);
     }
     return crystal;
   }
@@ -29,19 +23,11 @@ export class CrystalService {
     orderBy?: Prisma.CrystalOrderByWithRelationInput;
   }): Promise<Crystal[]> {
     const { skip, take, cursor, where, orderBy } = params;
-    return this.prisma.crystal.findMany({
-      skip,
-      take,
-      cursor,
-      where,
-      orderBy,
-    });
+    return this.prisma.crystal.findMany({ skip, take, cursor, where, orderBy });
   }
 
   async createCrystal(data: Prisma.CrystalCreateInput): Promise<Crystal> {
-    return this.prisma.crystal.create({
-      data,
-    });
+    return this.prisma.crystal.create({ data });
   }
 
   async updateCrystal(params: {
@@ -49,23 +35,25 @@ export class CrystalService {
     data: Prisma.CrystalUpdateInput;
   }): Promise<Crystal> {
     const { where, data } = params;
+
     try {
-      return await this.prisma.crystal.update({
-        data,
-        where,
-      });
-    } catch (error) {
-      throw new NotFoundException(`Crystal with ID #${where.id} not found`);
+      return await this.prisma.crystal.update({ data, where });
+    } catch (e: any) {
+      if (e?.code === 'P2025') {
+        throw new NotFoundException(`Crystal with ID #${where.id} not found.`);
+      }
+      throw e;
     }
   }
 
   async deleteCrystal(where: Prisma.CrystalWhereUniqueInput): Promise<Crystal> {
     try {
-      return await this.prisma.crystal.delete({
-        where,
-      });
-    } catch (error) {
-      throw new NotFoundException(`Crystal with ID #${where.id} not found`);
+      return await this.prisma.crystal.delete({ where });
+    } catch (e: any) {
+      if (e?.code === 'P2025') {
+        throw new NotFoundException(`Crystal with ID #${where.id} not found.`);
+      }
+      throw e;
     }
   }
 }

@@ -74,15 +74,23 @@ export class ProductsService {
    * Obtiene todos los productos e incluye las marcas asociadas a cada uno.
    * Esto es para la precarga de datos en el frontend.
    */
-  async findAllWithBrands(): Promise<Product[]> {
-    return this.prisma.product.findMany({
-      include: {
-        brandProducts: {
-          include: {
-            brand: true, // Incluye el objeto completo de la marca
-          },
-        },
+  async findAllWithBrands(opts?: { take?: number; skip?: number }): Promise<Product[]> {
+  const takeRaw = opts?.take ?? 100;
+  const skipRaw = opts?.skip ?? 0;
+
+  const take = Number.isFinite(takeRaw) ? Math.min(Math.max(takeRaw, 1), 200) : 100;
+  const skip = Number.isFinite(skipRaw) ? Math.max(skipRaw, 0) : 0;
+
+  return this.prisma.product.findMany({
+    include: {
+      brandProducts: {
+        include: { brand: true },
       },
-    });
-  }
+    },
+    orderBy: { id: 'asc' },
+    take,
+    skip,
+  });
+}
+
 }

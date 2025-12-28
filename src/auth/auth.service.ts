@@ -9,7 +9,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { UsersService } from 'src/users/users.service';
 import { RegisterUserDto } from './dto/register-user.dto';
 import * as bcrypt from 'bcrypt';
-import { User, Prisma } from '@prisma/client'; 
+import { Prisma } from '@prisma/client';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 
@@ -25,41 +25,39 @@ export class AuthService {
     identifier: string,
     pass: string,
   ): Promise<{ access_token: string }> {
-    // Define el tipo de payload esperado para el usuario con el rol incluido
-    type UserWithRolePayload = Prisma.UserGetPayload<{
-      include: { role: true };
-    }>;
+    // 🔐 Este método necesita password => usa findOneByIdentifier (auth select)
+    const user = await this.usersService.findOneByIdentifier(identifier);
 
-    const user = (await this.usersService.findOneByIdentifier(identifier)) as UserWithRolePayload;
-
-    if (!user) {
-      throw new UnauthorizedException('Credenciales inválidas.');
-    }
+    if (!user) throw new UnauthorizedException('Credenciales inválidas.');
 
     const isPasswordMatching = await bcrypt.compare(pass, user.password);
-    if (!isPasswordMatching) {
+    if (!isPasswordMatching)
       throw new UnauthorizedException('Credenciales inválidas.');
-    }
 
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, ...result } = user;
-    // Ahora 'user.role' es reconocido correctamente por TypeScript
-    const payload = { sub: user.id, username: user.username, firstName: user.firstName, lastName: user.lastName, email: user.email, role: user.role};
+    // ✅ payload simple: role como string (tu RolesGuard ya soporta string)
+    const payload = {
+      sub: user.id,
+      username: user.username,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      role: user.role?.name,
+    };
 
     return {
       access_token: await this.jwtService.signAsync(payload),
     };
   }
 
-  async registerUser(registerUserDto: RegisterUserDto): Promise<User> {
+  async registerUser(registerUserDto: RegisterUserDto) {
     const { password, ...userData } = registerUserDto;
-
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
     const clientRole = await this.prisma.role.findUnique({
       where: { name: 'client' },
+      select: { id: true },
     });
+
     if (!clientRole) {
       throw new InternalServerErrorException(
         "El rol por defecto 'client' no fue encontrado.",
@@ -67,53 +65,71 @@ export class AuthService {
     }
 
     try {
-      const user = await this.prisma.user.create({
+      // ✅ SAFE SELECT: nunca devolvemos password aquí
+      return await this.prisma.user.create({
         data: {
           ...userData,
           password: hashedPassword,
+          role: { connect: { id: clientRole.id } },
+        },
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          street: true,
+          city: true,
+          state: true,
+          postalCode: true,
+          markupOverride: true,
+          isTaxExempt: true,
+          idRole: true,
           role: {
-            connect: { id: clientRole.id },
+            select: { id: true, name: true, markup: true },
           },
         },
-        include: {
-          role: true, // Incluye el rol en la respuesta
-        },
       });
-      return user;
-    } catch (error) {
-      if (error.code === 'P2002') {
-        throw new ConflictException('El nombre de usuario o el email ya existen.');
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        throw new ConflictException(
+          'El nombre de usuario o el email ya existen.',
+        );
       }
       throw new InternalServerErrorException('No se pudo crear el usuario.');
     }
   }
 
-   async updateProfile(userId: number, data: UpdateProfileDto): Promise<User> {
-    // Reutiliza la lógica de tu UsersService para mantener todo consistente
+  async updateProfile(userId: number, data: UpdateProfileDto) {
+    // usersService.updateUser ya devuelve SAFE (sin password)
     return this.usersService.updateUser({
       where: { id: userId },
       data,
     });
   }
 
-  async changePassword(userId: number, changePasswordDto: ChangePasswordDto) {
-    const user = await this.usersService.user({ id: userId });
+    async changePassword(userId: number, changePasswordDto: ChangePasswordDto) {
+  const user = await this.usersService.userWithPassword({ id: userId });
 
-    const isPasswordMatching = await bcrypt.compare(
-      changePasswordDto.currentPassword,
-      user.password,
-    );
+  const isPasswordMatching = await bcrypt.compare(
+    changePasswordDto.currentPassword,
+    user.password,
+  );
 
-    if (!isPasswordMatching) {
-      throw new UnauthorizedException('La contraseña actual es incorrecta.');
-    }
-
-    // Reutilizamos la lógica de updateUser que ya hashea la contraseña
-    await this.usersService.updateUser({
-      where: { id: userId },
-      data: { password: changePasswordDto.newPassword },
-    });
-
-    return { message: 'Contraseña actualizada exitosamente.' };
+  if (!isPasswordMatching) {
+    throw new UnauthorizedException('La contraseña actual es incorrecta.');
   }
+
+  const hashed = await bcrypt.hash(changePasswordDto.newPassword, 10);
+
+  await this.usersService.updateUser({
+    where: { id: userId },
+    data: { password: hashed },
+  });
+
+  return { message: 'Contraseña actualizada exitosamente.' };
+}
+
+
 }

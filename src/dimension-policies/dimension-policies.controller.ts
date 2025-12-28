@@ -2,17 +2,21 @@ import { Controller, Get, Post, Patch, Delete, Param, Body, Query, ParseIntPipe 
 import { DimensionPoliciesService } from './dimension-policies.service';
 import { CreatePolicyDto, UpdatePolicyDto } from './dto/create-dimension-policy.dto';
 import { BulkUpsertRulesDto } from './dto/rule.dto';
+import { Roles } from 'src/auth/roles.decorator';
 
 @Controller('dimension-policies')
 export class DimensionPoliciesController {
   constructor(private svc: DimensionPoliciesService) {}
 
+  // 🔒 WRITE: solo admin
   @Post()
+  @Roles('admin')
   create(@Body() dto: CreatePolicyDto) {
     return this.svc.createPolicy(dto);
   }
 
-  @Get()
+  // ✅ READ: todos los usuarios autenticados
+  @Get()  
   list(
     @Query('idSystem') idSystem?: number,
     @Query('idConfig') idConfig?: number,
@@ -27,29 +31,8 @@ export class DimensionPoliciesController {
     });
   }
 
-  // 👇 Faltaba este endpoint (lo usa tu frontend)
-  @Get(':id')
-  getOne(@Param('id', ParseIntPipe) id: number) {
-    return this.svc.getPolicy(id);
-  }
-
-  @Patch(':id')
-  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdatePolicyDto) {
-    return this.svc.updatePolicy(id, dto);
-  }
-
-  @Delete(':id')
-  del(@Param('id', ParseIntPipe) id: number) {
-    return this.svc.deletePolicy(id);
-  }
-
-  @Post(':id/rules:bulk-upsert')
-  bulkUpsert(@Param('id', ParseIntPipe) id: number, @Body() dto: BulkUpsertRulesDto) {
-    return this.svc.bulkUpsertRules(id, dto);
-  }
-
-  // Preview/validate para UI Admin o para estimador
-  @Get('preview')
+  // ✅ READ: todos los usuarios autenticados
+  @Get('preview')  
   preview(
     @Query('idSystem', ParseIntPipe) idSystem: number,
     @Query('idConfig', ParseIntPipe) idConfig: number,
@@ -64,5 +47,32 @@ export class DimensionPoliciesController {
       widthIn: Number(widthIn),
       heightIn: Number(heightIn),
     });
+  }
+
+  // ✅ READ: todos los usuarios autenticados
+  @Get(':id')  
+  getOne(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.getPolicy(id);
+  }
+
+  // 🔒 WRITE: solo admin
+  @Patch(':id')
+  @Roles('admin')
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdatePolicyDto) {
+    return this.svc.updatePolicy(id, dto);
+  }
+
+  // 🔒 WRITE: solo admin
+  @Delete(':id')
+  @Roles('admin')
+  del(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.deletePolicy(id);
+  }
+
+  // 🔒 WRITE: solo admin
+  @Post(':id/rules/bulk-upsert')
+  @Roles('admin')
+  bulkUpsert(@Param('id', ParseIntPipe) id: number, @Body() dto: BulkUpsertRulesDto) {
+    return this.svc.bulkUpsertRules(id, dto);
   }
 }

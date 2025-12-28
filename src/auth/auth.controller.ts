@@ -15,14 +15,20 @@ import { LoginDto } from './dto/login.dto';
 import { Response, Request } from 'express';
 import { RegisterUserDto } from './dto/register-user.dto';
 import { JwtAuthGuard } from './guards/auth/auth.guard';
-import { User } from '@prisma/client';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { Public } from 'src/auth/public.decorator';
+import { AuthUser } from './types/auth-user.type';
+import { UsersService, UserSafe } from 'src/users/users.service'; // ✅ NEW
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly usersService: UsersService, // ✅ NEW
+  ) {}
 
+  @Public()
   @HttpCode(HttpStatus.OK)
   @Post('login')
   async login(
@@ -42,17 +48,18 @@ export class AuthController {
       path: '/',
     });
 
-    return {
-      message: 'Inicio de sesión exitoso',
-    };
+    return { message: 'Inicio de sesión exitoso' };
+  }
+
+  // ✅ AHORA DEVUELVE EL USER SAFE REAL (incluye role.id)
+  @UseGuards(JwtAuthGuard)
+  @Get('profile')
+  async getProfile(@Req() req: Request): Promise<UserSafe> {
+    const userId = (req.user as AuthUser).id;
+    return this.usersService.userSafe({ id: userId });
   }
 
   @UseGuards(JwtAuthGuard)
-  @Get('profile')
-  getProfile(@Req() req: Request) {
-    return req.user;
-  }
-
   @HttpCode(HttpStatus.OK)
   @Post('logout')
   async logout(@Res({ passthrough: true }) response: Response) {
@@ -67,23 +74,20 @@ export class AuthController {
     return { message: 'Sesión cerrada exitosamente' };
   }
 
+  @Public()
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
-  async register(@Body() registerUserDto: RegisterUserDto): Promise<Omit<User, 'password'>> {
-    const user = await this.authService.registerUser(registerUserDto);
-    // Excluimos la contraseña de la respuesta por seguridad.
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, ...result } = user;
-    return result;
+  async register(@Body() registerUserDto: RegisterUserDto) {
+    return this.authService.registerUser(registerUserDto);
   }
 
-    @UseGuards(JwtAuthGuard)
-    @Patch('profile')
+  @UseGuards(JwtAuthGuard)
+  @Patch('profile')
   async updateProfile(
     @Req() req: Request,
     @Body() updateProfileDto: UpdateProfileDto,
   ) {
-    const userId = req.user.id; // Obtiene el ID del usuario desde el token JWT
+    const userId = (req.user as AuthUser).id;
     return this.authService.updateProfile(userId, updateProfileDto);
   }
 
@@ -94,6 +98,7 @@ export class AuthController {
     @Req() req: Request,
     @Body() changePasswordDto: ChangePasswordDto,
   ) {
-    return this.authService.changePassword(req.user.id, changePasswordDto);
+    const userId = (req.user as AuthUser).id;
+    return this.authService.changePassword(userId, changePasswordDto);
   }
 }

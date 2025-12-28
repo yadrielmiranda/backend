@@ -4,36 +4,43 @@ import { Config, Prisma } from '@prisma/client';
 
 @Injectable()
 export class ConfigSService {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
-  async config(
-    configWhereUniqueInput: Prisma.ConfigWhereUniqueInput
-  ): Promise<Config> {
+  async config(where: Prisma.ConfigWhereUniqueInput): Promise<Config> {
     const config = await this.prisma.config.findUnique({
-      where: configWhereUniqueInput,
+      where,
+      include: { prod: true },
     });
 
     if (!config) {
-      throw new NotFoundException(`Config with ID #${configWhereUniqueInput.id} not found.`);
+      throw new NotFoundException(`Config with ID #${where.id} not found.`);
     }
     return config;
   }
 
   async configs(params: {
-    // ... tus parámetros ...
+    skip?: number;
+    take?: number;
+    cursor?: Prisma.ConfigWhereUniqueInput;
+    where?: Prisma.ConfigWhereInput;
+    orderBy?: Prisma.ConfigOrderByWithRelationInput;
   }): Promise<Config[]> {
-    // ... tu lógica findMany ...
+    const { skip, take, cursor, where, orderBy } = params;
+
     return this.prisma.config.findMany({
-      ...params,
-      include: {
-        prod: true,
-      },
+      skip,
+      take,
+      cursor,
+      where,
+      orderBy,
+      include: { prod: true },
     });
   }
 
   async createConfig(data: Prisma.ConfigCreateInput): Promise<Config> {
     return this.prisma.config.create({
       data,
+      include: { prod: true },
     });
   }
 
@@ -42,13 +49,18 @@ export class ConfigSService {
     data: Prisma.ConfigUpdateInput;
   }): Promise<Config> {
     const { where, data } = params;
+
     try {
       return await this.prisma.config.update({
         data,
         where,
+        include: { prod: true },
       });
-    } catch (error) {
-      throw new NotFoundException(`Config with ID #${where.id} not found.`);
+    } catch (e: any) {
+      if (e?.code === 'P2025') {
+        throw new NotFoundException(`Config with ID #${where.id} not found.`);
+      }
+      throw e;
     }
   }
 
@@ -57,24 +69,22 @@ export class ConfigSService {
       return await this.prisma.config.delete({
         where,
       });
-    } catch (error) {
-      throw new NotFoundException(`Config with ID #${where.id} not found.`);
+    } catch (e: any) {
+      if (e?.code === 'P2025') {
+        throw new NotFoundException(`Config with ID #${where.id} not found.`);
+      }
+      throw e;
     }
   }
 
-  
-  async getConfigWithProduct(
-    configWhereUniqueInput: Prisma.ConfigWhereUniqueInput
-  ): Promise<Config | null> {
+  async getConfigWithProduct(where: Prisma.ConfigWhereUniqueInput): Promise<Config> {
     const config = await this.prisma.config.findUnique({
-      where: configWhereUniqueInput,
-      include: {
-        prod: true,
-      },
+      where,
+      include: { prod: true },
     });
 
     if (!config) {
-        throw new NotFoundException(`Config with ID #${configWhereUniqueInput.id} not found.`);
+      throw new NotFoundException(`Config with ID #${where.id} not found.`);
     }
     return config;
   }

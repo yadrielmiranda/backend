@@ -6,127 +6,159 @@ import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 
+export type UserSafe = Omit<User, 'password'> & {
+  role: { id: number; name: string; markup: Prisma.Decimal };
+};
+
+type UserWithRoleAndPassword = Prisma.UserGetPayload<{
+  include: { role: true };
+}>;
+
 @Injectable()
 export class UsersService {
   constructor(private prisma: PrismaService) {}
 
-  async user(
+  // ✅ SELECT “safe”: NUNCA trae password
+  private readonly safeSelect = {
+    id: true,
+    username: true,
+    firstName: true,
+    lastName: true,
+    email: true,
+    phone: true,
+    street: true,
+    city: true,
+    state: true,
+    postalCode: true,
+    markupOverride: true,
+    isTaxExempt: true,
+    idRole: true,
+    role: true,
+  } satisfies Prisma.UserSelect;
+
+  // ------------------------------------------------------------
+  // ✅ Métodos SAFE (para controllers)
+  // ------------------------------------------------------------
+
+  async userSafe(
     userWhereUniqueInput: Prisma.UserWhereUniqueInput,
-  ): Promise<User | null> {
-    return this.prisma.user.findUnique({
+  ): Promise<UserSafe> {
+    const user = await this.prisma.user.findUnique({
       where: userWhereUniqueInput,
-      include: {
-        role: true,
-      },
+      select: this.safeSelect,
     });
+
+    if (!user) throw new NotFoundException(`User with ID #${userWhereUniqueInput.id} not found.`);
+    return user as UserSafe;
   }
 
-  async findOneByIdentifier(identifier: string): Promise<User | null> {
-    return this.prisma.user.findFirst({
-      where: {
-        OR: [{ username: identifier }, { email: identifier }],
-      },
-      include: {
-        role: true,
-      },
-    });
-  }
-
-  async users(params: {
+  async usersSafe(params: {
     skip?: number;
     take?: number;
     cursor?: Prisma.UserWhereUniqueInput;
     where?: Prisma.UserWhereInput;
     orderBy?: Prisma.UserOrderByWithRelationInput;
-  }): Promise<User[]> {
+  }): Promise<UserSafe[]> {
     const { skip, take, cursor, where, orderBy } = params;
-    return this.prisma.user.findMany({
+    const users = await this.prisma.user.findMany({
       skip,
       take,
       cursor,
       where,
       orderBy,
-      include: {
-        role: true,
-      },
+      select: this.safeSelect,
     });
+    return users as UserSafe[];
   }
 
-  async createUser(userData: CreateUserDto): Promise<User> {
-    const { idRole, ...restOfUserData } = userData;
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(
-      restOfUserData.password,
-      saltRounds,
-    );
-    const dataForPrisma: Prisma.UserCreateInput = {
-      ...restOfUserData,
-      password: hashedPassword,
-      role: {
-        connect: {
-          id: idRole,
-        },
+  async createUser(userData: CreateUserDto): Promise<UserSafe> {
+    const { idRole, ...rest } = userData;
+
+    const hashedPassword = await bcrypt.hash(rest.password, 10);
+
+    const created = await this.prisma.user.create({
+      data: {
+        ...rest,
+        password: hashedPassword,
+        role: { connect: { id: idRole } },
       },
-    };
-    return this.prisma.user.create({
-      data: dataForPrisma,
+      select: this.safeSelect,
     });
+
+    return created as UserSafe;
   }
 
   async updateUser(params: {
     where: Prisma.UserWhereUniqueInput;
     data: UpdateUserDto;
-  }): Promise<User> {
+  }): Promise<UserSafe> {
     const { where, data: userData } = params;
-    const { idRole, ...restOfUserData } = userData;
-    
-    // El objeto 'restOfUserData' ya contiene 'markupOverride' si se envió.
+    const { idRole, ...rest } = userData;
+
     const dataForPrisma: Prisma.UserUpdateInput = {
-      ...restOfUserData,
+      ...rest,
     };
 
-    if (restOfUserData.password) {
-      const saltRounds = 10;
-      dataForPrisma.password = await bcrypt.hash(
-        restOfUserData.password,
-        saltRounds,
-      );
-    }
-    if (idRole) {
-      dataForPrisma.role = {
-        connect: {
-          id: idRole,
-        },
-      };
+    if (rest.password) {
+      dataForPrisma.password = await bcrypt.hash(rest.password, 10);
     }
 
-    // Lógica explícita para manejar el 'markupOverride'.
-    // Si la propiedad 'markupOverride' existe en el DTO que recibimos...
+    if (idRole) {
+      dataForPrisma.role = { connect: { id: idRole } };
+    }
+
+    // Manejo explícito de markupOverride (si viene en el payload)
     if ('markupOverride' in userData) {
-      // ...la asignamos al payload que irá a Prisma.
-      // Si el valor es un número, se guarda. Si es 'null', Prisma borrará el valor.
       dataForPrisma.markupOverride = userData.markupOverride;
     }
 
     try {
-      return await this.prisma.user.update({
-        data: dataForPrisma,
+      const updated = await this.prisma.user.update({
         where,
+        data: dataForPrisma,
+        select: this.safeSelect,
       });
+
+      return updated as UserSafe;
     } catch (error) {
-      // Imprime el error en la consola del backend para depuración
-      console.error("Error updating user:", error);
+      console.error('Error updating user:', error);
       throw new NotFoundException(`User with ID #${where.id} not found or update failed.`);
     }
   }
 
-  async deleteUser(where: Prisma.UserWhereUniqueInput): Promise<User> {
+  async deleteUser(where: Prisma.UserWhereUniqueInput): Promise<UserSafe> {
     try {
-      return await this.prisma.user.delete({
+      const deleted = await this.prisma.user.delete({
         where,
+        select: this.safeSelect,
       });
+      return deleted as UserSafe;
     } catch (error) {
       throw new NotFoundException(`User with ID #${where.id} not found`);
     }
+  }
+
+  // ------------------------------------------------------------
+  // 🔐 Métodos INTERNOS (para Auth)
+  // ------------------------------------------------------------
+
+  // ✅ Necesario para cambiar contraseña (bcrypt.compare)
+  async userWithPassword(where: Prisma.UserWhereUniqueInput): Promise<UserWithRoleAndPassword> {
+    const user = await this.prisma.user.findUnique({
+      where,
+      include: { role: true },
+    });
+    if (!user) throw new NotFoundException(`User with ID #${where.id} not found.`);
+    return user;
+  }
+
+  // ✅ Necesario para login (trae password hash)
+  async findOneByIdentifier(identifier: string): Promise<UserWithRoleAndPassword | null> {
+    return this.prisma.user.findFirst({
+      where: {
+        OR: [{ username: identifier }, { email: identifier }],
+      },
+      include: { role: true },
+    });
   }
 }

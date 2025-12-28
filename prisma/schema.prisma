@@ -29,8 +29,12 @@ model User {
   email          String         @unique
   phone          String         @unique
   password       String
-  address        String
-  markupOverride Decimal?       @db.Decimal(10, 4) // Total 10 dígitos, 4 decimales
+  street         String  @db.VarChar(150)
+  city           String  @db.VarChar(100)
+  state          String  @db.VarChar(50)
+  postalCode     String  @db.VarChar(20)
+  markupOverride Decimal?       @db.Decimal(10, 4)
+  isTaxExempt    Boolean        @default(false)
   role           Role           @relation(fields: [idRole], references: [id])
   idRole         Int
   estimates      Estimate[]
@@ -179,63 +183,94 @@ model PricingRule {
 // =======================================
 
 model Estimate {
-  id           Int      @id @default(autoincrement())
-  number       String   @unique
-  name         String
-  date         DateTime @default(now())
-  units        Int
-  rateT        Decimal  @db.Decimal(12, 4)
-  priceT       Decimal  @db.Decimal(12, 2)
-  netProfit    Decimal  @db.Decimal(12, 4)
-  taxRate      Decimal  @default(0) @db.Decimal(10, 4) // La tasa de impuesto que aplicaste (ej. 0.07).
-  taxAmount    Decimal  @default(0) @db.Decimal(12, 2) // El monto del impuesto calculado sobre priceT.
-  totalPayable Decimal  @default(0) @db.Decimal(12, 2) // El total que te deben pagar a ti (priceT + taxAmount).
-  total        Decimal  @db.Decimal(12, 2)
-  netProfitD   Decimal  @db.Decimal(12, 2)
-  user         User     @relation(fields: [idUser], references: [id])
-  idUser       Int
-  active       Boolean
-  pieces       Piece[]
-  order        Order?
+  id     Int      @id @default(autoincrement())
+  number String   @unique
+  name   String
+  date   DateTime @default(now())
+
+  // --- BASE ---
+  units Int // suma de qty de todas las piezas
+
+  // --- TÚ → DEALER O CLIENTE ---
+  rateT     Decimal @db.Decimal(12, 2) // suma(rate * qty)
+  priceT    Decimal @db.Decimal(12, 2) // suma(price * qty)
+  netProfit Decimal @db.Decimal(12, 2) // priceT - rateT
+
+  // --- TUS TAXES (factory → dealer/cliente) ---
+  taxRate   Decimal @default(0) @db.Decimal(10, 4)
+  taxAmount Decimal @default(0) @db.Decimal(12, 2)
+
+  // Lo que tú recibes
+  totalPayable Decimal @default(0) @db.Decimal(12, 2) // priceT + taxAmount
+
+  // --- DEALER → CUSTOMER ---
+  customerPriceT       Decimal @default(0) @db.Decimal(12, 2) // suma(customerPrice * qty)
+  customerTaxRate      Decimal @default(0) @db.Decimal(10, 4)
+  customerTaxAmount    Decimal @default(0) @db.Decimal(12, 2)
+  customerTotalPayable Decimal @default(0) @db.Decimal(12, 2)
+
+  // --- GANANCIAS ---
+  netProfitD Decimal @default(0) @db.Decimal(12, 2) // dealer profit
+
+  // --- RELACIONES ---
+  user   User    @relation(fields: [idUser], references: [id])
+  idUser Int
+  active Boolean
+  pieces Piece[]
+  order  Order?
+
+  // --- CUSTOMER (dealer fills; not a relation) ---
+  customerFirstName  String? @db.VarChar(100)
+  customerLastName   String? @db.VarChar(100)
+  customerEmail      String? @db.VarChar(150)
+  customerPhone      String? @db.VarChar(30)
+  customerStreet     String? @db.VarChar(150)
+  customerCity       String? @db.VarChar(100)
+  customerState      String? @db.VarChar(50)
+  customerPostalCode String? @db.VarChar(20)
 }
 
 model Piece {
-  id           Int        @id @default(autoincrement())
-  estim        Estimate   @relation(fields: [idEst], references: [id])
-  idEst        Int
-  mark         String
-  prod         Product    @relation(fields: [idProd], references: [id])
-  idProd       Int
-  bran         Brand      @relation(fields: [idBrand], references: [id])
-  idBrand      Int
-  syst         System     @relation(fields: [idSyst], references: [id])
-  idSyst       Int
-  conf         Config     @relation(fields: [idConf], references: [id])
-  idConf       Int
-  fColor       FrameColor @relation(fields: [idFC], references: [id])
-  idFC         Int
-  width        Decimal?   @db.Decimal(10, 4)
-  height       Decimal?   @db.Decimal(10, 4)
-  heightLeft   Decimal?   @db.Decimal(10, 4)
-  heightRight  Decimal?   @db.Decimal(10, 4)
-  legHeight    Decimal?   @db.Decimal(10, 4)
-  cryst        Crystal    @relation(fields: [idCryst], references: [id])
-  idCryst      Int
-  tin          Tint       @relation(fields: [idTint], references: [id])
-  idTint       Int
-  privacy      Boolean
-  coat         Coating    @relation(fields: [idCoat], references: [id])
-  idCoat       Int
-  screen       Boolean
-  muntin       Boolean
-  qty          Int
-  rate         Decimal    @db.Decimal(12, 4)
-  price        Decimal    @db.Decimal(12, 2)
-  markup       Decimal    @default(0) @db.Decimal(10, 4)
-  subtotal     Decimal    @db.Decimal(12, 2)
-  netProfit    Decimal    @db.Decimal(12, 4)
-  dealerMarkup Decimal    @default(0) @db.Decimal(10, 4)
-  netProfitD   Decimal    @db.Decimal(12, 2)
+  id               Int        @id @default(autoincrement())
+  estim            Estimate   @relation(fields: [idEst], references: [id])
+  idEst            Int
+  mark             String
+  prod             Product    @relation(fields: [idProd], references: [id])
+  idProd           Int
+  bran             Brand      @relation(fields: [idBrand], references: [id])
+  idBrand          Int
+  syst             System     @relation(fields: [idSyst], references: [id])
+  idSyst           Int
+  conf             Config     @relation(fields: [idConf], references: [id])
+  idConf           Int
+  fColor           FrameColor @relation(fields: [idFC], references: [id])
+  idFC             Int
+  width            Decimal?   @db.Decimal(10, 3)
+  height           Decimal?   @db.Decimal(10, 3)
+  heightLeft       Decimal?   @db.Decimal(10, 3)
+  heightRight      Decimal?   @db.Decimal(10, 3)
+  legHeight        Decimal?   @db.Decimal(10, 3)
+  cryst            Crystal    @relation(fields: [idCryst], references: [id])
+  idCryst          Int
+  tin              Tint       @relation(fields: [idTint], references: [id])
+  idTint           Int
+  privacy          Boolean
+  coat             Coating    @relation(fields: [idCoat], references: [id])
+  idCoat           Int
+  dpPosPsf         Decimal?   @db.Decimal(10, 2)
+  dpNegPsf         Decimal?   @db.Decimal(10, 2)
+  screen           Boolean
+  muntin           Boolean
+  qty              Int
+  rate             Decimal    @db.Decimal(12, 2) // costo fábrica
+  markup           Decimal    @default(0) @db.Decimal(10, 4)
+  price            Decimal    @db.Decimal(12, 2) // tú → dealer/cliente
+  subtotal         Decimal    @db.Decimal(12, 2) // tú → dealer/cliente
+  netProfit        Decimal    @db.Decimal(12, 2) // tu ganancia
+  dealerMarkup     Decimal    @default(0) @db.Decimal(10, 4)
+  customerPrice    Decimal    @db.Decimal(12, 2) // dealer → cliente final
+  customerSubtotal Decimal    @db.Decimal(12, 2) // dealer → cliente final
+  netProfitD       Decimal    @db.Decimal(12, 2) // ganancia del dealer
 }
 
 model OrderStatus {
@@ -313,14 +348,15 @@ model DimensionPolicy {
 }
 
 model DimensionRule {
-  id        Int      @id @default(autoincrement())
-  idPolicy  Int
+  id       Int @id @default(autoincrement())
+  idPolicy Int
 
-  widthIn   Decimal
-  heightIn  Decimal
-  dpPosPsf  Decimal
-  dpNegPsf  Decimal
-  screws    Int
+  widthIn  Decimal @db.Decimal(10, 3)
+  heightIn Decimal @db.Decimal(10, 3)
+  dpPosPsf Decimal @db.Decimal(10, 2)
+  dpNegPsf Decimal @db.Decimal(10, 2)
+
+  screws Int
 
   note      String?  @db.VarChar(255)
   createdAt DateTime @default(now())
@@ -330,4 +366,3 @@ model DimensionRule {
 
   @@index([idPolicy, widthIn, heightIn], map: "idx_rule_policy_dims")
 }
-

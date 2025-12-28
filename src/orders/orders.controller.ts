@@ -1,47 +1,59 @@
-import { Controller, Post, Body, UseGuards, Req, Get, Param, ParseIntPipe, Patch } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  Req,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+} from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { JwtAuthGuard } from 'src/auth/guards/auth/auth.guard';
 import { Request } from 'express';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { Roles } from 'src/auth/roles.decorator';
-import { RolesGuard } from 'src/auth/guards/roles/roles.guard';
+import { AuthUser } from 'src/auth/types/auth-user.type';
 
-@UseGuards(JwtAuthGuard)
 @Controller('orders')
 export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
-
+  // Crear orden desde estimate (solo el dueño puede: validado en service)
   @Post()
-  create(@Body() createOrderDto: CreateOrderDto, @Req() req: Request) {
-    const user = req.user as { id: number };
-    return this.ordersService.createOrderFromEstimate(createOrderDto.estimateId, user.id);
+  create(@Body() dto: CreateOrderDto, @Req() req: Request) {
+    const user = req.user as AuthUser;
+    return this.ordersService.createOrderFromEstimate(dto.estimateId, user.id);
   }
 
-  // Endpoint para obtener todas las órdenes
-  @Get()
-  findAll() {
-    return this.ordersService.findAll();
-  }
-  
-  // Endpoint para obtener todos los estados de orden
+  // Estados (normalmente cualquiera autenticado puede leerlos)
   @Get('statuses')
   findAllStatuses() {
-      return this.ordersService.findAllStatuses();
+    return this.ordersService.findAllStatuses();
   }
 
-  // Endpoint para obtener una orden por ID
+  // ✅ admin/operator: todas
+  // ✅ client/dealer: solo las suyas
+  @Get()
+  findAll(@Req() req: Request) {
+    return this.ordersService.findAllForUser(req.user as AuthUser);
+  }
+
+  // ✅ admin/operator: cualquiera
+  // ✅ client/dealer: solo si es dueño
   @Get(':id')
-  findOne(@Param('id', ParseIntPipe) id: number) {
-    return this.ordersService.findOne(id);
+  findOne(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.ordersService.findOneForUser(id, req.user as AuthUser);
   }
 
-  // Endpoint para actualizar una orden
+  // 🔒 admin + operator pueden cambiar status
   @Patch(':id')
-  @Roles('admin') // <-- 3. Especifica que SOLO el rol 'admin' puede acceder
-  @UseGuards(RolesGuard)
-  update(@Param('id', ParseIntPipe) id: number, @Body() updateOrderDto: UpdateOrderDto) {
+  @Roles('admin', 'operator')  
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() updateOrderDto: UpdateOrderDto,
+  ) {
     return this.ordersService.update(id, updateOrderDto);
   }
 }

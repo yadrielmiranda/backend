@@ -38,7 +38,6 @@ export class DimensionPoliciesService {
       roundingRule: p.roundingRule,
       notes: p.notes,
       isActive: p.isActive,
-      // nombres legibles para el frontend
       systemName: p.sysConf?.system?.name ?? '',
       configName: p.sysConf?.config?.conf ?? '',
       crystalName: p.crystal?.glass ?? '',
@@ -74,7 +73,7 @@ export class DimensionPoliciesService {
     if (!sysConf) {
       // Esto te da un error claro en lugar del P2003 críptico
       throw new BadRequestException(
-        'No existe relación System + Config en sys_conf para esos IDs. Revisa las asociaciones del sistema.'
+        'No System + Config relationship found in sys_conf for those IDs. Please check the system associations.'
       );
     }
 
@@ -107,13 +106,13 @@ export class DimensionPoliciesService {
       if (e.code === 'P2002') {
         // unique sys+conf+crystal
         throw new BadRequestException(
-          'Ya existe una policy para esa combinación System + Config + Crystal.'
+          'A policy already exists for this exact System + Config + Crystal combination.'
         );
       }
       if (e.code === 'P2003') {
         // FK rota (por si acaso)
         throw new BadRequestException(
-          'La combinación System + Config no está asociada correctamente (FK en sys_conf).'
+          'The System + Config relationship is not correctly associated (sys_conf foreign key).'
         );
       }
       throw e;
@@ -238,7 +237,7 @@ export class DimensionPoliciesService {
         throw new BadRequestException(`Row ${i}: invalid heightIn`);
       }
       if (!isFinite(r.dpPosPsf) || !isFinite(r.dpNegPsf)) {
-        throw new BadRequestException(`Row ${i}: invalid psf`);
+        throw new BadRequestException(`Row ${i}: invalid psf values`);
       }
       if (!Number.isInteger(r.screws) || r.screws < 0) {
         throw new BadRequestException(`Row ${i}: invalid screws`);
@@ -291,9 +290,9 @@ export class DimensionPoliciesService {
       return {
         ok: false,
         reason: 'OVERSIZE' as const,
-        belowMinimum: true,                 
+        belowMinimum: true,
         suggestion: {
-          minWidthIn: minW,                 
+          minWidthIn: minW,
           minHeightIn: minH,
         },
       };

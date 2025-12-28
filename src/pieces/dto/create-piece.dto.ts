@@ -1,5 +1,6 @@
 import { IsBoolean, IsNotEmpty, IsNumber, IsString, IsOptional, IsInt, IsNumberString } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { Type } from "class-transformer";
 
 export class CreatePieceDto {
     @ApiProperty() @IsString() @IsNotEmpty() mark: string;
@@ -25,5 +26,6 @@ export class CreatePieceDto {
     @ApiPropertyOptional() 
     @IsOptional() 
     @IsNumber() 
+    @Type(() => Number)
     dealerMarkup?: number;
 }

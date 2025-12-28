@@ -3,6 +3,10 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { Order, OrderStatus } from '@prisma/client';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { AuthUser } from 'src/auth/types/auth-user.type';
+import { getRoleName } from 'src/auth/utils/get-role-name';
+
+type RoleName = 'admin' | 'operator' | 'client' | 'dealer';
 
 @Injectable()
 export class OrdersService {
@@ -11,22 +15,50 @@ export class OrdersService {
     private notificationsService: NotificationsService, // Se inyecta el servicio de notificaciones
   ) { }
 
-  async createOrderFromEstimate(estimateId: number, userId: number): Promise<Order> {
+  async createOrderFromEstimate(
+    estimateId: number,
+    userId: number,
+  ): Promise<Order> {
     return this.prisma.$transaction(async (tx) => {
-      const estimate = await tx.estimate.findUnique({ where: { id: estimateId }, include: { order: true } });
+
+      const estimate = await tx.estimate.findUnique({
+        where: { id: estimateId },
+        include: { order: true },
+      });
+
       if (!estimate) {
-        throw new NotFoundException(`Estimate with ID #${estimateId} not found.`);
+        throw new NotFoundException(
+          `Estimate with ID #${estimateId} not found.`,
+        );
       }
+
       if (estimate.order) {
-        throw new ConflictException(`Estimate with ID #${estimateId} already has an associated order.`);
+        throw new ConflictException(
+          `Estimate with ID #${estimateId} already has an associated order.`,
+        );
       }
 
-      const inProductionStatus = await tx.orderStatus.findUnique({ where: { name: 'In production' } });
+      // 🔐 VALIDACIÓN CLAVE (AQUÍ)
+      if (estimate.idUser !== userId) {
+        throw new NotFoundException(
+          `Estimate with ID #${estimateId} not found.`,
+        );
+      }
+
+      const inProductionStatus = await tx.orderStatus.findUnique({
+        where: { name: 'In production' },
+      });
+
       if (!inProductionStatus) {
-        throw new NotFoundException('Order status "In production" not found. Please run the database seed.');
+        throw new NotFoundException(
+          'Order status "In production" not found. Please run the database seed.',
+        );
       }
 
-      const lastOrder = await tx.order.findFirst({ orderBy: { id: 'desc' } });
+      const lastOrder = await tx.order.findFirst({
+        orderBy: { id: 'desc' },
+      });
+
       const lastOrderId = lastOrder?.id ?? 0;
       const newOrderNumber = `ORD-${lastOrderId + 1001}`;
 
@@ -34,7 +66,7 @@ export class OrdersService {
         data: {
           number: newOrderNumber,
           units: estimate.units,
-          amount: estimate.total,
+          amount: estimate.totalPayable,
           idEst: estimateId,
           statusId: inProductionStatus.id,
           userId: userId,
@@ -45,9 +77,11 @@ export class OrdersService {
         where: { id: estimateId },
         data: { active: false },
       });
+
       return newOrder;
     });
   }
+
 
   async findAll(): Promise<Order[]> {
     return this.prisma.order.findMany({
@@ -114,4 +148,38 @@ export class OrdersService {
       include: { status: true, user: true, estimate: true }
     });
   }
+
+  async findAllForUser(user: AuthUser) {
+    const roleName = getRoleName(user);
+
+    if (roleName === 'admin' || roleName === 'operator') {
+      return this.findAll();
+    }
+
+    return this.prisma.order.findMany({
+      where: { userId: user.id },
+      include: { estimate: true, status: true, user: true },
+      orderBy: { date: 'desc' },
+    });
+  }
+
+  async findOneForUser(id: number, user: AuthUser) {
+    const roleName = getRoleName(user);
+
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: { estimate: true, status: true, user: true },
+    });
+
+    if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
+
+    if (roleName === 'admin' || roleName === 'operator') return order;
+
+    if (order.userId !== user.id) {
+      throw new NotFoundException(`Order with ID #${id} not found.`);
+    }
+
+    return order;
+  }
+
 }

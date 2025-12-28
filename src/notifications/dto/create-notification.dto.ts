@@ -1,4 +1,11 @@
+import { IsInt, IsNotEmpty, IsString } from 'class-validator';
+
 export class CreateNotificationDto {
-    recipientId: number;
-    message: string;
+  @IsInt()
+  @IsNotEmpty()
+  recipientId: number;
+
+  @IsString()
+  @IsNotEmpty()
+  message: string;
 }

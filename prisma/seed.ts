@@ -12,9 +12,10 @@ async function main() {
     { name: 'admin', markup: 0.0 },  // 0%
     { name: 'client', markup: 0.30 }, // 30%
     { name: 'dealer', markup: 0.15 }, // 15%
+    { name: 'operator', markup: 0.0 }, // 0%
   ];
   console.log('Upserting roles...');
- for (const roleData of rolesToCreate) {
+  for (const roleData of rolesToCreate) {
     await prisma.role.upsert({
       where: { name: roleData.name },
       update: { markup: roleData.markup }, // Actualiza el markup si el rol ya existe
@@ -49,19 +50,35 @@ async function main() {
   }
 
   await prisma.user.upsert({
-    where: { username: 'admin' },
-    update: {},
-    create: {
-      username: 'admin',
-      firstName: 'Admin',
-      lastName: 'User',
-      email: 'admin@example.com',
-      phone: '1234567890',
-      address: '123 Admin Street',
-      password: hashedPassword,
-      idRole: adminRole.id,
-    },
-  });
+  where: { username: "admin" },
+  update: {
+    firstName: "Admin",
+    lastName: "User",
+    email: "admin@example.com",
+    phone: "+13055550101",
+    street: "123 Admin Street",
+    city: "Miami",
+    state: "FL",
+    postalCode: "33101",
+    idRole: adminRole.id,
+    isTaxExempt: true,
+  },
+  create: {
+    username: "admin",
+    firstName: "Admin",
+    lastName: "User",
+    email: "admin@example.com",
+    phone: "+13055550101",
+    street: "123 Admin Street",
+    city: "Miami",
+    state: "FL",
+    postalCode: "33101",
+    password: hashedPassword,
+    idRole: adminRole.id,
+    isTaxExempt: true,
+  },
+});
+
 
   console.log('Default admin user is up to date.');
 

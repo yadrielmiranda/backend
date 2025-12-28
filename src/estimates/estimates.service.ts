@@ -10,7 +10,6 @@ import {
   Prisma,
   PrismaClient,
   GlobalParameterKey,
-  Config,
   User,
   Piece,
 } from '@prisma/client';
@@ -25,8 +24,10 @@ import { areaPerimeterFor } from 'src/pricing/shape-geometry';
 import { computeBasePrice } from 'src/pricing/price-formula';
 import {
   normalizeInchesToEighthStep,
-  DimensionParseError,
 } from "src/common/dimensions";
+import type { AuthUser } from 'src/auth/types/auth-user.type';
+import { isPrivileged } from 'src/auth/utils/is-privileged';
+
 
 
 // Prisma Transaction Client Type
@@ -34,22 +35,22 @@ type PrismaTransactionClient = Omit<
   PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
 >;
 
-// Helper toDecimal
-function toDecimal(value: string | number | null | undefined): Decimal {
-  if (value === null || value === undefined || String(value).trim() === '') { return new Decimal(0); }
-  try {
-    const decValue = new Decimal(value);
-    if (decValue.isNaN()) { console.warn(`Invalid numeric value: "${value}". Defaulting to 0.`); return new Decimal(0); }
-    return decValue;
-  } catch (error) { throw new BadRequestException(`Invalid numeric format for dimension: ${value}`); }
-};
-
 
 // Tipo interno SÓLO para las métricas calculadas (usando Decimal.js)
 type CalculatedMetricsInternal = {
-  rate: Decimal; price: Decimal; netProfit: Decimal; markup: Decimal;
-  subtotal: Decimal; dealerMarkupDecimal: Decimal; netProfitD: Decimal;
+  rate: Decimal;                 // costo fabrica (unitario)
+  price: Decimal;                // tu precio al dealer/cliente (unitario)
+  netProfit: Decimal;            // tu ganancia (unitaria)
+  markup: Decimal;               // tu markup (0.30, etc.)
+  subtotal: Decimal;             // tu subtotal (puedes dejarlo como está, lo seguimos usando igual)
+  dealerMarkupDecimal: Decimal;  // markup dealer en fracción (0.15)
+  netProfitD: Decimal;           // ganancia dealer (total)
+  customerPrice: Decimal;        // precio unitario al cliente final
+  customerSubtotal: Decimal;     // precio * qty al cliente final
+  dpPosPsf: Decimal;
+  dpNegPsf: Decimal;
 };
+
 
 // --- Tipo para el OBJETO COMBINADO devuelto por internalCalculate ---
 // Contiene el DTO original + las métricas internas
@@ -117,13 +118,17 @@ export class EstimatesService {
       ...pieceDto, // Campos originales del DTO
       id: (pieceDto as UpsertPieceDto).id, // Añadir ID si existe
       // Métricas convertidas
-      rate: new Prisma.Decimal(calculated.rate.toFixed(4)),
+      rate: new Prisma.Decimal(calculated.rate.toFixed(2)),
       price: new Prisma.Decimal(calculated.price.toFixed(2)),
-      netProfit: new Prisma.Decimal(calculated.netProfit.toFixed(4)),
+      netProfit: new Prisma.Decimal(calculated.netProfit.toFixed(2)),
       markup: new Prisma.Decimal(calculated.markup.toFixed(4)),
       subtotal: new Prisma.Decimal(calculated.subtotal.toFixed(2)),
-      dealerMarkup: new Prisma.Decimal(calculated.dealerMarkupDecimal.toFixed(4)), // Renombrado
+      dealerMarkup: new Prisma.Decimal(calculated.dealerMarkupDecimal.toFixed(4)),
       netProfitD: new Prisma.Decimal(calculated.netProfitD.toFixed(2)),
+      customerPrice: new Prisma.Decimal(calculated.customerPrice.toFixed(2)),
+      customerSubtotal: new Prisma.Decimal(calculated.customerSubtotal.toFixed(2)),
+      dpPosPsf: new Prisma.Decimal(calculated.dpPosPsf.toFixed(2)),
+      dpNegPsf: new Prisma.Decimal(calculated.dpNegPsf.toFixed(2)),
     };
   }
 
@@ -144,6 +149,50 @@ export class EstimatesService {
     return estimates as EstimateWithRelations[];
   }
 
+  async findAllForUser(user: AuthUser) {
+    // admin/operator ven todo
+    if (isPrivileged(user)) {
+      return this.estimates({ where: {} });
+    }
+
+    // client/dealer solo lo suyo
+    return this.estimates({
+      where: { idUser: user.id },
+    });
+  }
+
+  async findOneForUser(id: number, user: AuthUser) {
+    const estimate = await this.estimate({ id });
+    if (!estimate) throw new NotFoundException(`Estimate with ID #${id} not found.`);
+
+    // admin/operator pueden ver cualquiera
+    if (isPrivileged(user)) return estimate;
+
+    // client/dealer: solo dueño
+    if (estimate.idUser !== user.id) {
+      throw new NotFoundException(`Estimate with ID #${id} not found.`);
+    }
+
+    return estimate;
+  }
+
+  async assertEstimateOwnerOrThrow(id: number, user: AuthUser) {
+    const estimate = await this.prisma.estimate.findUnique({
+      where: { id },
+      select: { id: true, idUser: true, active: true },
+    });
+
+    if (!estimate) throw new NotFoundException(`Estimate with ID #${id} not found.`);
+
+    if (estimate.idUser !== user.id) {
+      // NotFound para no filtrar existencia
+      throw new NotFoundException(`Estimate with ID #${id} not found.`);
+    }
+
+    return estimate;
+  }
+
+
   // --- createEstimate ---
   async createEstimate(dto: CreateEstimateDto, userId: number): Promise<EstimateWithRelations> {
     const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { role: true } });
@@ -152,14 +201,30 @@ export class EstimatesService {
       ? new Decimal(user.markupOverride.toString()) : new Decimal(user.role.markup.toString());
 
     return this.prisma.$transaction(async (tx) => {
-      const taxParameter = await tx.globalParameter.findUnique({ where: { key: GlobalParameterKey.SALES_TAX } });
+      const taxParameter = await tx.globalParameter.findUnique({
+        where: { key: GlobalParameterKey.SALES_TAX },
+      });
       if (!taxParameter) throw new InternalServerErrorException('SALES_TAX config missing.');
-      const taxRate = new Decimal(taxParameter.value.toString()); // taxRate es Decimal
+
+      // Si el usuario es tax-exempt, tus taxes son 0
+      const factoryTaxRate = user.isTaxExempt
+        ? new Decimal(0)
+        : new Decimal(taxParameter.value.toString());
+
+      // Tax del dealer al cliente (viene del DTO, 0 si no quiere cobrar)
+      const rawCustomerTaxRate = dto.customerTaxRate ?? 0; // número JS (0.07 etc.)
+      const customerTaxRate = new Decimal(rawCustomerTaxRate);
+
 
       const lastEstimate = await tx.estimate.findFirst({ orderBy: { number: 'desc' } });
       const nextNumber = !lastEstimate ? '190909' : String(parseInt(lastEstimate.number, 10) + 1);
       // Extraer 'project' si existe en el DTO, pero no lo usamos en createData
-      const { pieces: pieceDtos, project, ...estimateHeaderData } = dto;
+      const {
+        pieces: pieceDtos,
+        customerTaxRate: _ignoredCustomerTaxRate, // ya usamos rawCustomerTaxRate arriba
+        ...estimateHeaderData
+      } = dto;
+
 
       // Calcular todas las piezas (devuelve tipo combinado: DTO + Métricas Decimal.js)
       const calculatedPiecesPromises = pieceDtos.map(p => this.internalCalculatePieceMetrics(p, effectiveMarkupDecimal, tx as PrismaTransactionClient));
@@ -167,12 +232,12 @@ export class EstimatesService {
 
       // Calcular totales del estimado (devuelve Prisma.Decimal)
       // Pasamos el array combinado a internalCalculateEstimateTotals
-      const estimateTotals: {
-        rateT: Prisma.Decimal; priceT: Prisma.Decimal; netProfit: Prisma.Decimal;
-        taxRate: Prisma.Decimal; taxAmount: Prisma.Decimal; totalPayable: Prisma.Decimal;
-        total: Prisma.Decimal; netProfitD: Prisma.Decimal;
-      } = this.internalCalculateEstimateTotals(calculatedPieces, taxRate);
-      // --- FIN CORRECCIÓN ---
+      const estimateTotals = this.internalCalculateEstimateTotals(
+        calculatedPieces,
+        factoryTaxRate,
+        customerTaxRate,
+      );
+
 
       const totalUnits = calculatedPieces.reduce((sum, p) => sum + (p.qty || 0), 0);
 
@@ -183,10 +248,16 @@ export class EstimatesService {
           // Acceder a campos del DTO original directamente desde 'p'
           mark: p.mark, privacy: p.privacy, screen: p.screen, muntin: p.muntin, qty: p.qty,
           // Convertir Decimal.js -> Prisma.Decimal
-          rate: new Prisma.Decimal(p.rate.toFixed(4)), price: new Prisma.Decimal(p.price.toFixed(2)),
-          markup: new Prisma.Decimal(p.markup.toFixed(4)), subtotal: new Prisma.Decimal(p.subtotal.toFixed(2)),
+          rate: new Prisma.Decimal(p.rate.toFixed(2)),
+          price: new Prisma.Decimal(p.price.toFixed(2)),
+          markup: new Prisma.Decimal(p.markup.toFixed(4)),
+          subtotal: new Prisma.Decimal(p.subtotal.toFixed(2)),
           dealerMarkup: new Prisma.Decimal(p.dealerMarkupDecimal.toFixed(4)),
-          netProfit: new Prisma.Decimal(p.netProfit.toFixed(4)), netProfitD: new Prisma.Decimal(p.netProfitD.toFixed(2)),
+          netProfit: new Prisma.Decimal(p.netProfit.toFixed(2)),
+          netProfitD: new Prisma.Decimal(p.netProfitD.toFixed(2)),
+          customerPrice: new Prisma.Decimal(p.customerPrice.toFixed(2)),
+          customerSubtotal: new Prisma.Decimal(p.customerSubtotal.toFixed(2)),
+
           // Convertir DTO string? -> Prisma.Decimal | null
           width: p.width ? new Prisma.Decimal(p.width) : null, height: p.height ? new Prisma.Decimal(p.height) : null,
           heightLeft: p.heightLeft ? new Prisma.Decimal(p.heightLeft) : null, heightRight: p.heightRight ? new Prisma.Decimal(p.heightRight) : null,
@@ -195,30 +266,53 @@ export class EstimatesService {
           prod: { connect: { id: p.idProd } }, bran: { connect: { id: p.idBrand } }, syst: { connect: { id: p.idSyst } },
           conf: { connect: { id: p.idConf } }, fColor: { connect: { id: p.idFC } }, cryst: { connect: { id: p.idCryst } },
           tin: { connect: { id: p.idTint } }, coat: { connect: { id: p.idCoat } },
+          dpPosPsf: new Prisma.Decimal(p.dpPosPsf.toFixed(2)),
+          dpNegPsf: new Prisma.Decimal(p.dpNegPsf.toFixed(2)),
         };
-        return dataForPrisma; // <--- CORREGIDO: Faltaba este return
+        return dataForPrisma;
       });
-      // --- FIN CORRECCIÓN ---
+
 
       // Asegurar que todos los campos necesarios estén presentes en `data`
       const createData: Prisma.EstimateCreateInput = {
         number: nextNumber,
         name: estimateHeaderData.name,
-        // project: project, // --- CORRECCIÓN: Campo 'project' eliminado ---
-        // Campos de estimateTotals (ahora TypeScript los reconoce)
+
+        // --- CUSTOMER (new fields) ---
+        customerFirstName: estimateHeaderData.customerFirstName ?? null,
+        customerLastName: estimateHeaderData.customerLastName ?? null,
+        customerEmail: estimateHeaderData.customerEmail ?? null,
+        customerPhone: estimateHeaderData.customerPhone ?? null,
+        customerStreet: estimateHeaderData.customerStreet ?? null,
+        customerCity: estimateHeaderData.customerCity ?? null,
+        customerState: estimateHeaderData.customerState ?? null,
+        customerPostalCode: estimateHeaderData.customerPostalCode ?? null,
+
+        // --- TÚ (factory) → DEALER/CLIENTE ---
         rateT: estimateTotals.rateT,
         priceT: estimateTotals.priceT,
         netProfit: estimateTotals.netProfit,
+
+        // --- TAXES (solo factory) ---
         taxRate: estimateTotals.taxRate,
         taxAmount: estimateTotals.taxAmount,
         totalPayable: estimateTotals.totalPayable,
-        total: estimateTotals.total,
+
+        // --- DEALER → CUSTOMER ---
+        customerPriceT: estimateTotals.customerPriceT,
+        customerTaxRate: estimateTotals.customerTaxRate,
+        customerTaxAmount: estimateTotals.customerTaxAmount,
+        customerTotalPayable: estimateTotals.customerTotalPayable,
+
+        // --- GANANCIAS ---
         netProfitD: estimateTotals.netProfitD,
+
         units: totalUnits,
         active: true,
         user: { connect: { id: userId } },
         pieces: { create: piecesToCreate },
       };
+
 
       const createdEstimate = await tx.estimate.create({
         data: createData,
@@ -237,15 +331,30 @@ export class EstimatesService {
 
     // --- CORRECCIÓN: Asignar resultado de la transacción y retornarlo ---
     const result = await this.prisma.$transaction(async (tx) => { // <-- Asignar a 'result'
-      const taxParameter = await tx.globalParameter.findUnique({ where: { key: GlobalParameterKey.SALES_TAX } });
+      const taxParameter = await tx.globalParameter.findUnique({
+        where: { key: GlobalParameterKey.SALES_TAX },
+      });
       if (!taxParameter) throw new InternalServerErrorException('SALES_TAX config missing.');
-      const taxRate = new Decimal(taxParameter.value.toString());
 
-      const { pieces: pieceDtos = [], project, ...estimateHeaderData } = dto; // Extraer y ignorar project
+      const factoryTaxRate = user.isTaxExempt
+        ? new Decimal(0)
+        : new Decimal(taxParameter.value.toString());
 
       const existingEstimate = await tx.estimate.findUnique({ where: { id: estimateId } });
-      if (!existingEstimate || existingEstimate.idUser !== userId) throw new NotFoundException(`Estimate #${estimateId} not found/denied.`);
-      if (!existingEstimate.active) throw new BadRequestException(`Estimate #${estimateId} is inactive.`);
+      if (!existingEstimate || existingEstimate.idUser !== userId)
+        throw new NotFoundException(`Estimate #${estimateId} not found/denied.`);
+      if (!existingEstimate.active)
+        throw new BadRequestException(`Estimate #${estimateId} is inactive.`);
+
+      const {
+        pieces: pieceDtos = [],
+        customerTaxRate: rawCustomerTaxRate,
+        ...estimateHeaderData
+      } = dto;
+
+      const customerTaxRate = new Decimal(
+        rawCustomerTaxRate ?? Number(existingEstimate.customerTaxRate ?? 0),
+      );
 
       const incomingPieceIds = pieceDtos.map(p => p.id).filter((id): id is number => id !== undefined);
       await tx.piece.deleteMany({ where: { idEst: estimateId, NOT: { id: { in: incomingPieceIds } } } });
@@ -253,21 +362,34 @@ export class EstimatesService {
       const calculatedPiecesPromises = pieceDtos.map(p => this.internalCalculatePieceMetrics(p, effectiveMarkupDecimal, tx as PrismaTransactionClient));
       const calculatedPieces: CalculatedPieceCombined[] = await Promise.all(calculatedPiecesPromises);
 
-      const estimateTotals: { /*...tipo explícito como en createEstimate...*/ } = this.internalCalculateEstimateTotals(calculatedPieces, taxRate);
+      const estimateTotals = this.internalCalculateEstimateTotals(
+        calculatedPieces,
+        factoryTaxRate,
+        customerTaxRate,
+      );
+
       const totalUnits = calculatedPieces.reduce((sum, p) => sum + (p.qty || 0), 0);
 
       const piecesToUpsert = calculatedPieces.map((p) => {
         const upsertData: Omit<Prisma.PieceUncheckedUpdateInput, 'idEst'> & Omit<Prisma.PieceUncheckedCreateInput, 'idEst'> = {
           mark: p.mark, privacy: p.privacy, screen: p.screen, muntin: p.muntin, qty: p.qty,
-          rate: new Prisma.Decimal(p.rate.toFixed(4)), price: new Prisma.Decimal(p.price.toFixed(2)),
-          markup: new Prisma.Decimal(p.markup.toFixed(4)), subtotal: new Prisma.Decimal(p.subtotal.toFixed(2)),
+          rate: new Prisma.Decimal(p.rate.toFixed(2)),
+          price: new Prisma.Decimal(p.price.toFixed(2)),
+          markup: new Prisma.Decimal(p.markup.toFixed(4)),
+          subtotal: new Prisma.Decimal(p.subtotal.toFixed(2)),
           dealerMarkup: new Prisma.Decimal(p.dealerMarkupDecimal.toFixed(4)),
-          netProfit: new Prisma.Decimal(p.netProfit.toFixed(4)), netProfitD: new Prisma.Decimal(p.netProfitD.toFixed(2)),
+          netProfit: new Prisma.Decimal(p.netProfit.toFixed(2)),
+          netProfitD: new Prisma.Decimal(p.netProfitD.toFixed(2)),
+          customerPrice: new Prisma.Decimal(p.customerPrice.toFixed(2)),
+          customerSubtotal: new Prisma.Decimal(p.customerSubtotal.toFixed(2)),
           width: p.width ? new Prisma.Decimal(p.width) : null, height: p.height ? new Prisma.Decimal(p.height) : null,
           heightLeft: p.heightLeft ? new Prisma.Decimal(p.heightLeft) : null, heightRight: p.heightRight ? new Prisma.Decimal(p.heightRight) : null,
           legHeight: p.legHeight ? new Prisma.Decimal(p.legHeight) : null,
           idProd: p.idProd, idBrand: p.idBrand, idSyst: p.idSyst, idConf: p.idConf, idFC: p.idFC,
           idCryst: p.idCryst, idTint: p.idTint, idCoat: p.idCoat,
+          dpPosPsf: new Prisma.Decimal(p.dpPosPsf.toFixed(2)),
+          dpNegPsf: new Prisma.Decimal(p.dpNegPsf.toFixed(2)),
+
         };
         return {
           where: { id: (p as UpsertPieceDto).id || -1 },
@@ -275,13 +397,41 @@ export class EstimatesService {
           update: upsertData as Prisma.PieceUncheckedUpdateWithoutEstimInput,
         };
       });
-
       const updateData: Prisma.EstimateUpdateInput = {
-        ...estimateHeaderData, // name
-        ...estimateTotals,    // rateT, priceT, etc.
+        // header (si vienen definidos, actualiza; si no, no toques)
+        ...(estimateHeaderData.name !== undefined ? { name: estimateHeaderData.name } : {}),
+
+        ...(estimateHeaderData.customerFirstName !== undefined
+          ? { customerFirstName: estimateHeaderData.customerFirstName }
+          : {}),
+        ...(estimateHeaderData.customerLastName !== undefined
+          ? { customerLastName: estimateHeaderData.customerLastName }
+          : {}),
+        ...(estimateHeaderData.customerEmail !== undefined
+          ? { customerEmail: estimateHeaderData.customerEmail }
+          : {}),
+        ...(estimateHeaderData.customerPhone !== undefined
+          ? { customerPhone: estimateHeaderData.customerPhone }
+          : {}),
+        ...(estimateHeaderData.customerStreet !== undefined
+          ? { customerStreet: estimateHeaderData.customerStreet }
+          : {}),
+        ...(estimateHeaderData.customerCity !== undefined
+          ? { customerCity: estimateHeaderData.customerCity }
+          : {}),
+        ...(estimateHeaderData.customerState !== undefined
+          ? { customerState: estimateHeaderData.customerState }
+          : {}),
+        ...(estimateHeaderData.customerPostalCode !== undefined
+          ? { customerPostalCode: estimateHeaderData.customerPostalCode }
+          : {}),
+
+        // totals
+        ...estimateTotals,
         units: totalUnits,
         pieces: { upsert: piecesToUpsert },
       };
+
 
       const updatedEstimate = await tx.estimate.update({
         where: { id: estimateId },
@@ -555,6 +705,11 @@ export class EstimatesService {
       }
     }
 
+    // ✅ Si pasó NOA, ya tengo DP para devolver/guardar
+    const dpPosPsf = new Decimal(dpCheck.dpPos ?? 0).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    const dpNegPsf = new Decimal(dpCheck.dpNeg ?? 0).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+
 
     // 3) Área y Perímetro en pies (ft² / ft) según el nombre de la configuración
     //    Soporta Tombstone/Eyebrow y sus HALF como "mitad vertical", tal como definimos.
@@ -594,64 +749,138 @@ export class EstimatesService {
     const dealerMarkupDecimal = dealerMarkupFromDto.div(100);
     const dealerMarkupAmount = price.mul(dealerMarkupDecimal);
 
-    const subtotal = price;           // tu "price" antes de dealer markup visible
-    const netProfitD = dealerMarkupAmount; // ganancia dealer
+    // ✅ Qty como Decimal (siempre)
+    const qtyDec = new Decimal(pieceDto.qty || 1);
 
-    // 7) Devolver objeto COMBINADO (DTO + métricas Decimal.js), tal como usas en el resto del servicio
+
+
+    // 🔢 7) Redondear TODO a la precisión que usas en la BD
+    const rateR = rate.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    const priceR = price.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    const netProfitR = netProfit.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    const markupR = effectiveMarkup.toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+    const dealerMarkupDecimalR = dealerMarkupDecimal.toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+
+    // 👇 ahora sí son “por línea”   
+
+    const subtotalR = priceR.mul(qtyDec).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+    // Ganancia dealer por línea basada en TU subtotal mostrado (no en price unrounded)
+    const netProfitDR = subtotalR
+      .mul(dealerMarkupDecimalR)
+      .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+    const customerSubtotalR = subtotalR
+      .add(netProfitDR)
+      .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+    // Unit customer desde line (así nunca se desalinean)
+    const customerPriceR = qtyDec.gt(0)
+      ? customerSubtotalR.div(qtyDec).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+      : new Decimal(0);
+
+    // 8) Devolver objeto COMBINADO (DTO + métricas Decimal.js) usando los redondeados
     const result: CalculatedPieceCombined = {
       ...(pieceDto as any),
 
-      rate,                 // Decimal
-      price,                // Decimal
-      netProfit,            // Decimal
-      markup: effectiveMarkup,          // Decimal (el markup aplicado)
-      dealerMarkupDecimal,             // Decimal (0.xx)
-      netProfitD,                      // Decimal
-      subtotal,                        // Decimal
+      rate: rateR,
+      price: priceR,
+      netProfit: netProfitR,
+      markup: markupR,
+      dealerMarkupDecimal: dealerMarkupDecimalR,
+      netProfitD: netProfitDR,
+      subtotal: subtotalR,
+      customerPrice: customerPriceR,
+      customerSubtotal: customerSubtotalR,
+      dpPosPsf,
+      dpNegPsf,
     };
 
     return result;
+
   }
 
 
   // --- calculateEstimateTotals ---
   // Usa Decimal internamente y devuelve Prisma.Decimal
   private internalCalculateEstimateTotals(
-    // Espera el array combinado
     pieces: CalculatedPieceCombined[],
-    taxRate: Decimal
-  ): { // Devuelve este tipo explícito
-    rateT: Prisma.Decimal; priceT: Prisma.Decimal; netProfit: Prisma.Decimal;
-    taxRate: Prisma.Decimal; taxAmount: Prisma.Decimal; totalPayable: Prisma.Decimal;
-    total: Prisma.Decimal; netProfitD: Prisma.Decimal;
+    factoryTaxRate: Decimal,
+    customerTaxRate: Decimal,
+  ): {
+    rateT: Prisma.Decimal;
+    priceT: Prisma.Decimal;
+    netProfit: Prisma.Decimal;
+    taxRate: Prisma.Decimal;
+    taxAmount: Prisma.Decimal;
+    totalPayable: Prisma.Decimal;
+    customerPriceT: Prisma.Decimal;
+    customerTaxRate: Prisma.Decimal;
+    customerTaxAmount: Prisma.Decimal;
+    customerTotalPayable: Prisma.Decimal;
+    netProfitD: Prisma.Decimal;
   } {
     const zero = new Decimal(0);
-    // Acumulador con tipo explícito
-    const totals: { rateT: Decimal, priceT: Decimal, total: Decimal, netProfitD: Decimal } =
-      pieces.reduce((acc, piece) => {
-        // Acceder a qty y métricas desde el objeto combinado
+
+    const totals = pieces.reduce(
+      (acc, piece) => {
         const qty = new Decimal(piece.qty || 0);
+
+        // tus números
         acc.rateT = acc.rateT.add(piece.rate.mul(qty));
         acc.priceT = acc.priceT.add(piece.price.mul(qty));
+
+        // números del dealer / cliente
+        acc.customerPriceT = acc.customerPriceT.add(piece.customerPrice.mul(qty));
+
+        // ganancia del dealer
         const dealerProfitPiece = piece.price.mul(piece.dealerMarkupDecimal);
-        const finalPricePiece = piece.price.add(dealerProfitPiece);
         acc.netProfitD = acc.netProfitD.add(dealerProfitPiece.mul(qty));
-        acc.total = acc.total.add(finalPricePiece.mul(qty));
+
         return acc;
-      }, { rateT: zero, priceT: zero, total: zero, netProfitD: zero });
+      },
+      {
+        rateT: zero,
+        priceT: zero,
+        customerPriceT: zero,
+        netProfitD: zero,
+      } as {
+        rateT: Decimal;
+        priceT: Decimal;
+        customerPriceT: Decimal;
+        netProfitD: Decimal;
+      },
+    );
 
     const yourNetProfit = totals.priceT.sub(totals.rateT);
-    const taxAmount = totals.priceT.mul(taxRate);
+
+    // Tus taxes (factory)
+    const taxAmount = totals.priceT.mul(factoryTaxRate);
     const totalPayable = totals.priceT.add(taxAmount);
 
-    // Convert to Prisma.Decimal
+    // Taxes del dealer al cliente final
+    const customerTaxAmount = totals.customerPriceT.mul(customerTaxRate);
+    const customerTotalPayable = totals.customerPriceT.add(customerTaxAmount);
+
     return {
-      rateT: new Prisma.Decimal(totals.rateT.toFixed(4)), priceT: new Prisma.Decimal(totals.priceT.toFixed(2)),
-      netProfit: new Prisma.Decimal(yourNetProfit.toFixed(4)), taxRate: new Prisma.Decimal(taxRate.toFixed(4)),
-      taxAmount: new Prisma.Decimal(taxAmount.toFixed(2)), totalPayable: new Prisma.Decimal(totalPayable.toFixed(2)),
-      total: new Prisma.Decimal(totals.total.toFixed(2)), netProfitD: new Prisma.Decimal(totals.netProfitD.toFixed(2)),
+      rateT: new Prisma.Decimal(totals.rateT.toFixed(2)),
+      priceT: new Prisma.Decimal(totals.priceT.toFixed(2)),
+      netProfit: new Prisma.Decimal(yourNetProfit.toFixed(2)),
+
+      taxRate: new Prisma.Decimal(factoryTaxRate.toFixed(4)),
+      taxAmount: new Prisma.Decimal(taxAmount.toFixed(2)),
+      totalPayable: new Prisma.Decimal(totalPayable.toFixed(2)),
+
+      customerPriceT: new Prisma.Decimal(totals.customerPriceT.toFixed(2)),
+      customerTaxRate: new Prisma.Decimal(customerTaxRate.toFixed(4)),
+      customerTaxAmount: new Prisma.Decimal(customerTaxAmount.toFixed(2)),
+      customerTotalPayable: new Prisma.Decimal(customerTotalPayable.toFixed(2)),
+
+      netProfitD: new Prisma.Decimal(totals.netProfitD.toFixed(2)),
     };
   }
+
+
 
   // Permite validar sin crear pieza
   async previewDimensionValidation(input: {

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ProductsModule } from './products/products.module';
@@ -20,11 +21,44 @@ import { PricingRulesModule } from './pricing-rules/pricing-rules.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { GlobalParametersModule } from './global-parameters/global-parameters.module';
 import { DimensionPoliciesModule } from './dimension-policies/dimension-policies.module';
+import { GeoModule } from './geo/geo.module';
+import { JwtAuthGuard } from './auth/guards/auth/auth.guard';
+import { RolesGuard } from './auth/guards/roles/roles.guard';
+import { ConfigModule } from '@nestjs/config';
 
 
 @Module({
-  imports: [PrismaModule ,ProductsModule, SystemsModule, UsersModule, FrameColorModule, ConfigSModule, CoatingModule, CrystalsModule, TintsModule, AuthModule, EstimatesModule, PiecesModule, BrandsModule, RolesModule, OrdersModule, PricingRulesModule, NotificationsModule, GlobalParametersModule, DimensionPoliciesModule],
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true, // ✅ para que ConfigService funcione en todo el app
+    }),
+
+    PrismaModule,
+    ProductsModule,
+    SystemsModule,
+    UsersModule,
+    FrameColorModule,
+    ConfigSModule,
+    CoatingModule,
+    CrystalsModule,
+    TintsModule,
+    AuthModule,
+    EstimatesModule,
+    PiecesModule,
+    BrandsModule,
+    RolesModule,
+    OrdersModule,
+    PricingRulesModule,
+    NotificationsModule,
+    GlobalParametersModule,
+    DimensionPoliciesModule,
+    GeoModule,
+  ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },
+  ],
 })
 export class AppModule {}

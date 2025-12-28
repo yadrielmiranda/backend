@@ -1,42 +1,65 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, ParseIntPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  ParseIntPipe,
+  Query,
+} from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { Product as ProductModel } from '@prisma/client';
-
+import { Roles } from 'src/auth/roles.decorator';
 
 @Controller('products')
 export class ProductsController {
-  constructor(private readonly productsService: ProductsService) { }
+  constructor(private readonly productsService: ProductsService) {}
 
-  @Post()
-  async createProduct(
-    @Body() productData: CreateProductDto,
-  ): Promise<ProductModel> {
-    return this.productsService.createProduct(productData);
-  }
-
-  
+  // ✅ READ: todos los usuarios autenticados
   @Get()
-  async getAllProducts(): Promise<ProductModel[]> {
-    return this.productsService.products({});
+  async getAllProducts(
+    @Query('take') take?: string,
+    @Query('skip') skip?: string,
+  ): Promise<ProductModel[]> {
+    return this.productsService.products({
+      take: take ? Number(take) : undefined,
+      skip: skip ? Number(skip) : undefined,
+    });
   }
 
-  /**
-   * ✅ NUEVA RUTA AÑADIDA
-   * Expone el método para obtener todos los productos con sus marcas.
-   * Se coloca antes de la ruta ':id' para que NestJS la encuentre primero.
-   */
+  // ✅ READ: todos los usuarios autenticados
   @Get('with-brands')
-  findAllWithBrands() {
-    return this.productsService.findAllWithBrands();
+  findAllWithBrands(
+    @Query('take') take?: string,
+    @Query('skip') skip?: string,
+  ) {
+    return this.productsService.findAllWithBrands({
+      take: take ? Number(take) : undefined,
+      skip: skip ? Number(skip) : undefined,
+    });
   }
 
+  // ✅ READ: todos los usuarios autenticados
   @Get(':id')
-  async getProductById(@Param('id', ParseIntPipe) id: number): Promise<ProductModel> {
+  async getProductById(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<ProductModel> {
     return this.productsService.product({ id });
   }
 
+  // 🔒 WRITE: solo admin
+  @Roles('admin')
+  @Post()
+  async createProduct(@Body() productData: CreateProductDto): Promise<ProductModel> {
+    return this.productsService.createProduct(productData);
+  }
+
+  // 🔒 WRITE: solo admin
+  @Roles('admin')
   @Patch(':id')
   async updateProduct(
     @Param('id', ParseIntPipe) id: number,
@@ -48,8 +71,12 @@ export class ProductsController {
     });
   }
 
+  // 🔒 WRITE: solo admin
+  @Roles('admin')
   @Delete(':id')
-  async deleteProduct(@Param('id', ParseIntPipe) id: number): Promise<ProductModel> {
+  async deleteProduct(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<ProductModel> {
     return this.productsService.deleteProduct({ id });
   }
 }

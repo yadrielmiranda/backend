@@ -1,27 +1,16 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { FrameColor, Prisma, } from '@prisma/client';
+import { FrameColor, Prisma } from '@prisma/client';
 
 @Injectable()
 export class FrameColorService {
+  constructor(private prisma: PrismaService) {}
 
-  constructor(private prisma: PrismaService) { }
-
-
-  async color(
-    frameColorWhereUniqueInput: Prisma.FrameColorWhereUniqueInput,
-  ): Promise<FrameColor> {
-    const color = await this.prisma.frameColor.findUnique({
-      where: frameColorWhereUniqueInput,
-    });
-
-    //  Si no se encuentra el color, lanza un error 404.
+  async color(where: Prisma.FrameColorWhereUniqueInput): Promise<FrameColor> {
+    const color = await this.prisma.frameColor.findUnique({ where });
     if (!color) {
-      throw new NotFoundException(
-        `FrameColor with ID #${frameColorWhereUniqueInput.id} not found`,
-      );
+      throw new NotFoundException(`FrameColor with ID #${where.id} not found.`);
     }
-
     return color;
   }
 
@@ -32,49 +21,36 @@ export class FrameColorService {
     where?: Prisma.FrameColorWhereInput;
     orderBy?: Prisma.FrameColorOrderByWithRelationInput;
   }): Promise<FrameColor[]> {
-    const { skip, take, cursor, where, orderBy } = params;
-    return this.prisma.frameColor.findMany({
-      skip,
-      take,
-      cursor,
-      where,
-      orderBy,
-    });
+    return this.prisma.frameColor.findMany(params);
   }
 
   async createColor(data: Prisma.FrameColorCreateInput): Promise<FrameColor> {
-    return this.prisma.frameColor.create({
-      data,
-    });
+    return this.prisma.frameColor.create({ data });
   }
 
- async updateColor(params: {
+  async updateColor(params: {
     where: Prisma.FrameColorWhereUniqueInput;
     data: Prisma.FrameColorUpdateInput;
   }): Promise<FrameColor> {
     const { where, data } = params;
-    
-    //  Verifica que el color exista antes de intentar actualizarlo.
     try {
-      return await this.prisma.frameColor.update({
-        data,
-        where,
-      });
-    } catch (error) {
-      // Prisma lanza un error si el registro a actualizar no existe.
-      throw new NotFoundException(`FrameColor with ID #${where.id} not found`);
+      return await this.prisma.frameColor.update({ data, where });
+    } catch (e: any) {
+      if (e?.code === 'P2025') {
+        throw new NotFoundException(`FrameColor with ID #${where.id} not found.`);
+      }
+      throw e;
     }
   }
 
-   async deleteColor(where: Prisma.FrameColorWhereUniqueInput): Promise<FrameColor> {
-    // Verifica que el color exista antes de intentar borrarlo.
+  async deleteColor(where: Prisma.FrameColorWhereUniqueInput): Promise<FrameColor> {
     try {
-      return await this.prisma.frameColor.delete({
-        where,
-      });
-    } catch (error) {
-      // Prisma lanza un error si el registro a borrar no existe.
-      throw new NotFoundException(`FrameColor with ID #${where.id} not found`);
+      return await this.prisma.frameColor.delete({ where });
+    } catch (e: any) {
+      if (e?.code === 'P2025') {
+        throw new NotFoundException(`FrameColor with ID #${where.id} not found.`);
+      }
+      throw e;
     }
   }
 }

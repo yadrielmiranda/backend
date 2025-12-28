@@ -1,4 +1,5 @@
-import { IsNumber, IsInt, IsOptional, IsString } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsNumber, IsInt, IsOptional, IsString, ValidateNested, IsArray } from 'class-validator';
 
 export class RuleRowDto {
   @IsNumber()
@@ -22,5 +23,8 @@ export class RuleRowDto {
 }
 
 export class BulkUpsertRulesDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RuleRowDto)
   rows: RuleRowDto[];
 }

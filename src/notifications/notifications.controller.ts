@@ -1,34 +1,54 @@
-import { Controller, Get, Param, Patch, Req, UseGuards, ParseIntPipe, Delete } from '@nestjs/common';
-import { JwtAuthGuard } from 'src/auth/guards/auth/auth.guard';
+import {
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Req,
+  UseGuards,
+  ParseIntPipe,
+  Delete,
+  Query,
+  DefaultValuePipe,
+} from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
 import { Request } from 'express';
+import type { AuthUser } from 'src/auth/types/auth-user.type';
 
-@UseGuards(JwtAuthGuard)
+
 @Controller('notifications')
 export class NotificationsController {
-    constructor(private readonly notificationsService: NotificationsService) { }
+  constructor(private readonly notificationsService: NotificationsService) { }
 
-    @Get()
-    async getMyNotifications(@Req() req: Request) {
-        const userId = req.user.id;
-        return this.notificationsService.getNotificationsForUser(userId);
-    }
+  // ✅ GET /notifications?take=50&skip=0
+  @Get()
+  async getMyNotifications(
+    @Req() req: Request,
+    @Query('take') take?: string,
+    @Query('skip') skip?: string,
+  ) {
+    const userId = (req.user as any).id;
 
-    @Patch(':id/read')
-    async markAsRead(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
-        const userId = req.user.id;
-        return this.notificationsService.markAsRead(id, userId);
-    }
+    return this.notificationsService.getNotificationsForUser(userId, {
+      take: take != null ? Number(take) : undefined,
+      skip: skip != null ? Number(skip) : undefined,
+    });
+  }
 
-    @Delete('clear-all')
-    async deleteAllNotifications(@Req() req: Request) {
-        const userId = req.user.id;
-        return this.notificationsService.deleteAllForUser(userId);
-    }
+  @Patch(':id/read')
+  markAsRead(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    const user = req.user as AuthUser;
+    return this.notificationsService.markAsRead(id, user.id);
+  }
 
-    @Delete(':id')
-    async deleteNotification(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
-        const userId = req.user.id;
-        return this.notificationsService.deleteNotification(id, userId);
-    }
+  @Delete('clear-all')
+  deleteAllNotifications(@Req() req: Request) {
+    const user = req.user as AuthUser;
+    return this.notificationsService.deleteAllForUser(user.id);
+  }
+
+  @Delete(':id')
+  deleteNotification(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    const user = req.user as AuthUser;
+    return this.notificationsService.deleteNotification(id, user.id);
+  }
 }

@@ -4,41 +4,35 @@ import {
   Patch,
   Body,
   Param,
-  UseGuards,
   ParseEnumPipe,
 } from '@nestjs/common';
 import { GlobalParametersService } from './global-parameters.service';
 import { UpdateGlobalParameterDto } from './dto/update-global-parameter.dto';
-import { JwtAuthGuard } from 'src/auth/guards/auth/auth.guard';
-import { RolesGuard } from 'src/auth/guards/roles/roles.guard';
 import { Roles } from 'src/auth/roles.decorator';
 import { GlobalParameterKey } from '@prisma/client';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 
 @ApiTags('Global Parameters')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard) // <-- Todos los endpoints requieren que el usuario esté logueado
 @Controller('global-parameters')
 export class GlobalParametersController {
-  constructor(
-    private readonly globalParametersService: GlobalParametersService,
-  ) {}
+  constructor(private readonly globalParametersService: GlobalParametersService) {}
 
-  @Get()
+  // ✅ READ: todos los usuarios autenticados
+  @Get()  
   @ApiOperation({ summary: 'Get all global parameters' })
   findAll() {
-    return this.globalParametersService.findAll();
+    return this.globalParametersService.findAll(); 
   }
 
+  // 🔒 WRITE: solo admin
   @Patch(':key')
-  @UseGuards(RolesGuard) 
-  @Roles('admin')        // Solo los admins pueden actualizar
+  @Roles('admin')
   @ApiOperation({ summary: 'Update a global parameter by its key' })
   update(
-    @Param('key', new ParseEnumPipe(GlobalParameterKey))
-    key: GlobalParameterKey,
-    @Body() updateGlobalParameterDto: UpdateGlobalParameterDto,
+    @Param('key', new ParseEnumPipe(GlobalParameterKey)) key: GlobalParameterKey,
+    @Body() dto: UpdateGlobalParameterDto,
   ) {
-    return this.globalParametersService.update(key, updateGlobalParameterDto);
+    return this.globalParametersService.update(key, dto);
   }
 }

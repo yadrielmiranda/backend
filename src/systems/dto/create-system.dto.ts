@@ -1,18 +1,18 @@
-import { IsNotEmpty, IsNumber, IsString } from "class-validator";
+import { IsNotEmpty, IsNumber, IsString } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CreateSystemDto {
+  @IsNotEmpty()
+  @IsString()
+  name: string;
 
-    @IsNotEmpty()
-    @IsString()
-    name: string;
+  @Type(() => Number)
+  @IsNumber()
+  @IsNotEmpty()
+  idProduct: number;
 
-    @IsNumber()
-    @IsNotEmpty()
-    idProduct: number;  //es el id del producto al que pertenece este sistema
-
-    @IsNumber()
-    @IsNotEmpty()
-    idBrand: number; ////es el id de la marca a la que pertenece este sistema
-
-    
+  @Type(() => Number)
+  @IsNumber()
+  @IsNotEmpty()
+  idBrand: number;
 }

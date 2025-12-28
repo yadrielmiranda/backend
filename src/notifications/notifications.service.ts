@@ -1,17 +1,17 @@
-import { Injectable, UnauthorizedException  } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsGateway } from './notifications.gateway';
 import { Notification } from '@prisma/client';
 import { CreateNotificationDto } from './dto/create-notification.dto';
-import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class NotificationsService {
   constructor(
     private prisma: PrismaService,
     private gateway: NotificationsGateway,
-  ) {}
+  ) { }
 
+  // 🔒 Interno: lo llaman otros módulos (OrdersService, etc.)
   async createAndSend(data: CreateNotificationDto): Promise<Notification> {
     const notification = await this.prisma.notification.create({
       data: {
@@ -24,44 +24,57 @@ export class NotificationsService {
     return notification;
   }
 
-  async getNotificationsForUser(userId: number): Promise<Notification[]> {
+  // ✅ Solo devuelve las del usuario (controller pasa req.user.id)
+  async getNotificationsForUser(
+    userId: number,
+    opts?: { take?: number; skip?: number },
+  ): Promise<Notification[]> {
+    // ✅ límites pro para evitar abuso
+    const takeRaw = opts?.take ?? 50;
+    const skipRaw = opts?.skip ?? 0;
+
+    const take = Number.isFinite(takeRaw) ? Math.min(Math.max(takeRaw, 1), 100) : 50;
+    const skip = Number.isFinite(skipRaw) ? Math.max(skipRaw, 0) : 0;
+
     return this.prisma.notification.findMany({
       where: { recipientId: userId },
       orderBy: { createdAt: 'desc' },
-      take: 20,
+      take,
+      skip,
     });
   }
-  
+
+
+  // ✅ Pro: no revelar si existe o no si no es del usuario => NotFound
   async markAsRead(notificationId: number, userId: number): Promise<Notification> {
     const notification = await this.prisma.notification.findFirst({
-        where: { id: notificationId, recipientId: userId }
+      where: { id: notificationId, recipientId: userId },
     });
+
     if (!notification) {
-        throw new Error('Notification not found or access denied');
+      throw new NotFoundException(`Notification with ID #${notificationId} not found.`);
     }
+
     return this.prisma.notification.update({
       where: { id: notificationId },
       data: { isRead: true },
     });
   }
 
-  async deleteNotification(notificationId: number, userId: number): Promise<{ message: string }> {
-    // Primero, encontramos la notificación para asegurarnos de que pertenece al usuario.
-    const notification = await this.prisma.notification.findUnique({
-      where: { id: notificationId },
+  async deleteNotification(
+    notificationId: number,
+    userId: number,
+  ): Promise<{ message: string }> {
+    // ✅ Busca SOLO si es del usuario (pro: no leaks)
+    const notification = await this.prisma.notification.findFirst({
+      where: { id: notificationId, recipientId: userId },
+      select: { id: true },
     });
 
     if (!notification) {
-      // Si no existe, no hacemos nada
-      return { message: 'Notification not found.' };
+      throw new NotFoundException(`Notification with ID #${notificationId} not found.`);
     }
 
-    // ¡Importante! Verificación de seguridad.
-    if (notification.recipientId !== userId) {
-      throw new UnauthorizedException('You are not authorized to delete this notification.');
-    }
-
-    // Si todo está bien, la eliminamos.
     await this.prisma.notification.delete({
       where: { id: notificationId },
     });
@@ -69,12 +82,9 @@ export class NotificationsService {
     return { message: 'Notification deleted successfully.' };
   }
 
-    async deleteAllForUser(userId: number): Promise<{ count: number }> {
-    // deleteMany es la forma más eficiente de borrar múltiples registros
+  async deleteAllForUser(userId: number): Promise<{ count: number }> {
     const { count } = await this.prisma.notification.deleteMany({
-      where: {
-        recipientId: userId,
-      },
+      where: { recipientId: userId },
     });
     return { count };
   }
