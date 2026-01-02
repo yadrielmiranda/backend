@@ -25,6 +25,7 @@ import { GeoModule } from './geo/geo.module';
 import { JwtAuthGuard } from './auth/guards/auth/auth.guard';
 import { RolesGuard } from './auth/guards/roles/roles.guard';
 import { ConfigModule } from '@nestjs/config';
+import { SessionTouchGuard } from './auth/guards/auth/session-touch.guard';
 
 
 @Module({
@@ -57,8 +58,9 @@ import { ConfigModule } from '@nestjs/config';
   controllers: [AppController],
   providers: [
     AppService,
+    { provide: APP_GUARD, useClass: SessionTouchGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
-    { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },    
   ],
 })
 export class AppModule {}

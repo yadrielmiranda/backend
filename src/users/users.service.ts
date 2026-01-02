@@ -33,12 +33,11 @@ export class UsersService {
     markupOverride: true,
     isTaxExempt: true,
     idRole: true,
+    passwordUpdatedAt: true,
+    createdAt: true,
+    updatedAt: true,
     role: true,
   } satisfies Prisma.UserSelect;
-
-  // ------------------------------------------------------------
-  // ✅ Métodos SAFE (para controllers)
-  // ------------------------------------------------------------
 
   async userSafe(
     userWhereUniqueInput: Prisma.UserWhereUniqueInput,
@@ -48,7 +47,11 @@ export class UsersService {
       select: this.safeSelect,
     });
 
-    if (!user) throw new NotFoundException(`User with ID #${userWhereUniqueInput.id} not found.`);
+    if (!user)
+      throw new NotFoundException(
+        `User with ID #${userWhereUniqueInput.id} not found.`,
+      );
+
     return user as UserSafe;
   }
 
@@ -73,7 +76,6 @@ export class UsersService {
 
   async createUser(userData: CreateUserDto): Promise<UserSafe> {
     const { idRole, ...rest } = userData;
-
     const hashedPassword = await bcrypt.hash(rest.password, 10);
 
     const created = await this.prisma.user.create({
@@ -101,13 +103,13 @@ export class UsersService {
 
     if (rest.password) {
       dataForPrisma.password = await bcrypt.hash(rest.password, 10);
+      dataForPrisma.passwordUpdatedAt = new Date();
     }
 
     if (idRole) {
       dataForPrisma.role = { connect: { id: idRole } };
     }
 
-    // Manejo explícito de markupOverride (si viene en el payload)
     if ('markupOverride' in userData) {
       dataForPrisma.markupOverride = userData.markupOverride;
     }
@@ -122,7 +124,9 @@ export class UsersService {
       return updated as UserSafe;
     } catch (error) {
       console.error('Error updating user:', error);
-      throw new NotFoundException(`User with ID #${where.id} not found or update failed.`);
+      throw new NotFoundException(
+        `User with ID #${where.id} not found or update failed.`,
+      );
     }
   }
 
@@ -142,18 +146,21 @@ export class UsersService {
   // 🔐 Métodos INTERNOS (para Auth)
   // ------------------------------------------------------------
 
-  // ✅ Necesario para cambiar contraseña (bcrypt.compare)
-  async userWithPassword(where: Prisma.UserWhereUniqueInput): Promise<UserWithRoleAndPassword> {
+  async userWithPassword(
+    where: Prisma.UserWhereUniqueInput,
+  ): Promise<UserWithRoleAndPassword> {
     const user = await this.prisma.user.findUnique({
       where,
       include: { role: true },
     });
-    if (!user) throw new NotFoundException(`User with ID #${where.id} not found.`);
+    if (!user)
+      throw new NotFoundException(`User with ID #${where.id} not found.`);
     return user;
   }
 
-  // ✅ Necesario para login (trae password hash)
-  async findOneByIdentifier(identifier: string): Promise<UserWithRoleAndPassword | null> {
+  async findOneByIdentifier(
+    identifier: string,
+  ): Promise<UserWithRoleAndPassword | null> {
     return this.prisma.user.findFirst({
       where: {
         OR: [{ username: identifier }, { email: identifier }],

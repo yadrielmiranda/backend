@@ -19,6 +19,8 @@ model Role {
   name   String  @unique
   markup Decimal @default(0) @db.Decimal(10, 4) // Total 10 dígitos, 4 decimales
   users  User[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model User {
@@ -29,6 +31,7 @@ model User {
   email          String         @unique
   phone          String         @unique
   password       String
+  passwordUpdatedAt DateTime @default(now())
   street         String  @db.VarChar(150)
   city           String  @db.VarChar(100)
   state          String  @db.VarChar(50)
@@ -40,7 +43,32 @@ model User {
   estimates      Estimate[]
   orders         Order[]
   notifications  Notification[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  sessions Session[]
+
 }
+
+model Session {
+  id               String   @id @default(uuid())
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId           Int
+
+  refreshTokenHash String   @db.VarChar(255)
+
+  createdAt        DateTime @default(now())
+  lastUsedAt       DateTime @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+
+  userAgent        String?  @db.VarChar(255)
+  ip               String?  @db.VarChar(64)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+
 
 // =======================================
 //        Modelos de Piezas y Opciones
@@ -52,6 +80,8 @@ model Brand {
   pieces        Piece[]
   brandProducts BrandProduct[]
   pricingRules  PricingRule[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Product {
@@ -61,6 +91,8 @@ model Product {
   pieces        Piece[]
   brandProducts BrandProduct[]
   pricingRules  PricingRule[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model BrandProduct {
@@ -83,6 +115,8 @@ model System {
   sysconfs     SysConf[]
   pieces       Piece[]
   pricingRules PricingRule[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Config {
@@ -99,6 +133,8 @@ model Config {
   requiresHeightLeft  Boolean       @default(false)
   requiresHeightRight Boolean       @default(false)
   requiresLegHeight   Boolean       @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model SysConf {
@@ -116,6 +152,8 @@ model FrameColor {
   id     Int     @id @default(autoincrement())
   color  String
   pieces Piece[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Crystal {
@@ -124,18 +162,24 @@ model Crystal {
   pieces            Piece[]
   pricingRules      PricingRule[]
   dimensionPolicies DimensionPolicy[] @relation("CrystalDimensionPolicies")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Tint {
   id     Int     @id @default(autoincrement())
   color  String
   pieces Piece[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Coating {
   id     Int     @id @default(autoincrement())
   name   String
   pieces Piece[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ==================================================
@@ -228,6 +272,8 @@ model Estimate {
   customerCity       String? @db.VarChar(100)
   customerState      String? @db.VarChar(50)
   customerPostalCode String? @db.VarChar(20)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Piece {
@@ -271,6 +317,8 @@ model Piece {
   customerPrice    Decimal    @db.Decimal(12, 2) // dealer → cliente final
   customerSubtotal Decimal    @db.Decimal(12, 2) // dealer → cliente final
   netProfitD       Decimal    @db.Decimal(12, 2) // ganancia del dealer
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model OrderStatus {
@@ -289,8 +337,11 @@ model Order {
   idEst    Int         @unique
   status   OrderStatus @relation(fields: [statusId], references: [id])
   statusId Int
+  updateStatus DateTime @default(now())
   user     User        @relation(fields: [userId], references: [id])
   userId   Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // =======================================

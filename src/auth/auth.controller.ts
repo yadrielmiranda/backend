@@ -1,3 +1,4 @@
+// src/auth/auth.controller.ts
 import {
   Controller,
   Post,
@@ -9,49 +10,121 @@ import {
   Get,
   Req,
   Patch,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
-import { Response, Request } from 'express';
+import { Response, Request, CookieOptions } from 'express';
 import { RegisterUserDto } from './dto/register-user.dto';
 import { JwtAuthGuard } from './guards/auth/auth.guard';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { Public } from 'src/auth/public.decorator';
 import { AuthUser } from './types/auth-user.type';
-import { UsersService, UserSafe } from 'src/users/users.service'; // ✅ NEW
+import { UsersService, UserSafe } from 'src/users/users.service';
+import { ACCESS_COOKIE, REFRESH_COOKIE } from './auth.tokens';
 
 @Controller('auth')
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
-    private readonly usersService: UsersService, // ✅ NEW
+    private readonly usersService: UsersService,
   ) {}
+
+  /**
+   * ✅ Cookies config:
+   * - DEV: sameSite=lax (evita bloqueos cuando usas IP/host distinto)
+   * - PROD: sameSite=strict (más seguridad si es mismo site)
+   *
+   * Nota: si en PROD frontend/backend están en dominios distintos, cambia a:
+   * sameSite: 'none' y secure: true (HTTPS obligatorio).
+   */
+  private cookieOptions(maxAgeMs: number): CookieOptions {
+    const isProd = process.env.NODE_ENV === 'production';
+
+    return {
+      httpOnly: true,
+      secure: isProd, // prod debe ser https
+      sameSite: (isProd ? 'strict' : 'lax') as CookieOptions['sameSite'],
+      maxAge: maxAgeMs,
+      path: '/',
+    };
+  }
+
+  private clearCookieOptions(): CookieOptions {
+    const isProd = process.env.NODE_ENV === 'production';
+
+    return {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: (isProd ? 'strict' : 'lax') as CookieOptions['sameSite'],
+      expires: new Date(0),
+      path: '/',
+    };
+  }
 
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('login')
   async login(
     @Body() loginDto: LoginDto,
-    @Res({ passthrough: true }) response: Response,
+    @Res({ passthrough: true }) res: Response,
+    @Req() req: Request,
   ) {
-    const { access_token } = await this.authService.validateAndSignIn(
+    const user = await this.authService.validateUser(
       loginDto.identifier,
       loginDto.password,
     );
 
-    response.cookie('access_token', access_token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 3600000 * 24, // 24 horas
-      path: '/',
+    const accessToken = await this.authService.signAccessToken(user);
+
+    const sessionId = this.authService.newSessionId();
+    const refreshToken = await this.authService.signRefreshToken(
+      user.id,
+      sessionId,
+    );
+
+    await this.authService.createSession({
+      sessionId,
+      userId: user.id,
+      refreshToken,
+      userAgent: req.headers['user-agent'] as string | undefined,
+      ip: req.ip as string | undefined,
     });
+
+    res.cookie(ACCESS_COOKIE, accessToken, this.cookieOptions(1000 * 60 * 15)); // 15m
+    res.cookie(
+      REFRESH_COOKIE,
+      refreshToken,
+      this.cookieOptions(1000 * 60 * 60 * 24 * 30), // 30d
+    );
 
     return { message: 'Inicio de sesión exitoso' };
   }
 
-  // ✅ AHORA DEVUELVE EL USER SAFE REAL (incluye role.id)
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @Post('refresh')
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const refreshToken = req.cookies?.[REFRESH_COOKIE];
+    if (!refreshToken) throw new UnauthorizedException('No autenticado.');
+
+    const { accessToken, newRefreshToken } =
+      await this.authService.refreshFromToken(refreshToken);
+
+    res.cookie(ACCESS_COOKIE, accessToken, this.cookieOptions(1000 * 60 * 15));
+    res.cookie(
+      REFRESH_COOKIE,
+      newRefreshToken,
+      this.cookieOptions(1000 * 60 * 60 * 24 * 30),
+    );
+
+    return { message: 'Token refrescado' };
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('profile')
   async getProfile(@Req() req: Request): Promise<UserSafe> {
@@ -62,14 +135,14 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('logout')
-  async logout(@Res({ passthrough: true }) response: Response) {
-    response.cookie('access_token', '', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      expires: new Date(0),
-      path: '/',
-    });
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const refreshToken = req.cookies?.[REFRESH_COOKIE];
+    if (refreshToken) {
+      await this.authService.revokeByRefreshToken(refreshToken);
+    }
+
+    res.cookie(ACCESS_COOKIE, '', this.clearCookieOptions());
+    res.cookie(REFRESH_COOKIE, '', this.clearCookieOptions());
 
     return { message: 'Sesión cerrada exitosamente' };
   }
@@ -91,14 +164,47 @@ export class AuthController {
     return this.authService.updateProfile(userId, updateProfileDto);
   }
 
+  /**
+   * ✅ Change password (self):
+   * - mantiene la sesión actual
+   * - revoca las otras sesiones
+   * - rota refresh y re-set cookies
+   */
   @UseGuards(JwtAuthGuard)
   @Patch('change-password')
   @HttpCode(HttpStatus.OK)
   async changePassword(
     @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
     @Body() changePasswordDto: ChangePasswordDto,
   ) {
     const userId = (req.user as AuthUser).id;
-    return this.authService.changePassword(userId, changePasswordDto);
+
+    const currentRefresh = req.cookies?.[REFRESH_COOKIE] as string | undefined;
+
+    const result = await this.authService.changePasswordSelf(
+      userId,
+      changePasswordDto,
+      currentRefresh,
+    );
+
+    // si el service devolvió nuevos tokens, los seteamos (mantiene sesión)
+    if (result.accessToken) {
+      res.cookie(
+        ACCESS_COOKIE,
+        result.accessToken,
+        this.cookieOptions(1000 * 60 * 15),
+      );
+    }
+
+    if (result.refreshToken) {
+      res.cookie(
+        REFRESH_COOKIE,
+        result.refreshToken,
+        this.cookieOptions(1000 * 60 * 60 * 24 * 30),
+      );
+    }
+
+    return { message: result.message };
   }
 }

@@ -7,7 +7,8 @@ import { Roles } from 'src/auth/roles.decorator';
 @Controller('roles')
 export class RolesController {
   constructor(private readonly rolesService: RolesService) {}
-
+  
+  @Roles('admin', 'operator')
   @Get()
   findAll() {
     return this.rolesService.findAll();
