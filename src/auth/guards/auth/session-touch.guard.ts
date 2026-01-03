@@ -44,11 +44,44 @@ export class SessionTouchGuard implements CanActivate {
     // ✅ Si no hay refresh cookie, dejamos pasar (JwtAuthGuard se encargará)
     if (!refresh) return true;
 
-    // ✅ Importante: NO queremos “revivir” la sesión con cualquier GET automático.
-    // Solo tocamos (update lastUsedAt) en mutaciones (POST/PUT/PATCH/DELETE).
     const method = String(req.method || 'GET').toUpperCase();
-    const shouldTouch =
-      method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+
+    /**
+     * Detectar path real
+     * - originalUrl suele traer algo como "/api/auth/profile"
+     */
+    const path = String(req.originalUrl || req.url || '');
+
+    /**
+     * ✅ Rutas que NO deben contar como "actividad"
+     * (no deben actualizar lastUsedAt)
+     */
+    const EXCLUDED_TOUCH_PATHS = ['/api/auth/profile', '/api/auth/refresh'];
+
+    const isExcludedTouch = EXCLUDED_TOUCH_PATHS.some((p) => path.includes(p));
+
+    /**
+     * ✅ Mutaciones SIEMPRE cuentan como actividad (excepto que tú quieras excluir alguna)
+     */
+    const isMutation =
+      method === 'POST' ||
+      method === 'PUT' ||
+      method === 'PATCH' ||
+      method === 'DELETE';
+
+    /**
+     * ✅ Touch (actualizar lastUsedAt) si:
+     * - es mutación (y no es /auth/refresh), o
+     * - es GET pero NO está excluido
+     */
+    const shouldTouchLastUsedAt =
+      (isMutation && !path.includes('/api/auth/refresh')) ||
+      (method === 'GET' && !isExcludedTouch);
+
+    /**
+     * ✅ Si es refresh, NO tocar lastUsedAt; solo lastRefreshedAt
+     */
+    const isRefreshEndpoint = path.includes('/api/auth/refresh');
 
     let payload: RefreshPayload;
     try {
@@ -82,13 +115,12 @@ export class SessionTouchGuard implements CanActivate {
       throw new UnauthorizedException('Session expired.');
     }
 
-    // ✅ Idle real (inactividad)
+    // ✅ Idle real (inactividad) usando lastUsedAt
     const lastUsed = new Date(session.lastUsedAt).getTime();
     const now = Date.now();
     const maxMs = this.idleMinutes * 60 * 1000;
 
     if (now - lastUsed > maxMs) {
-      // ✅ Marca revocada por idle y forzamos 401 para que el frontend abra login modal
       await this.prisma.session.update({
         where: { id: session.id },
         data: { revokedAt: new Date() },
@@ -96,8 +128,15 @@ export class SessionTouchGuard implements CanActivate {
       throw new UnauthorizedException('Session expired due to inactivity.');
     }
 
-    // ✅ Solo tocamos si es una acción real (mutación)
-    if (shouldTouch) {
+    // ✅ Actualizaciones controladas
+    if (isRefreshEndpoint) {
+      // refresh NO cuenta como actividad: solo marca lastRefreshedAt
+      await this.prisma.session.update({
+        where: { id: session.id },
+        data: { lastRefreshedAt: new Date() },
+      });
+    } else if (shouldTouchLastUsedAt) {
+      // GET real o mutación real => cuenta como actividad
       await this.prisma.session.update({
         where: { id: session.id },
         data: { lastUsedAt: new Date() },

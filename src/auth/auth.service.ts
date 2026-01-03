@@ -162,6 +162,7 @@ export class AuthService {
         userAgent: params.userAgent,
         ip: params.ip,
         lastUsedAt: new Date(),
+        lastRefreshedAt: new Date(),
       },
     });
   }
@@ -343,7 +344,7 @@ export class AuthService {
       where: { id: session.id },
       data: {
         refreshTokenHash: newHash,
-        lastUsedAt: new Date(),
+        lastRefreshedAt: new Date(),
       },
     });
 

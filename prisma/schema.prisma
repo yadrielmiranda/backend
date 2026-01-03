@@ -58,6 +58,7 @@ model Session {
 
   createdAt        DateTime @default(now())
   lastUsedAt       DateTime @default(now())
+  lastRefreshedAt  DateTime @default(now()) 
   expiresAt        DateTime
   revokedAt        DateTime?
 
