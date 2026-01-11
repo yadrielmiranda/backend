@@ -227,6 +227,13 @@ model PricingRule {
 //        Modelos de Cotizaciones y Pedidos
 // =======================================
 
+model EstimateStatus {
+  id        Int        @id @default(autoincrement())
+  name      String     @unique
+  estimates Estimate[]
+}
+
+
 model Estimate {
   id     Int      @id @default(autoincrement())
   number String   @unique
@@ -260,7 +267,9 @@ model Estimate {
   // --- RELACIONES ---
   user   User    @relation(fields: [idUser], references: [id])
   idUser Int
-  active Boolean
+  status   EstimateStatus @relation(fields: [statusId], references: [id])
+  statusId Int
+
   pieces Piece[]
   order  Order?
 
@@ -332,18 +341,41 @@ model Order {
   id       Int         @id @default(autoincrement())
   number   String      @unique
   date     DateTime    @default(now())
+
   units    Int
+
+  // amount = total con taxes incluidos (lo que paga el usuario)
   amount   Decimal     @db.Decimal(12, 2)
+
+  // snapshot financiero (sin taxes) para cálculo de ganancia
+  price        Decimal  @db.Decimal(12, 2) // tu precio total (sin taxes)
+  rate         Decimal  @db.Decimal(12, 2) // tu costo estimado total (fábrica estimada)
+  netProfit    Decimal  @db.Decimal(12, 2) // price - rate (ganancia estimada)
+
+  // datos reales luego de meter la orden en la fábrica
+  poNumber      String?  @unique @db.VarChar(50) // PO real de fábrica (único). Nullable hasta que lo tengas.
+  rateReal      Decimal? @db.Decimal(12, 2)      // costo real total que te cobra la fábrica
+  netProfitReal Decimal? @db.Decimal(12, 2)      // price - rateReal (ganancia real)
+
   estimate Estimate    @relation(fields: [idEst], references: [id])
   idEst    Int         @unique
+
   status   OrderStatus @relation(fields: [statusId], references: [id])
   statusId Int
+
   updateStatus DateTime @default(now())
+
   user     User        @relation(fields: [userId], references: [id])
   userId   Int
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([statusId])
+  @@index([date])
 }
+
 
 // =======================================
 //   Modelo de Notificaciones

@@ -22,7 +22,7 @@ import type { AuthUser } from 'src/auth/types/auth-user.type';
 @UseGuards(JwtAuthGuard)
 @Controller('estimates')
 export class EstimatesController {
-  constructor(private readonly estimatesService: EstimatesService) {}
+  constructor(private readonly estimatesService: EstimatesService) { }
 
   @Post('preview-dimension')
   async previewDimension(
@@ -71,6 +71,7 @@ export class EstimatesController {
   findAll(@Req() req: Request) {
     return this.estimatesService.findAllForUser(req.user as AuthUser);
   }
+
 
   // ✅ admin/operator: cualquiera
   // ✅ client/dealer: solo si es dueño

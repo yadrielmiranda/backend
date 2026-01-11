@@ -36,6 +36,19 @@ async function main() {
   }
   console.log('Order statuses are up to date.');
 
+    // 2.b Crear los estados de los estimates
+  const estimateStatusesToCreate = ["Active", "Ordered", "Expired"];
+  console.log("Upserting estimate statuses...");
+  for (const statusName of estimateStatusesToCreate) {
+    await prisma.estimateStatus.upsert({
+      where: { name: statusName },
+      update: {},
+      create: { name: statusName },
+    });
+  }
+  console.log("Estimate statuses are up to date.");
+
+
   // 3. Crear un usuario administrador por defecto
   const saltRounds = 10;
   const hashedPassword = await bcrypt.hash('admin123', saltRounds); // ¡IMPORTANTE: Cambiar esta contraseña en producción!
