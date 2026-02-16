@@ -13,7 +13,9 @@ import {
   GlobalParameterKey,
   User,
   Piece,
-  Order, // ✅ añadido
+  Order,
+  BrandingType,
+  Branding,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateEstimateDto } from './dto/create-estimate.dto';
@@ -28,6 +30,12 @@ import { computeBasePrice } from 'src/pricing/price-formula';
 import { normalizeInchesToEighthStep } from 'src/common/dimensions';
 import type { AuthUser } from 'src/auth/types/auth-user.type';
 import { isPrivileged } from 'src/auth/utils/is-privileged';
+
+// ✅ PDF on-the-fly
+import puppeteer from 'puppeteer';
+
+// ✅ Logs (EventLog + TempLog)
+import { LogsService } from 'src/logs/logs.service';
 
 // Prisma Transaction Client Type
 type PrismaTransactionClient = Omit<
@@ -77,11 +85,135 @@ export type EstimateWithRelations = Estimate & {
   pieces: PieceWithRelations[];
   order?: Order | null;
   status?: EstimateStatus | null; // ✅ tipado real, no any
+  branding?: Branding | null; // ✅ ya lo estabas retornando
 };
+
+// ✅ vistas de PDF (las 4 de tu UI)
+export type PdfView = 'client' | 'dealer_internal' | 'dealer_public' | 'admin';
 
 @Injectable()
 export class EstimatesService {
-  constructor(private prisma: PrismaService) { }
+  constructor(
+    private prisma: PrismaService,
+    private logs: LogsService,
+  ) {}
+
+  // =====================================================
+  // ✅ Audit snapshot helper
+  // =====================================================
+  private buildEstimateAuditSnapshot(est: any) {
+    // comentario en espanol: snapshot "estable" para auditoria (no metemos TODO el objeto gigante)
+    return {
+      id: est.id,
+      number: est.number,
+      name: est.name,
+      idUser: est.idUser,
+      statusId: est.statusId,
+      statusName: est.status?.name ?? null,
+      orderId: est.order?.id ?? null,
+
+      units: est.units,
+
+      // totales
+      rateT: est.rateT ?? null,
+      priceT: est.priceT ?? null,
+      netProfit: est.netProfit ?? null,
+      taxRate: est.taxRate ?? null,
+      taxAmount: est.taxAmount ?? null,
+      totalPayable: est.totalPayable ?? null,
+
+      customerPriceT: est.customerPriceT ?? null,
+      customerTaxRate: est.customerTaxRate ?? null,
+      customerTaxAmount: est.customerTaxAmount ?? null,
+      customerTotalPayable: est.customerTotalPayable ?? null,
+
+      netProfitD: est.netProfitD ?? null,
+
+      // customer
+      customerFirstName: est.customerFirstName ?? null,
+      customerLastName: est.customerLastName ?? null,
+      customerEmail: est.customerEmail ?? null,
+      customerPhone: est.customerPhone ?? null,
+      customerStreet: est.customerStreet ?? null,
+      customerCity: est.customerCity ?? null,
+      customerState: est.customerState ?? null,
+      customerPostalCode: est.customerPostalCode ?? null,
+
+      // piezas (resumen)
+      pieces: Array.isArray(est.pieces)
+        ? est.pieces.map((p: any) => ({
+            id: p.id ?? null,
+            mark: p.mark ?? null,
+            qty: p.qty ?? null,
+
+            // dims
+            width: p.width ?? null,
+            height: p.height ?? null,
+            heightLeft: p.heightLeft ?? null,
+            heightRight: p.heightRight ?? null,
+            legHeight: p.legHeight ?? null,
+
+            // ids de relaciones
+            idProd: p.idProd ?? null,
+            idBrand: p.idBrand ?? null,
+            idSyst: p.idSyst ?? null,
+            idConf: p.idConf ?? null,
+            idFC: p.idFC ?? null,
+            idCryst: p.idCryst ?? null,
+            idTint: p.idTint ?? null,
+            idCoat: p.idCoat ?? null,
+
+            // money
+            rate: p.rate ?? null,
+            price: p.price ?? null,
+            subtotal: p.subtotal ?? null,
+            netProfit: p.netProfit ?? null,
+
+            dealerMarkup: p.dealerMarkup ?? null,
+            netProfitD: p.netProfitD ?? null,
+
+            customerPrice: p.customerPrice ?? null,
+            customerSubtotal: p.customerSubtotal ?? null,
+
+            dpPosPsf: p.dpPosPsf ?? null,
+            dpNegPsf: p.dpNegPsf ?? null,
+
+            // flags
+            privacy: p.privacy ?? null,
+            screen: p.screen ?? null,
+            muntin: p.muntin ?? null,
+          }))
+        : [],
+      piecesCount: Array.isArray(est.pieces) ? est.pieces.length : 0,
+    };
+  }
+
+  // =====================================================
+  // Helpers PDF: permisos por rol
+  // =====================================================
+  private assertPdfViewAllowed(view: PdfView, roleName: string | null) {
+    // comentario en espanol: bloqueamos vistas que no corresponden al rol
+    if (roleName === 'client') {
+      if (view !== 'client') {
+        throw new BadRequestException('Vista no permitida.');
+      }
+      return;
+    }
+
+    if (roleName === 'dealer') {
+      if (view !== 'dealer_internal' && view !== 'dealer_public') {
+        throw new BadRequestException('Vista no permitida.');
+      }
+      return;
+    }
+
+    if (roleName === 'admin' || roleName === 'operator') {
+      // comentario en espanol: admin/operator pueden imprimir todo
+      return;
+    }
+
+    throw new BadRequestException('Rol no permitido.');
+  }
 
   // Estima la altura gobernante en función de los flags de Config.
   // FRAME-only: no hacemos conversiones a DLO.
@@ -152,6 +284,38 @@ export class EstimatesService {
     };
   }
 
+  // =====================================================
+  // BRANDING para reporte (dealer usa su branding, si no company)
+  // =====================================================
+  private async resolveBrandingForEstimate(
+    estimate: any,
+    tx: PrismaTransactionClient | PrismaService = this.prisma,
+  ) {
+    const roleName = estimate?.user?.role?.name ?? null;
+
+    // ✅ dealer => branding propio
+    if (roleName === 'dealer') {
+      const dealerId = estimate?.idUser;
+      if (!Number.isFinite(dealerId)) return null;
+
+      return (tx as any).branding.findFirst({
+        where: {
+          type: BrandingType.DEALER,
+          userId: dealerId,
+          isActive: true,
+        },
+      });
+    }
+
+    // ✅ resto => company
+    return (tx as any).branding.findFirst({
+      where: {
+        type: BrandingType.COMPANY,
+        isActive: true,
+      },
+    });
+  }
+
   // --- estimate (Get Single) ---
   async estimate(
     where: Prisma.EstimateWhereUniqueInput,
@@ -159,8 +323,8 @@ export class EstimatesService {
     const estimate = await this.prisma.estimate.findUnique({
       where,
       include: {
-        user: true,
-        status: true, // ✅ nuevo
+        user: { include: { role: true } }, // ✅ NECESARIO para saber si es dealer
+        status: true,
         order: true,
         pieces: {
           orderBy: { id: 'asc' },
@@ -178,7 +342,14 @@ export class EstimatesService {
       },
     });
 
-    return estimate as EstimateWithRelations | null;
+    if (!estimate) return null;
+
+    const branding = await this.resolveBrandingForEstimate(
+      estimate,
+      this.prisma as PrismaTransactionClient,
+    );
+
+    return { ...(estimate as any), branding } as EstimateWithRelations;
   }
 
   // --- estimates (Get List) ---
@@ -189,15 +360,14 @@ export class EstimatesService {
       where: params.where,
       include: {
         user: true,
-        status: true, // ✅ necesario para el badge/acciones del frontend
-        order: true,  // ✅ recomendado (para fallback y bloqueo)
+        status: true,
+        order: true,
       },
       orderBy: { date: 'desc' },
     });
 
     return estimates as EstimateWithRelations[];
   }
-
 
   async findAllForUser(user: AuthUser) {
     if (isPrivileged(user)) {
@@ -260,7 +430,6 @@ export class EstimatesService {
       });
       if (!taxParameter) throw new InternalServerErrorException('SALES_TAX config missing.');
 
-      // ✅ Buscar status "Active" sin asumir ID
       const activeStatus = await tx.estimateStatus.findUnique({
         where: { name: 'Active' },
         select: { id: true },
@@ -368,7 +537,6 @@ export class EstimatesService {
 
         units: totalUnits,
 
-        // ✅ status por defecto
         status: { connect: { id: activeStatus.id } },
 
         user: { connect: { id: userId } },
@@ -382,9 +550,30 @@ export class EstimatesService {
           status: true,
           order: true,
           pieces: {
-            include: { prod: true, bran: true, syst: true, conf: true, fColor: true, cryst: true, tin: true, coat: true },
+            include: {
+              prod: true,
+              bran: true,
+              syst: true,
+              conf: true,
+              fColor: true,
+              cryst: true,
+              tin: true,
+              coat: true,
+            },
           },
         },
+      });
+
+      // ✅ EventLog + TempLog (tu LogsService nuevo)
+      await this.logs.log({
+        action: 'CREATE',
+        entityType: 'Estimate',
+        entityId: createdEstimate.id,
+        userId,
+        message: `Estimate created (#${createdEstimate.number})`,
+        before: null,
+        after: this.buildEstimateAuditSnapshot(createdEstimate),
+        meta: { source: 'EstimatesService.createEstimate' },
       });
 
       return createdEstimate as EstimateWithRelations;
@@ -418,30 +607,31 @@ export class EstimatesService {
         ? new Decimal(0)
         : new Decimal(taxParameter.value.toString());
 
-      // ✅ ahora bloqueamos por status + order
-      const existingEstimate = await tx.estimate.findUnique({
+      // ✅ 1 sola query: sirve para validar y para snapshot BEFORE
+      const beforeEstimate = await tx.estimate.findUnique({
         where: { id: estimateId },
-        select: {
-          id: true,
-          idUser: true,
-          customerTaxRate: true,
-          status: { select: { name: true } },
-          order: { select: { id: true } },
+        include: {
+          user: true,
+          status: true,
+          order: true,
+          pieces: { orderBy: { id: 'asc' } },
         },
       });
 
-      if (!existingEstimate || existingEstimate.idUser !== userId) {
+      if (!beforeEstimate || beforeEstimate.idUser !== userId) {
         throw new NotFoundException(`Estimate #${estimateId} not found/denied.`);
       }
 
-      if (existingEstimate.status?.name !== 'Active') {
+      if (beforeEstimate.status?.name !== 'Active') {
         throw new BadRequestException(
-          `Estimate #${estimateId} no se puede editar (status: ${existingEstimate.status?.name ?? 'UNKNOWN'}).`,
+          `Estimate #${estimateId} no se puede editar (status: ${beforeEstimate.status?.name ?? 'UNKNOWN'}).`,
         );
       }
 
-      if (existingEstimate.order) {
-        throw new BadRequestException(`Estimate #${estimateId} ya tiene una orden y no se puede editar.`);
+      if (beforeEstimate.order) {
+        throw new BadRequestException(
+          `Estimate #${estimateId} ya tiene una orden y no se puede editar.`,
+        );
       }
 
       const {
@@ -451,7 +641,7 @@ export class EstimatesService {
       } = dto;
 
       const customerTaxRate = new Decimal(
-        rawCustomerTaxRate ?? Number(existingEstimate.customerTaxRate ?? 0),
+        rawCustomerTaxRate ?? Number(beforeEstimate.customerTaxRate ?? 0),
       );
 
       const incomingPieceIds = pieceDtos
@@ -561,9 +751,30 @@ export class EstimatesService {
           status: true,
           order: true,
           pieces: {
-            include: { prod: true, bran: true, syst: true, conf: true, fColor: true, cryst: true, tin: true, coat: true },
+            include: {
+              prod: true,
+              bran: true,
+              syst: true,
+              conf: true,
+              fColor: true,
+              cryst: true,
+              tin: true,
+              coat: true,
+            },
           },
         },
+      });
+
+      // ✅ EventLog + TempLog (tu LogsService nuevo)
+      await this.logs.log({
+        action: 'UPDATE',
+        entityType: 'Estimate',
+        entityId: updatedEstimate.id,
+        userId,
+        message: `Estimate updated (#${updatedEstimate.number})`,
+        before: this.buildEstimateAuditSnapshot(beforeEstimate),
+        after: this.buildEstimateAuditSnapshot(updatedEstimate),
+        meta: { source: 'EstimatesService.updateEstimate' },
       });
 
       return updatedEstimate;
@@ -573,14 +784,17 @@ export class EstimatesService {
   }
 
   // --- deleteEstimate ---
-  async deleteEstimate(where: Prisma.EstimateWhereUniqueInput): Promise<Estimate> {
+  async deleteEstimate(
+    where: Prisma.EstimateWhereUniqueInput,
+    userId: number,
+  ): Promise<Estimate> {
     return this.prisma.$transaction(async (tx) => {
       const estimate = await tx.estimate.findUnique({
         where,
-        select: {
-          id: true,
-          status: { select: { name: true } },
-          order: { select: { id: true } },
+        include: {
+          status: true,
+          order: true,
+          pieces: { orderBy: { id: 'asc' } },
         },
       });
 
@@ -595,11 +809,27 @@ export class EstimatesService {
       }
 
       if (estimate.order) {
-        throw new BadRequestException(`Estimate #${where.id} ya tiene una orden y no se puede borrar.`);
+        throw new BadRequestException(
+          `Estimate #${where.id} ya tiene una orden y no se puede borrar.`,
+        );
       }
+
+      const beforeSnapshot = this.buildEstimateAuditSnapshot(estimate);
 
       await tx.piece.deleteMany({ where: { idEst: where.id } });
       await tx.estimate.delete({ where: { id: where.id } });
+
+      // ✅ EventLog + TempLog (tu LogsService nuevo)
+      await this.logs.log({
+        action: 'DELETE',
+        entityType: 'Estimate',
+        entityId: estimate.id,
+        userId,
+        message: `Estimate deleted (#${estimate.number})`,
+        before: beforeSnapshot,
+        after: null,
+        meta: { source: 'EstimatesService.deleteEstimate' },
+      });
 
       return estimate as unknown as Estimate;
     });
@@ -986,4 +1216,576 @@ export class EstimatesService {
       };
     });
   }
-} // End Class
+
+  // =====================================================
+  // ✅ PDF on-the-fly (Buffer) con 4 vistas
+  // =====================================================
+  async generateEstimatePdfBufferForUser(
+    estimateId: number,
+    user: AuthUser,
+    view: PdfView,
+  ): Promise<Buffer> {
+    // comentario en espanol: respetamos la misma regla de acceso que findOneForUser
+    const estimate = await this.findOneForUser(estimateId, user);
+
+    const viewerRole =
+      (user as any)?.role?.name ??
+      (user as any)?.roleName ??
+      (estimate as any)?.user?.role?.name ??
+      null;
+
+    // comentario en espanol: valida que esa vista sea permitida para el rol
+    this.assertPdfViewAllowed(view, viewerRole);
+
+    const html = this.buildEstimatePdfHtml(estimate, view);
+
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+
+    try {
+      const page = await browser.newPage();
+
+      // comentario en espanol: si el logoUrl es externo, esto ayuda a que cargue completo
+      await page.setContent(html, { waitUntil: 'networkidle0' });
+
+      const pdf = await page.pdf({
+        format: 'Letter',
+        printBackground: true,
+        displayHeaderFooter: false,
+        preferCSSPageSize: true,
+        // ✅ ahora SI se nota el margen, porque no lo anulamos en CSS
+        margin: {
+          top: '24mm',
+          right: '16mm',
+          bottom: '12mm',
+          left: '16mm',
+        },
+      });
+
+      return Buffer.from(pdf);
+    } finally {
+      await browser.close();
+    }
+  }
+
+  // =====================================================
+  // ✅ HTML del PDF basado en tus 4 vistas reales
+  // =====================================================
+  private buildEstimatePdfHtml(
+    estimate: EstimateWithRelations,
+    view: PdfView,
+  ): string {
+    const b = (estimate as any).branding as Branding | null;
+
+    const brandingName = b?.name ?? 'Impact Plus';
+    const addressLine =
+      b?.street || b?.city || b?.state || b?.postalCode
+        ? [b?.street, b?.city, b?.state, b?.postalCode].filter(Boolean).join(', ')
+        : '';
+
+    const esc = (v: any) =>
+      String(v ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+
+    const money = (n: any) => {
+      const v = Number(n) || 0;
+      return v.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+    };
+
+    const dateLabel = (() => {
+      try {
+        const d = new Date((estimate as any).date);
+        return d.toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+        });
+      } catch {
+        return '';
+      }
+    })();
+
+    const logo = b?.logoUrl
+      ? `<div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+           <img src="${esc(b.logoUrl)}" style="height:48px; object-fit:contain;" />
+         </div>`
+      : '';
+
+    // =====================================================
+    // ✅ lógica igual a tu frontend (admin => base view depende del owner)
+    // =====================================================
+
+    // comentario en espanol: rol del duenio del estimate (quien lo creo)
+    const ownerRole = String((estimate as any)?.user?.role?.name ?? '')
+      .trim()
+      .toLowerCase();
+
+    // comentario en espanol: si admin imprime, el "base view" depende del owner
+    const effectiveView: PdfView =
+      view === 'admin' ? (ownerRole === 'dealer' ? 'dealer_internal' : 'client') : view;
+
+    const isPublic = effectiveView === 'dealer_public';
+
+    // DealerSummary solo cuando base view es dealer_internal
+    const showDealerSummary = effectiveView === 'dealer_internal';
+
+    // AdminSummary solo cuando la vista solicitada es admin
+    const showAdminSummary = view === 'admin';
+
+    // =====================================================
+    // ✅ Helpers de descripcion (igual a PieceDescriptionCell)
+    // =====================================================
+
+    // comentario en espanol: formatea pulgadas en pasos de 1/8 como "60 3/8"
+    const formatInchesFromEighthStep = (raw: any) => {
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return '?';
+
+      const sign = n < 0 ? '-' : '';
+      const abs = Math.abs(n);
+
+      const whole = Math.floor(abs);
+      const frac = abs - whole;
+
+      // redondeo a octavos
+      let eighths = Math.round(frac * 8);
+
+      // carry si se fue a 8/8
+      let w = whole;
+      if (eighths >= 8) {
+        w += 1;
+        eighths = 0;
+      }
+
+      if (eighths === 0) return `${sign}${w}`;
+
+      const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+      const g = gcd(eighths, 8);
+      const num = eighths / g;
+      const den = 8 / g;
+
+      return w > 0 ? `${sign}${w} ${num}/${den}` : `${sign}${num}/${den}`;
+    };
+
+    // comentario en espanol: formatea PSF como "+70.0 -80.0"
+    const formatPsf = (raw: any) => {
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return '';
+      const s = n >= 0 ? '+' : '';
+      return `${s}${n.toFixed(1)}`;
+    };
+
+    // comentario en espanol: construye lineas tipo frontend (PieceDescriptionCell)
+    const buildPieceDescriptionLines = (p: any): string[] => {
+      const header = [p.prod?.name, p.bran?.name, p.syst?.name, p.conf?.conf]
+        .filter(Boolean)
+        .join(' ');
+
+      const w = p.width != null ? formatInchesFromEighthStep(p.width) : '?';
+      const h = p.height != null ? formatInchesFromEighthStep(p.height) : '?';
+
+      const sizeParts: string[] = [`${w} x ${h}`];
+
+      if (p.heightLeft != null) sizeParts.push(`HL ${formatInchesFromEighthStep(p.heightLeft)}`);
+      if (p.heightRight != null) sizeParts.push(`HR ${formatInchesFromEighthStep(p.heightRight)}`);
+      if (p.legHeight != null) sizeParts.push(`Leg ${formatInchesFromEighthStep(p.legHeight)}`);
+
+      const sizeLine = `Size: ${sizeParts.join(' / ')}`;
+
+      const glassTokens: string[] = [];
+      if (p.cryst?.glass) glassTokens.push(p.cryst.glass);
+      if (p.tin?.color) glassTokens.push(p.tin.color);
+      if (p.coat?.name) glassTokens.push(p.coat.name);
+
+      const glassLine = glassTokens.length ? `Glass: ${glassTokens.join(' + ')}` : '';
+
+      const optionsLine = [
+        `Screen: ${p.screen ? 'Yes' : 'No'}`,
+        `Muntin: ${p.muntin ? 'Yes' : 'No'}`,
+        `Privacy: ${p.privacy ? 'Yes' : 'No'}`,
+      ].join(' | ');
+
+      const pos = p.dpPosPsf;
+      const neg = p.dpNegPsf;
+      const psfLine = pos != null && neg != null ? `PSF: ${formatPsf(pos)} ${formatPsf(neg)}` : '';
+
+      return [header, sizeLine, glassLine, optionsLine, psfLine].filter(
+        (l) => l && l.trim() !== '',
+      );
+    };
+
+    // =====================================================
+    // ✅ tabla de piezas segun vista (dealer_public usa customerPrice)
+    // =====================================================
+
+    const getUnitPrice = (p: any) => {
+      if (effectiveView === 'dealer_public') return Number(p.customerPrice ?? p.price) || 0;
+      return Number(p.price) || 0;
+    };
+
+    const getSubtotal = (p: any) => {
+      if (effectiveView === 'dealer_public') {
+        const unit = getUnitPrice(p);
+        const qty = Number(p.qty) || 0;
+        return unit * qty;
+      }
+      // comentario en espanol: en vistas internas ya viene subtotal calculado por backend
+      return Number(p.subtotal ?? 0) || 0;
+    };
+
+    const rows = (estimate.pieces ?? [])
+      .map((p: any) => {
+        const lines = buildPieceDescriptionLines(p);
+
+        const unitPrice = getUnitPrice(p);
+        const qty = Number(p.qty) || 0;
+        const subtotal = getSubtotal(p);
+
+        const descHtml = lines
+          .map((line, idx) =>
+            idx === 0 ? `<div class="h">${esc(line)}</div>` : `<div class="s">${esc(line)}</div>`,
+          )
+          .join('');
+
+        return `
+          <tr>
+            <td class="td mark">${esc(p.mark)}</td>
+            <td class="td desc">
+              ${descHtml}
+            </td>
+            <td class="td center">${esc(qty)}</td>
+            <td class="td right">${money(unitPrice)}</td>
+            <td class="td right strong">${money(subtotal)}</td>
+          </tr>
+        `;
+      })
+      .join('');
+
+    // =====================================================
+    // ✅ totales segun vista (igual que TotalsPublic / TotalsInternal)
+    // =====================================================
+
+    const subtotalInternal = Number((estimate as any).priceT ?? 0) || 0;
+    const taxRate = Number((estimate as any).taxRate ?? 0) || 0;
+    const taxAmount = Number((estimate as any).taxAmount ?? 0) || 0;
+    const totalPayable = Number((estimate as any).totalPayable ?? 0) || 0;
+
+    const customerSubtotal = Number((estimate as any).customerPriceT ?? 0) || 0;
+    const customerTaxRate = Number((estimate as any).customerTaxRate ?? 0) || 0;
+    const customerTaxAmount = Number((estimate as any).customerTaxAmount ?? 0) || 0;
+    const customerTotal = Number((estimate as any).customerTotalPayable ?? 0) || 0;
+
+    // Dealer summary (como tu DealerSummary)
+    const dealerTotalDueToImpact = totalPayable;
+    const dealerFinalPriceCustomer = customerSubtotal;
+    const dealerProfit = Number((estimate as any).netProfitD ?? 0) || 0;
+
+    // Admin summary (como tu AdminSummary)
+    const adminRateT = Number((estimate as any).rateT ?? 0) || 0;
+    const adminPriceT = subtotalInternal;
+    const adminProfit = Number((estimate as any).netProfit ?? 0) || 0;
+
+    return `
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Estimate ${esc((estimate as any).number)}</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #fff;
+      font-family: Arial, Helvetica, sans-serif;
+      color: #111;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #e5e7eb;
+    }
+
+    .title { font-size: 26px; font-weight: 700; margin: 0; }
+    .muted { color: #6b7280; font-size: 12px; margin-top: 6px; }
+
+    .brand { text-align: right; font-size: 12px; color: #6b7280; }
+    .brand .name { font-size: 18px; font-weight: 700; color: #374151; margin-top: 6px; }
+
+    .grid {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      margin-top: 12px;
+    }
+
+    .label {
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #6b7280;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .value { font-size: 16px; font-weight: 700; color: #111827; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+
+    thead th {
+      background: #f9fafb;
+      font-size: 11px;
+      text-transform: uppercase;
+      color: #374151;
+      padding: 9px 10px;
+      text-align: left;
+      border-bottom: 1px solid #e5e7eb;
+    }
+
+    .td {
+      padding: 10px;
+      border-bottom: 1px solid #e5e7eb;
+      vertical-align: top;
+      font-size: 12px;
+    }
+
+    .center { text-align: center; }
+    .right { text-align: right; }
+    .strong { font-weight: 700; }
+
+    .h { font-weight: 700; color: #111827; font-size: 12px; }
+    .s { color: #6b7280; font-size: 11px; margin-top: 4px; line-height: 1.35; }
+
+    .totals { display: flex; justify-content: flex-end; margin-top: 10px; }
+    .totbox { min-width: 300px; }
+
+    .sectionTitle {
+      font-size: 12px;
+      font-weight: 700;
+      color: #374151;
+      margin: 0 0 6px 0;
+    }
+
+    .line {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 12px;
+      color: #374151;
+    }
+
+    .line.total {
+      border-top: 2px solid #e5e7eb;
+      padding-top: 8px;
+      font-size: 14px;
+      font-weight: 800;
+      color: #111827;
+    }
+
+    .summary {
+      margin-top: 14px;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid #e5e7eb;
+      background: #f9fafb;
+      font-size: 12px;
+      color: #374151;
+    }
+
+    .summary h3 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      font-weight: 800;
+      color: #111827;
+    }
+
+    .summary .row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-top: 1px solid #e5e7eb;
+    }
+
+    .summary .row:first-of-type { border-top: none; padding-top: 0; }
+
+    .summary .profit {
+      font-weight: 900;
+      color: #065f46;
+    }
+
+    .summary .adminprofit {
+      font-weight: 900;
+      color: #991b1b;
+    }
+
+    .footer {
+      margin-top: 14px;
+      padding-top: 10px;
+      border-top: 1px solid #e5e7eb;
+      text-align: center;
+      font-size: 10px;
+      color: #6b7280;
+    }
+  </style>
+</head>
+<body>
+  <div>
+    <div class="header">
+      <div>
+        <h1 class="title">Estimate</h1>
+        <div class="muted">Number: ${esc((estimate as any).number)}</div>
+      </div>
+
+      <div class="brand">
+        ${logo}
+        <div class="name">${esc(brandingName)}</div>
+        ${addressLine ? `<div>${esc(addressLine)}</div>` : ``}
+        ${b?.email ? `<div>${esc(b.email)}</div>` : ``}
+        ${b?.phone ? `<div>${esc(b.phone)}</div>` : ``}
+        ${b?.website ? `<div>${esc(b.website)}</div>` : ``}
+      </div>
+    </div>
+
+    <div class="grid">
+      <div>
+        <div class="label">Prepared For</div>
+        <div class="value">${esc((estimate as any).name)}</div>
+      </div>
+      <div style="text-align:right;">
+        <div class="muted">Date: ${esc(dateLabel)}</div>
+      </div>
+    </div>
+
+    <div style="margin-top:16px; font-weight:700; color:#111827;">Pieces Detail</div>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width:80px;">Mark</th>
+          <th>Description</th>
+          <th style="width:70px; text-align:center;">Qty</th>
+          <th style="width:120px; text-align:right;">Unit Price</th>
+          <th style="width:120px; text-align:right;">Subtotal</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+
+    <div class="totals">
+      <div class="totbox">
+        ${
+          isPublic
+            ? `
+              <div class="line">
+                <span>Subtotal:</span>
+                <span>${money(customerSubtotal)}</span>
+              </div>
+              <div class="line">
+                <span>Sales Tax (${(customerTaxRate * 100).toFixed(2)}%):</span>
+                <span>${money(customerTaxAmount)}</span>
+              </div>
+              <div class="line total">
+                <span>Total:</span>
+                <span>${money(customerTotal)}</span>
+              </div>
+            `
+            : effectiveView === 'dealer_internal'
+              ? `
+                <div class="sectionTitle">Customer View Total</div>
+                <div class="line">
+                  <span>Subtotal:</span>
+                  <span>${money(customerSubtotal)}</span>
+                </div>
+                <div class="line">
+                  <span>Sales Tax (${(customerTaxRate * 100).toFixed(2)}%):</span>
+                  <span>${money(customerTaxAmount)}</span>
+                </div>
+                <div class="line total">
+                  <span>Total:</span>
+                  <span>${money(customerTotal)}</span>
+                </div>
+
+                <div style="height:14px;"></div>
+
+                <div class="sectionTitle">Internal Totals</div>
+                <div class="line">
+                  <span>Subtotal:</span>
+                  <span>${money(subtotalInternal)}</span>
+                </div>
+                <div class="line">
+                  <span>Sales Tax (${(taxRate * 100).toFixed(2)}%):</span>
+                  <span>${money(taxAmount)}</span>
+                </div>
+                <div class="line total">
+                  <span>Total:</span>
+                  <span>${money(totalPayable)}</span>
+                </div>
+              `
+              : `
+                <div class="line">
+                  <span>Subtotal:</span>
+                  <span>${money(subtotalInternal)}</span>
+                </div>
+                <div class="line">
+                  <span>Sales Tax (${(taxRate * 100).toFixed(2)}%):</span>
+                  <span>${money(taxAmount)}</span>
+                </div>
+                <div class="line total">
+                  <span>Total:</span>
+                  <span>${money(totalPayable)}</span>
+                </div>
+              `
+        }
+      </div>
+    </div>
+
+    ${
+      showDealerSummary
+        ? `
+          <div class="summary" style="background:#ecfdf5; border-color:#bbf7d0;">
+            <h3 style="color:#065f46;">Dealer Summary</h3>
+            <div class="row"><span>Total Due to Impact Plus:</span><span>${money(dealerTotalDueToImpact)}</span></div>
+            <div class="row"><span>Final Price for Your Customer:</span><span>${money(dealerFinalPriceCustomer)}</span></div>
+            <div class="row"><span>Your Profit (Net Profit):</span><span class="profit">${money(dealerProfit)}</span></div>
+          </div>
+        `
+        : ''
+    }
+
+    ${
+      showAdminSummary
+        ? `
+          <div class="summary" style="background:#fef2f2; border-color:#fecaca;">
+            <h3 style="color:#991b1b;">Admin Summary</h3>
+            <div class="row"><span>Total Production Cost (Rate):</span><span>${money(adminRateT)}</span></div>
+            <div class="row"><span>Sale Price (Before Taxes):</span><span>${money(adminPriceT)}</span></div>
+            <div class="row"><span>Impact Plus Profit (Net Profit):</span><span class="adminprofit">${money(adminProfit)}</span></div>
+          </div>
+        `
+        : ''
+    }
+
+    <div class="footer">
+      This estimate is valid for 30 days. Thank you for your business.
+    </div>
+  </div>
+</body>
+</html>
+    `;
+  }
+}

@@ -16,7 +16,7 @@ import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { Response, Request, CookieOptions } from 'express';
 import { RegisterUserDto } from './dto/register-user.dto';
-import { JwtAuthGuard } from './guards/auth/auth.guard';
+import { JwtAuthGuard } from 'src/auth/guards/auth/auth.guard';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { Public } from 'src/auth/public.decorator';
@@ -31,20 +31,12 @@ export class AuthController {
     private readonly usersService: UsersService,
   ) {}
 
-  /**
-   * ✅ Cookies config:
-   * - DEV: sameSite=lax (evita bloqueos cuando usas IP/host distinto)
-   * - PROD: sameSite=strict (más seguridad si es mismo site)
-   *
-   * Nota: si en PROD frontend/backend están en dominios distintos, cambia a:
-   * sameSite: 'none' y secure: true (HTTPS obligatorio).
-   */
   private cookieOptions(maxAgeMs: number): CookieOptions {
     const isProd = process.env.NODE_ENV === 'production';
 
     return {
       httpOnly: true,
-      secure: isProd, // prod debe ser https
+      secure: isProd,
       sameSite: (isProd ? 'strict' : 'lax') as CookieOptions['sameSite'],
       maxAge: maxAgeMs,
       path: '/',
@@ -84,6 +76,7 @@ export class AuthController {
       sessionId,
     );
 
+    // ✅ crea sesión + LOG LOGIN dentro del service
     await this.authService.createSession({
       sessionId,
       userId: user.id,
@@ -138,7 +131,11 @@ export class AuthController {
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const refreshToken = req.cookies?.[REFRESH_COOKIE];
     if (refreshToken) {
-      await this.authService.revokeByRefreshToken(refreshToken);
+      // ✅ revoca + LOG LOGOUT dentro del service
+      await this.authService.revokeByRefreshToken(refreshToken, {
+        reason: 'USER_LOGOUT',
+        source: 'AuthController.logout',
+      });
     }
 
     res.cookie(ACCESS_COOKIE, '', this.clearCookieOptions());
@@ -164,12 +161,6 @@ export class AuthController {
     return this.authService.updateProfile(userId, updateProfileDto);
   }
 
-  /**
-   * ✅ Change password (self):
-   * - mantiene la sesión actual
-   * - revoca las otras sesiones
-   * - rota refresh y re-set cookies
-   */
   @UseGuards(JwtAuthGuard)
   @Patch('change-password')
   @HttpCode(HttpStatus.OK)
@@ -188,7 +179,6 @@ export class AuthController {
       currentRefresh,
     );
 
-    // si el service devolvió nuevos tokens, los seteamos (mantiene sesión)
     if (result.accessToken) {
       res.cookie(
         ACCESS_COOKIE,

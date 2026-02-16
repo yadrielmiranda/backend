@@ -15,61 +15,99 @@ datasource db {
 // =======================================
 
 model Role {
-  id     Int     @id @default(autoincrement())
-  name   String  @unique
-  markup Decimal @default(0) @db.Decimal(10, 4) // Total 10 dígitos, 4 decimales
-  users  User[]
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  markup    Decimal  @default(0) @db.Decimal(10, 4) // Total 10 dígitos, 4 decimales
+  users     User[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
 model User {
-  id             Int            @id @default(autoincrement())
-  username       String         @unique
-  firstName      String
-  lastName       String
-  email          String         @unique
-  phone          String         @unique
-  password       String
-  passwordUpdatedAt DateTime @default(now())
-  street         String  @db.VarChar(150)
-  city           String  @db.VarChar(100)
-  state          String  @db.VarChar(50)
-  postalCode     String  @db.VarChar(20)
-  markupOverride Decimal?       @db.Decimal(10, 4)
-  isTaxExempt    Boolean        @default(false)
-  role           Role           @relation(fields: [idRole], references: [id])
-  idRole         Int
-  estimates      Estimate[]
-  orders         Order[]
-  notifications  Notification[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  sessions Session[]
-
+  id                Int            @id @default(autoincrement())
+  username          String         @unique
+  firstName         String
+  lastName          String
+  email             String         @unique
+  phone             String         @unique
+  password          String
+  passwordUpdatedAt DateTime       @default(now())
+  street            String         @db.VarChar(150)
+  city              String         @db.VarChar(100)
+  state             String         @db.VarChar(50)
+  postalCode        String         @db.VarChar(20)
+  markupOverride    Decimal?       @db.Decimal(10, 4)
+  isTaxExempt       Boolean        @default(false)
+  role              Role           @relation(fields: [idRole], references: [id])
+  idRole            Int
+  estimates         Estimate[]
+  payments          Payment[]
+  orders            Order[]
+  notifications     Notification[]
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  sessions          Session[]
+  branding          Branding? // 1:1 opcional (solo dealer la usará normalmente)
+  eventLogs         EventLog[]
 }
 
 model Session {
-  id               String   @id @default(uuid())
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId           Int
+  id     String @id @default(uuid())
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId Int
 
-  refreshTokenHash String   @db.VarChar(255)
+  refreshTokenHash String @db.VarChar(255)
 
-  createdAt        DateTime @default(now())
-  lastUsedAt       DateTime @default(now())
-  lastRefreshedAt  DateTime @default(now()) 
-  expiresAt        DateTime
-  revokedAt        DateTime?
+  createdAt       DateTime  @default(now())
+  lastUsedAt      DateTime  @default(now())
+  lastRefreshedAt DateTime  @default(now())
+  expiresAt       DateTime
+  revokedAt       DateTime?
 
-  userAgent        String?  @db.VarChar(255)
-  ip               String?  @db.VarChar(64)
+  userAgent String? @db.VarChar(255)
+  ip        String? @db.VarChar(64)
 
   @@index([userId])
   @@index([expiresAt])
 }
 
+enum BrandingType {
+  COMPANY
+  DEALER
+}
 
+model Branding {
+  id Int @id @default(autoincrement())
+
+  type   BrandingType
+  userId Int?         @unique // solo cuando type=DEALER  1 branding por dealer
+
+  // Header info
+  name    String  @db.VarChar(150)
+  phone   String? @db.VarChar(30)
+  email   String? @db.VarChar(150)
+  website String? @db.VarChar(150)
+
+  street     String? @db.VarChar(150)
+  city       String? @db.VarChar(100)
+  state      String? @db.VarChar(50)
+  postalCode String? @db.VarChar(20)
+
+  logoUrl String? @db.VarChar(500)
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relación (dealer)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Reglas para que no se dupliquen:  
+
+  @@index([type, isActive])
+  @@map("branding")
+}
 
 // =======================================
 //        Modelos de Piezas y Opciones
@@ -81,8 +119,8 @@ model Brand {
   pieces        Piece[]
   brandProducts BrandProduct[]
   pricingRules  PricingRule[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
 model Product {
@@ -92,8 +130,8 @@ model Product {
   pieces        Piece[]
   brandProducts BrandProduct[]
   pricingRules  PricingRule[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
 model BrandProduct {
@@ -116,8 +154,8 @@ model System {
   sysconfs     SysConf[]
   pieces       Piece[]
   pricingRules PricingRule[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
 }
 
 model Config {
@@ -134,8 +172,8 @@ model Config {
   requiresHeightLeft  Boolean       @default(false)
   requiresHeightRight Boolean       @default(false)
   requiresLegHeight   Boolean       @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
 }
 
 model SysConf {
@@ -150,9 +188,9 @@ model SysConf {
 }
 
 model FrameColor {
-  id     Int     @id @default(autoincrement())
-  color  String
-  pieces Piece[]
+  id        Int      @id @default(autoincrement())
+  color     String
+  pieces    Piece[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -163,22 +201,22 @@ model Crystal {
   pieces            Piece[]
   pricingRules      PricingRule[]
   dimensionPolicies DimensionPolicy[] @relation("CrystalDimensionPolicies")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
 }
 
 model Tint {
-  id     Int     @id @default(autoincrement())
-  color  String
-  pieces Piece[]
+  id        Int      @id @default(autoincrement())
+  color     String
+  pieces    Piece[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
 model Coating {
-  id     Int     @id @default(autoincrement())
-  name   String
-  pieces Piece[]
+  id        Int      @id @default(autoincrement())
+  name      String
+  pieces    Piece[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -233,7 +271,6 @@ model EstimateStatus {
   estimates Estimate[]
 }
 
-
 model Estimate {
   id     Int      @id @default(autoincrement())
   number String   @unique
@@ -265,25 +302,26 @@ model Estimate {
   netProfitD Decimal @default(0) @db.Decimal(12, 2) // dealer profit
 
   // --- RELACIONES ---
-  user   User    @relation(fields: [idUser], references: [id])
-  idUser Int
+  user     User           @relation(fields: [idUser], references: [id])
+  idUser   Int
   status   EstimateStatus @relation(fields: [statusId], references: [id])
   statusId Int
 
-  pieces Piece[]
-  order  Order?
+  pieces  Piece[]
+  order   Order?
+  payment Payment?
 
   // --- CUSTOMER (dealer fills; not a relation) ---
-  customerFirstName  String? @db.VarChar(100)
-  customerLastName   String? @db.VarChar(100)
-  customerEmail      String? @db.VarChar(150)
-  customerPhone      String? @db.VarChar(30)
-  customerStreet     String? @db.VarChar(150)
-  customerCity       String? @db.VarChar(100)
-  customerState      String? @db.VarChar(50)
-  customerPostalCode String? @db.VarChar(20)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  customerFirstName  String?  @db.VarChar(100)
+  customerLastName   String?  @db.VarChar(100)
+  customerEmail      String?  @db.VarChar(150)
+  customerPhone      String?  @db.VarChar(30)
+  customerStreet     String?  @db.VarChar(150)
+  customerCity       String?  @db.VarChar(100)
+  customerState      String?  @db.VarChar(50)
+  customerPostalCode String?  @db.VarChar(20)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 }
 
 model Piece {
@@ -327,8 +365,8 @@ model Piece {
   customerPrice    Decimal    @db.Decimal(12, 2) // dealer → cliente final
   customerSubtotal Decimal    @db.Decimal(12, 2) // dealer → cliente final
   netProfitD       Decimal    @db.Decimal(12, 2) // ganancia del dealer
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 }
 
 model OrderStatus {
@@ -338,35 +376,39 @@ model OrderStatus {
 }
 
 model Order {
-  id       Int         @id @default(autoincrement())
-  number   String      @unique
-  date     DateTime    @default(now())
+  id     Int      @id @default(autoincrement())
+  number String   @unique
+  date   DateTime @default(now())
 
-  units    Int
+  units Int
 
   // amount = total con taxes incluidos (lo que paga el usuario)
-  amount   Decimal     @db.Decimal(12, 2)
+  amount Decimal @db.Decimal(12, 2)
 
   // snapshot financiero (sin taxes) para cálculo de ganancia
-  price        Decimal  @db.Decimal(12, 2) // tu precio total (sin taxes)
-  rate         Decimal  @db.Decimal(12, 2) // tu costo estimado total (fábrica estimada)
-  netProfit    Decimal  @db.Decimal(12, 2) // price - rate (ganancia estimada)
+  price     Decimal @db.Decimal(12, 2) // tu precio total (sin taxes)
+  rate      Decimal @db.Decimal(12, 2) // tu costo estimado total (fábrica estimada)
+  netProfit Decimal @db.Decimal(12, 2) // price - rate (ganancia estimada)
 
   // datos reales luego de meter la orden en la fábrica
   poNumber      String?  @unique @db.VarChar(50) // PO real de fábrica (único). Nullable hasta que lo tengas.
-  rateReal      Decimal? @db.Decimal(12, 2)      // costo real total que te cobra la fábrica
-  netProfitReal Decimal? @db.Decimal(12, 2)      // price - rateReal (ganancia real)
+  rateReal      Decimal? @db.Decimal(12, 2) // costo real total que te cobra la fábrica
+  netProfitReal Decimal? @db.Decimal(12, 2) // price - rateReal (ganancia real)
 
-  estimate Estimate    @relation(fields: [idEst], references: [id])
-  idEst    Int         @unique
+  estimate Estimate @relation(fields: [idEst], references: [id])
+  idEst    Int      @unique
 
   status   OrderStatus @relation(fields: [statusId], references: [id])
   statusId Int
 
   updateStatus DateTime @default(now())
 
-  user     User        @relation(fields: [userId], references: [id])
-  userId   Int
+  user   User @relation(fields: [userId], references: [id])
+  userId Int
+
+  // Pago asociado (Order solo debe existir si hubo pago)
+  payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  paymentId Int     @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -375,7 +417,6 @@ model Order {
   @@index([statusId])
   @@index([date])
 }
-
 
 // =======================================
 //   Modelo de Notificaciones
@@ -449,4 +490,93 @@ model DimensionRule {
   policy DimensionPolicy @relation(fields: [idPolicy], references: [id], onDelete: Cascade)
 
   @@index([idPolicy, widthIn, heightIn], map: "idx_rule_policy_dims")
+}
+
+// =======================================
+//   Pagos (Stripe)
+// =======================================
+
+enum PaymentStatus {
+  PENDING // creado checkout, esperando pago
+  PAID // pago confirmado
+  FAILED // pago falló
+  CANCELED // usuario canceló
+  EXPIRED // sesión expiró
+  REFUNDED // reembolsado (opcional para futuro)
+}
+
+model Payment {
+  id     Int           @id @default(autoincrement())
+  status PaymentStatus @default(PENDING)
+
+  // A qué Estimate corresponde este pago
+  estimate Estimate @relation(fields: [idEst], references: [id], onDelete: Cascade)
+  idEst    Int      @unique
+
+  // Quién pagó (dealer o client; ambos son usuarios en tu sistema)
+  user   User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  userId Int
+
+  // Monto cobrado (normalmente estimate.totalPayable)
+  amount   Decimal @db.Decimal(12, 2)
+  currency String  @default("usd") @db.VarChar(10)
+
+  // Stripe IDs (para reconciliar con webhooks)
+  stripeSessionId       String? @unique @db.VarChar(255)
+  stripePaymentIntentId String? @unique @db.VarChar(255)
+  stripeCustomerId      String? @db.VarChar(255)
+
+  // Relación 1:1 con Order (solo existe si el pago fue exitoso y se creó la orden)
+  order Order?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@map("payments")
+}
+
+// =======================================
+//   Logs (Event + Temp)
+// =======================================
+
+model EventLog {
+  id Int @id @default(autoincrement())
+
+  action     String
+  entityType String
+  entityId   Int
+
+  userId Int?
+  user   User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  message   String?
+  createdAt DateTime @default(now())
+
+  // relación 1:1 opcional
+  tempLog TempLog?
+
+  @@index([userId])
+  @@index([entityType])
+  @@index([entityId])
+  @@index([createdAt])
+  @@map("event_logs")
+}
+
+model TempLog {
+  id Int @id @default(autoincrement())
+
+  //  UNIQUE = solo un TempLog por EventLog
+  eventId Int      @unique
+  event   EventLog @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  before Json?
+  after  Json?
+  meta   Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("temp_logs")
 }

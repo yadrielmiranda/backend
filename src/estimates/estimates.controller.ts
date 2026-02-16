@@ -1,3 +1,4 @@
+// src/estimates/estimates.controller.ts
 import {
   Controller,
   Get,
@@ -10,19 +11,22 @@ import {
   UseGuards,
   Req,
   NotFoundException,
+  Res,
+  BadRequestException,
+  Query,
 } from '@nestjs/common';
-import { EstimatesService } from './estimates.service';
+import { EstimatesService, type PdfView } from './estimates.service';
 import { CreateEstimateDto } from './dto/create-estimate.dto';
 import { UpdateEstimateDto } from './dto/update-estimate.dto';
 import { JwtAuthGuard } from 'src/auth/guards/auth/auth.guard';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { CreatePieceDto } from 'src/pieces/dto/create-piece.dto';
 import type { AuthUser } from 'src/auth/types/auth-user.type';
 
 @UseGuards(JwtAuthGuard)
 @Controller('estimates')
 export class EstimatesController {
-  constructor(private readonly estimatesService: EstimatesService) { }
+  constructor(private readonly estimatesService: EstimatesService) {}
 
   @Post('preview-dimension')
   async previewDimension(
@@ -65,22 +69,67 @@ export class EstimatesController {
     return this.estimatesService.createEstimate(dto, user.id);
   }
 
-  // ✅ admin/operator: todos
-  // ✅ client/dealer: solo los suyos
   @Get()
   findAll(@Req() req: Request) {
     return this.estimatesService.findAllForUser(req.user as AuthUser);
   }
 
-
-  // ✅ admin/operator: cualquiera
-  // ✅ client/dealer: solo si es dueño
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.estimatesService.findOneForUser(id, req.user as AuthUser);
   }
 
-  // 🔒 SOLO el que lo creó (aunque sea admin/operator)
+  @Get(':id/pdf')
+  async pdf(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('view') viewParam: string | undefined,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const user = req.user as AuthUser;
+
+    const roleName =
+      (user as any)?.role?.name ?? (user as any)?.roleName ?? null;
+
+    // comentario en espanol: si no mandan view, elegimos un default por rol
+    const defaultView: PdfView =
+      roleName === 'dealer'
+        ? 'dealer_internal'
+        : roleName === 'admin' || roleName === 'operator'
+          ? 'admin'
+          : 'client';
+
+    const normalized = (viewParam ?? '').trim().toLowerCase();
+
+    const view: PdfView =
+      normalized === 'client'
+        ? 'client'
+        : normalized === 'dealer_internal'
+          ? 'dealer_internal'
+          : normalized === 'dealer_public'
+            ? 'dealer_public'
+            : normalized === 'admin'
+              ? 'admin'
+              : normalized === ''
+                ? defaultView
+                : (() => {
+                    throw new BadRequestException(
+                      `view inválido. Use: client | dealer_internal | dealer_public | admin`,
+                    );
+                  })();
+
+    const pdfBuffer = await this.estimatesService.generateEstimatePdfBufferForUser(
+      id,
+      user,
+      view,
+    );
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="estimate-${id}.pdf"`);
+
+    return res.end(pdfBuffer);
+  }
+
   @Patch(':id')
   async update(
     @Param('id', ParseIntPipe) id: number,
@@ -92,11 +141,9 @@ export class EstimatesController {
     // ✅ valida dueño fuerte
     await this.estimatesService.assertEstimateOwnerOrThrow(id, user);
 
-    // y usa tu método original (que ya valida idUser y active)
     return this.estimatesService.updateEstimate(id, dto, user.id);
   }
 
-  // 🔒 SOLO el que lo creó (aunque sea admin/operator)
   @Delete(':id')
   async remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     const user = req.user as AuthUser;
@@ -104,6 +151,6 @@ export class EstimatesController {
     // ✅ valida dueño fuerte
     await this.estimatesService.assertEstimateOwnerOrThrow(id, user);
 
-    return this.estimatesService.deleteEstimate({ id });
+    return this.estimatesService.deleteEstimate({ id }, user.id);
   }
 }

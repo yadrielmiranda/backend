@@ -8,13 +8,15 @@ import { AuthController } from './auth.controller';
 import { UsersModule } from 'src/users/users.module';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { JwtStrategy } from './guards/auth/jwt.strategy';
+import { LogsModule } from 'src/logs/logs.module';
 
 @Module({
-  imports: [    
+  imports: [
     ConfigModule,
     UsersModule,
     PrismaModule,
     PassportModule,
+    LogsModule, 
 
     // ✅ JWT usando .env (JWT_SECRET_KEY)
     JwtModule.registerAsync({
@@ -26,7 +28,7 @@ import { JwtStrategy } from './guards/auth/jwt.strategy';
           throw new Error('JWT_SECRET_KEY is not set in .env');
         }
         return {
-          global: true, // si quieres que JwtService esté disponible global
+          global: true,
           secret,
           signOptions: { expiresIn: '1d' },
         };

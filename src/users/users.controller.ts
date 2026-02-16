@@ -9,28 +9,27 @@ import {
   Delete,
   ParseIntPipe,
   UseGuards,
+  Req,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { UsersService, UserSafe } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { JwtAuthGuard } from 'src/auth/guards/auth/auth.guard';
 import { Roles } from 'src/auth/roles.decorator';
 import { RolesGuard } from 'src/auth/guards/roles/roles.guard';
-import { PrismaService } from 'src/prisma/prisma.service';
+import type { AuthUser } from 'src/auth/types/auth-user.type';
 
 @UseGuards(JwtAuthGuard)
 @Controller('users')
 export class UsersController {
-  constructor(
-    private readonly usersService: UsersService,
-    private readonly prisma: PrismaService,
-  ) {}
+  constructor(private readonly usersService: UsersService) {}
 
   @Post()
   @Roles('admin')
   @UseGuards(RolesGuard)
-  async createUser(@Body() userData: CreateUserDto): Promise<UserSafe> {
-    return this.usersService.createUser(userData);
+  async createUser(@Body() userData: CreateUserDto, @Req() req: Request): Promise<UserSafe> {
+    return this.usersService.createUserAsAdmin(userData, req.user as AuthUser);
   }
 
   @Get()
@@ -53,27 +52,15 @@ export class UsersController {
   async updateUser(
     @Param('id', ParseIntPipe) id: number,
     @Body() userData: UpdateUserDto,
+    @Req() req: Request,
   ): Promise<UserSafe> {
-    const updated = await this.usersService.updateUser({
-      where: { id },
-      data: userData,
-    });
-
-    // ✅ Si el ADMIN cambió password => revoca TODAS las sesiones por seguridad
-    if (userData?.password) {
-      await this.prisma.session.updateMany({
-        where: { userId: id, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
-    }
-
-    return updated;
+    return this.usersService.updateUserAsAdmin(id, userData, req.user as AuthUser);
   }
 
   @Delete(':id')
   @Roles('admin')
   @UseGuards(RolesGuard)
-  async deleteUser(@Param('id', ParseIntPipe) id: number): Promise<UserSafe> {
-    return this.usersService.deleteUser({ id });
+  async deleteUser(@Param('id', ParseIntPipe) id: number, @Req() req: Request): Promise<UserSafe> {
+    return this.usersService.deleteUserAsAdmin(id, req.user as AuthUser);
   }
 }

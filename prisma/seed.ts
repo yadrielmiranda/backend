@@ -25,7 +25,7 @@ async function main() {
   console.log('Roles are up to date.');
 
   // 2. Crear los estados de las órdenes 
-  const orderStatusesToCreate = ['In production', 'Ready to pick up', 'Delivered'];
+  const orderStatusesToCreate = ['Pending', 'In production', 'Ready to pick up', 'Delivered'];
   console.log('Upserting order statuses...');
   for (const statusName of orderStatusesToCreate) {
     await prisma.orderStatus.upsert({

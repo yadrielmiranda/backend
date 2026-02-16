@@ -26,6 +26,9 @@ import { JwtAuthGuard } from './auth/guards/auth/auth.guard';
 import { RolesGuard } from './auth/guards/roles/roles.guard';
 import { ConfigModule } from '@nestjs/config';
 import { SessionTouchGuard } from './auth/guards/auth/session-touch.guard';
+import { BrandingsModule } from './brandings/brandings.module';
+import { PaymentsModule } from './payments/payments.module';
+import { LogsModule } from './logs/logs.module';
 
 
 @Module({
@@ -54,6 +57,9 @@ import { SessionTouchGuard } from './auth/guards/auth/session-touch.guard';
     GlobalParametersModule,
     DimensionPoliciesModule,
     GeoModule,
+    BrandingsModule,
+    PaymentsModule,    
+    LogsModule,
   ],
   controllers: [AppController],
   providers: [

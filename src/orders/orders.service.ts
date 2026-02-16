@@ -1,7 +1,7 @@
+// src/orders/orders.service.ts
 import {
   Injectable,
   NotFoundException,
-  ConflictException,
   BadRequestException,
 } from '@nestjs/common';
 import { Prisma, Order, OrderStatus } from '@prisma/client';
@@ -10,113 +10,15 @@ import { UpdateOrderDto } from './dto/update-order.dto';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { AuthUser } from 'src/auth/types/auth-user.type';
 import { getRoleName } from 'src/auth/utils/get-role-name';
-
-type RoleName = 'admin' | 'operator' | 'client' | 'dealer';
+import { LogsService } from 'src/logs/logs.service';
 
 @Injectable()
 export class OrdersService {
   constructor(
     private prisma: PrismaService,
     private notificationsService: NotificationsService,
+    private logsService: LogsService,
   ) {}
-
-  async createOrderFromEstimate(
-    estimateId: number,
-    userId: number,
-  ): Promise<Order> {
-    return this.prisma.$transaction(async (tx) => {
-      const estimate = await tx.estimate.findUnique({
-        where: { id: estimateId },
-        include: {
-          order: true,
-          status: { select: { name: true } }, // ✅ para validar Active
-        },
-      });
-
-      if (!estimate) {
-        throw new NotFoundException(`Estimate with ID #${estimateId} not found.`);
-      }
-
-      if (estimate.order) {
-        throw new ConflictException(
-          `Estimate with ID #${estimateId} already has an associated order.`,
-        );
-      }
-
-      // 🔐 Solo el dueño puede convertir su estimate en orden
-      if (estimate.idUser !== userId) {
-        throw new NotFoundException(`Estimate with ID #${estimateId} not found.`);
-      }
-
-      // 🔒 Solo se puede ordenar si el estimate está Active
-      if (estimate.status?.name !== 'Active') {
-        throw new BadRequestException(
-          `Estimate with ID #${estimateId} cannot be ordered (status: ${estimate.status?.name ?? 'UNKNOWN'}).`,
-        );
-      }
-
-      // ✅ Status de la orden (OrderStatus)
-      const inProductionStatus = await tx.orderStatus.findUnique({
-        where: { name: 'In production' },
-        select: { id: true },
-      });
-
-      if (!inProductionStatus) {
-        throw new NotFoundException(
-          'Order status "In production" not found. Please run the database seed.',
-        );
-      }
-
-      // ✅ Status del estimate (EstimateStatus) => "Ordered"
-      const orderedEstimateStatus = await tx.estimateStatus.findUnique({
-        where: { name: 'Ordered' },
-        select: { id: true },
-      });
-
-      if (!orderedEstimateStatus) {
-        throw new NotFoundException(
-          'Estimate status "Ordered" not found. Please run the database seed.',
-        );
-      }
-
-      const lastOrder = await tx.order.findFirst({ orderBy: { id: 'desc' } });
-      const lastOrderId = lastOrder?.id ?? 0;
-      const newOrderNumber = `ORD-${lastOrderId + 1001}`;
-
-      const newOrder = await tx.order.create({
-        data: {
-          number: newOrderNumber,
-          units: estimate.units,
-
-          // amount = total con taxes incluidos (lo que paga el usuario)
-          amount: estimate.totalPayable,
-
-          // snapshot financiero (sin taxes)
-          price: estimate.priceT,
-          rate: estimate.rateT,
-          netProfit: estimate.netProfit,
-
-          // reales => NULL al crear
-          poNumber: null,
-          rateReal: null,
-          netProfitReal: null,
-
-          idEst: estimateId,
-          statusId: inProductionStatus.id,
-          userId,
-          // updateStatus se queda con default(now())
-        },
-      });
-
-      // ✅ Marcar estimate como Ordered (ya ordenado)
-      await tx.estimate.update({
-        where: { id: estimateId },
-        data: { status: { connect: { id: orderedEstimateStatus.id } } },
-      });
-
-      return newOrder;
-    });
-  }
 
   async findAll(): Promise<Order[]> {
     return this.prisma.order.findMany({
@@ -139,7 +41,11 @@ export class OrdersService {
     return this.prisma.orderStatus.findMany();
   }
 
-  async update(id: number, updateOrderDto: UpdateOrderDto): Promise<Order> {
+  async update(
+    id: number,
+    updateOrderDto: UpdateOrderDto,
+    actor: AuthUser,
+  ): Promise<Order> {
     const current = await this.prisma.order.findUnique({
       where: { id },
       include: {
@@ -151,11 +57,15 @@ export class OrdersService {
 
     if (!current) throw new NotFoundException(`Order with ID #${id} not found.`);
 
+    let nextStatus: { id: number; name: string } | null = null;
+
     if (updateOrderDto.statusId !== undefined) {
-      const statusExists = await this.prisma.orderStatus.findUnique({
+      nextStatus = await this.prisma.orderStatus.findUnique({
         where: { id: updateOrderDto.statusId },
+        select: { id: true, name: true },
       });
-      if (!statusExists) {
+
+      if (!nextStatus) {
         throw new NotFoundException(
           `OrderStatus with ID #${updateOrderDto.statusId} not found.`,
         );
@@ -178,6 +88,24 @@ export class OrdersService {
       updateOrderDto.statusId !== undefined &&
       updateOrderDto.statusId !== current.statusId;
 
+    // comentario en espanol: PO obligatorio para mover a estados "posteriores"
+    if (statusWillChange && nextStatus) {
+      const requiresPO = ['In production', 'Ready to pick up', 'Delivered'].includes(
+        nextStatus.name,
+      );
+
+      if (requiresPO) {
+        const finalPo =
+          normalizedPo !== undefined ? normalizedPo : current.poNumber ?? null;
+
+        if (!finalPo) {
+          throw new BadRequestException(
+            `PO Number is required before moving the order to "${nextStatus.name}".`,
+          );
+        }
+      }
+    }
+
     const finalRateReal =
       normalizedRateReal !== undefined ? normalizedRateReal : current.rateReal;
 
@@ -190,9 +118,7 @@ export class OrdersService {
       ...(updateOrderDto.statusId !== undefined && { statusId: updateOrderDto.statusId }),
       ...(normalizedPo !== undefined && { poNumber: normalizedPo }),
       ...(normalizedRateReal !== undefined && { rateReal: normalizedRateReal }),
-
       netProfitReal: nextNetProfitReal,
-
       ...(statusWillChange && { updateStatus: new Date() }),
     };
 
@@ -206,6 +132,64 @@ export class OrdersService {
       },
     });
 
+    // =====================================================
+    // LOGS (EventLog + TempLog)
+    // - EventLog: liviano y permanente
+    // - TempLog: before/after/meta (temporal, para borrar cada X días)
+    // =====================================================
+    const actorRole = getRoleName(actor) ?? null;
+
+    // comentario en espanol: calculamos qué campos realmente cambiaron (para auditoría)
+    const changedFields: string[] = [];
+    if (statusWillChange) changedFields.push('statusId');
+    if (normalizedPo !== undefined && normalizedPo !== current.poNumber) changedFields.push('poNumber');
+    if (normalizedRateReal !== undefined) {
+      const curr = current.rateReal?.toString() ?? null;
+      const next = normalizedRateReal?.toString() ?? null;
+      if (curr !== next) changedFields.push('rateReal');
+    }
+
+    await this.logsService.log({
+      action: 'UPDATE',
+      entityType: 'Order',
+      entityId: updated.id,
+      userId: actor.id, // ✅ quien hizo el cambio
+      message: statusWillChange
+        ? `Order status changed: "${current.status?.name ?? ''}" -> "${updated.status?.name ?? ''}"`
+        : 'Order updated',
+
+      // comentario en espanol: snapshot corto, NO toda la orden
+      before: {
+        id: current.id,
+        statusId: current.statusId,
+        statusName: current.status?.name ?? null,
+        poNumber: current.poNumber ?? null,
+        rateReal: current.rateReal ?? null,
+        netProfitReal: current.netProfitReal ?? null,
+        updateStatus: current.updateStatus ?? null,
+      },
+      after: {
+        id: updated.id,
+        statusId: updated.statusId,
+        statusName: updated.status?.name ?? null,
+        poNumber: updated.poNumber ?? null,
+        rateReal: updated.rateReal ?? null,
+        netProfitReal: updated.netProfitReal ?? null,
+        updateStatus: updated.updateStatus ?? null,
+      },
+
+      // comentario en espanol: meta MINIMA (sin payload interno del DTO)
+      meta: {
+        changedFields,
+        statusWillChange,
+        fromStatus: current.status?.name ?? null,
+        toStatus: updated.status?.name ?? null,
+        actorRole,
+        targetUserId: current.userId, // dueño de la orden (para auditoría)
+      },
+    });
+
+    // notificación al dueño (solo si cambia el status)
     if (statusWillChange) {
       await this.notificationsService.createAndSend({
         recipientId: updated.estimate.idUser,

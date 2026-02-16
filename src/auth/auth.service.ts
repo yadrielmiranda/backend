@@ -14,6 +14,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { addDays } from 'date-fns';
 import { randomUUID } from 'crypto';
+import { LogsService } from 'src/logs/logs.service';
 
 type JwtRolePayload = string | undefined;
 
@@ -30,6 +31,7 @@ export class AuthService {
     private usersService: UsersService,
     private prisma: PrismaService,
     private jwtService: JwtService,
+    private logs: LogsService,
   ) {}
 
   private accessTtl = process.env.JWT_ACCESS_TTL || '15m';
@@ -41,6 +43,61 @@ export class AuthService {
   );
 
   private idleMinutes = parseInt(process.env.SESSION_IDLE_MINUTES ?? '0', 10);
+
+  // =====================================================
+  // ✅ Helpers logs: inicio / fin de sesión
+  // Nota: entityId en EventLog es INT NOT NULL.
+  // Para sesiones (sid es UUID string), usamos entityId=0 y guardamos sid en meta.sessionId.
+  // =====================================================
+  private SESSION_ENTITY_ID = 0;
+
+  private async logSessionLogin(params: {
+    userId: number;
+    sessionId: string;
+    ip?: string;
+    userAgent?: string;
+    source: string;
+  }) {
+    await this.logs.log({
+      action: 'LOGIN',
+      entityType: 'Session',
+      entityId: this.SESSION_ENTITY_ID, // ✅ NO null
+      userId: params.userId,
+      message: 'Session started',
+      meta: {
+        source: params.source,
+        sessionId: params.sessionId,
+        ip: params.ip ?? null,
+        userAgent: params.userAgent ?? null,
+      },
+    });
+  }
+
+  private async logSessionLogout(params: {
+    userId?: number | null;
+    sessionId?: string | null;
+    reason:
+      | 'USER_LOGOUT'
+      | 'IDLE_TIMEOUT'
+      | 'REFRESH_INVALID'
+      | 'PASSWORD_CHANGED'
+      | 'SESSION_EXPIRED'
+      | 'SESSION_REVOKED';
+    source: string;
+  }) {
+    await this.logs.log({
+      action: 'LOGOUT',
+      entityType: 'Session',
+      entityId: this.SESSION_ENTITY_ID, // ✅ NO null
+      userId: params.userId ?? null,
+      message: 'Session ended',
+      meta: {
+        source: params.source,
+        sessionId: params.sessionId ?? null,
+        reason: params.reason,
+      },
+    });
+  }
 
   async validateAndSignIn(
     identifier: string,
@@ -123,7 +180,7 @@ export class AuthService {
     const ok = await bcrypt.compare(pass, user.password);
     if (!ok) throw new UnauthorizedException('Credenciales inválidas.');
 
-    return user; // incluye role
+    return user;
   }
 
   async signAccessToken(user: any) {
@@ -153,7 +210,7 @@ export class AuthService {
 
     const expiresAt = addDays(new Date(), this.refreshSessionDays);
 
-    return this.prisma.session.create({
+    const session = await this.prisma.session.create({
       data: {
         id: params.sessionId,
         userId: params.userId,
@@ -165,20 +222,22 @@ export class AuthService {
         lastRefreshedAt: new Date(),
       },
     });
+
+    await this.logSessionLogin({
+      userId: params.userId,
+      sessionId: params.sessionId,
+      ip: params.ip,
+      userAgent: params.userAgent,
+      source: 'AuthService.createSession',
+    });
+
+    return session;
   }
 
   newSessionId() {
     return randomUUID();
   }
 
-  /**
-   * ✅ SELF change password:
-   * - valida currentPassword
-   * - cambia password (UsersService actualiza passwordUpdatedAt)
-   * - revoca TODAS las sesiones menos la actual (sid del refresh cookie)
-   * - rota refresh de la sesión actual para que NO se caiga
-   * - devuelve nuevos tokens (access + refresh) para re-set cookies
-   */
   async changePasswordSelf(
     userId: number,
     dto: ChangePasswordDto,
@@ -191,57 +250,104 @@ export class AuthService {
       throw new UnauthorizedException('La contraseña actual es incorrecta.');
     }
 
-    // 1) Cambia password (hash + passwordUpdatedAt en UsersService)
     await this.usersService.updateUser({
       where: { id: userId },
       data: { password: dto.newPassword },
     });
 
-    // Si no hay refresh cookie, no podemos identificar “sesión actual”
-    // (en tu frontend normal SI la tendrás).
     if (!currentRefreshToken) {
-      // opción más segura: revoca todas (access actual sigue vivo hasta expirar)
+      const sessionsToRevoke = await this.prisma.session.findMany({
+        where: { userId, revokedAt: null },
+        select: { id: true },
+      });
+
       await this.prisma.session.updateMany({
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date() },
       });
+
+      for (const s of sessionsToRevoke) {
+        await this.logSessionLogout({
+          userId,
+          sessionId: s.id,
+          reason: 'PASSWORD_CHANGED',
+          source: 'AuthService.changePasswordSelf(no-refresh)',
+        });
+      }
+
       return { message: 'Contraseña actualizada. Vuelve a iniciar sesión.' };
     }
 
-    // 2) Identifica sid de la sesión actual
     let payload: RefreshPayload;
     try {
       payload = await this.jwtService.verifyAsync<RefreshPayload>(currentRefreshToken);
     } catch {
-      // si refresh es inválido, revocamos todo y pedimos login
+      const sessionsToRevoke = await this.prisma.session.findMany({
+        where: { userId, revokedAt: null },
+        select: { id: true },
+      });
+
       await this.prisma.session.updateMany({
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date() },
       });
+
+      for (const s of sessionsToRevoke) {
+        await this.logSessionLogout({
+          userId,
+          sessionId: s.id,
+          reason: 'PASSWORD_CHANGED',
+          source: 'AuthService.changePasswordSelf(bad-refresh)',
+        });
+      }
+
       return { message: 'Contraseña actualizada. Vuelve a iniciar sesión.' };
     }
 
     if (!payload?.sid || payload.sub !== userId) {
+      const sessionsToRevoke = await this.prisma.session.findMany({
+        where: { userId, revokedAt: null },
+        select: { id: true },
+      });
+
       await this.prisma.session.updateMany({
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date() },
       });
+
+      for (const s of sessionsToRevoke) {
+        await this.logSessionLogout({
+          userId,
+          sessionId: s.id,
+          reason: 'PASSWORD_CHANGED',
+          source: 'AuthService.changePasswordSelf(mismatch-refresh)',
+        });
+      }
+
       return { message: 'Contraseña actualizada. Vuelve a iniciar sesión.' };
     }
 
     const currentSid = payload.sid;
 
-    // 3) Revoca todas menos la actual
+    const sessionsToRevoke = await this.prisma.session.findMany({
+      where: { userId, revokedAt: null, NOT: { id: currentSid } },
+      select: { id: true },
+    });
+
     await this.prisma.session.updateMany({
-      where: {
-        userId,
-        revokedAt: null,
-        NOT: { id: currentSid },
-      },
+      where: { userId, revokedAt: null, NOT: { id: currentSid } },
       data: { revokedAt: new Date() },
     });
 
-    // 4) Rota refresh para la sesión actual (y actualiza hash)
+    for (const s of sessionsToRevoke) {
+      await this.logSessionLogout({
+        userId,
+        sessionId: s.id,
+        reason: 'PASSWORD_CHANGED',
+        source: 'AuthService.changePasswordSelf(revoke-others)',
+      });
+    }
+
     const newRefresh = await this.signRefreshToken(userId, currentSid);
     const newHash = await bcrypt.hash(newRefresh, this.bcryptRounds);
 
@@ -250,11 +356,10 @@ export class AuthService {
       data: {
         refreshTokenHash: newHash,
         lastUsedAt: new Date(),
-        revokedAt: null, // por si acaso
+        revokedAt: null,
       },
     });
 
-    // 5) Emite nuevo access también (para que quede limpio)
     const freshUser = await this.prisma.user.findUnique({
       where: { id: userId },
       include: { role: true },
@@ -303,6 +408,14 @@ export class AuthService {
           where: { id: session.id },
           data: { revokedAt: new Date() },
         });
+
+        await this.logSessionLogout({
+          userId: session.userId,
+          sessionId: session.id,
+          reason: 'IDLE_TIMEOUT',
+          source: 'AuthService.refreshFromToken(idle)',
+        });
+
         throw new UnauthorizedException('Sesión expirada por inactividad.');
       }
     }
@@ -313,6 +426,14 @@ export class AuthService {
         where: { id: session.id },
         data: { revokedAt: new Date() },
       });
+
+      await this.logSessionLogout({
+        userId: session.userId,
+        sessionId: session.id,
+        reason: 'REFRESH_INVALID',
+        source: 'AuthService.refreshFromToken(hash-mismatch)',
+      });
+
       throw new UnauthorizedException('Refresh token inválido.');
     }
 
@@ -322,7 +443,6 @@ export class AuthService {
     });
     if (!user) throw new UnauthorizedException('Usuario no existe.');
 
-    // ✅ invalidación por cambio de password (extra seguridad)
     if (payload.iat) {
       const refreshIatMs = payload.iat * 1000;
       const pwdUpdatedMs = new Date(user.passwordUpdatedAt).getTime();
@@ -331,6 +451,14 @@ export class AuthService {
           where: { id: session.id },
           data: { revokedAt: new Date() },
         });
+
+        await this.logSessionLogout({
+          userId: session.userId,
+          sessionId: session.id,
+          reason: 'PASSWORD_CHANGED',
+          source: 'AuthService.refreshFromToken(password-updated)',
+        });
+
         throw new UnauthorizedException('Sesión inválida. Vuelve a iniciar sesión.');
       }
     }
@@ -351,15 +479,37 @@ export class AuthService {
     return { accessToken, newRefreshToken };
   }
 
-  async revokeByRefreshToken(refreshToken: string): Promise<void> {
+  async revokeByRefreshToken(
+    refreshToken: string,
+    opts?: { reason?: 'USER_LOGOUT' | 'SESSION_REVOKED'; source?: string },
+  ): Promise<void> {
+    const reason = opts?.reason ?? 'USER_LOGOUT';
+    const source = opts?.source ?? 'AuthService.revokeByRefreshToken';
+
     try {
       const payload = await this.jwtService.verifyAsync<RefreshPayload>(refreshToken);
       if (!payload?.sid) return;
 
-      await this.prisma.session.update({
+      const session = await this.prisma.session.findUnique({
         where: { id: payload.sid },
-        data: { revokedAt: new Date() },
+        select: { id: true, userId: true, revokedAt: true },
       });
+
+      if (!session) return;
+
+      if (!session.revokedAt) {
+        await this.prisma.session.update({
+          where: { id: session.id },
+          data: { revokedAt: new Date() },
+        });
+
+        await this.logSessionLogout({
+          userId: session.userId,
+          sessionId: session.id,
+          reason,
+          source,
+        });
+      }
     } catch {
       return;
     }
