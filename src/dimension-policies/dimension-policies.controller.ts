@@ -1,22 +1,35 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, ParseIntPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Param,
+  Body,
+  Query,
+  ParseIntPipe,
+  Req,
+} from '@nestjs/common';
+import { Request } from 'express';
 import { DimensionPoliciesService } from './dimension-policies.service';
 import { CreatePolicyDto, UpdatePolicyDto } from './dto/create-dimension-policy.dto';
 import { BulkUpsertRulesDto } from './dto/rule.dto';
 import { Roles } from 'src/auth/roles.decorator';
+import type { AuthUser } from 'src/auth/types/auth-user.type';
 
 @Controller('dimension-policies')
 export class DimensionPoliciesController {
   constructor(private svc: DimensionPoliciesService) {}
 
-  // 🔒 WRITE: solo admin
+  // WRITE: solo admin
   @Post()
   @Roles('admin')
-  create(@Body() dto: CreatePolicyDto) {
-    return this.svc.createPolicy(dto);
+  create(@Body() dto: CreatePolicyDto, @Req() req: Request) {
+    return this.svc.createPolicy(dto, req.user as AuthUser);
   }
 
-  // ✅ READ: todos los usuarios autenticados
-  @Get()  
+  //  READ: todos los usuarios autenticados
+  @Get()
   list(
     @Query('idSystem') idSystem?: number,
     @Query('idConfig') idConfig?: number,
@@ -31,8 +44,8 @@ export class DimensionPoliciesController {
     });
   }
 
-  // ✅ READ: todos los usuarios autenticados
-  @Get('preview')  
+  // READ: todos los usuarios autenticados
+  @Get('preview')
   preview(
     @Query('idSystem', ParseIntPipe) idSystem: number,
     @Query('idConfig', ParseIntPipe) idConfig: number,
@@ -49,30 +62,38 @@ export class DimensionPoliciesController {
     });
   }
 
-  // ✅ READ: todos los usuarios autenticados
-  @Get(':id')  
+  // READ: todos los usuarios autenticados
+  @Get(':id')
   getOne(@Param('id', ParseIntPipe) id: number) {
     return this.svc.getPolicy(id);
   }
 
-  // 🔒 WRITE: solo admin
+  // WRITE: solo admin
   @Patch(':id')
   @Roles('admin')
-  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdatePolicyDto) {
-    return this.svc.updatePolicy(id, dto);
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdatePolicyDto,
+    @Req() req: Request,
+  ) {
+    return this.svc.updatePolicy(id, dto, req.user as AuthUser);
   }
 
-  // 🔒 WRITE: solo admin
+  // WRITE: solo admin
   @Delete(':id')
   @Roles('admin')
-  del(@Param('id', ParseIntPipe) id: number) {
-    return this.svc.deletePolicy(id);
+  del(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.svc.deletePolicy(id, req.user as AuthUser);
   }
 
-  // 🔒 WRITE: solo admin
+  // WRITE: solo admin
   @Post(':id/rules/bulk-upsert')
   @Roles('admin')
-  bulkUpsert(@Param('id', ParseIntPipe) id: number, @Body() dto: BulkUpsertRulesDto) {
-    return this.svc.bulkUpsertRules(id, dto);
+  bulkUpsert(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: BulkUpsertRulesDto,
+    @Req() req: Request,
+  ) {
+    return this.svc.bulkUpsertRules(id, dto, req.user as AuthUser);
   }
 }

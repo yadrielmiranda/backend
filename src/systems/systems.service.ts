@@ -1,4 +1,3 @@
-// systems.service.ts
 import {
   BadRequestException,
   Injectable,
@@ -8,6 +7,8 @@ import { Prisma, System } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateSystemDto } from './dto/create-system.dto';
 import { UpdateSystemDto } from './dto/update-system.dto';
+import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
+
 
 @Injectable()
 export class SystemsService {
@@ -21,6 +22,16 @@ export class SystemsService {
           include: {
             brand: true,
             product: true,
+          },
+        },
+        sysconfs: {
+          include: {
+            config: true,
+          },
+          orderBy: {
+            config: {
+              conf: 'asc',
+            },
           },
         },
       },
@@ -50,6 +61,16 @@ export class SystemsService {
         brandProduct: {
           include: { brand: true, product: true },
         },
+        sysconfs: {
+          include: {
+            config: true,
+          },
+          orderBy: {
+            config: {
+              conf: 'asc',
+            },
+          },
+        },
       },
     });
   }
@@ -58,7 +79,17 @@ export class SystemsService {
   async findAllWithConfigs(): Promise<System[]> {
     return this.prisma.system.findMany({
       include: {
-        sysconfs: { include: { config: true } },
+        sysconfs: {
+          include: { config: true },
+          orderBy: {
+            config: {
+              conf: 'asc',
+            },
+          },
+        },
+        brandProduct: {
+          include: { brand: true, product: true },
+        },
       },
       orderBy: { id: 'asc' },
     });
@@ -117,7 +148,14 @@ export class SystemsService {
     const system = await this.prisma.system.findUnique({
       where: { id: systemId },
       include: {
-        sysconfs: { include: { config: true } },
+        sysconfs: {
+          include: { config: true },
+          orderBy: {
+            config: {
+              conf: 'asc',
+            },
+          },
+        },
         brandProduct: { include: { product: true, brand: true } },
       },
     });
@@ -167,6 +205,7 @@ export class SystemsService {
    * - Verifica existencia
    * - Valida que pertenecen al mismo Product
    * - Upsert idempotente
+   * - allowScreen arranca en false por defecto
    */
   async addConfigToSystem(systemId: number, configId: number) {
     const [system, config] = await Promise.all([
@@ -192,14 +231,63 @@ export class SystemsService {
     await this.prisma.sysConf.upsert({
       where: { idSystem_idConfig: { idSystem: systemId, idConfig: configId } },
       update: {},
-      create: { idSystem: systemId, idConfig: configId },
+      create: {
+        idSystem: systemId,
+        idConfig: configId,
+        allowScreen: false,
+      },
+    });
+
+    return this.getSystemWithConfigs(systemId);
+  }
+
+  /**
+   * Actualiza opciones de la relación System ⇄ Config
+   */
+  async updateSystemConfig(
+    systemId: number,
+    configId: number,
+    data: UpdateSystemConfigDto,
+  ) {
+    const existingLink = await this.prisma.sysConf.findUnique({
+      where: {
+        idSystem_idConfig: {
+          idSystem: systemId,
+          idConfig: configId,
+        },
+      },
+      select: {
+        idSystem: true,
+        idConfig: true,
+      },
+    });
+
+    if (!existingLink) {
+      throw new NotFoundException(
+        `System/Config link not found (systemId=${systemId}, configId=${configId}).`,
+      );
+    }
+
+    await this.prisma.sysConf.update({
+      where: {
+        idSystem_idConfig: {
+          idSystem: systemId,
+          idConfig: configId,
+        },
+      },
+      data: {
+        allowScreen: data.allowScreen,
+      },
     });
 
     return this.getSystemWithConfigs(systemId);
   }
 
   /** Elimina la asociación System ⇄ Config (404 si no existe) */
-  async removeConfigFromSystem(systemId: number, configId: number): Promise<System> {
+  async removeConfigFromSystem(
+    systemId: number,
+    configId: number,
+  ): Promise<System> {
     try {
       await this.prisma.sysConf.delete({
         where: { idSystem_idConfig: { idSystem: systemId, idConfig: configId } },

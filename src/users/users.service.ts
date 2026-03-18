@@ -1,4 +1,3 @@
-// src/users/users.service.ts
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { Prisma, User } from '@prisma/client';
@@ -24,7 +23,7 @@ export class UsersService {
     private logs: LogsService,
   ) {}
 
-  // ✅ SELECT “safe”: NUNCA trae password
+  //  SELECT “safe”: NUNCA trae password
   private readonly safeSelect = {
     id: true,
     username: true,
@@ -49,7 +48,7 @@ export class UsersService {
   // Helpers
   // =====================================================
 
-  // comentario en espanol: snapshot "safe" para before/after (no incluye password)
+  //  snapshot "safe" para before/after (no incluye password)
   private userSnapshot(u: UserSafe) {
     return {
       id: u.id,
@@ -71,7 +70,7 @@ export class UsersService {
   }
 
   private diffChangedFields(before: UserSafe, after: UserSafe, dto: UpdateUserDto) {
-    // comentario en espanol: solo auditamos campos que vinieron en el DTO
+    //  solo auditamos campos que vinieron en el DTO
     const changed: string[] = [];
     const cmp = (a: any, b: any) => (a ?? null) !== (b ?? null);
 
@@ -185,9 +184,7 @@ export class UsersService {
     } catch (error) {
       // comentario en espanol: mantenemos el mismo comportamiento de antes
       console.error('Error updating user:', error);
-      throw new NotFoundException(
-        `User with ID #${where.id} not found or update failed.`,
-      );
+      throw new NotFoundException(`User with ID #${where.id} not found or update failed.`);
     }
   }
 
@@ -204,7 +201,7 @@ export class UsersService {
   }
 
   // =====================================================
-  // ✅ ADMIN wrappers: logs + before/after + revoke sessions
+  //  ADMIN wrappers: logs + before/after + revoke sessions
   // =====================================================
 
   async createUserAsAdmin(userData: CreateUserDto, actor: AuthUser): Promise<UserSafe> {
@@ -214,7 +211,7 @@ export class UsersService {
       action: 'CREATE',
       entityType: 'User',
       entityId: created.id,
-      userId: actor.id, // ✅ admin que creó
+      userId: actor.id, //  admin que creó
       message: `User created (#${created.id})`,
       after: this.userSnapshot(created),
       meta: {
@@ -227,7 +224,11 @@ export class UsersService {
     return created;
   }
 
-  async updateUserAsAdmin(userId: number, userData: UpdateUserDto, actor: AuthUser): Promise<UserSafe> {
+  async updateUserAsAdmin(
+    userId: number,
+    userData: UpdateUserDto,
+    actor: AuthUser,
+  ): Promise<UserSafe> {
     // 1) before
     const before = await this.userSafe({ id: userId });
 
@@ -273,9 +274,9 @@ export class UsersService {
         await this.logs.log({
           action: 'LOGOUT',
           entityType: 'Session',
-          entityId: 0, // ✅ entityId es Int requerido; el sessionId (UUID) va en meta
+          entityId: 0, // entityId es Int requerido; el sessionId (UUID) va en meta
           userId: userId, // dueño de la sesión
-          message: 'Session ended (password changed by admin)',
+          message: `Session ended (password changed by admin) (sid: ${s.id})`,
           meta: {
             source: 'UsersService.updateUserAsAdmin',
             reason: 'PASSWORD_CHANGED',
@@ -315,7 +316,7 @@ export class UsersService {
   }
 
   // ------------------------------------------------------------
-  // 🔐 Métodos INTERNOS (para Auth)
+  //  Métodos INTERNOS (para Auth)
   // ------------------------------------------------------------
 
   async userWithPassword(where: Prisma.UserWhereUniqueInput): Promise<UserWithRoleAndPassword> {

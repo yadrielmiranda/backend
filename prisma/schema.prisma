@@ -103,7 +103,7 @@ model Branding {
   // Relación (dealer)
   user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // Reglas para que no se dupliquen:  
+  // Reglas para que no se dupliquen:
 
   @@index([type, isActive])
   @@map("branding")
@@ -181,6 +181,7 @@ model SysConf {
   idSystem          Int
   config            Config            @relation(fields: [idConfig], references: [id])
   idConfig          Int
+  allowScreen       Boolean           @default(false)
   dimensionPolicies DimensionPolicy[] @relation("SysConfDimensionPolicies")
 
   @@id([idSystem, idConfig])
@@ -226,7 +227,7 @@ model Coating {
 // ==================================================
 
 enum GlobalParameterKey {
-  SALES_TAX // Impuesto sobre ventas de Florida  
+  SALES_TAX // Impuesto sobre ventas de Florida
   // Se pueden añadir más claves aquí en el futuro
 }
 

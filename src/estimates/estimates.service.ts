@@ -96,7 +96,7 @@ export class EstimatesService {
   constructor(
     private prisma: PrismaService,
     private logs: LogsService,
-  ) {}
+  ) { }
 
   // =====================================================
   // ✅ Audit snapshot helper
@@ -142,47 +142,47 @@ export class EstimatesService {
       // piezas (resumen)
       pieces: Array.isArray(est.pieces)
         ? est.pieces.map((p: any) => ({
-            id: p.id ?? null,
-            mark: p.mark ?? null,
-            qty: p.qty ?? null,
+          id: p.id ?? null,
+          mark: p.mark ?? null,
+          qty: p.qty ?? null,
 
-            // dims
-            width: p.width ?? null,
-            height: p.height ?? null,
-            heightLeft: p.heightLeft ?? null,
-            heightRight: p.heightRight ?? null,
-            legHeight: p.legHeight ?? null,
+          // dims
+          width: p.width ?? null,
+          height: p.height ?? null,
+          heightLeft: p.heightLeft ?? null,
+          heightRight: p.heightRight ?? null,
+          legHeight: p.legHeight ?? null,
 
-            // ids de relaciones
-            idProd: p.idProd ?? null,
-            idBrand: p.idBrand ?? null,
-            idSyst: p.idSyst ?? null,
-            idConf: p.idConf ?? null,
-            idFC: p.idFC ?? null,
-            idCryst: p.idCryst ?? null,
-            idTint: p.idTint ?? null,
-            idCoat: p.idCoat ?? null,
+          // ids de relaciones
+          idProd: p.idProd ?? null,
+          idBrand: p.idBrand ?? null,
+          idSyst: p.idSyst ?? null,
+          idConf: p.idConf ?? null,
+          idFC: p.idFC ?? null,
+          idCryst: p.idCryst ?? null,
+          idTint: p.idTint ?? null,
+          idCoat: p.idCoat ?? null,
 
-            // money
-            rate: p.rate ?? null,
-            price: p.price ?? null,
-            subtotal: p.subtotal ?? null,
-            netProfit: p.netProfit ?? null,
+          // money
+          rate: p.rate ?? null,
+          price: p.price ?? null,
+          subtotal: p.subtotal ?? null,
+          netProfit: p.netProfit ?? null,
 
-            dealerMarkup: p.dealerMarkup ?? null,
-            netProfitD: p.netProfitD ?? null,
+          dealerMarkup: p.dealerMarkup ?? null,
+          netProfitD: p.netProfitD ?? null,
 
-            customerPrice: p.customerPrice ?? null,
-            customerSubtotal: p.customerSubtotal ?? null,
+          customerPrice: p.customerPrice ?? null,
+          customerSubtotal: p.customerSubtotal ?? null,
 
-            dpPosPsf: p.dpPosPsf ?? null,
-            dpNegPsf: p.dpNegPsf ?? null,
+          dpPosPsf: p.dpPosPsf ?? null,
+          dpNegPsf: p.dpNegPsf ?? null,
 
-            // flags
-            privacy: p.privacy ?? null,
-            screen: p.screen ?? null,
-            muntin: p.muntin ?? null,
-          }))
+          // flags
+          privacy: p.privacy ?? null,
+          screen: p.screen ?? null,
+          muntin: p.muntin ?? null,
+        }))
         : [],
       piecesCount: Array.isArray(est.pieces) ? est.pieces.length : 0,
     };
@@ -989,6 +989,33 @@ export class EstimatesService {
       throw new NotFoundException(`Config ID #${pieceDto.idConf} not found.`);
     }
 
+    // comentario en espanol: validamos que la config realmente pertenezca al system
+    // y leemos allowScreen desde SysConf
+    const sysConf = await tx.sysConf.findUnique({
+      where: {
+        idSystem_idConfig: {
+          idSystem: pieceDto.idSyst,
+          idConfig: pieceDto.idConf,
+        },
+      },
+      select: {
+        allowScreen: true,
+      },
+    });
+
+    if (!sysConf) {
+      throw new BadRequestException(
+        'The selected configuration does not belong to the selected system.',
+      );
+    }
+
+    // comentario en espanol: screen solo se permite si SysConf.allowScreen = true
+    if (pieceDto.screen && !sysConf.allowScreen) {
+      throw new BadRequestException(
+        'Screen is not allowed for the selected configuration.',
+      );
+    }
+
     const need = (v?: number | boolean | null) => v === 1 || v === true;
     const missing: string[] = [];
     if (need(config.requiresWidth) && pieceDto.width == null) missing.push('width');
@@ -1688,9 +1715,8 @@ export class EstimatesService {
 
     <div class="totals">
       <div class="totbox">
-        ${
-          isPublic
-            ? `
+        ${isPublic
+        ? `
               <div class="line">
                 <span>Subtotal:</span>
                 <span>${money(customerSubtotal)}</span>
@@ -1704,8 +1730,8 @@ export class EstimatesService {
                 <span>${money(customerTotal)}</span>
               </div>
             `
-            : effectiveView === 'dealer_internal'
-              ? `
+        : effectiveView === 'dealer_internal'
+          ? `
                 <div class="sectionTitle">Customer View Total</div>
                 <div class="line">
                   <span>Subtotal:</span>
@@ -1736,7 +1762,7 @@ export class EstimatesService {
                   <span>${money(totalPayable)}</span>
                 </div>
               `
-              : `
+          : `
                 <div class="line">
                   <span>Subtotal:</span>
                   <span>${money(subtotalInternal)}</span>
@@ -1750,12 +1776,11 @@ export class EstimatesService {
                   <span>${money(totalPayable)}</span>
                 </div>
               `
-        }
+      }
       </div>
     </div>
 
-    ${
-      showDealerSummary
+    ${showDealerSummary
         ? `
           <div class="summary" style="background:#ecfdf5; border-color:#bbf7d0;">
             <h3 style="color:#065f46;">Dealer Summary</h3>
@@ -1765,10 +1790,9 @@ export class EstimatesService {
           </div>
         `
         : ''
-    }
+      }
 
-    ${
-      showAdminSummary
+    ${showAdminSummary
         ? `
           <div class="summary" style="background:#fef2f2; border-color:#fecaca;">
             <h3 style="color:#991b1b;">Admin Summary</h3>
@@ -1778,7 +1802,7 @@ export class EstimatesService {
           </div>
         `
         : ''
-    }
+      }
 
     <div class="footer">
       This estimate is valid for 30 days. Thank you for your business.

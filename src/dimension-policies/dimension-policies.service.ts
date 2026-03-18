@@ -5,16 +5,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import {
-  BulkUpsertRulesDto,
-  RuleRowDto,
-} from './dto/rule.dto';
+import { Prisma } from '@prisma/client';
+import { PrismaService } from 'src/prisma/prisma.service';
+import { LogsService } from 'src/logs/logs.service';
+
+import { BulkUpsertRulesDto, RuleRowDto } from './dto/rule.dto';
 import {
   CreatePolicyDto,
   DimensionRounding,
   UpdatePolicyDto,
 } from './dto/create-dimension-policy.dto';
-import { PrismaService } from 'src/prisma/prisma.service';
+import type { AuthUser } from 'src/auth/types/auth-user.type';
 
 type PickResult = {
   rule: any | null;
@@ -23,7 +24,10 @@ type PickResult = {
 
 @Injectable()
 export class DimensionPoliciesService {
-  constructor(private prisma: PrismaService) { }
+  constructor(
+    private prisma: PrismaService,
+    private logs: LogsService,
+  ) {}
 
   // -------------------------------------------------
   // Helpers de mapeo
@@ -56,10 +60,63 @@ export class DimensionPoliciesService {
     };
   }
 
+  private async policySnapshot(id: number) {
+    const p = await this.prisma.dimensionPolicy.findUnique({
+      where: { id },
+      include: this.includeForPolicy(),
+    });
+    if (!p) return null;
+
+    const rulesCount = await this.prisma.dimensionRule.count({
+      where: { idPolicy: id },
+    });
+
+    return {
+      id: p.id,
+      idSystem: p.idSystem,
+      idConfig: p.idConfig,
+      idCrystal: p.idCrystal,
+      sizeBasis: p.sizeBasis,
+      roundingRule: p.roundingRule,
+      notes: p.notes ?? null,
+      isActive: p.isActive,
+      systemName: p.sysConf?.system?.name ?? '',
+      configName: p.sysConf?.config?.conf ?? '',
+      crystalName: p.crystal?.glass ?? '',
+      rulesCount,
+    };
+  }
+
+  private async logPolicy(params: {
+    action: 'CREATE' | 'UPDATE' | 'DELETE';
+    actor: AuthUser;
+    policyId: number;
+    message: string;
+    before?: unknown;
+    after?: unknown;
+    meta?: Record<string, unknown> | null;
+    source: string;
+  }) {
+    await this.logs.log({
+      action: params.action,
+      entityType: 'DimensionPolicy',
+      entityId: params.policyId, // ✅ NO nullable en tu schema
+      userId: params.actor?.id ?? null,
+      message: params.message,
+      before: params.before,
+      after: params.after,
+      meta: {
+        ...(params.meta ?? {}),
+        source: params.source,
+        actorUserId: params.actor?.id ?? null,
+      },
+    });
+  }
+
   // -------------------------------------------------
   //                 Policies
   // -------------------------------------------------
-  async createPolicy(dto: CreatePolicyDto) {
+  async createPolicy(dto: CreatePolicyDto, actor: AuthUser) {
     // 1) Verificamos que exista la relación System+Config en sys_conf
     const sysConf = await this.prisma.sysConf.findUnique({
       where: {
@@ -71,9 +128,8 @@ export class DimensionPoliciesService {
     });
 
     if (!sysConf) {
-      // Esto te da un error claro en lugar del P2003 críptico
       throw new BadRequestException(
-        'No System + Config relationship found in sys_conf for those IDs. Please check the system associations.'
+        'No System + Config relationship found in sys_conf for those IDs. Please check the system associations.',
       );
     }
 
@@ -101,18 +157,33 @@ export class DimensionPoliciesService {
         throw new NotFoundException('Policy not found after create');
       }
 
+      const afterSnap = await this.policySnapshot(created.id);
+
+      // ✅ LOG CREATE (after liviano)
+      await this.logPolicy({
+        action: 'CREATE',
+        actor,
+        policyId: created.id,
+        message: `DimensionPolicy created (#${created.id})`,
+        after: afterSnap,
+        meta: {
+          idSystem: dto.idSystem,
+          idConfig: dto.idConfig,
+          idCrystal: dto.idCrystal,
+        },
+        source: 'DimensionPoliciesService.createPolicy',
+      });
+
       return this.toPolicyView(full);
     } catch (e: any) {
       if (e.code === 'P2002') {
-        // unique sys+conf+crystal
         throw new BadRequestException(
-          'A policy already exists for this exact System + Config + Crystal combination.'
+          'A policy already exists for this exact System + Config + Crystal combination.',
         );
       }
       if (e.code === 'P2003') {
-        // FK rota (por si acaso)
         throw new BadRequestException(
-          'The System + Config relationship is not correctly associated (sys_conf foreign key).'
+          'The System + Config relationship is not correctly associated (sys_conf foreign key).',
         );
       }
       throw e;
@@ -124,13 +195,12 @@ export class DimensionPoliciesService {
       where: { id },
       include: {
         ...this.includeForPolicy(),
-        rules: true,              // 👈 importante
+        rules: true, // 👈 importante
       },
     });
 
     if (!p) throw new NotFoundException('Policy not found');
 
-    // mapeamos a la vista + reglas
     return {
       ...this.toPolicyView(p),
       rules: p.rules.map((r) => ({
@@ -169,7 +239,10 @@ export class DimensionPoliciesService {
     return list.map((p) => this.toPolicyView(p));
   }
 
-  async updatePolicy(id: number, dto: UpdatePolicyDto) {
+  async updatePolicy(id: number, dto: UpdatePolicyDto, actor: AuthUser) {
+    const beforeSnap = await this.policySnapshot(id);
+    if (!beforeSnap) throw new NotFoundException('Policy not found');
+
     await this.prisma.dimensionPolicy.update({
       where: { id },
       data: dto,
@@ -182,18 +255,60 @@ export class DimensionPoliciesService {
 
     if (!full) throw new NotFoundException('Policy not found after update');
 
+    const afterSnap = await this.policySnapshot(id);
+
+    const changedFields: string[] = [];
+    const cmp = (a: any, b: any) => (a ?? null) !== (b ?? null);
+
+    if ('sizeBasis' in dto && cmp(beforeSnap.sizeBasis, afterSnap?.sizeBasis)) changedFields.push('sizeBasis');
+    if ('roundingRule' in dto && cmp(beforeSnap.roundingRule, afterSnap?.roundingRule)) changedFields.push('roundingRule');
+    if ('notes' in dto && cmp(beforeSnap.notes, afterSnap?.notes)) changedFields.push('notes');
+    if ('isActive' in dto && cmp(beforeSnap.isActive, afterSnap?.isActive)) changedFields.push('isActive');
+
+    // ✅ LOG UPDATE (before/after liviano)
+    await this.logPolicy({
+      action: 'UPDATE',
+      actor,
+      policyId: id,
+      message: `DimensionPolicy updated (#${id})`,
+      before: beforeSnap,
+      after: afterSnap,
+      meta: {
+        changedFields,
+      },
+      source: 'DimensionPoliciesService.updatePolicy',
+    });
+
     return this.toPolicyView(full);
   }
 
-  async deletePolicy(id: number) {
+  async deletePolicy(id: number, actor: AuthUser) {
+    const beforeSnap = await this.policySnapshot(id);
+    if (!beforeSnap) throw new NotFoundException('Policy not found');
+
     // cascade a rules ya está en el schema
-    return this.prisma.dimensionPolicy.delete({ where: { id } });
+    const deleted = await this.prisma.dimensionPolicy.delete({ where: { id } });
+
+    // ✅ LOG DELETE (before liviano)
+    await this.logPolicy({
+      action: 'DELETE',
+      actor,
+      policyId: id,
+      message: `DimensionPolicy deleted (#${id})`,
+      before: beforeSnap,
+      meta: {
+        rulesCount: beforeSnap.rulesCount,
+      },
+      source: 'DimensionPoliciesService.deletePolicy',
+    });
+
+    return deleted;
   }
 
   // -------------------------------------------------
   //              Rules (bulk upsert)
   // -------------------------------------------------
-  async bulkUpsertRules(policyId: number, dto: BulkUpsertRulesDto) {
+  async bulkUpsertRules(policyId: number, dto: BulkUpsertRulesDto, actor: AuthUser) {
     const policy = await this.prisma.dimensionPolicy.findUnique({
       where: { id: policyId },
     });
@@ -202,11 +317,13 @@ export class DimensionPoliciesService {
     // Validaciones básicas
     this.validateRows(dto.rows);
 
-    await this.prisma.$transaction([
-      // Borramos todas las reglas anteriores de esa policy
-      this.prisma.dimensionRule.deleteMany({ where: { idPolicy: policyId } }),
+    // before (solo count)
+    const beforeCount = await this.prisma.dimensionRule.count({
+      where: { idPolicy: policyId },
+    });
 
-      // Insertamos las nuevas
+    await this.prisma.$transaction([
+      this.prisma.dimensionRule.deleteMany({ where: { idPolicy: policyId } }),
       this.prisma.dimensionRule.createMany({
         data: dto.rows.map((r) => ({
           idPolicy: policyId,
@@ -219,6 +336,26 @@ export class DimensionPoliciesService {
         })),
       }),
     ]);
+
+    const afterCount = await this.prisma.dimensionRule.count({
+      where: { idPolicy: policyId },
+    });
+
+    // ✅ LOG UPDATE (bulk rules) - NO guardamos filas completas
+    await this.logs.log({
+      action: 'UPDATE',
+      entityType: 'DimensionPolicyRules',
+      entityId: policyId, // ✅ int, no null
+      userId: actor?.id ?? null,
+      message: `DimensionPolicy rules bulk upsert (#${policyId})`,
+      before: { rulesCount: beforeCount },
+      after: { rulesCount: afterCount },
+      meta: {
+        source: 'DimensionPoliciesService.bulkUpsertRules',
+        actorUserId: actor?.id ?? null,
+        rowsInPayload: dto.rows.length,
+      },
+    });
 
     return { ok: true, count: dto.rows.length };
   }
@@ -298,8 +435,6 @@ export class DimensionPoliciesService {
       };
     }
 
-
-
     const { rule, suggestion } = this.pickRuleWithRounding(
       policy.roundingRule as DimensionRounding,
       policy.rules,
@@ -327,9 +462,7 @@ export class DimensionPoliciesService {
       ok: true,
       dpPos: Number(rule.dpPosPsf),
       dpNeg: Number(rule.dpNegPsf),
-      // nuevo campo: cantidad total de tornillos para ese tamaño
       screws: Number(rule.screws),
-      // para no romper el front actual, devolvemos un "rango" degenerado [w,w] / [h,h]
       usedRange: {
         w: [Number(rule.widthIn), Number(rule.widthIn)],
         h: [Number(rule.heightIn), Number(rule.heightIn)],
@@ -362,7 +495,6 @@ export class DimensionPoliciesService {
     );
 
     if (rounding === DimensionRounding.ROUND_UP_TO_NEXT) {
-      // "si no está, mira la fila con los valores que le siguen"
       const wNext = this.nextOrSame(widthValues, w);
       const hNext = this.nextOrSame(heightValues, h);
 
@@ -370,13 +502,10 @@ export class DimensionPoliciesService {
         const r = this.pickExactRule(rules, wNext, hNext);
         return {
           rule: r,
-          suggestion: r
-            ? undefined
-            : { maxWidthIn: wNext, maxHeightIn: hNext },
+          suggestion: r ? undefined : { maxWidthIn: wNext, maxHeightIn: hNext },
         };
       }
     } else {
-      // NEAREST: el más cercano en W y el más cercano en H
       const wNear = this.nearest(widthValues, w);
       const hNear = this.nearest(heightValues, h);
 
@@ -384,14 +513,11 @@ export class DimensionPoliciesService {
         const r = this.pickExactRule(rules, wNear, hNear);
         return {
           rule: r,
-          suggestion: r
-            ? undefined
-            : { maxWidthIn: wNear, maxHeightIn: hNear },
+          suggestion: r ? undefined : { maxWidthIn: wNear, maxHeightIn: hNear },
         };
       }
     }
 
-    // Si no encontramos nada razonable, devolvemos sugerencia con el máximo
     const maxW = widthValues[widthValues.length - 1];
     const maxH = heightValues[heightValues.length - 1];
     return {
@@ -400,18 +526,14 @@ export class DimensionPoliciesService {
     };
   }
 
-  // Busca una fila exacta W x H en la tabla
   private pickExactRule(rules: any[], w: number, h: number) {
     return (
       rules.find(
-        (r) =>
-          Number(r.widthIn) === w &&
-          Number(r.heightIn) === h,
+        (r) => Number(r.widthIn) === w && Number(r.heightIn) === h,
       ) ?? null
     );
   }
 
-  // Primer valor >= v dentro de la lista ordenada
   private nextOrSame(values: number[], v: number): number | null {
     for (const val of values) {
       if (val >= v) return val;
@@ -419,7 +541,6 @@ export class DimensionPoliciesService {
     return null;
   }
 
-  // Valor más cercano a v dentro de la lista
   private nearest(values: number[], v: number): number | null {
     if (!values.length) return null;
     let best = values[0];

@@ -1,4 +1,3 @@
-// systems.controller.ts
 import {
   Controller,
   Get,
@@ -13,6 +12,7 @@ import {
 import { SystemsService } from './systems.service';
 import { CreateSystemDto } from './dto/create-system.dto';
 import { UpdateSystemDto } from './dto/update-system.dto';
+import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 import { Roles } from 'src/auth/roles.decorator';
 
 @Controller('systems')
@@ -36,13 +36,24 @@ export class SystemsController {
     return this.systemsService.addConfigToSystem(id, configId);
   }
 
+  // 🔒 WRITE: solo admin
+  @Roles('admin')
+  @Patch(':id/configs/:configId')
+  async updateSystemConfig(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('configId', ParseIntPipe) configId: number,
+    @Body() body: UpdateSystemConfigDto,
+  ) {
+    return this.systemsService.updateSystemConfig(id, configId, body);
+  }
+
   // ✅ READ: todos los usuarios autenticados
   @Get('with-configs')
   findAllWithConfigs() {
     return this.systemsService.findAllWithConfigs();
   }
 
-  // ✅ READ: todos los usuarios autenticados  
+  // ✅ READ: todos los usuarios autenticados
   @Get()
   async getSystems(
     @Query('product') idP?: string,
@@ -67,7 +78,7 @@ export class SystemsController {
     return this.systemsService.getSystemWithConfigs(id);
   }
 
-  // ✅ READ: todos los usuarios autenticados  
+  // ✅ READ: todos los usuarios autenticados
   @Get(':id/available-configs')
   async getAvailableConfigs(@Param('id', ParseIntPipe) id: number) {
     return this.systemsService.getAvailableConfigsForSystem(id);

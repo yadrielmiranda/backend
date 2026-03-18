@@ -3,7 +3,7 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
 
 export class CreatePieceDto {
-    @ApiProperty() @IsString() @IsNotEmpty() mark: string;
+    @ApiProperty() @IsString() mark: string;
     @ApiProperty() @IsInt() @IsNotEmpty() idProd: number; 
     @ApiProperty() @IsInt() @IsNotEmpty() idBrand: number;  
     @ApiProperty() @IsInt() @IsNotEmpty() idSyst: number;

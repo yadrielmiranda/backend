@@ -48,6 +48,7 @@ export class AuthService {
   // ✅ Helpers logs: inicio / fin de sesión
   // Nota: entityId en EventLog es INT NOT NULL.
   // Para sesiones (sid es UUID string), usamos entityId=0 y guardamos sid en meta.sessionId.
+  // Además, lo incluimos en message para verlo rápido en la tabla.
   // =====================================================
   private SESSION_ENTITY_ID = 0;
 
@@ -63,7 +64,7 @@ export class AuthService {
       entityType: 'Session',
       entityId: this.SESSION_ENTITY_ID, // ✅ NO null
       userId: params.userId,
-      message: 'Session started',
+      message: `Session started (sid: ${params.sessionId})`,
       meta: {
         source: params.source,
         sessionId: params.sessionId,
@@ -85,15 +86,17 @@ export class AuthService {
       | 'SESSION_REVOKED';
     source: string;
   }) {
+    const sid = params.sessionId ?? null;
+
     await this.logs.log({
       action: 'LOGOUT',
       entityType: 'Session',
       entityId: this.SESSION_ENTITY_ID, // ✅ NO null
       userId: params.userId ?? null,
-      message: 'Session ended',
+      message: sid ? `Session ended (sid: ${sid})` : 'Session ended',
       meta: {
         source: params.source,
-        sessionId: params.sessionId ?? null,
+        sessionId: sid,
         reason: params.reason,
       },
     });
