@@ -159,21 +159,26 @@ model System {
 }
 
 model Config {
-  id                  Int           @id @default(autoincrement())
-  conf                String
-  prod                Product       @relation(fields: [idProduct], references: [id])
-  idProduct           Int
-  sysconfs            SysConf[]
-  pieces              Piece[]
-  pricingRules        PricingRule[]
+  id           Int           @id @default(autoincrement())
+  conf         String
+  prod         Product       @relation(fields: [idProduct], references: [id])
+  idProduct    Int
+  sysconfs     SysConf[]
+  pieces       Piece[]
+  pricingRules PricingRule[]
+
   // Indican qué dimensiones son REQUERIDAS por esta configuración
-  requiresWidth       Boolean       @default(false)
-  requiresHeight      Boolean       @default(false)
-  requiresHeightLeft  Boolean       @default(false)
-  requiresHeightRight Boolean       @default(false)
-  requiresLegHeight   Boolean       @default(false)
-  createdAt           DateTime      @default(now())
-  updatedAt           DateTime      @updatedAt
+  requiresWidth       Boolean @default(false)
+  requiresHeight      Boolean @default(false)
+  requiresHeightLeft  Boolean @default(false)
+  requiresHeightRight Boolean @default(false)
+  requiresLegHeight   Boolean @default(false)
+
+  // layout de paneles para muntin
+  muntinLayout Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model SysConf {
@@ -220,6 +225,76 @@ model Coating {
   pieces    Piece[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model MuntinPattern {
+  id            Int      @id @default(autoincrement())
+  name          String   @unique @db.VarChar(100)
+  requiresLites Boolean  @default(true)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  pieceMuntins PieceMuntin[]
+
+  @@map("muntin_patterns")
+}
+
+model MuntinType {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique @db.VarChar(100)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pieceMuntins PieceMuntin[]
+
+  @@map("muntin_types")
+}
+
+model PieceMuntin {
+  id Int @id @default(autoincrement())
+
+  piece   Piece @relation(fields: [pieceId], references: [id], onDelete: Cascade)
+  pieceId Int   @unique
+
+  pattern   MuntinPattern @relation(fields: [patternId], references: [id], onDelete: Restrict)
+  patternId Int
+
+  type   MuntinType? @relation(fields: [typeId], references: [id], onDelete: Restrict)
+  typeId Int?
+
+  totalLites Int? @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  panels PieceMuntinPanel[]
+
+  @@index([patternId])
+  @@index([typeId])
+  @@map("piece_muntins")
+}
+
+model PieceMuntinPanel {
+  id Int @id @default(autoincrement())
+
+  pieceMuntin   PieceMuntin @relation(fields: [pieceMuntinId], references: [id], onDelete: Cascade)
+  pieceMuntinId Int
+
+  panelIndex Int
+  panelCode  String  @db.VarChar(20)
+  panelLabel String? @db.VarChar(100)
+
+  horizontalLites Int @default(1)
+  verticalLites   Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([pieceMuntinId, panelIndex], map: "uq_piece_muntin_panel_index")
+  @@index([pieceMuntinId])
+  @@map("piece_muntin_panels")
 }
 
 // ==================================================
@@ -355,19 +430,26 @@ model Piece {
   dpPosPsf         Decimal?   @db.Decimal(10, 2)
   dpNegPsf         Decimal?   @db.Decimal(10, 2)
   screen           Boolean
-  muntin           Boolean
   qty              Int
-  rate             Decimal    @db.Decimal(12, 2) // costo fábrica
+  rate             Decimal    @db.Decimal(12, 2)
   markup           Decimal    @default(0) @db.Decimal(10, 4)
-  price            Decimal    @db.Decimal(12, 2) // tú → dealer/cliente
-  subtotal         Decimal    @db.Decimal(12, 2) // tú → dealer/cliente
-  netProfit        Decimal    @db.Decimal(12, 2) // tu ganancia
+  price            Decimal    @db.Decimal(12, 2)
+  subtotal         Decimal    @db.Decimal(12, 2)
+  netProfit        Decimal    @db.Decimal(12, 2)
   dealerMarkup     Decimal    @default(0) @db.Decimal(10, 4)
-  customerPrice    Decimal    @db.Decimal(12, 2) // dealer → cliente final
-  customerSubtotal Decimal    @db.Decimal(12, 2) // dealer → cliente final
-  netProfitD       Decimal    @db.Decimal(12, 2) // ganancia del dealer
+  customerPrice    Decimal    @db.Decimal(12, 2)
+  customerSubtotal Decimal    @db.Decimal(12, 2)
+  netProfitD       Decimal    @db.Decimal(12, 2)
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
+
+  pieceMuntin PieceMuntin?
+
+  @@index([idEst])
+  @@index([idProd])
+  @@index([idBrand])
+  @@index([idSyst])
+  @@index([idConf])
 }
 
 model OrderStatus {

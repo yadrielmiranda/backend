@@ -29,6 +29,7 @@ import { SessionTouchGuard } from './auth/guards/auth/session-touch.guard';
 import { BrandingsModule } from './brandings/brandings.module';
 import { PaymentsModule } from './payments/payments.module';
 import { LogsModule } from './logs/logs.module';
+import { MuntinPatternsModule } from './muntin-patterns/muntin-patterns.module';
 
 
 @Module({
@@ -60,6 +61,7 @@ import { LogsModule } from './logs/logs.module';
     BrandingsModule,
     PaymentsModule,    
     LogsModule,
+    MuntinPatternsModule,
   ],
   controllers: [AppController],
   providers: [

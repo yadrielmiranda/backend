@@ -1,18 +1,63 @@
-import { IsBoolean, IsNotEmpty, IsNumber, IsOptional, IsString } from "class-validator";
+import {
+  IsArray,
+  IsBoolean,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  ValidateNested,
+} from "class-validator";
+import { Type } from "class-transformer";
+
+export class CreateConfigMuntinLayoutItemDto {
+  @Type(() => Number)
+  @IsInt()
+  @IsNotEmpty()
+  panelIndex: number;
+
+  @IsString()
+  @IsNotEmpty()
+  panelCode: string;
+
+  @IsOptional()
+  @IsString()
+  panelLabel?: string;
+}
 
 export class CreateConfigDto {
+  @IsString()
+  @IsNotEmpty()
+  conf: string;
 
-    @IsString()
-    @IsNotEmpty()
-    conf: string;
+  @Type(() => Number)
+  @IsNumber()
+  @IsNotEmpty()
+  idProduct: number;
 
-    @IsNumber()
-    @IsNotEmpty()
-    idProduct: number;
+  @IsOptional()
+  @IsBoolean()
+  requiresWidth?: boolean;
 
-    @IsOptional() @IsBoolean() requiresWidth?: boolean;
-    @IsOptional() @IsBoolean() requiresHeight?: boolean;
-    @IsOptional() @IsBoolean() requiresHeightLeft?: boolean;
-    @IsOptional() @IsBoolean() requiresHeightRight?: boolean;
-    @IsOptional() @IsBoolean() requiresLegHeight?: boolean;
+  @IsOptional()
+  @IsBoolean()
+  requiresHeight?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  requiresHeightLeft?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  requiresHeightRight?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  requiresLegHeight?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateConfigMuntinLayoutItemDto)
+  muntinLayout?: CreateConfigMuntinLayoutItemDto[];
 }

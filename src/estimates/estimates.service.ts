@@ -77,6 +77,13 @@ type PieceWithRelations = Piece & {
   cryst: Prisma.CrystalGetPayload<{}>;
   tin: Prisma.TintGetPayload<{}>;
   coat: Prisma.CoatingGetPayload<{}>;
+  pieceMuntin: Prisma.PieceMuntinGetPayload<{
+    include: {
+      pattern: true;
+      type: true;
+      panels: true;
+    };
+  }> | null;
 };
 
 // ✅ incluimos order para que el front sepa si ya fue ordenado
@@ -181,7 +188,27 @@ export class EstimatesService {
           // flags
           privacy: p.privacy ?? null,
           screen: p.screen ?? null,
-          muntin: p.muntin ?? null,
+
+          muntin:
+            p.pieceMuntin
+              ? {
+                id: p.pieceMuntin.id ?? null,
+                patternId: p.pieceMuntin.patternId ?? null,
+                patternName: p.pieceMuntin.pattern?.name ?? null,
+                typeId: p.pieceMuntin.typeId ?? null,
+                typeName: p.pieceMuntin.type?.name ?? null,
+                totalLites: p.pieceMuntin.totalLites ?? null,
+                panels: Array.isArray(p.pieceMuntin.panels)
+                  ? p.pieceMuntin.panels.map((mp: any) => ({
+                    id: mp.id ?? null,
+                    panelIndex: mp.panelIndex ?? null,
+                    panelCode: mp.panelCode ?? null,
+                    horizontalLites: mp.horizontalLites ?? null,
+                    verticalLites: mp.verticalLites ?? null,
+                  }))
+                  : [],
+              }
+              : null,
         }))
         : [],
       piecesCount: Array.isArray(est.pieces) ? est.pieces.length : 0,
@@ -242,6 +269,34 @@ export class EstimatesService {
 
     const heightIn = Math.max(h, hl, hr, lh);
     return { widthIn, heightIn: heightIn || h };
+  }
+
+  private buildPieceMuntinCreateInput(
+    muntin?: CreatePieceDto["muntin"] | UpsertPieceDto["muntin"] | null,
+  ) {
+    if (!muntin) return undefined;
+
+    const panels = Array.isArray(muntin.panels) ? muntin.panels : [];
+
+    const totalLites = panels.reduce((sum, panel) => {
+      const h = Number(panel.horizontalLites || 0);
+      const v = Number(panel.verticalLites || 0);
+      return sum + h * v;
+    }, 0);
+
+    return {
+      pattern: { connect: { id: muntin.idPattern } },
+      ...(muntin.idType ? { type: { connect: { id: muntin.idType } } } : {}),
+      totalLites,
+      panels: {
+        create: panels.map((panel) => ({
+          panelIndex: panel.panelIndex,
+          panelCode: panel.panelCode,
+          horizontalLites: panel.horizontalLites,
+          verticalLites: panel.verticalLites,
+        })),
+      },
+    };
   }
 
   // --- calculateAndReturnPieceMetrics (Public) ---
@@ -337,6 +392,15 @@ export class EstimatesService {
             cryst: true,
             tin: true,
             coat: true,
+            pieceMuntin: {
+              include: {
+                pattern: true,
+                type: true,
+                panels: {
+                  orderBy: { panelIndex: 'asc' },
+                },
+              },
+            },
           },
         },
       },
@@ -469,11 +533,12 @@ export class EstimatesService {
       const totalUnits = calculatedPieces.reduce((sum, p) => sum + (p.qty || 0), 0);
 
       const piecesToCreate: Prisma.PieceCreateWithoutEstimInput[] = calculatedPieces.map((p) => {
+        const pieceMuntinCreate = this.buildPieceMuntinCreateInput(p.muntin);
+
         const dataForPrisma: Prisma.PieceCreateWithoutEstimInput = {
           mark: p.mark,
           privacy: p.privacy,
           screen: p.screen,
-          muntin: p.muntin,
           qty: p.qty,
 
           rate: new Prisma.Decimal(p.rate.toFixed(2)),
@@ -503,6 +568,13 @@ export class EstimatesService {
 
           dpPosPsf: new Prisma.Decimal(p.dpPosPsf.toFixed(2)),
           dpNegPsf: new Prisma.Decimal(p.dpNegPsf.toFixed(2)),
+          ...(pieceMuntinCreate
+            ? {
+              pieceMuntin: {
+                create: pieceMuntinCreate,
+              },
+            }
+            : {}),
         };
         return dataForPrisma;
       });
@@ -550,6 +622,7 @@ export class EstimatesService {
           status: true,
           order: true,
           pieces: {
+            orderBy: { id: 'asc' },
             include: {
               prod: true,
               bran: true,
@@ -559,6 +632,15 @@ export class EstimatesService {
               cryst: true,
               tin: true,
               coat: true,
+              pieceMuntin: {
+                include: {
+                  pattern: true,
+                  type: true,
+                  panels: {
+                    orderBy: { panelIndex: 'asc' },
+                  },
+                },
+              },
             },
           },
         },
@@ -607,14 +689,27 @@ export class EstimatesService {
         ? new Decimal(0)
         : new Decimal(taxParameter.value.toString());
 
-      // ✅ 1 sola query: sirve para validar y para snapshot BEFORE
+      // 1 sola query: sirve para validar y para snapshot BEFORE
       const beforeEstimate = await tx.estimate.findUnique({
         where: { id: estimateId },
         include: {
           user: true,
           status: true,
           order: true,
-          pieces: { orderBy: { id: 'asc' } },
+          pieces: {
+            orderBy: { id: 'asc' },
+            include: {
+              pieceMuntin: {
+                include: {
+                  pattern: true,
+                  type: true,
+                  panels: {
+                    orderBy: { panelIndex: 'asc' },
+                  },
+                },
+              },
+            },
+          },
         },
       });
 
@@ -671,7 +766,6 @@ export class EstimatesService {
           mark: p.mark,
           privacy: p.privacy,
           screen: p.screen,
-          muntin: p.muntin,
           qty: p.qty,
 
           rate: new Prisma.Decimal(p.rate.toFixed(2)),
@@ -751,6 +845,7 @@ export class EstimatesService {
           status: true,
           order: true,
           pieces: {
+            orderBy: { id: 'asc' },
             include: {
               prod: true,
               bran: true,
@@ -760,24 +855,122 @@ export class EstimatesService {
               cryst: true,
               tin: true,
               coat: true,
+              pieceMuntin: {
+                include: {
+                  pattern: true,
+                  type: true,
+                  panels: {
+                    orderBy: { panelIndex: 'asc' },
+                  },
+                },
+              },
             },
           },
         },
       });
 
-      // ✅ EventLog + TempLog (tu LogsService nuevo)
+      const existingCalculatedById = new Map<number, CalculatedPieceCombined>();
+      const newCalculatedQueue: CalculatedPieceCombined[] = [];
+
+      for (const cp of calculatedPieces) {
+        const cpId = (cp as UpsertPieceDto).id;
+
+        if (cpId) {
+          existingCalculatedById.set(cpId, cp);
+        } else {
+          newCalculatedQueue.push(cp);
+        }
+      }
+
+      for (const piece of updatedEstimate.pieces) {
+        let sourcePiece = existingCalculatedById.get(piece.id);
+
+        if (!sourcePiece) {
+          sourcePiece = newCalculatedQueue.shift();
+        }
+
+        if (!sourcePiece) continue;
+
+        await tx.pieceMuntin.deleteMany({
+          where: { pieceId: piece.id },
+        });
+
+        if (!sourcePiece.muntin) {
+          continue;
+        }
+
+        const muntinCreate = this.buildPieceMuntinCreateInput(sourcePiece.muntin);
+
+        if (!muntinCreate) continue;
+
+        await tx.pieceMuntin.create({
+          data: {
+            piece: { connect: { id: piece.id } },
+            pattern: { connect: { id: sourcePiece.muntin.idPattern } },
+            ...(sourcePiece.muntin.idType
+              ? { type: { connect: { id: sourcePiece.muntin.idType } } }
+              : {}),
+            totalLites: muntinCreate.totalLites,
+            panels: {
+              create: sourcePiece.muntin.panels.map((panel) => ({
+                panelIndex: panel.panelIndex,
+                panelCode: panel.panelCode,
+                horizontalLites: panel.horizontalLites,
+                verticalLites: panel.verticalLites,
+              })),
+            },
+          },
+        });
+      }
+
+      const refreshedEstimate = await tx.estimate.findUnique({
+        where: { id: estimateId },
+        include: {
+          user: true,
+          status: true,
+          order: true,
+          pieces: {
+            orderBy: { id: 'asc' },
+            include: {
+              prod: true,
+              bran: true,
+              syst: true,
+              conf: true,
+              fColor: true,
+              cryst: true,
+              tin: true,
+              coat: true,
+              pieceMuntin: {
+                include: {
+                  pattern: true,
+                  type: true,
+                  panels: {
+                    orderBy: { panelIndex: 'asc' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!refreshedEstimate) {
+        throw new NotFoundException(`Estimate #${estimateId} not found after update.`);
+      }
+
+      // EventLog + TempLog (tu LogsService nuevo)
       await this.logs.log({
         action: 'UPDATE',
         entityType: 'Estimate',
-        entityId: updatedEstimate.id,
+        entityId: refreshedEstimate.id,
         userId,
-        message: `Estimate updated (#${updatedEstimate.number})`,
+        message: `Estimate updated (#${refreshedEstimate.number})`,
         before: this.buildEstimateAuditSnapshot(beforeEstimate),
-        after: this.buildEstimateAuditSnapshot(updatedEstimate),
+        after: this.buildEstimateAuditSnapshot(refreshedEstimate),
         meta: { source: 'EstimatesService.updateEstimate' },
       });
 
-      return updatedEstimate;
+      return refreshedEstimate;
     });
 
     return result as EstimateWithRelations;
@@ -1433,7 +1626,7 @@ export class EstimatesService {
 
       const optionsLine = [
         `Screen: ${p.screen ? 'Yes' : 'No'}`,
-        `Muntin: ${p.muntin ? 'Yes' : 'No'}`,
+        `Muntin: ${p.pieceMuntin ? 'Yes' : 'No'}`,
         `Privacy: ${p.privacy ? 'Yes' : 'No'}`,
       ].join(' | ');
 
