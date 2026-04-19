@@ -232,6 +232,7 @@ model MuntinPattern {
   name          String   @unique @db.VarChar(100)
   requiresLites Boolean  @default(true)
   isActive      Boolean  @default(true)
+  isDefault     Boolean  @default(false)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

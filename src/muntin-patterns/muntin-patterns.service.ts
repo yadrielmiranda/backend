@@ -43,12 +43,21 @@ export class MuntinPatternsService {
   async createMuntinPattern(
     data: CreateMuntinPatternDto,
   ): Promise<MuntinPattern> {
-    return this.prisma.muntinPattern.create({
-      data: {
-        name: data.name.trim(),
-        requiresLites: data.requiresLites ?? true,
-        isActive: data.isActive ?? true,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      if (data.isDefault === true) {
+        await tx.muntinPattern.updateMany({
+          data: { isDefault: false },
+        });
+      }
+
+      return tx.muntinPattern.create({
+        data: {
+          name: data.name.trim(),
+          requiresLites: data.requiresLites ?? true,
+          isActive: data.isActive ?? true,
+          isDefault: data.isDefault ?? false,
+        },
+      });
     });
   }
 
@@ -59,15 +68,27 @@ export class MuntinPatternsService {
     const { where, data } = params;
 
     try {
-      return await this.prisma.muntinPattern.update({
-        where,
-        data: {
-          ...(data.name !== undefined ? { name: data.name.trim() } : {}),
-          ...(data.requiresLites !== undefined
-            ? { requiresLites: data.requiresLites }
-            : {}),
-          ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
-        },
+      return await this.prisma.$transaction(async (tx) => {
+        if (data.isDefault === true) {
+          await tx.muntinPattern.updateMany({
+            where: { NOT: { id: where.id } },
+            data: { isDefault: false },
+          });
+        }
+
+        return tx.muntinPattern.update({
+          where,
+          data: {
+            ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+            ...(data.requiresLites !== undefined
+              ? { requiresLites: data.requiresLites }
+              : {}),
+            ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+            ...(data.isDefault !== undefined
+              ? { isDefault: data.isDefault }
+              : {}),
+          },
+        });
       });
     } catch (e: any) {
       if (e?.code === 'P2025') {

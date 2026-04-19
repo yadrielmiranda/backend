@@ -30,6 +30,7 @@ import { BrandingsModule } from './brandings/brandings.module';
 import { PaymentsModule } from './payments/payments.module';
 import { LogsModule } from './logs/logs.module';
 import { MuntinPatternsModule } from './muntin-patterns/muntin-patterns.module';
+import { MuntinTypesModule } from './muntin-types/muntin-types.module';
 
 
 @Module({
@@ -62,6 +63,7 @@ import { MuntinPatternsModule } from './muntin-patterns/muntin-patterns.module';
     PaymentsModule,    
     LogsModule,
     MuntinPatternsModule,
+    MuntinTypesModule
   ],
   controllers: [AppController],
   providers: [
