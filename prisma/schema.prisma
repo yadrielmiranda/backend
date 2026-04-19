@@ -189,8 +189,125 @@ model SysConf {
   allowScreen       Boolean           @default(false)
   dimensionPolicies DimensionPolicy[] @relation("SysConfDimensionPolicies")
 
+  activeOptions         SysConfActiveOption[]
+  preparationOptions    SysConfPreparationOption[]
+  sillOptions           SysConfSillOption[]
+  reinforcementOptions  SysConfReinforcementOption[]
+
   @@id([idSystem, idConfig])
   @@map("sys_conf")
+}
+
+model ActiveOption {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique @db.VarChar(100)
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sysConfOptions SysConfActiveOption[]
+  pieces         Piece[]
+
+  @@map("active_options")
+}
+
+model PreparationOption {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique @db.VarChar(150)
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sysConfOptions SysConfPreparationOption[]
+  pieces         Piece[]
+
+  @@map("preparation_options")
+}
+
+model SillOption {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique @db.VarChar(100)
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sysConfOptions SysConfSillOption[]
+  pieces         Piece[]
+
+  @@map("sill_options")
+}
+
+model ReinforcementOption {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique @db.VarChar(100)
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sysConfOptions SysConfReinforcementOption[]
+  pieces         Piece[]
+
+  @@map("reinforcement_options")
+}
+
+model SysConfActiveOption {
+  idSystem  Int
+  idConfig  Int
+  optionId  Int
+  sortOrder Int @default(0)
+
+  sysConf SysConf      @relation(fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
+  option  ActiveOption @relation(fields: [optionId], references: [id], onDelete: Restrict)
+
+  @@id([idSystem, idConfig, optionId])
+  @@index([optionId])
+  @@map("sysconf_active_options")
+}
+
+model SysConfPreparationOption {
+  idSystem  Int
+  idConfig  Int
+  optionId  Int
+  sortOrder Int @default(0)
+
+  sysConf SysConf            @relation(fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
+  option  PreparationOption  @relation(fields: [optionId], references: [id], onDelete: Restrict)
+
+  @@id([idSystem, idConfig, optionId])
+  @@index([optionId])
+  @@map("sysconf_preparation_options")
+}
+
+model SysConfSillOption {
+  idSystem  Int
+  idConfig  Int
+  optionId  Int
+  sortOrder Int @default(0)
+
+  sysConf SysConf    @relation(fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
+  option  SillOption @relation(fields: [optionId], references: [id], onDelete: Restrict)
+
+  @@id([idSystem, idConfig, optionId])
+  @@index([optionId])
+  @@map("sysconf_sill_options")
+}
+
+model SysConfReinforcementOption {
+  idSystem  Int
+  idConfig  Int
+  optionId  Int
+  sortOrder Int @default(0)
+
+  sysConf SysConf             @relation(fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
+  option  ReinforcementOption @relation(fields: [optionId], references: [id], onDelete: Restrict)
+
+  @@id([idSystem, idConfig, optionId])
+  @@index([optionId])
+  @@map("sysconf_reinforcement_options")
 }
 
 model FrameColor {
@@ -416,11 +533,13 @@ model Piece {
   idConf           Int
   fColor           FrameColor @relation(fields: [idFC], references: [id])
   idFC             Int
+
   width            Decimal?   @db.Decimal(10, 3)
   height           Decimal?   @db.Decimal(10, 3)
   heightLeft       Decimal?   @db.Decimal(10, 3)
   heightRight      Decimal?   @db.Decimal(10, 3)
   legHeight        Decimal?   @db.Decimal(10, 3)
+
   cryst            Crystal    @relation(fields: [idCryst], references: [id])
   idCryst          Int
   tin              Tint       @relation(fields: [idTint], references: [id])
@@ -428,9 +547,23 @@ model Piece {
   privacy          Boolean
   coat             Coating    @relation(fields: [idCoat], references: [id])
   idCoat           Int
+
   dpPosPsf         Decimal?   @db.Decimal(10, 2)
   dpNegPsf         Decimal?   @db.Decimal(10, 2)
   screen           Boolean
+
+  activeOption         ActiveOption?         @relation(fields: [idActiveOption], references: [id])
+  idActiveOption       Int?
+
+  preparationOption    PreparationOption?    @relation(fields: [idPreparationOption], references: [id])
+  idPreparationOption  Int?
+
+  sillOption           SillOption?           @relation(fields: [idSillOption], references: [id])
+  idSillOption         Int?
+
+  reinforcementOption   ReinforcementOption? @relation(fields: [idReinforcementOption], references: [id])
+  idReinforcementOption Int?
+
   qty              Int
   rate             Decimal    @db.Decimal(12, 2)
   markup           Decimal    @default(0) @db.Decimal(10, 4)
@@ -451,6 +584,10 @@ model Piece {
   @@index([idBrand])
   @@index([idSyst])
   @@index([idConf])
+  @@index([idActiveOption])
+  @@index([idPreparationOption])
+  @@index([idSillOption])
+  @@index([idReinforcementOption])
 }
 
 model OrderStatus {

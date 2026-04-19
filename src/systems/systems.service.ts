@@ -12,7 +12,7 @@ import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 
 @Injectable()
 export class SystemsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   async system(where: Prisma.SystemWhereUniqueInput): Promise<System> {
     const system = await this.prisma.system.findUnique({
@@ -165,6 +165,67 @@ export class SystemsService {
     }
 
     return system;
+  }
+
+  async getSystemConfigOptions(systemId: number, configId: number) {
+    const sysConf = await this.prisma.sysConf.findUnique({
+      where: {
+        idSystem_idConfig: {
+          idSystem: systemId,
+          idConfig: configId,
+        },
+      },
+      include: {
+        activeOptions: {
+          include: { option: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+        preparationOptions: {
+          include: { option: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+        sillOptions: {
+          include: { option: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+        reinforcementOptions: {
+          include: { option: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+    });
+
+    if (!sysConf) {
+      throw new NotFoundException(
+        `System/Config link not found (systemId=${systemId}, configId=${configId}).`,
+      );
+    }
+
+    return {
+      idSystem: systemId,
+      idConfig: configId,
+      allowScreen: sysConf.allowScreen,
+      activeOptions: sysConf.activeOptions.map((x) => ({
+        id: x.option.id,
+        name: x.option.name,
+        sortOrder: x.sortOrder,
+      })),
+      preparationOptions: sysConf.preparationOptions.map((x) => ({
+        id: x.option.id,
+        name: x.option.name,
+        sortOrder: x.sortOrder,
+      })),
+      sillOptions: sysConf.sillOptions.map((x) => ({
+        id: x.option.id,
+        name: x.option.name,
+        sortOrder: x.sortOrder,
+      })),
+      reinforcementOptions: sysConf.reinforcementOptions.map((x) => ({
+        id: x.option.id,
+        name: x.option.name,
+        sortOrder: x.sortOrder,
+      })),
+    };
   }
 
   /**

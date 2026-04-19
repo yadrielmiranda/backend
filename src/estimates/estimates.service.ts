@@ -272,24 +272,24 @@ export class EstimatesService {
   }
 
   private buildPieceMuntinCreateInput(
-  muntin?: CreatePieceDto['muntin'] | UpsertPieceDto['muntin'] | null,
-) {
-  if (!muntin) return undefined;
+    muntin?: CreatePieceDto['muntin'] | UpsertPieceDto['muntin'] | null,
+  ) {
+    if (!muntin) return undefined;
 
-  const panels = Array.isArray(muntin.panels) ? muntin.panels : [];
+    const panels = Array.isArray(muntin.panels) ? muntin.panels : [];
 
-  const totalLites = panels.reduce((sum, panel) => {
-    const h = Number(panel.horizontalLites || 0);
-    const v = Number(panel.verticalLites || 0);
-    return sum + h * v;
-  }, 0);
+    const totalLites = panels.reduce((sum, panel) => {
+      const h = Number(panel.horizontalLites || 0);
+      const v = Number(panel.verticalLites || 0);
+      return sum + h * v;
+    }, 0);
 
-  return {
-    pattern: { connect: { id: muntin.idPattern } },
-    ...(muntin.idType ? { type: { connect: { id: muntin.idType } } } : {}),
-    totalLites,
-    ...(panels.length > 0
-      ? {
+    return {
+      pattern: { connect: { id: muntin.idPattern } },
+      ...(muntin.idType ? { type: { connect: { id: muntin.idType } } } : {}),
+      totalLites,
+      ...(panels.length > 0
+        ? {
           panels: {
             create: panels.map((panel) => ({
               panelIndex: panel.panelIndex,
@@ -299,119 +299,119 @@ export class EstimatesService {
             })),
           },
         }
-      : {}),
-  };
-}
-
-private parseConfigMuntinLayout(layout: unknown): Array<{
-  panelIndex: number;
-  panelCode: string;
-  panelLabel?: string;
-}> {
-  if (!Array.isArray(layout)) return [];
-
-  return layout
-    .map((item: any) => ({
-      panelIndex: Number(item?.panelIndex),
-      panelCode: String(item?.panelCode ?? '').trim(),
-      ...(item?.panelLabel ? { panelLabel: String(item.panelLabel) } : {}),
-    }))
-    .filter(
-      (item) =>
-        Number.isInteger(item.panelIndex) &&
-        item.panelIndex >= 0 &&
-        item.panelCode.length > 0,
-    )
-    .sort((a, b) => a.panelIndex - b.panelIndex);
-}
-
-private buildDefaultPanelsFromConfigLayout(
-  configLayout: Array<{ panelIndex: number; panelCode: string; panelLabel?: string }>,
-  incomingPanels?: Array<{
-    panelIndex?: number;
-    panelCode?: string;
-    horizontalLites?: number;
-    verticalLites?: number;
-  }>,
-) {
-  const incomingByIndex = new Map<number, (typeof incomingPanels)[number]>();
-
-  for (const panel of incomingPanels ?? []) {
-    const idx = Number(panel?.panelIndex);
-    if (Number.isInteger(idx) && idx >= 0) {
-      incomingByIndex.set(idx, panel);
-    }
-  }
-
-  return configLayout.map((panel) => {
-    const incoming = incomingByIndex.get(panel.panelIndex);
-
-    return {
-      panelIndex: panel.panelIndex,
-      panelCode: panel.panelCode,
-      horizontalLites: Math.max(1, Number(incoming?.horizontalLites ?? 1)),
-      verticalLites: Math.max(1, Number(incoming?.verticalLites ?? 1)),
+        : {}),
     };
-  });
-}
-
-private async normalizePieceMuntinFromCatalog(
-  muntin: CreatePieceDto['muntin'] | UpsertPieceDto['muntin'] | null | undefined,
-  configLayoutRaw: unknown,
-  tx: PrismaTransactionClient,
-) {
-  if (!muntin) return null;
-
-  const pattern = await tx.muntinPattern.findUnique({
-    where: { id: muntin.idPattern },
-    select: {
-      id: true,
-      requiresLites: true,
-    },
-  });
-
-  if (!pattern) {
-    throw new BadRequestException(`Muntin pattern #${muntin.idPattern} not found.`);
   }
 
-  if (muntin.idType) {
-    const type = await tx.muntinType.findUnique({
-      where: { id: muntin.idType },
-      select: { id: true },
+  private parseConfigMuntinLayout(layout: unknown): Array<{
+    panelIndex: number;
+    panelCode: string;
+    panelLabel?: string;
+  }> {
+    if (!Array.isArray(layout)) return [];
+
+    return layout
+      .map((item: any) => ({
+        panelIndex: Number(item?.panelIndex),
+        panelCode: String(item?.panelCode ?? '').trim(),
+        ...(item?.panelLabel ? { panelLabel: String(item.panelLabel) } : {}),
+      }))
+      .filter(
+        (item) =>
+          Number.isInteger(item.panelIndex) &&
+          item.panelIndex >= 0 &&
+          item.panelCode.length > 0,
+      )
+      .sort((a, b) => a.panelIndex - b.panelIndex);
+  }
+
+  private buildDefaultPanelsFromConfigLayout(
+    configLayout: Array<{ panelIndex: number; panelCode: string; panelLabel?: string }>,
+    incomingPanels?: Array<{
+      panelIndex?: number;
+      panelCode?: string;
+      horizontalLites?: number;
+      verticalLites?: number;
+    }>,
+  ) {
+    const incomingByIndex = new Map<number, (typeof incomingPanels)[number]>();
+
+    for (const panel of incomingPanels ?? []) {
+      const idx = Number(panel?.panelIndex);
+      if (Number.isInteger(idx) && idx >= 0) {
+        incomingByIndex.set(idx, panel);
+      }
+    }
+
+    return configLayout.map((panel) => {
+      const incoming = incomingByIndex.get(panel.panelIndex);
+
+      return {
+        panelIndex: panel.panelIndex,
+        panelCode: panel.panelCode,
+        horizontalLites: Math.max(1, Number(incoming?.horizontalLites ?? 1)),
+        verticalLites: Math.max(1, Number(incoming?.verticalLites ?? 1)),
+      };
+    });
+  }
+
+  private async normalizePieceMuntinFromCatalog(
+    muntin: CreatePieceDto['muntin'] | UpsertPieceDto['muntin'] | null | undefined,
+    configLayoutRaw: unknown,
+    tx: PrismaTransactionClient,
+  ) {
+    if (!muntin) return null;
+
+    const pattern = await tx.muntinPattern.findUnique({
+      where: { id: muntin.idPattern },
+      select: {
+        id: true,
+        requiresLites: true,
+      },
     });
 
-    if (!type) {
-      throw new BadRequestException(`Muntin type #${muntin.idType} not found.`);
+    if (!pattern) {
+      throw new BadRequestException(`Muntin pattern #${muntin.idPattern} not found.`);
     }
-  }
 
-  const configLayout = this.parseConfigMuntinLayout(configLayoutRaw);
+    if (muntin.idType) {
+      const type = await tx.muntinType.findUnique({
+        where: { id: muntin.idType },
+        select: { id: true },
+      });
 
-  // Full View o cualquier pattern sin lites
-  if (!pattern.requiresLites) {
+      if (!type) {
+        throw new BadRequestException(`Muntin type #${muntin.idType} not found.`);
+      }
+    }
+
+    const configLayout = this.parseConfigMuntinLayout(configLayoutRaw);
+
+    // Full View o cualquier pattern sin lites
+    if (!pattern.requiresLites) {
+      return {
+        idPattern: muntin.idPattern,
+        idType: muntin.idType ?? null,
+        panels: [],
+      };
+    }
+
+    // Si requiere lites, la config debe definir layout
+    if (configLayout.length === 0) {
+      throw new BadRequestException(
+        'This configuration does not define a muntin layout.',
+      );
+    }
+
     return {
       idPattern: muntin.idPattern,
       idType: muntin.idType ?? null,
-      panels: [],
+      panels: this.buildDefaultPanelsFromConfigLayout(
+        configLayout,
+        Array.isArray(muntin.panels) ? muntin.panels : [],
+      ),
     };
   }
-
-  // Si requiere lites, la config debe definir layout
-  if (configLayout.length === 0) {
-    throw new BadRequestException(
-      'This configuration does not define a muntin layout.',
-    );
-  }
-
-  return {
-    idPattern: muntin.idPattern,
-    idType: muntin.idType ?? null,
-    panels: this.buildDefaultPanelsFromConfigLayout(
-      configLayout,
-      Array.isArray(muntin.panels) ? muntin.panels : [],
-    ),
-  };
-}
 
   // --- calculateAndReturnPieceMetrics (Public) ---
   async calculateAndReturnPieceMetrics(
@@ -437,21 +437,21 @@ private async normalizePieceMuntinFromCatalog(
       );
 
     return {
-  ...pieceDto,
-  muntin: calculated.muntin ?? null,
-  id: (pieceDto as UpsertPieceDto).id,
-  rate: new Prisma.Decimal(calculated.rate.toFixed(2)),
-  price: new Prisma.Decimal(calculated.price.toFixed(2)),
-  netProfit: new Prisma.Decimal(calculated.netProfit.toFixed(2)),
-  markup: new Prisma.Decimal(calculated.markup.toFixed(4)),
-  subtotal: new Prisma.Decimal(calculated.subtotal.toFixed(2)),
-  dealerMarkup: new Prisma.Decimal(calculated.dealerMarkupDecimal.toFixed(4)),
-  netProfitD: new Prisma.Decimal(calculated.netProfitD.toFixed(2)),
-  customerPrice: new Prisma.Decimal(calculated.customerPrice.toFixed(2)),
-  customerSubtotal: new Prisma.Decimal(calculated.customerSubtotal.toFixed(2)),
-  dpPosPsf: new Prisma.Decimal(calculated.dpPosPsf.toFixed(2)),
-  dpNegPsf: new Prisma.Decimal(calculated.dpNegPsf.toFixed(2)),
-};
+      ...pieceDto,
+      muntin: calculated.muntin ?? null,
+      id: (pieceDto as UpsertPieceDto).id,
+      rate: new Prisma.Decimal(calculated.rate.toFixed(2)),
+      price: new Prisma.Decimal(calculated.price.toFixed(2)),
+      netProfit: new Prisma.Decimal(calculated.netProfit.toFixed(2)),
+      markup: new Prisma.Decimal(calculated.markup.toFixed(4)),
+      subtotal: new Prisma.Decimal(calculated.subtotal.toFixed(2)),
+      dealerMarkup: new Prisma.Decimal(calculated.dealerMarkupDecimal.toFixed(4)),
+      netProfitD: new Prisma.Decimal(calculated.netProfitD.toFixed(2)),
+      customerPrice: new Prisma.Decimal(calculated.customerPrice.toFixed(2)),
+      customerSubtotal: new Prisma.Decimal(calculated.customerSubtotal.toFixed(2)),
+      dpPosPsf: new Prisma.Decimal(calculated.dpPosPsf.toFixed(2)),
+      dpNegPsf: new Prisma.Decimal(calculated.dpNegPsf.toFixed(2)),
+    };
   }
 
   // =====================================================
@@ -1019,27 +1019,27 @@ private async normalizePieceMuntinFromCatalog(
         if (!muntinCreate) continue;
 
         await tx.pieceMuntin.create({
-  data: {
-    piece: { connect: { id: piece.id } },
-    pattern: { connect: { id: sourcePiece.muntin.idPattern } },
-    ...(sourcePiece.muntin.idType
-      ? { type: { connect: { id: sourcePiece.muntin.idType } } }
-      : {}),
-    totalLites: muntinCreate.totalLites,
-    ...(sourcePiece.muntin.panels.length > 0
-      ? {
-          panels: {
-            create: sourcePiece.muntin.panels.map((panel) => ({
-              panelIndex: panel.panelIndex,
-              panelCode: panel.panelCode,
-              horizontalLites: panel.horizontalLites,
-              verticalLites: panel.verticalLites,
-            })),
+          data: {
+            piece: { connect: { id: piece.id } },
+            pattern: { connect: { id: sourcePiece.muntin.idPattern } },
+            ...(sourcePiece.muntin.idType
+              ? { type: { connect: { id: sourcePiece.muntin.idType } } }
+              : {}),
+            totalLites: muntinCreate.totalLites,
+            ...(sourcePiece.muntin.panels.length > 0
+              ? {
+                panels: {
+                  create: sourcePiece.muntin.panels.map((panel) => ({
+                    panelIndex: panel.panelIndex,
+                    panelCode: panel.panelCode,
+                    horizontalLites: panel.horizontalLites,
+                    verticalLites: panel.verticalLites,
+                  })),
+                },
+              }
+              : {}),
           },
-        }
-      : {}),
-  },
-});
+        });
       }
 
       const refreshedEstimate = await tx.estimate.findUnique({
@@ -1286,17 +1286,17 @@ private async normalizePieceMuntinFromCatalog(
     tx: PrismaTransactionClient,
   ): Promise<CalculatedPieceCombined> {
     const config = await tx.config.findUnique({
-  where: { id: pieceDto.idConf },
-  select: {
-    conf: true,
-    requiresWidth: true,
-    requiresHeight: true,
-    requiresHeightLeft: true,
-    requiresHeightRight: true,
-    requiresLegHeight: true,
-    muntinLayout: true,
-  },
-});
+      where: { id: pieceDto.idConf },
+      select: {
+        conf: true,
+        requiresWidth: true,
+        requiresHeight: true,
+        requiresHeightLeft: true,
+        requiresHeightRight: true,
+        requiresLegHeight: true,
+        muntinLayout: true,
+      },
+    });
 
     if (!config) {
       throw new NotFoundException(`Config ID #${pieceDto.idConf} not found.`);
@@ -1313,6 +1313,19 @@ private async normalizePieceMuntinFromCatalog(
       },
       select: {
         allowScreen: true,
+
+        activeOptions: {
+          select: { optionId: true },
+        },
+        preparationOptions: {
+          select: { optionId: true },
+        },
+        sillOptions: {
+          select: { optionId: true },
+        },
+        reinforcementOptions: {
+          select: { optionId: true },
+        },
       },
     });
 
@@ -1328,6 +1341,75 @@ private async normalizePieceMuntinFromCatalog(
         'Screen is not allowed for the selected configuration.',
       );
     }
+
+    const allowedActiveOptionIds = new Set(
+      sysConf.activeOptions.map((x) => x.optionId),
+    );
+
+    const allowedPreparationOptionIds = new Set(
+      sysConf.preparationOptions.map((x) => x.optionId),
+    );
+
+    const allowedSillOptionIds = new Set(
+      sysConf.sillOptions.map((x) => x.optionId),
+    );
+
+    const allowedReinforcementOptionIds = new Set(
+      sysConf.reinforcementOptions.map((x) => x.optionId),
+    );
+
+    const validateSingleSysConfOption = (
+      label: string,
+      selectedId: number | undefined | null,
+      allowedIds: Set<number>,
+    ) => {      
+      // si este SysConf no tiene opciones para ese campo, no permitimos que manden un valor      
+      if (allowedIds.size === 0) {
+        if (selectedId != null) {
+          throw new BadRequestException(
+            `${label} is not allowed for the selected configuration.`,
+          );
+        }
+        return;
+      }
+
+      // si el SysConf si tiene opciones configuradas, exigimos que el usuario seleccione una valida      
+      if (selectedId == null) {
+        throw new BadRequestException(
+          `${label} is required for the selected configuration.`,
+        );
+      }
+
+      if (!allowedIds.has(selectedId)) {
+        throw new BadRequestException(
+          `${label} is invalid for the selected configuration.`,
+        );
+      }
+    };
+
+    validateSingleSysConfOption(
+      'Active option',
+      pieceDto.idActiveOption,
+      allowedActiveOptionIds,
+    );
+
+    validateSingleSysConfOption(
+      'Preparation option',
+      pieceDto.idPreparationOption,
+      allowedPreparationOptionIds,
+    );
+
+    validateSingleSysConfOption(
+      'Sill option',
+      pieceDto.idSillOption,
+      allowedSillOptionIds,
+    );
+
+    validateSingleSysConfOption(
+      'Reinforcement option',
+      pieceDto.idReinforcementOption,
+      allowedReinforcementOptionIds,
+    );
 
     const normalizedMuntin = await this.normalizePieceMuntinFromCatalog(
       pieceDto.muntin,
@@ -1439,21 +1521,21 @@ private async normalizePieceMuntinFromCatalog(
       : new Decimal(0);
 
     const result: CalculatedPieceCombined = {
-  ...(pieceDto as any),
-  muntin: normalizedMuntin,
+      ...(pieceDto as any),
+      muntin: normalizedMuntin,
 
-  rate: rateR,
-  price: priceR,
-  netProfit: netProfitR,
-  markup: markupR,
-  dealerMarkupDecimal: dealerMarkupDecimalR,
-  netProfitD: netProfitDR,
-  subtotal: subtotalR,
-  customerPrice: customerPriceR,
-  customerSubtotal: customerSubtotalR,
-  dpPosPsf,
-  dpNegPsf,
-};
+      rate: rateR,
+      price: priceR,
+      netProfit: netProfitR,
+      markup: markupR,
+      dealerMarkupDecimal: dealerMarkupDecimalR,
+      netProfitD: netProfitDR,
+      subtotal: subtotalR,
+      customerPrice: customerPriceR,
+      customerSubtotal: customerSubtotalR,
+      dpPosPsf,
+      dpNegPsf,
+    };
 
     return result;
   }

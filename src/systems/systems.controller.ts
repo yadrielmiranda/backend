@@ -17,7 +17,7 @@ import { Roles } from 'src/auth/roles.decorator';
 
 @Controller('systems')
 export class SystemsController {
-  constructor(private readonly systemsService: SystemsService) {}
+  constructor(private readonly systemsService: SystemsService) { }
 
   // 🔒 WRITE: solo admin
   @Roles('admin')
@@ -53,7 +53,6 @@ export class SystemsController {
     return this.systemsService.findAllWithConfigs();
   }
 
-  // ✅ READ: todos los usuarios autenticados
   @Get()
   async getSystems(
     @Query('product') idP?: string,
@@ -66,22 +65,27 @@ export class SystemsController {
     return this.systemsService.systems({ where });
   }
 
-  // ✅ READ: todos los usuarios autenticados
-  @Get(':id')
-  async getSystem(@Param('id', ParseIntPipe) id: number) {
-    return this.systemsService.system({ id });
+  @Get(':id/configs/:configId/options')
+  async getSystemConfigOptions(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('configId', ParseIntPipe) configId: number,
+  ) {
+    return this.systemsService.getSystemConfigOptions(id, configId);
   }
 
-  // ✅ READ: todos los usuarios autenticados
   @Get(':id/configs')
   async getSystemConfigs(@Param('id', ParseIntPipe) id: number) {
     return this.systemsService.getSystemWithConfigs(id);
   }
 
-  // ✅ READ: todos los usuarios autenticados
   @Get(':id/available-configs')
   async getAvailableConfigs(@Param('id', ParseIntPipe) id: number) {
     return this.systemsService.getAvailableConfigsForSystem(id);
+  }
+
+  @Get(':id')
+  async getSystem(@Param('id', ParseIntPipe) id: number) {
+    return this.systemsService.system({ id });
   }
 
   // 🔒 WRITE: solo admin
