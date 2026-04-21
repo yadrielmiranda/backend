@@ -8,6 +8,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateSystemDto } from './dto/create-system.dto';
 import { UpdateSystemDto } from './dto/update-system.dto';
 import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
+import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options.dto';
 
 
 @Injectable()
@@ -226,6 +227,264 @@ export class SystemsService {
         sortOrder: x.sortOrder,
       })),
     };
+  }
+
+  async getSystemConfigOptionsForManage(systemId: number, configId: number) {
+    const sysConf = await this.prisma.sysConf.findUnique({
+      where: {
+        idSystem_idConfig: {
+          idSystem: systemId,
+          idConfig: configId,
+        },
+      },
+      include: {
+        activeOptions: {
+          include: { option: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+        preparationOptions: {
+          include: { option: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+        sillOptions: {
+          include: { option: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+        reinforcementOptions: {
+          include: { option: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+        system: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        config: {
+          select: {
+            id: true,
+            conf: true,
+          },
+        },
+      },
+    });
+
+    if (!sysConf) {
+      throw new NotFoundException(
+        `System/Config link not found (systemId=${systemId}, configId=${configId}).`,
+      );
+    }
+
+    const [
+      activeOptionsCatalog,
+      preparationOptionsCatalog,
+      sillOptionsCatalog,
+      reinforcementOptionsCatalog,
+    ] = await Promise.all([
+      this.prisma.activeOption.findMany({
+        where: { isActive: true },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      }),
+      this.prisma.preparationOption.findMany({
+        where: { isActive: true },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      }),
+      this.prisma.sillOption.findMany({
+        where: { isActive: true },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      }),
+      this.prisma.reinforcementOption.findMany({
+        where: { isActive: true },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      }),
+    ]);
+
+    return {
+      idSystem: systemId,
+      idConfig: configId,
+      system: sysConf.system,
+      config: sysConf.config,
+      allowScreen: sysConf.allowScreen,
+
+      selectedActiveOptionIds: sysConf.activeOptions.map((x) => x.option.id),
+      selectedPreparationOptionIds: sysConf.preparationOptions.map(
+        (x) => x.option.id,
+      ),
+      selectedSillOptionIds: sysConf.sillOptions.map((x) => x.option.id),
+      selectedReinforcementOptionIds: sysConf.reinforcementOptions.map(
+        (x) => x.option.id,
+      ),
+
+      activeOptionsCatalog,
+      preparationOptionsCatalog,
+      sillOptionsCatalog,
+      reinforcementOptionsCatalog,
+    };
+  }
+
+  async updateSystemConfigOptions(
+    systemId: number,
+    configId: number,
+    data: UpdateSystemConfigOptionsDto,
+  ) {
+    const sysConf = await this.prisma.sysConf.findUnique({
+      where: {
+        idSystem_idConfig: {
+          idSystem: systemId,
+          idConfig: configId,
+        },
+      },
+      select: {
+        idSystem: true,
+        idConfig: true,
+      },
+    });
+
+    if (!sysConf) {
+      throw new NotFoundException(
+        `System/Config link not found (systemId=${systemId}, configId=${configId}).`,
+      );
+    }
+
+    const [
+      validActiveOptions,
+      validPreparationOptions,
+      validSillOptions,
+      validReinforcementOptions,
+    ] = await Promise.all([
+      this.prisma.activeOption.findMany({
+        where: {
+          id: { in: data.activeOptionIds },
+          isActive: true,
+        },
+        select: { id: true },
+      }),
+      this.prisma.preparationOption.findMany({
+        where: {
+          id: { in: data.preparationOptionIds },
+          isActive: true,
+        },
+        select: { id: true },
+      }),
+      this.prisma.sillOption.findMany({
+        where: {
+          id: { in: data.sillOptionIds },
+          isActive: true,
+        },
+        select: { id: true },
+      }),
+      this.prisma.reinforcementOption.findMany({
+        where: {
+          id: { in: data.reinforcementOptionIds },
+          isActive: true,
+        },
+        select: { id: true },
+      }),
+    ]);
+
+    if (validActiveOptions.length !== data.activeOptionIds.length) {
+      throw new BadRequestException(
+        'One or more active options are invalid or inactive.',
+      );
+    }
+
+    if (
+      validPreparationOptions.length !== data.preparationOptionIds.length
+    ) {
+      throw new BadRequestException(
+        'One or more preparation options are invalid or inactive.',
+      );
+    }
+
+    if (validSillOptions.length !== data.sillOptionIds.length) {
+      throw new BadRequestException(
+        'One or more sill options are invalid or inactive.',
+      );
+    }
+
+    if (
+      validReinforcementOptions.length !== data.reinforcementOptionIds.length
+    ) {
+      throw new BadRequestException(
+        'One or more reinforcement options are invalid or inactive.',
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.sysConfActiveOption.deleteMany({
+        where: {
+          idSystem: systemId,
+          idConfig: configId,
+        },
+      });
+
+      await tx.sysConfPreparationOption.deleteMany({
+        where: {
+          idSystem: systemId,
+          idConfig: configId,
+        },
+      });
+
+      await tx.sysConfSillOption.deleteMany({
+        where: {
+          idSystem: systemId,
+          idConfig: configId,
+        },
+      });
+
+      await tx.sysConfReinforcementOption.deleteMany({
+        where: {
+          idSystem: systemId,
+          idConfig: configId,
+        },
+      });
+
+      if (data.activeOptionIds.length > 0) {
+        await tx.sysConfActiveOption.createMany({
+          data: data.activeOptionIds.map((optionId, index) => ({
+            idSystem: systemId,
+            idConfig: configId,
+            optionId,
+            sortOrder: index,
+          })),
+        });
+      }
+
+      if (data.preparationOptionIds.length > 0) {
+        await tx.sysConfPreparationOption.createMany({
+          data: data.preparationOptionIds.map((optionId, index) => ({
+            idSystem: systemId,
+            idConfig: configId,
+            optionId,
+            sortOrder: index,
+          })),
+        });
+      }
+
+      if (data.sillOptionIds.length > 0) {
+        await tx.sysConfSillOption.createMany({
+          data: data.sillOptionIds.map((optionId, index) => ({
+            idSystem: systemId,
+            idConfig: configId,
+            optionId,
+            sortOrder: index,
+          })),
+        });
+      }
+
+      if (data.reinforcementOptionIds.length > 0) {
+        await tx.sysConfReinforcementOption.createMany({
+          data: data.reinforcementOptionIds.map((optionId, index) => ({
+            idSystem: systemId,
+            idConfig: configId,
+            optionId,
+            sortOrder: index,
+          })),
+        });
+      }
+    });
+
+    return this.getSystemConfigOptionsForManage(systemId, configId);
   }
 
   /**

@@ -14,6 +14,7 @@ import { CreateSystemDto } from './dto/create-system.dto';
 import { UpdateSystemDto } from './dto/update-system.dto';
 import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 import { Roles } from 'src/auth/roles.decorator';
+import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options.dto';
 
 @Controller('systems')
 export class SystemsController {
@@ -65,6 +66,15 @@ export class SystemsController {
     return this.systemsService.systems({ where });
   }
 
+    //READ: admin UI para gestionar options de un SysConf
+  @Get(':id/configs/:configId/options/manage')
+  async getSystemConfigOptionsForManage(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('configId', ParseIntPipe) configId: number,
+  ) {
+    return this.systemsService.getSystemConfigOptionsForManage(id, configId);
+  }
+
   @Get(':id/configs/:configId/options')
   async getSystemConfigOptions(
     @Param('id', ParseIntPipe) id: number,
@@ -86,6 +96,17 @@ export class SystemsController {
   @Get(':id')
   async getSystem(@Param('id', ParseIntPipe) id: number) {
     return this.systemsService.system({ id });
+  }
+
+   // 🔒 WRITE: solo admin
+  @Roles('admin')
+  @Patch(':id/configs/:configId/options/manage')
+  async updateSystemConfigOptions(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('configId', ParseIntPipe) configId: number,
+    @Body() body: UpdateSystemConfigOptionsDto,
+  ) {
+    return this.systemsService.updateSystemConfigOptions(id, configId, body);
   }
 
   // 🔒 WRITE: solo admin

@@ -31,12 +31,16 @@ import { PaymentsModule } from './payments/payments.module';
 import { LogsModule } from './logs/logs.module';
 import { MuntinPatternsModule } from './muntin-patterns/muntin-patterns.module';
 import { MuntinTypesModule } from './muntin-types/muntin-types.module';
+import { ActiveOptionsModule } from './active-options/active-options.module';
+import { PreparationOptionsModule } from './preparation-options/preparation-options.module';
+import { SillOptionsModule } from './sill-options/sill-options.module';
+import { ReinforcementOptionsModule } from './reinforcement-options/reinforcement-options.module';
 
 
 @Module({
   imports: [
     ConfigModule.forRoot({
-      isGlobal: true, // ✅ para que ConfigService funcione en todo el app
+      isGlobal: true, // para que ConfigService funcione en todo el app
     }),
 
     PrismaModule,
@@ -63,7 +67,11 @@ import { MuntinTypesModule } from './muntin-types/muntin-types.module';
     PaymentsModule,    
     LogsModule,
     MuntinPatternsModule,
-    MuntinTypesModule
+    MuntinTypesModule,
+    ActiveOptionsModule,
+    PreparationOptionsModule,
+    SillOptionsModule,
+    ReinforcementOptionsModule,
   ],
   controllers: [AppController],
   providers: [

@@ -77,6 +77,12 @@ type PieceWithRelations = Piece & {
   cryst: Prisma.CrystalGetPayload<{}>;
   tin: Prisma.TintGetPayload<{}>;
   coat: Prisma.CoatingGetPayload<{}>;
+
+  activeOption: Prisma.ActiveOptionGetPayload<{}> | null;
+  preparationOption: Prisma.PreparationOptionGetPayload<{}> | null;
+  sillOption: Prisma.SillOptionGetPayload<{}> | null;
+  reinforcementOption: Prisma.ReinforcementOptionGetPayload<{}> | null;
+
   pieceMuntin: Prisma.PieceMuntinGetPayload<{
     include: {
       pattern: true;
@@ -507,6 +513,12 @@ export class EstimatesService {
             cryst: true,
             tin: true,
             coat: true,
+
+            activeOption: true,
+            preparationOption: true,
+            sillOption: true,
+            reinforcementOption: true,
+
             pieceMuntin: {
               include: {
                 pattern: true,
@@ -656,6 +668,38 @@ export class EstimatesService {
           screen: p.screen,
           qty: p.qty,
 
+          ...(p.idActiveOption
+            ? {
+              activeOption: {
+                connect: { id: p.idActiveOption },
+              },
+            }
+            : {}),
+
+          ...(p.idPreparationOption
+            ? {
+              preparationOption: {
+                connect: { id: p.idPreparationOption },
+              },
+            }
+            : {}),
+
+          ...(p.idSillOption
+            ? {
+              sillOption: {
+                connect: { id: p.idSillOption },
+              },
+            }
+            : {}),
+
+          ...(p.idReinforcementOption
+            ? {
+              reinforcementOption: {
+                connect: { id: p.idReinforcementOption },
+              },
+            }
+            : {}),
+
           rate: new Prisma.Decimal(p.rate.toFixed(2)),
           price: new Prisma.Decimal(p.price.toFixed(2)),
           markup: new Prisma.Decimal(p.markup.toFixed(4)),
@@ -747,6 +791,12 @@ export class EstimatesService {
               cryst: true,
               tin: true,
               coat: true,
+
+              activeOption: true,
+              preparationOption: true,
+              sillOption: true,
+              reinforcementOption: true,
+
               pieceMuntin: {
                 include: {
                   pattern: true,
@@ -814,6 +864,10 @@ export class EstimatesService {
           pieces: {
             orderBy: { id: 'asc' },
             include: {
+              activeOption: true,
+              preparationOption: true,
+              sillOption: true,
+              reinforcementOption: true,
               pieceMuntin: {
                 include: {
                   pattern: true,
@@ -882,6 +936,11 @@ export class EstimatesService {
           privacy: p.privacy,
           screen: p.screen,
           qty: p.qty,
+
+          idActiveOption: p.idActiveOption ?? null,
+          idPreparationOption: p.idPreparationOption ?? null,
+          idSillOption: p.idSillOption ?? null,
+          idReinforcementOption: p.idReinforcementOption ?? null,
 
           rate: new Prisma.Decimal(p.rate.toFixed(2)),
           price: new Prisma.Decimal(p.price.toFixed(2)),
@@ -970,6 +1029,12 @@ export class EstimatesService {
               cryst: true,
               tin: true,
               coat: true,
+
+              activeOption: true,
+              preparationOption: true,
+              sillOption: true,
+              reinforcementOption: true,
+
               pieceMuntin: {
                 include: {
                   pattern: true,
@@ -1059,6 +1124,12 @@ export class EstimatesService {
               cryst: true,
               tin: true,
               coat: true,
+
+              activeOption: true,
+              preparationOption: true,
+              sillOption: true,
+              reinforcementOption: true,
+
               pieceMuntin: {
                 include: {
                   pattern: true,
@@ -1362,7 +1433,7 @@ export class EstimatesService {
       label: string,
       selectedId: number | undefined | null,
       allowedIds: Set<number>,
-    ) => {      
+    ) => {
       // si este SysConf no tiene opciones para ese campo, no permitimos que manden un valor      
       if (allowedIds.size === 0) {
         if (selectedId != null) {
