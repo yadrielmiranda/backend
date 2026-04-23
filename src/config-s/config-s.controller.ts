@@ -12,7 +12,7 @@ import { ConfigSService } from './config-s.service';
 import { CreateConfigDto } from './dto/create-config.dto';
 import { UpdateConfigDto } from './dto/update-config.dto';
 import { Config as ConfigModel, Prisma } from '@prisma/client';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 
 @Controller('configs')
 export class ConfigSController {

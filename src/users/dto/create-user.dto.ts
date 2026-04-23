@@ -11,14 +11,14 @@ import {
   MaxLength,
 } from "class-validator";
 import { Transform, Type } from "class-transformer";
-import { US_STATE_CODES } from "src/common/us-states";
+import { US_STATE_CODES } from "@/common/us-states";
 import {
   trimOnly,
   normalizeEmailOrNull,
   normalizeUSPhoneE164OrNull,
   normalizeZip5OrNull,
   normalizeStateCodeOrNull,
-} from "src/common/transforms";
+} from "@/common/transforms";
 
 export class CreateUserDto {
   @IsNotEmpty()

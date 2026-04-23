@@ -1,16 +1,16 @@
-// src/payments/payments.service.ts
+// @/payments/payments.service.ts
 import {
   Injectable,
   NotFoundException,
   ConflictException,
   BadRequestException,
 } from '@nestjs/common';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { PaymentStatus, Prisma } from '@prisma/client';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
-import { LogsService } from 'src/logs/logs.service'; 
+import type { AuthUser } from '@/auth/types/auth-user.type';
+import { LogsService } from '@/logs/logs.service'; 
 
 @Injectable()
 export class PaymentsService {

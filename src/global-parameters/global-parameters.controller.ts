@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { GlobalParametersService } from './global-parameters.service';
 import { UpdateGlobalParameterDto } from './dto/update-global-parameter.dto';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 import { GlobalParameterKey } from '@prisma/client';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 

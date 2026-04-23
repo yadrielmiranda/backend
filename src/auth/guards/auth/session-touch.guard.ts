@@ -5,10 +5,10 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { PrismaService } from 'src/prisma/prisma.service';
-import { REFRESH_COOKIE } from 'src/auth/auth.tokens';
+import { PrismaService } from '@/prisma/prisma.service';
+import { REFRESH_COOKIE } from '@/auth/auth.tokens';
 import { Reflector } from '@nestjs/core';
-import { IS_PUBLIC_KEY } from 'src/auth/public.decorator';
+import { IS_PUBLIC_KEY } from '@/auth/public.decorator';
 
 type RefreshPayload = {
   sub: number;

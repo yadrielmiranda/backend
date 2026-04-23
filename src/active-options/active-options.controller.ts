@@ -9,7 +9,7 @@ import {
   Post,
 } from '@nestjs/common';
 import { ActiveOption as ActiveOptionModel } from '@prisma/client';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 import { ActiveOptionsService } from './active-options.service';
 import { CreateActiveOptionDto } from './dto/create-active-option.dto';
 import { UpdateActiveOptionDto } from './dto/update-active-option.dto';

@@ -8,8 +8,12 @@
     "allowSyntheticDefaultImports": true,
     "target": "ES2021",
     "sourceMap": true,
-    "outDir": "./dist",
+    "outDir": "./dist",   
     "baseUrl": "./",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+
     "incremental": true,
     "skipLibCheck": true,
     "strictNullChecks": false,

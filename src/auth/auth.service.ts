@@ -1,4 +1,4 @@
-// src/auth/auth.service.ts
+// @/auth/auth.service.ts
 import {
   Injectable,
   UnauthorizedException,
@@ -6,15 +6,15 @@ import {
   InternalServerErrorException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { PrismaService } from 'src/prisma/prisma.service';
-import { UsersService } from 'src/users/users.service';
+import { PrismaService } from '@/prisma/prisma.service';
+import { UsersService } from '@/users/users.service';
 import { RegisterUserDto } from './dto/register-user.dto';
 import * as bcrypt from 'bcrypt';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { addDays } from 'date-fns';
 import { randomUUID } from 'crypto';
-import { LogsService } from 'src/logs/logs.service';
+import { LogsService } from '@/logs/logs.service';
 
 type JwtRolePayload = string | undefined;
 

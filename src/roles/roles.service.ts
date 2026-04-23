@@ -1,10 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import { Role } from '@prisma/client';
 import { UpdateRoleDto } from './dto/update-role.dto';
-import { LogsService } from 'src/logs/logs.service';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
-import { getRoleName } from 'src/auth/utils/get-role-name'; 
+import { LogsService } from '@/logs/logs.service';
+import type { AuthUser } from '@/auth/types/auth-user.type';
+import { getRoleName } from '@/auth/utils/get-role-name'; 
 
 @Injectable()
 export class RolesService {

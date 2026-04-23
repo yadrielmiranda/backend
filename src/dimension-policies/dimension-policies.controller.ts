@@ -14,8 +14,8 @@ import { Request } from 'express';
 import { DimensionPoliciesService } from './dimension-policies.service';
 import { CreatePolicyDto, UpdatePolicyDto } from './dto/create-dimension-policy.dto';
 import { BulkUpsertRulesDto } from './dto/rule.dto';
-import { Roles } from 'src/auth/roles.decorator';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
+import { Roles } from '@/auth/roles.decorator';
+import type { AuthUser } from '@/auth/types/auth-user.type';
 
 @Controller('dimension-policies')
 export class DimensionPoliciesController {

@@ -1,10 +1,10 @@
-// src/payments/payments.controller.ts
+// @/payments/payments.controller.ts
 import { Controller, Post, Body, Req, Headers, Res } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { PaymentsService } from './payments.service';
 import { CreateCheckoutSessionDto } from './dto/create-checkout-session.dto';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
-import { Public } from 'src/auth/public.decorator';
+import type { AuthUser } from '@/auth/types/auth-user.type';
+import { Public } from '@/auth/public.decorator';
 
 @Controller('payments')
 export class PaymentsController {

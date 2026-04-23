@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
 import { EstimatesService } from './estimates.service';
 import { EstimatesController } from './estimates.controller';
-import { PrismaModule } from 'src/prisma/prisma.module';
-import { PricingRulesModule } from 'src/pricing-rules/pricing-rules.module';
-import { LogsModule } from 'src/logs/logs.module';
+import { PrismaModule } from '@/prisma/prisma.module';
+import { PricingRulesModule } from '@/pricing-rules/pricing-rules.module';
+import { LogsModule } from '@/logs/logs.module';
 
 @Module({
   imports: [PrismaModule, PricingRulesModule, LogsModule],

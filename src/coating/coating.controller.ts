@@ -12,7 +12,7 @@ import { CoatingService } from './coating.service';
 import { CreateCoatingDto } from './dto/create-coating.dto';
 import { UpdateCoatingDto } from './dto/update-coating.dto';
 import { Coating as CoatingModel } from '@prisma/client';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 
 @Controller('coatings')
 export class CoatingController {

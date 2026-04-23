@@ -13,8 +13,8 @@ import { Request } from 'express';
 import { PricingRulesService } from './pricing-rules.service';
 import { CreatePricingRuleDto } from './dto/create-pricing-rule.dto';
 import { UpdatePricingRuleDto } from './dto/update-pricing-rule.dto';
-import { Roles } from 'src/auth/roles.decorator';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
+import { Roles } from '@/auth/roles.decorator';
+import type { AuthUser } from '@/auth/types/auth-user.type';
 
 @Controller('pricing-rules')
 export class PricingRulesController {

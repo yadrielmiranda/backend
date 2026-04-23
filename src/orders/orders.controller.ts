@@ -10,8 +10,8 @@ import {
 import { OrdersService } from './orders.service';
 import { Request } from 'express';
 import { UpdateOrderDto } from './dto/update-order.dto';
-import { Roles } from 'src/auth/roles.decorator';
-import { AuthUser } from 'src/auth/types/auth-user.type';
+import { Roles } from '@/auth/roles.decorator';
+import { AuthUser } from '@/auth/types/auth-user.type';
 
 @Controller('orders')
 export class OrdersController {

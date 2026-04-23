@@ -3,13 +3,13 @@ import {
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import { CreatePricingRuleDto } from './dto/create-pricing-rule.dto';
 import { UpdatePricingRuleDto } from './dto/update-pricing-rule.dto';
 import { Prisma } from '@prisma/client';
-import { LogsService } from 'src/logs/logs.service';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
-import { getRoleName } from 'src/auth/utils/get-role-name';
+import { LogsService } from '@/logs/logs.service';
+import type { AuthUser } from '@/auth/types/auth-user.type';
+import { getRoleName } from '@/auth/utils/get-role-name';
 
 @Injectable()
 export class PricingRulesService {

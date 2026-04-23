@@ -1,12 +1,12 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import { Prisma, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { LogsService } from 'src/logs/logs.service';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
-import { getRoleName } from 'src/auth/utils/get-role-name';
+import { LogsService } from '@/logs/logs.service';
+import type { AuthUser } from '@/auth/types/auth-user.type';
+import { getRoleName } from '@/auth/utils/get-role-name';
 
 export type UserSafe = Omit<User, 'password'> & {
   role: { id: number; name: string; markup: Prisma.Decimal };

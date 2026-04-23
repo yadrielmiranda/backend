@@ -1,6 +1,6 @@
 import { PartialType, OmitType } from '@nestjs/mapped-types';
 import { CreateEstimateDto } from './create-estimate.dto';
-import { CreatePieceDto } from 'src/pieces/dto/create-piece.dto';
+import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 import { IsArray, ValidateNested, IsOptional, IsInt } from 'class-validator';
 import { Type } from 'class-transformer';
 

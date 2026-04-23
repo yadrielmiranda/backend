@@ -1,4 +1,4 @@
-// src/payments/dto/create-checkout-session.dto.ts
+// @/payments/dto/create-checkout-session.dto.ts
 import { IsInt, Min } from 'class-validator';
 
 export class CreateCheckoutSessionDto {

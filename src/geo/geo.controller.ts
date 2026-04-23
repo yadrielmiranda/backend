@@ -1,7 +1,7 @@
-// src/geo/geo.controller.ts
+// @/geo/geo.controller.ts
 import { Controller, Get, Param, BadRequestException } from "@nestjs/common";
 import { GeoService } from "./geo.service";
-import { Public } from "src/auth/public.decorator";
+import { Public } from "@/auth/public.decorator";
 
 @Controller("geo")
 export class GeoController {

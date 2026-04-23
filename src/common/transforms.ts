@@ -1,4 +1,3 @@
-// src/common/transforms.ts
 
 export const trimOrNull = ({ value }: { value: unknown }) => {
   if (value === null || value === undefined) return null;

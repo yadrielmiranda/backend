@@ -3,7 +3,7 @@ import {
   BadRequestException,
   NotFoundException,
 } from "@nestjs/common";
-import { PrismaService } from "src/prisma/prisma.service";
+import { PrismaService } from "@/prisma/prisma.service";
 import { BrandingType } from "@prisma/client";
 import { CreateBrandingDto } from "./dto/create-branding.dto";
 import { UpdateBrandingDto } from "./dto/update-branding.dto";

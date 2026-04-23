@@ -12,7 +12,7 @@ import { FrameColorService } from './frame-color.service';
 import { CreateFrameColorDto } from './dto/create-frame-color.dto';
 import { UpdateFrameColorDto } from './dto/update-frame-color.dto';
 import { FrameColor as FrameColorModel } from '@prisma/client';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 
 @Controller('framecolors')
 export class FrameColorController {

@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { PrismaModule } from 'src/prisma/prisma.module';
+import { PrismaModule } from '@/prisma/prisma.module';
 import { PreparationOptionsController } from './preparation-options.controller';
 import { PreparationOptionsService } from './preparation-options.service';
 

@@ -1,4 +1,4 @@
-// src/dimension-policies/dimension-policies.service.ts
+// @/dimension-policies/dimension-policies.service.ts
 import {
   Injectable,
   BadRequestException,
@@ -6,8 +6,8 @@ import {
 } from '@nestjs/common';
 
 import { Prisma } from '@prisma/client';
-import { PrismaService } from 'src/prisma/prisma.service';
-import { LogsService } from 'src/logs/logs.service';
+import { PrismaService } from '@/prisma/prisma.service';
+import { LogsService } from '@/logs/logs.service';
 
 import { BulkUpsertRulesDto, RuleRowDto } from './dto/rule.dto';
 import {
@@ -15,7 +15,7 @@ import {
   DimensionRounding,
   UpdatePolicyDto,
 } from './dto/create-dimension-policy.dto';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
+import type { AuthUser } from '@/auth/types/auth-user.type';
 
 type PickResult = {
   rule: any | null;

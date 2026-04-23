@@ -1,4 +1,4 @@
-// src/pricing/shape-geometry.ts
+// @/pricing/shape-geometry.ts
 export type DimsFt = {
   width?: number;      // W
   height?: number;     // H

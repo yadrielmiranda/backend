@@ -1,4 +1,4 @@
-// src/estimates/estimates.controller.ts
+// @/estimates/estimates.controller.ts
 import {
   Controller,
   Get,
@@ -18,10 +18,10 @@ import {
 import { EstimatesService, type PdfView } from './estimates.service';
 import { CreateEstimateDto } from './dto/create-estimate.dto';
 import { UpdateEstimateDto } from './dto/update-estimate.dto';
-import { JwtAuthGuard } from 'src/auth/guards/auth/auth.guard';
+import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
 import { Request, Response } from 'express';
-import { CreatePieceDto } from 'src/pieces/dto/create-piece.dto';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
+import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
+import type { AuthUser } from '@/auth/types/auth-user.type';
 
 @UseGuards(JwtAuthGuard)
 @Controller('estimates')

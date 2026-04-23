@@ -5,7 +5,7 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { Request } from 'express';
 import { ConfigService } from '@nestjs/config';
 
-import type { AuthUser, RoleName } from 'src/auth/types/auth-user.type';
+import type { AuthUser, RoleName } from '@/auth/types/auth-user.type';
 
 type RolePayload = { name: string } | string | null | undefined;
 

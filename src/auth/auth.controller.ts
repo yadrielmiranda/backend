@@ -1,4 +1,4 @@
-// src/auth/auth.controller.ts
+// @/auth/auth.controller.ts
 import {
   Controller,
   Post,
@@ -16,12 +16,12 @@ import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { Response, Request, CookieOptions } from 'express';
 import { RegisterUserDto } from './dto/register-user.dto';
-import { JwtAuthGuard } from 'src/auth/guards/auth/auth.guard';
+import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
-import { Public } from 'src/auth/public.decorator';
+import { Public } from '@/auth/public.decorator';
 import { AuthUser } from './types/auth-user.type';
-import { UsersService, UserSafe } from 'src/users/users.service';
+import { UsersService, UserSafe } from '@/users/users.service';
 import { ACCESS_COOKIE, REFRESH_COOKIE } from './auth.tokens';
 
 @Controller('auth')

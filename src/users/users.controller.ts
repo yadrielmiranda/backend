@@ -1,4 +1,4 @@
-// src/users/users.controller.ts
+// @/users/users.controller.ts
 import {
   Controller,
   Get,
@@ -15,10 +15,10 @@ import { Request } from 'express';
 import { UsersService, UserSafe } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { JwtAuthGuard } from 'src/auth/guards/auth/auth.guard';
-import { Roles } from 'src/auth/roles.decorator';
-import { RolesGuard } from 'src/auth/guards/roles/roles.guard';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
+import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
+import { Roles } from '@/auth/roles.decorator';
+import { RolesGuard } from '@/auth/guards/roles/roles.guard';
+import type { AuthUser } from '@/auth/types/auth-user.type';
 
 @UseGuards(JwtAuthGuard)
 @Controller('users')

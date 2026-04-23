@@ -12,7 +12,7 @@ import { CrystalService } from './crystals.service';
 import { CreateCrystalDto } from './dto/create-crystal.dto';
 import { UpdateCrystalDto } from './dto/update-crystal.dto';
 import { Crystal as CrystalModel } from '@prisma/client';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 
 @Controller('crystals')
 export class CrystalController {

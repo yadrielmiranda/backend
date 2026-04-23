@@ -17,7 +17,7 @@ import * as fs from "fs";
 import { BrandingsService } from "./brandings.service";
 import { CreateBrandingDto } from "./dto/create-branding.dto";
 import { UpdateBrandingDto } from "./dto/update-branding.dto";
-import { Roles } from "src/auth/roles.decorator";
+import { Roles } from "@/auth/roles.decorator";
 
 const UPLOAD_DIR = join(process.cwd(), "uploads", "logos");
 

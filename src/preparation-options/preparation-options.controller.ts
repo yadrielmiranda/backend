@@ -9,7 +9,7 @@ import {
   Post,
 } from '@nestjs/common';
 import { PreparationOption as PreparationOptionModel } from '@prisma/client';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 import { PreparationOptionsService } from './preparation-options.service';
 import { CreatePreparationOptionDto } from './dto/create-preparation-option.dto';
 import { UpdatePreparationOptionDto } from './dto/update-preparation-option.dto';

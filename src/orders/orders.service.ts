@@ -1,16 +1,16 @@
-// src/orders/orders.service.ts
+// @/orders/orders.service.ts
 import {
   Injectable,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
 import { Prisma, Order, OrderStatus } from '@prisma/client';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import { UpdateOrderDto } from './dto/update-order.dto';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { AuthUser } from 'src/auth/types/auth-user.type';
-import { getRoleName } from 'src/auth/utils/get-role-name';
-import { LogsService } from 'src/logs/logs.service';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { AuthUser } from '@/auth/types/auth-user.type';
+import { getRoleName } from '@/auth/utils/get-role-name';
+import { LogsService } from '@/logs/logs.service';
 
 @Injectable()
 export class OrdersService {

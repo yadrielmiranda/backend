@@ -1,4 +1,4 @@
-// src/pricing/price-formula.ts
+// @/pricing/price-formula.ts
 import Decimal from 'decimal.js';
 
 export function computeBasePrice(

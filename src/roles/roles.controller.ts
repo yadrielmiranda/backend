@@ -2,8 +2,8 @@ import { Controller, Get, Patch, Param, Body, ParseIntPipe, Req } from '@nestjs/
 import { Request } from 'express';
 import { RolesService } from './roles.service';
 import { UpdateRoleDto } from './dto/update-role.dto';
-import { Roles } from 'src/auth/roles.decorator';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
+import { Roles } from '@/auth/roles.decorator';
+import type { AuthUser } from '@/auth/types/auth-user.type';
 
 @Controller('roles')
 export class RolesController {

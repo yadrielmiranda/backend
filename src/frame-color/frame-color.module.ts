@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { FrameColorService } from './frame-color.service';
 import { FrameColorController } from './frame-color.controller';
-import { PrismaModule } from 'src/prisma/prisma.module';
+import { PrismaModule } from '@/prisma/prisma.module';
 
 @Module({
   imports: [PrismaModule],

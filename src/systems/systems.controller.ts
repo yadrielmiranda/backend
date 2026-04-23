@@ -13,7 +13,7 @@ import { SystemsService } from './systems.service';
 import { CreateSystemDto } from './dto/create-system.dto';
 import { UpdateSystemDto } from './dto/update-system.dto';
 import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options.dto';
 
 @Controller('systems')

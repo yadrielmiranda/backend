@@ -8,7 +8,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 import { SillOption as SillOptionModel } from '@prisma/client';
 import { SillOptionsService } from './sill-options.service';
 import { CreateSillOptionDto } from './dto/create-sill-option.dto';

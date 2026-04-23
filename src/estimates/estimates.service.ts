@@ -1,4 +1,4 @@
-// src/estimates/estimates.service.ts
+// @/estimates/estimates.service.ts
 import {
   Injectable,
   NotFoundException,
@@ -17,25 +17,25 @@ import {
   BrandingType,
   Branding,
 } from '@prisma/client';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import { CreateEstimateDto } from './dto/create-estimate.dto';
 import { UpdateEstimateDto, UpsertPieceDto } from './dto/update-estimate.dto';
-import { CreatePieceDto } from 'src/pieces/dto/create-piece.dto';
+import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 
 // --- Importación Estándar ---
 import Decimal from 'decimal.js';
-import { dimsInchesToFeet } from 'src/pricing/units';
-import { areaPerimeterFor } from 'src/pricing/shape-geometry';
-import { computeBasePrice } from 'src/pricing/price-formula';
-import { normalizeInchesToEighthStep } from 'src/common/dimensions';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
-import { isPrivileged } from 'src/auth/utils/is-privileged';
+import { dimsInchesToFeet } from '@/pricing/units';
+import { areaPerimeterFor } from '@/pricing/shape-geometry';
+import { computeBasePrice } from '@/pricing/price-formula';
+import { normalizeInchesToEighthStep } from '@/common/dimensions';
+import type { AuthUser } from '@/auth/types/auth-user.type';
+import { isPrivileged } from '@/auth/utils/is-privileged';
 
 // ✅ PDF on-the-fly
 import puppeteer from 'puppeteer';
 
 // ✅ Logs (EventLog + TempLog)
-import { LogsService } from 'src/logs/logs.service';
+import { LogsService } from '@/logs/logs.service';
 
 // Prisma Transaction Client Type
 type PrismaTransactionClient = Omit<

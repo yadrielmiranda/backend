@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
 import { Request } from 'express';
-import type { AuthUser } from 'src/auth/types/auth-user.type';
+import type { AuthUser } from '@/auth/types/auth-user.type';
 
 
 @Controller('notifications')

@@ -1,4 +1,4 @@
-// src/estimates/dto/create-estimate.dto.ts
+// @/estimates/dto/create-estimate.dto.ts
 import {
   IsNotEmpty,
   IsString,
@@ -12,10 +12,10 @@ import {
   Matches,
 } from "class-validator";
 import { Transform, Type } from "class-transformer";
-import { CreatePieceDto } from "src/pieces/dto/create-piece.dto";
+import { CreatePieceDto } from "@/pieces/dto/create-piece.dto";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { US_STATE_CODES } from "src/common/us-states";
-import { normalizeEmailOrNull, normalizeStateCodeOrNull, normalizeUSPhoneE164OrNull, normalizeZip5OrNull, trimOnly, trimOrNull } from "src/common/transforms";
+import { US_STATE_CODES } from "@/common/us-states";
+import { normalizeEmailOrNull, normalizeStateCodeOrNull, normalizeUSPhoneE164OrNull, normalizeZip5OrNull, trimOnly, trimOrNull } from "@/common/transforms";
 
 
 

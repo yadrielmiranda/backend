@@ -10,7 +10,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { MuntinType } from '@prisma/client';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 import { CreateMuntinTypeDto } from './dto/create-muntin-type.dto';
 import { UpdateMuntinTypeDto } from './dto/update-muntin-type.dto';
 import { MuntinTypesService } from './muntin-types.service';

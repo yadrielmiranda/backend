@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { MuntinType, Prisma } from '@prisma/client';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '@/prisma/prisma.service';
 import { CreateMuntinTypeDto } from './dto/create-muntin-type.dto';
 import { UpdateMuntinTypeDto } from './dto/update-muntin-type.dto';
 

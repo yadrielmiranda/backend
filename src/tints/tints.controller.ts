@@ -12,7 +12,7 @@ import { TintService } from './tints.service';
 import { CreateTintDto } from './dto/create-tint.dto';
 import { UpdateTintDto } from './dto/update-tint.dto';
 import { Tint as TintModel } from '@prisma/client';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 
 @Controller('tints')
 export class TintController {

@@ -9,7 +9,7 @@ import {
   Post,
 } from '@nestjs/common';
 import { ReinforcementOption as ReinforcementOptionModel } from '@prisma/client';
-import { Roles } from 'src/auth/roles.decorator';
+import { Roles } from '@/auth/roles.decorator';
 import { ReinforcementOptionsService } from './reinforcement-options.service';
 import { CreateReinforcementOptionDto } from './dto/create-reinforcement-option.dto';
 import { UpdateReinforcementOptionDto } from './dto/update-reinforcement-option.dto';
