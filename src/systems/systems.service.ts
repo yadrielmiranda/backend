@@ -81,18 +81,62 @@ export class SystemsService {
     return this.prisma.system.findMany({
       include: {
         sysconfs: {
-          include: { config: true },
+          include: {
+            config: true,
+
+            activeOptions: {
+              include: {
+                option: true,
+              },
+              orderBy: {
+                sortOrder: 'asc',
+              },
+            },
+
+            preparationOptions: {
+              include: {
+                option: true,
+              },
+              orderBy: {
+                sortOrder: 'asc',
+              },
+            },
+
+            sillOptions: {
+              include: {
+                option: true,
+              },
+              orderBy: {
+                sortOrder: 'asc',
+              },
+            },
+
+            reinforcementOptions: {
+              include: {
+                option: true,
+              },
+              orderBy: {
+                sortOrder: 'asc',
+              },
+            },
+          },
           orderBy: {
             config: {
               conf: 'asc',
             },
           },
         },
+
         brandProduct: {
-          include: { brand: true, product: true },
+          include: {
+            brand: true,
+            product: true,
+          },
         },
       },
-      orderBy: { id: 'asc' },
+      orderBy: {
+        id: 'asc',
+      },
     });
   }
 
