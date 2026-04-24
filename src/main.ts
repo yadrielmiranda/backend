@@ -2,7 +2,7 @@ import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { ValidationPipe } from "@nestjs/common";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
-import * as cookieParser from "cookie-parser";
+import cookieParser from "cookie-parser";
 import { NestExpressApplication } from "@nestjs/platform-express";
 import { join } from "path";
 
@@ -26,7 +26,7 @@ async function bootstrap() {
   );
 
   app.enableCors({
-    origin: ["http://localhost:3000", "http://10.0.0.7:3000"],
+    origin: ["http://localhost:3000", "http://10.0.0.4:3000"],
     credentials: true,
   });
 
