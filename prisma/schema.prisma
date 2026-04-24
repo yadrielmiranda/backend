@@ -182,19 +182,34 @@ model Config {
 }
 
 model SysConf {
-  system            System            @relation(fields: [idSystem], references: [id])
-  idSystem          Int
-  config            Config            @relation(fields: [idConfig], references: [id])
-  idConfig          Int
-  allowScreen       Boolean           @default(false)
+  system      System @relation(fields: [idSystem], references: [id])
+  idSystem    Int
+  config      Config @relation(fields: [idConfig], references: [id])
+  idConfig    Int
+  allowScreen Boolean @default(false)
+
+  defaultActiveOptionId        Int?
+  defaultPreparationOptionId   Int?
+  defaultSillOptionId          Int?
+  defaultReinforcementOptionId Int?
+
+  defaultActiveOption ActiveOption? @relation("SysConfDefaultActiveOption", fields: [defaultActiveOptionId], references: [id], onDelete: SetNull)
+  defaultPreparationOption PreparationOption? @relation("SysConfDefaultPreparationOption", fields: [defaultPreparationOptionId], references: [id], onDelete: SetNull)
+  defaultSillOption SillOption? @relation("SysConfDefaultSillOption", fields: [defaultSillOptionId], references: [id], onDelete: SetNull)
+  defaultReinforcementOption ReinforcementOption? @relation("SysConfDefaultReinforcementOption", fields: [defaultReinforcementOptionId], references: [id], onDelete: SetNull)
+
   dimensionPolicies DimensionPolicy[] @relation("SysConfDimensionPolicies")
 
-  activeOptions         SysConfActiveOption[]
-  preparationOptions    SysConfPreparationOption[]
-  sillOptions           SysConfSillOption[]
-  reinforcementOptions  SysConfReinforcementOption[]
+  activeOptions        SysConfActiveOption[]
+  preparationOptions   SysConfPreparationOption[]
+  sillOptions          SysConfSillOption[]
+  reinforcementOptions SysConfReinforcementOption[]
 
   @@id([idSystem, idConfig])
+  @@index([defaultActiveOptionId])
+  @@index([defaultPreparationOptionId])
+  @@index([defaultSillOptionId])
+  @@index([defaultReinforcementOptionId])
   @@map("sys_conf")
 }
 
@@ -208,6 +223,7 @@ model ActiveOption {
 
   sysConfOptions SysConfActiveOption[]
   pieces         Piece[]
+  defaultForSysConfs SysConf[] @relation("SysConfDefaultActiveOption")
 
   @@map("active_options")
 }
@@ -222,6 +238,7 @@ model PreparationOption {
 
   sysConfOptions SysConfPreparationOption[]
   pieces         Piece[]
+  defaultForSysConfs SysConf[] @relation("SysConfDefaultPreparationOption")
 
   @@map("preparation_options")
 }
@@ -236,6 +253,7 @@ model SillOption {
 
   sysConfOptions SysConfSillOption[]
   pieces         Piece[]
+  defaultForSysConfs SysConf[] @relation("SysConfDefaultSillOption")
 
   @@map("sill_options")
 }
@@ -250,6 +268,7 @@ model ReinforcementOption {
 
   sysConfOptions SysConfReinforcementOption[]
   pieces         Piece[]
+  defaultForSysConfs SysConf[] @relation("SysConfDefaultReinforcementOption")
 
   @@map("reinforcement_options")
 }

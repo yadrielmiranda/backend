@@ -250,6 +250,12 @@ export class SystemsService {
       idSystem: systemId,
       idConfig: configId,
       allowScreen: sysConf.allowScreen,
+
+      defaultActiveOptionId: sysConf.defaultActiveOptionId,
+      defaultPreparationOptionId: sysConf.defaultPreparationOptionId,
+      defaultSillOptionId: sysConf.defaultSillOptionId,
+      defaultReinforcementOptionId: sysConf.defaultReinforcementOptionId,
+
       activeOptions: sysConf.activeOptions.map((x) => ({
         id: x.option.id,
         name: x.option.name,
@@ -350,6 +356,11 @@ export class SystemsService {
       config: sysConf.config,
       allowScreen: sysConf.allowScreen,
 
+      defaultActiveOptionId: sysConf.defaultActiveOptionId,
+      defaultPreparationOptionId: sysConf.defaultPreparationOptionId,
+      defaultSillOptionId: sysConf.defaultSillOptionId,
+      defaultReinforcementOptionId: sysConf.defaultReinforcementOptionId,
+
       selectedActiveOptionIds: sysConf.activeOptions.map((x) => x.option.id),
       selectedPreparationOptionIds: sysConf.preparationOptions.map(
         (x) => x.option.id,
@@ -432,9 +443,7 @@ export class SystemsService {
       );
     }
 
-    if (
-      validPreparationOptions.length !== data.preparationOptionIds.length
-    ) {
+    if (validPreparationOptions.length !== data.preparationOptionIds.length) {
       throw new BadRequestException(
         'One or more preparation options are invalid or inactive.',
       );
@@ -451,6 +460,45 @@ export class SystemsService {
     ) {
       throw new BadRequestException(
         'One or more reinforcement options are invalid or inactive.',
+      );
+    }
+
+    // 🔥 VALIDACIÓN DE DEFAULTS
+    if (
+      data.defaultActiveOptionId &&
+      !data.activeOptionIds.includes(data.defaultActiveOptionId)
+    ) {
+      throw new BadRequestException(
+        'Default active option must be one of the selected active options.',
+      );
+    }
+
+    if (
+      data.defaultPreparationOptionId &&
+      !data.preparationOptionIds.includes(data.defaultPreparationOptionId)
+    ) {
+      throw new BadRequestException(
+        'Default preparation option must be one of the selected preparation options.',
+      );
+    }
+
+    if (
+      data.defaultSillOptionId &&
+      !data.sillOptionIds.includes(data.defaultSillOptionId)
+    ) {
+      throw new BadRequestException(
+        'Default sill option must be one of the selected sill options.',
+      );
+    }
+
+    if (
+      data.defaultReinforcementOptionId &&
+      !data.reinforcementOptionIds.includes(
+        data.defaultReinforcementOptionId,
+      )
+    ) {
+      throw new BadRequestException(
+        'Default reinforcement option must be one of the selected reinforcement options.',
       );
     }
 
@@ -526,6 +574,24 @@ export class SystemsService {
           })),
         });
       }
+
+      // 🔥 GUARDAR DEFAULTS
+      await tx.sysConf.update({
+        where: {
+          idSystem_idConfig: {
+            idSystem: systemId,
+            idConfig: configId,
+          },
+        },
+        data: {
+          defaultActiveOptionId: data.defaultActiveOptionId ?? null,
+          defaultPreparationOptionId:
+            data.defaultPreparationOptionId ?? null,
+          defaultSillOptionId: data.defaultSillOptionId ?? null,
+          defaultReinforcementOptionId:
+            data.defaultReinforcementOptionId ?? null,
+        },
+      });
     });
 
     return this.getSystemConfigOptionsForManage(systemId, configId);
