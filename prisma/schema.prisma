@@ -151,11 +151,19 @@ model System {
   brandProduct BrandProduct  @relation(fields: [idBrand, idProduct], references: [idBrand, idProduct])
   idBrand      Int
   idProduct    Int
+
+  defaultCrystalId Int?
+  defaultCrystal   Crystal? @relation("SystemDefaultCrystal", fields: [defaultCrystalId], references: [id], onDelete: SetNull)
+
+  systemCrystals SystemCrystal[]
+
   sysconfs     SysConf[]
   pieces       Piece[]
   pricingRules PricingRule[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
+
+  @@index([defaultCrystalId])
 }
 
 model Config {
@@ -211,6 +219,19 @@ model SysConf {
   @@index([defaultSillOptionId])
   @@index([defaultReinforcementOptionId])
   @@map("sys_conf")
+}
+
+model SystemCrystal {
+  idSystem  Int
+  idCrystal Int
+  sortOrder Int @default(0)
+
+  system  System  @relation(fields: [idSystem], references: [id], onDelete: Cascade)
+  crystal Crystal @relation(fields: [idCrystal], references: [id], onDelete: Restrict)
+
+  @@id([idSystem, idCrystal])
+  @@index([idCrystal])
+  @@map("system_crystals")
 }
 
 model ActiveOption {
@@ -343,6 +364,9 @@ model Crystal {
   pieces            Piece[]
   pricingRules      PricingRule[]
   dimensionPolicies DimensionPolicy[] @relation("CrystalDimensionPolicies")
+  systemCrystals SystemCrystal[]
+  defaultForSystems System[] @relation("SystemDefaultCrystal")
+
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 }
