@@ -15,6 +15,7 @@ import { UpdateSystemDto } from './dto/update-system.dto';
 import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 import { Roles } from '@/auth/roles.decorator';
 import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options.dto';
+import { UpdateSystemCrystalsDto } from './dto/update-system-crystals.dto';
 
 @Controller('systems')
 export class SystemsController {
@@ -66,7 +67,7 @@ export class SystemsController {
     return this.systemsService.systems({ where });
   }
 
-    //READ: admin UI para gestionar options de un SysConf
+  //READ: admin UI para gestionar options de un SysConf
   @Get(':id/configs/:configId/options/manage')
   async getSystemConfigOptionsForManage(
     @Param('id', ParseIntPipe) id: number,
@@ -93,12 +94,26 @@ export class SystemsController {
     return this.systemsService.getAvailableConfigsForSystem(id);
   }
 
+  @Get(':id/crystals/manage')
+  async getSystemCrystalsForManage(@Param('id', ParseIntPipe) id: number) {
+    return this.systemsService.getSystemCrystalsForManage(id);
+  }
+
+  @Roles('admin')
+  @Patch(':id/crystals/manage')
+  async updateSystemCrystals(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: UpdateSystemCrystalsDto,
+  ) {
+    return this.systemsService.updateSystemCrystals(id, body);
+  }
+
   @Get(':id')
   async getSystem(@Param('id', ParseIntPipe) id: number) {
     return this.systemsService.system({ id });
   }
 
-   // 🔒 WRITE: solo admin
+  // 🔒 WRITE: solo admin
   @Roles('admin')
   @Patch(':id/configs/:configId/options/manage')
   async updateSystemConfigOptions(

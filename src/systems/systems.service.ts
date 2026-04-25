@@ -9,6 +9,7 @@ import { CreateSystemDto } from './dto/create-system.dto';
 import { UpdateSystemDto } from './dto/update-system.dto';
 import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options.dto';
+import { UpdateSystemCrystalsDto } from './dto/update-system-crystals.dto';
 
 
 @Injectable()
@@ -33,6 +34,15 @@ export class SystemsService {
             config: {
               conf: 'asc',
             },
+          },
+        },
+        defaultCrystal: true,
+        systemCrystals: {
+          include: {
+            crystal: true,
+          },
+          orderBy: {
+            sortOrder: 'asc',
           },
         },
       },
@@ -70,6 +80,15 @@ export class SystemsService {
             config: {
               conf: 'asc',
             },
+          },
+        },
+        defaultCrystal: true,
+        systemCrystals: {
+          include: {
+            crystal: true,
+          },
+          orderBy: {
+            sortOrder: 'asc',
           },
         },
       },
@@ -131,6 +150,16 @@ export class SystemsService {
           include: {
             brand: true,
             product: true,
+          },
+        },
+
+        defaultCrystal: true,
+        systemCrystals: {
+          include: {
+            crystal: true,
+          },
+          orderBy: {
+            sortOrder: 'asc',
           },
         },
       },
@@ -202,6 +231,15 @@ export class SystemsService {
           },
         },
         brandProduct: { include: { product: true, brand: true } },
+        defaultCrystal: true,
+        systemCrystals: {
+          include: {
+            crystal: true,
+          },
+          orderBy: {
+            sortOrder: 'asc',
+          },
+        },
       },
     });
 
@@ -595,6 +633,114 @@ export class SystemsService {
     });
 
     return this.getSystemConfigOptionsForManage(systemId, configId);
+  }
+
+  async getSystemCrystalsForManage(systemId: number) {
+    const system = await this.prisma.system.findUnique({
+      where: { id: systemId },
+      include: {
+        brandProduct: {
+          include: {
+            brand: true,
+            product: true,
+          },
+        },
+        systemCrystals: {
+          include: {
+            crystal: true,
+          },
+          orderBy: {
+            sortOrder: 'asc',
+          },
+        },
+        defaultCrystal: true,
+      },
+    });
+
+    if (!system) {
+      throw new NotFoundException(`System with ID #${systemId} not found.`);
+    }
+
+    const crystalsCatalog = await this.prisma.crystal.findMany({
+      orderBy: {
+        glass: 'asc',
+      },
+    });
+
+    return {
+      system: {
+        id: system.id,
+        name: system.name,
+        idBrand: system.idBrand,
+        idProduct: system.idProduct,
+        brand: system.brandProduct.brand,
+        product: system.brandProduct.product,
+      },
+      selectedCrystalIds: system.systemCrystals.map((x) => x.idCrystal),
+      defaultCrystalId: system.defaultCrystalId,
+      crystalsCatalog,
+    };
+  }
+
+  async updateSystemCrystals(
+    systemId: number,
+    data: UpdateSystemCrystalsDto,
+  ) {
+    const system = await this.prisma.system.findUnique({
+      where: { id: systemId },
+      select: { id: true },
+    });
+
+    if (!system) {
+      throw new NotFoundException(`System with ID #${systemId} not found.`);
+    }
+
+    const validCrystals = await this.prisma.crystal.findMany({
+      where: {
+        id: { in: data.crystalIds },
+      },
+      select: { id: true },
+    });
+
+    if (validCrystals.length !== data.crystalIds.length) {
+      throw new BadRequestException('One or more glass types are invalid.');
+    }
+
+    if (
+      data.defaultCrystalId &&
+      !data.crystalIds.includes(data.defaultCrystalId)
+    ) {
+      throw new BadRequestException(
+        'Default glass type must be one of the selected glass types.',
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.systemCrystal.deleteMany({
+        where: {
+          idSystem: systemId,
+        },
+      });
+
+      if (data.crystalIds.length > 0) {
+        await tx.systemCrystal.createMany({
+          data: data.crystalIds.map((crystalId, index) => ({
+            idSystem: systemId,
+            idCrystal: crystalId,
+            sortOrder: index,
+          })),
+        });
+      }
+
+      await tx.system.update({
+        where: { id: systemId },
+        data: {
+          defaultCrystalId: data.defaultCrystalId ?? null,
+        },
+      });
+    });
+
+    return this.getSystemCrystalsForManage(systemId);
   }
 
   /**
