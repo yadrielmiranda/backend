@@ -6,7 +6,7 @@ import { UpdateMuntinTypeDto } from './dto/update-muntin-type.dto';
 
 @Injectable()
 export class MuntinTypesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   async muntinType(
     where: Prisma.MuntinTypeWhereUniqueInput,
@@ -39,11 +39,20 @@ export class MuntinTypesService {
   }
 
   async createMuntinType(data: CreateMuntinTypeDto): Promise<MuntinType> {
-    return this.prisma.muntinType.create({
-      data: {
-        name: data.name.trim(),
-        isActive: data.isActive ?? true,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      if (data.isDefault === true) {
+        await tx.muntinType.updateMany({
+          data: { isDefault: false },
+        });
+      }
+
+      return tx.muntinType.create({
+        data: {
+          name: data.name.trim(),
+          isActive: data.isActive ?? true,
+          isDefault: data.isDefault ?? false,
+        },
+      });
     });
   }
 
@@ -54,12 +63,24 @@ export class MuntinTypesService {
     const { where, data } = params;
 
     try {
-      return await this.prisma.muntinType.update({
-        where,
-        data: {
-          ...(data.name !== undefined ? { name: data.name.trim() } : {}),
-          ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
-        },
+      return await this.prisma.$transaction(async (tx) => {
+        if (data.isDefault === true) {
+          await tx.muntinType.updateMany({
+            where: { NOT: { id: where.id } },
+            data: { isDefault: false },
+          });
+        }
+
+        return tx.muntinType.update({
+          where,
+          data: {
+            ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+            ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+            ...(data.isDefault !== undefined
+              ? { isDefault: data.isDefault }
+              : {}),
+          },
+        });
       });
     } catch (e: any) {
       if (e?.code === 'P2025') {

@@ -1,4 +1,10 @@
-import { IsBoolean, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 export class CreateMuntinTypeDto {
   @IsString()
@@ -9,4 +15,8 @@ export class CreateMuntinTypeDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isDefault?: boolean;
 }

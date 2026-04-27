@@ -18,11 +18,11 @@ export class CreateConfigMuntinLayoutItemDto {
 
   @IsString()
   @IsNotEmpty()
-  panelCode: string;
+  panelLabel: string;
 
   @IsOptional()
   @IsString()
-  panelLabel?: string;
+  panelCode?: string | null;
 }
 
 export class CreateConfigDto {

@@ -19,10 +19,15 @@ export class CreatePieceMuntinPanelDto {
   @Min(1)
   panelIndex: number;
 
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  panelCode?: string | null;
+
   @ApiProperty()
   @IsString()
   @IsNotEmpty()
-  panelCode: string;
+  panelLabel: string;
 
   @ApiProperty()
   @IsInt()

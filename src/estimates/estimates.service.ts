@@ -209,6 +209,7 @@ export class EstimatesService {
                     id: mp.id ?? null,
                     panelIndex: mp.panelIndex ?? null,
                     panelCode: mp.panelCode ?? null,
+                    panelLabel: mp.panelLabel ?? null,
                     horizontalLites: mp.horizontalLites ?? null,
                     verticalLites: mp.verticalLites ?? null,
                   }))
@@ -299,7 +300,8 @@ export class EstimatesService {
           panels: {
             create: panels.map((panel) => ({
               panelIndex: panel.panelIndex,
-              panelCode: panel.panelCode,
+              panelCode: panel.panelCode ?? null,
+              panelLabel: panel.panelLabel,
               horizontalLites: panel.horizontalLites,
               verticalLites: panel.verticalLites,
             })),
@@ -311,31 +313,35 @@ export class EstimatesService {
 
   private parseConfigMuntinLayout(layout: unknown): Array<{
     panelIndex: number;
-    panelCode: string;
-    panelLabel?: string;
+    panelCode?: string | null;
+    panelLabel: string;
   }> {
     if (!Array.isArray(layout)) return [];
 
     return layout
       .map((item: any) => ({
         panelIndex: Number(item?.panelIndex),
-        panelCode: String(item?.panelCode ?? '').trim(),
-        ...(item?.panelLabel ? { panelLabel: String(item.panelLabel) } : {}),
+        panelCode:
+          item?.panelCode == null || String(item.panelCode).trim() === ""
+            ? null
+            : String(item.panelCode).trim(),
+        panelLabel: String(item?.panelLabel ?? "").trim(),
       }))
       .filter(
         (item) =>
           Number.isInteger(item.panelIndex) &&
-          item.panelIndex >= 0 &&
-          item.panelCode.length > 0,
+          item.panelIndex >= 1 &&
+          item.panelLabel.length > 0,
       )
       .sort((a, b) => a.panelIndex - b.panelIndex);
   }
 
   private buildDefaultPanelsFromConfigLayout(
-    configLayout: Array<{ panelIndex: number; panelCode: string; panelLabel?: string }>,
+    configLayout: Array<{ panelIndex: number; panelCode?: string | null; panelLabel: string }>,
     incomingPanels?: Array<{
       panelIndex?: number;
       panelCode?: string;
+      panelLabel?: string;
       horizontalLites?: number;
       verticalLites?: number;
     }>,
@@ -344,7 +350,7 @@ export class EstimatesService {
 
     for (const panel of incomingPanels ?? []) {
       const idx = Number(panel?.panelIndex);
-      if (Number.isInteger(idx) && idx >= 0) {
+      if (Number.isInteger(idx) && idx >= 1) {
         incomingByIndex.set(idx, panel);
       }
     }
@@ -354,7 +360,8 @@ export class EstimatesService {
 
       return {
         panelIndex: panel.panelIndex,
-        panelCode: panel.panelCode,
+        panelCode: panel.panelCode ?? null,
+        panelLabel: panel.panelLabel,
         horizontalLites: Math.max(1, Number(incoming?.horizontalLites ?? 1)),
         verticalLites: Math.max(1, Number(incoming?.verticalLites ?? 1)),
       };
@@ -1096,7 +1103,8 @@ export class EstimatesService {
                 panels: {
                   create: sourcePiece.muntin.panels.map((panel) => ({
                     panelIndex: panel.panelIndex,
-                    panelCode: panel.panelCode,
+                    panelCode: panel.panelCode ?? null,
+                    panelLabel: panel.panelLabel,
                     horizontalLites: panel.horizontalLites,
                     verticalLites: panel.verticalLites,
                   })),

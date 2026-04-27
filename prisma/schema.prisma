@@ -405,6 +405,7 @@ model MuntinType {
   id        Int      @id @default(autoincrement())
   name      String   @unique @db.VarChar(100)
   isActive  Boolean  @default(true)
+  isDefault Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -444,8 +445,8 @@ model PieceMuntinPanel {
   pieceMuntinId Int
 
   panelIndex Int
-  panelCode  String  @db.VarChar(20)
-  panelLabel String? @db.VarChar(100)
+  panelCode  String?  @db.VarChar(20)
+  panelLabel String @db.VarChar(100)
 
   horizontalLites Int @default(1)
   verticalLites   Int @default(1)
