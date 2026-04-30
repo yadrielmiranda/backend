@@ -26,7 +26,7 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 @UseGuards(JwtAuthGuard)
 @Controller('estimates')
 export class EstimatesController {
-  constructor(private readonly estimatesService: EstimatesService) {}
+  constructor(private readonly estimatesService: EstimatesService) { }
 
   @Post('preview-dimension')
   async previewDimension(
@@ -113,10 +113,10 @@ export class EstimatesController {
               : normalized === ''
                 ? defaultView
                 : (() => {
-                    throw new BadRequestException(
-                      `view inválido. Use: client | dealer_internal | dealer_public | admin`,
-                    );
-                  })();
+                  throw new BadRequestException(
+                    `view inválido. Use: client | dealer_internal | dealer_public | admin`,
+                  );
+                })();
 
     const pdfBuffer = await this.estimatesService.generateEstimatePdfBufferForUser(
       id,
@@ -128,6 +128,16 @@ export class EstimatesController {
     res.setHeader('Content-Disposition', `inline; filename="estimate-${id}.pdf"`);
 
     return res.end(pdfBuffer);
+  }
+
+  @Post(':id/recalculate')
+  async recalculate(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthUser;
+
+    return this.estimatesService.recalculateExpiredEstimate(id, user);
   }
 
   @Patch(':id')

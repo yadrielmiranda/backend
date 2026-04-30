@@ -464,8 +464,8 @@ model PieceMuntinPanel {
 // ==================================================
 
 enum GlobalParameterKey {
-  SALES_TAX // Impuesto sobre ventas de Florida
-  // Se pueden añadir más claves aquí en el futuro
+  SALES_TAX
+  ESTIMATE_VALID_DAYS
 }
 
 model GlobalParameter {
@@ -514,6 +514,7 @@ model Estimate {
   number String   @unique
   name   String
   date   DateTime @default(now())
+  expiresAt DateTime?
 
   // --- BASE ---
   units Int // suma de qty de todas las piezas

@@ -164,8 +164,9 @@ async function main() {
 
   console.log('Default admin user is up to date.');
 
-  // 4. Crear el parámetro de impuesto sobre ventas por defecto
+  // 4. Crear o actualizar parámetros globales
   console.log('Upserting global parameters...');
+
   await prisma.globalParameter.upsert({
     where: { key: GlobalParameterKey.SALES_TAX },
     update: {},
@@ -176,6 +177,18 @@ async function main() {
       unit: '%',
     },
   });
+
+  await prisma.globalParameter.upsert({
+    where: { key: GlobalParameterKey.ESTIMATE_VALID_DAYS },
+    update: {},
+    create: {
+      key: GlobalParameterKey.ESTIMATE_VALID_DAYS,
+      value: 30,
+      description: 'Number of days an estimate remains valid.',
+      unit: 'days',
+    },
+  });
+
   console.log('Global parameters are up to date.');
 
   console.log(`Seeding finished.`);

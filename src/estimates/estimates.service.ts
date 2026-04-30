@@ -31,11 +31,13 @@ import { normalizeInchesToEighthStep } from '@/common/dimensions';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { isPrivileged } from '@/auth/utils/is-privileged';
 
-// ✅ PDF on-the-fly
+// PDF on-the-fly
 import puppeteer from 'puppeteer';
 
-// ✅ Logs (EventLog + TempLog)
+// Logs (EventLog + TempLog)
 import { LogsService } from '@/logs/logs.service';
+// Cron Jobs
+import { Cron, CronExpression } from '@nestjs/schedule';
 
 // Prisma Transaction Client Type
 type PrismaTransactionClient = Omit<
@@ -111,6 +113,57 @@ export class EstimatesService {
     private logs: LogsService,
   ) { }
 
+  private async getEstimateExpirationDate(tx: PrismaTransactionClient) {
+    const validDaysParam = await tx.globalParameter.findUnique({
+      where: { key: GlobalParameterKey.ESTIMATE_VALID_DAYS },
+    });
+
+    const validDays = validDaysParam ? Number(validDaysParam.value) : 30;
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + validDays);
+
+    return expiresAt;
+  }
+
+  private async expireOldActiveEstimates(
+    tx: PrismaTransactionClient | PrismaService = this.prisma,
+  ) {
+    const expiredStatus = await (tx as any).estimateStatus.findUnique({
+      where: { name: 'Expired' },
+      select: { id: true },
+    });
+
+    const activeStatus = await (tx as any).estimateStatus.findUnique({
+      where: { name: 'Active' },
+      select: { id: true },
+    });
+
+    if (!expiredStatus || !activeStatus) {
+      throw new InternalServerErrorException(
+        'EstimateStatus "Active" or "Expired" not seeded.',
+      );
+    }
+
+    await (tx as any).estimate.updateMany({
+      where: {
+        statusId: activeStatus.id,
+        order: null,
+        expiresAt: {
+          lt: new Date(),
+        },
+      },
+      data: {
+        statusId: expiredStatus.id,
+      },
+    });
+  }
+
+  @Cron(CronExpression.EVERY_HOUR)
+  async expireOldActiveEstimatesJob() {
+    await this.expireOldActiveEstimates();
+  }
+
   // =====================================================
   // ✅ Audit snapshot helper
   // =====================================================
@@ -121,6 +174,7 @@ export class EstimatesService {
       number: est.number,
       name: est.name,
       idUser: est.idUser,
+      expiresAt: est.expiresAt ?? null,
       statusId: est.statusId,
       statusName: est.status?.name ?? null,
       orderId: est.order?.id ?? null,
@@ -628,6 +682,10 @@ export class EstimatesService {
       });
       if (!taxParameter) throw new InternalServerErrorException('SALES_TAX config missing.');
 
+      const expiresAt = await this.getEstimateExpirationDate(
+        tx as PrismaTransactionClient,
+      );
+
       const activeStatus = await tx.estimateStatus.findUnique({
         where: { name: 'Active' },
         select: { id: true },
@@ -748,7 +806,7 @@ export class EstimatesService {
       const createData: Prisma.EstimateCreateInput = {
         number: nextNumber,
         name: estimateHeaderData.name,
-
+        expiresAt,
         customerFirstName: estimateHeaderData.customerFirstName ?? null,
         customerLastName: estimateHeaderData.customerLastName ?? null,
         customerEmail: estimateHeaderData.customerEmail ?? null,
@@ -856,6 +914,10 @@ export class EstimatesService {
         where: { key: GlobalParameterKey.SALES_TAX },
       });
       if (!taxParameter) throw new InternalServerErrorException('SALES_TAX config missing.');
+
+      const expiresAt = await this.getEstimateExpirationDate(
+        tx as PrismaTransactionClient,
+      );
 
       const factoryTaxRate = user.isTaxExempt
         ? new Decimal(0)
@@ -1014,6 +1076,7 @@ export class EstimatesService {
           : {}),
 
         ...estimateTotals,
+        expiresAt,
         units: totalUnits,
         pieces: { upsert: piecesToUpsert },
       };
@@ -1174,6 +1237,328 @@ export class EstimatesService {
     return result as EstimateWithRelations;
   }
 
+  // recalcular estimado
+  async recalculateExpiredEstimate(
+    estimateId: number,
+    user: AuthUser,
+  ): Promise<EstimateWithRelations> {
+    const dbUser = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      include: { role: true },
+    });
+
+    if (!dbUser) throw new NotFoundException('User not found');
+
+    const effectiveMarkupDecimal =
+      dbUser.markupOverride !== null
+        ? new Decimal(dbUser.markupOverride.toString())
+        : new Decimal(dbUser.role.markup.toString());
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const beforeEstimate = await tx.estimate.findUnique({
+        where: { id: estimateId },
+        include: {
+          user: true,
+          status: true,
+          order: true,
+          pieces: {
+            orderBy: { id: 'asc' },
+            include: {
+              activeOption: true,
+              preparationOption: true,
+              sillOption: true,
+              reinforcementOption: true,
+              pieceMuntin: {
+                include: {
+                  pattern: true,
+                  type: true,
+                  panels: {
+                    orderBy: { panelIndex: 'asc' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!beforeEstimate) {
+        throw new NotFoundException(`Estimate #${estimateId} not found.`);
+      }
+
+      if (!isPrivileged(user) && beforeEstimate.idUser !== user.id) {
+        throw new NotFoundException(`Estimate #${estimateId} not found.`);
+      }
+
+      if (beforeEstimate.status?.name !== 'Expired') {
+        throw new BadRequestException(
+          `Only expired estimates can be recalculated. Current status: ${beforeEstimate.status?.name ?? 'UNKNOWN'
+          }.`,
+        );
+      }
+
+      if (beforeEstimate.order) {
+        throw new BadRequestException(
+          `Estimate #${estimateId} already has an order and cannot be recalculated.`,
+        );
+      }
+
+      const activeStatus = await tx.estimateStatus.findUnique({
+        where: { name: 'Active' },
+        select: { id: true },
+      });
+
+      if (!activeStatus) {
+        throw new InternalServerErrorException(
+          'EstimateStatus "Active" not seeded.',
+        );
+      }
+
+      const taxParameter = await tx.globalParameter.findUnique({
+        where: { key: GlobalParameterKey.SALES_TAX },
+      });
+
+      if (!taxParameter) {
+        throw new InternalServerErrorException('SALES_TAX config missing.');
+      }
+
+      const expiresAt = await this.getEstimateExpirationDate(
+        tx as PrismaTransactionClient,
+      );
+
+      const factoryTaxRate = dbUser.isTaxExempt
+        ? new Decimal(0)
+        : new Decimal(taxParameter.value.toString());
+
+      const customerTaxRate = new Decimal(
+        Number(beforeEstimate.customerTaxRate ?? 0),
+      );
+
+      const pieceDtos: UpsertPieceDto[] = beforeEstimate.pieces.map((p) => ({
+        id: p.id,
+        mark: p.mark,
+        idProd: p.idProd,
+        idBrand: p.idBrand,
+        idSyst: p.idSyst,
+        idConf: p.idConf,
+        idFC: p.idFC,
+
+        width: p.width == null ? null : p.width.toString(),
+        height: p.height == null ? null : p.height.toString(),
+        heightLeft: p.heightLeft == null ? null : p.heightLeft.toString(),
+        heightRight: p.heightRight == null ? null : p.heightRight.toString(),
+        legHeight: p.legHeight == null ? null : p.legHeight.toString(),
+
+        idCryst: p.idCryst,
+        idTint: p.idTint,
+        privacy: p.privacy,
+        idCoat: p.idCoat,
+        screen: p.screen,
+
+        idActiveOption: p.idActiveOption ?? null,
+        idPreparationOption: p.idPreparationOption ?? null,
+        idSillOption: p.idSillOption ?? null,
+        idReinforcementOption: p.idReinforcementOption ?? null,
+
+        muntin: p.pieceMuntin
+          ? {
+            idPattern: p.pieceMuntin.patternId,
+            idType: p.pieceMuntin.typeId ?? null,
+            panels: p.pieceMuntin.panels.map((panel) => ({
+              panelIndex: panel.panelIndex,
+              panelCode: panel.panelCode ?? undefined,
+              panelLabel: panel.panelLabel,
+              horizontalLites: panel.horizontalLites,
+              verticalLites: panel.verticalLites,
+            })),
+          }
+          : null,
+
+        qty: p.qty,
+
+        // comentario en espanol: en DB está guardado como decimal 0.15, pero el cálculo espera 15
+        dealerMarkup: Number(p.dealerMarkup ?? 0) * 100,
+      }));
+
+      const calculatedPieces = await Promise.all(
+        pieceDtos.map((p) =>
+          this.internalCalculatePieceMetrics(
+            p,
+            effectiveMarkupDecimal,
+            tx as PrismaTransactionClient,
+          ),
+        ),
+      );
+
+      const estimateTotals = this.internalCalculateEstimateTotals(
+        calculatedPieces,
+        factoryTaxRate,
+        customerTaxRate,
+      );
+
+      const totalUnits = calculatedPieces.reduce(
+        (sum, p) => sum + (p.qty || 0),
+        0,
+      );
+
+      for (const p of calculatedPieces) {
+        const pieceId = (p as UpsertPieceDto).id;
+
+        if (!pieceId) continue;
+
+        await tx.piece.update({
+          where: { id: pieceId },
+          data: {
+            mark: p.mark,
+            privacy: p.privacy,
+            screen: p.screen,
+            qty: p.qty,
+
+            idActiveOption: p.idActiveOption ?? null,
+            idPreparationOption: p.idPreparationOption ?? null,
+            idSillOption: p.idSillOption ?? null,
+            idReinforcementOption: p.idReinforcementOption ?? null,
+
+            rate: new Prisma.Decimal(p.rate.toFixed(2)),
+            price: new Prisma.Decimal(p.price.toFixed(2)),
+            markup: new Prisma.Decimal(p.markup.toFixed(4)),
+            subtotal: new Prisma.Decimal(p.subtotal.toFixed(2)),
+            dealerMarkup: new Prisma.Decimal(
+              p.dealerMarkupDecimal.toFixed(4),
+            ),
+            netProfit: new Prisma.Decimal(p.netProfit.toFixed(2)),
+            netProfitD: new Prisma.Decimal(p.netProfitD.toFixed(2)),
+            customerPrice: new Prisma.Decimal(p.customerPrice.toFixed(2)),
+            customerSubtotal: new Prisma.Decimal(
+              p.customerSubtotal.toFixed(2),
+            ),
+
+            width: p.width ? new Prisma.Decimal(p.width) : null,
+            height: p.height ? new Prisma.Decimal(p.height) : null,
+            heightLeft: p.heightLeft ? new Prisma.Decimal(p.heightLeft) : null,
+            heightRight: p.heightRight ? new Prisma.Decimal(p.heightRight) : null,
+            legHeight: p.legHeight ? new Prisma.Decimal(p.legHeight) : null,
+
+            idProd: p.idProd,
+            idBrand: p.idBrand,
+            idSyst: p.idSyst,
+            idConf: p.idConf,
+            idFC: p.idFC,
+            idCryst: p.idCryst,
+            idTint: p.idTint,
+            idCoat: p.idCoat,
+
+            dpPosPsf: new Prisma.Decimal(p.dpPosPsf.toFixed(2)),
+            dpNegPsf: new Prisma.Decimal(p.dpNegPsf.toFixed(2)),
+          },
+        });
+
+        await tx.pieceMuntin.deleteMany({
+          where: { pieceId },
+        });
+
+        if (p.muntin) {
+          const muntinCreate = this.buildPieceMuntinCreateInput(p.muntin);
+
+          if (muntinCreate) {
+            await tx.pieceMuntin.create({
+              data: {
+                piece: { connect: { id: pieceId } },
+                pattern: { connect: { id: p.muntin.idPattern } },
+                ...(p.muntin.idType
+                  ? { type: { connect: { id: p.muntin.idType } } }
+                  : {}),
+                totalLites: muntinCreate.totalLites,
+                ...(p.muntin.panels.length > 0
+                  ? {
+                    panels: {
+                      create: p.muntin.panels.map((panel) => ({
+                        panelIndex: panel.panelIndex,
+                        panelCode: panel.panelCode ?? null,
+                        panelLabel: panel.panelLabel,
+                        horizontalLites: panel.horizontalLites,
+                        verticalLites: panel.verticalLites,
+                      })),
+                    },
+                  }
+                  : {}),
+              },
+            });
+          }
+        }
+      }
+
+      await tx.estimate.update({
+        where: { id: estimateId },
+        data: {
+          ...estimateTotals,
+          units: totalUnits,
+          expiresAt,
+          status: {
+            connect: { id: activeStatus.id },
+          },
+        },
+      });
+
+      const refreshedEstimate = await tx.estimate.findUnique({
+        where: { id: estimateId },
+        include: {
+          user: true,
+          status: true,
+          order: true,
+          pieces: {
+            orderBy: { id: 'asc' },
+            include: {
+              prod: true,
+              bran: true,
+              syst: true,
+              conf: true,
+              fColor: true,
+              cryst: true,
+              tin: true,
+              coat: true,
+              activeOption: true,
+              preparationOption: true,
+              sillOption: true,
+              reinforcementOption: true,
+              pieceMuntin: {
+                include: {
+                  pattern: true,
+                  type: true,
+                  panels: {
+                    orderBy: { panelIndex: 'asc' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!refreshedEstimate) {
+        throw new NotFoundException(
+          `Estimate #${estimateId} not found after recalculation.`,
+        );
+      }
+
+      await this.logs.log({
+        action: 'RECALCULATE',
+        entityType: 'Estimate',
+        entityId: refreshedEstimate.id,
+        userId: user.id,
+        message: `Estimate recalculated (#${refreshedEstimate.number})`,
+        before: this.buildEstimateAuditSnapshot(beforeEstimate),
+        after: this.buildEstimateAuditSnapshot(refreshedEstimate),
+        meta: { source: 'EstimatesService.recalculateExpiredEstimate' },
+      });
+
+      return refreshedEstimate;
+    });
+
+    return result as EstimateWithRelations;
+  }
+
+
   // --- deleteEstimate ---
   async deleteEstimate(
     where: Prisma.EstimateWhereUniqueInput,
@@ -1192,13 +1577,7 @@ export class EstimatesService {
       if (!estimate) {
         throw new NotFoundException(`Estimate #${where.id} not found.`);
       }
-
-      if (estimate.status?.name !== 'Active') {
-        throw new BadRequestException(
-          `Estimate #${where.id} no se puede borrar (status: ${estimate.status?.name ?? 'UNKNOWN'}).`,
-        );
-      }
-
+      
       if (estimate.order) {
         throw new BadRequestException(
           `Estimate #${where.id} ya tiene una orden y no se puede borrar.`,
@@ -1818,6 +2197,19 @@ export class EstimatesService {
       }
     })();
 
+    const expiresAtLabel = (() => {
+      try {
+        const d = new Date((estimate as any).expiresAt);
+        return d.toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+        });
+      } catch {
+        return '';
+      }
+    })();
+
     const logo = b?.logoUrl
       ? `<div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
            <img src="${esc(b.logoUrl)}" style="height:48px; object-fit:contain;" />
@@ -2286,7 +2678,7 @@ export class EstimatesService {
       }
 
     <div class="footer">
-      This estimate is valid for 30 days. Thank you for your business.
+      This estimate is valid until ${esc(expiresAtLabel)}. Thank you for your business.
     </div>
   </div>
 </body>

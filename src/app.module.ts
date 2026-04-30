@@ -35,6 +35,7 @@ import { ActiveOptionsModule } from './active-options/active-options.module';
 import { PreparationOptionsModule } from './preparation-options/preparation-options.module';
 import { SillOptionsModule } from './sill-options/sill-options.module';
 import { ReinforcementOptionsModule } from './reinforcement-options/reinforcement-options.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 
 @Module({
@@ -42,6 +43,7 @@ import { ReinforcementOptionsModule } from './reinforcement-options/reinforcemen
     ConfigModule.forRoot({
       isGlobal: true, // para que ConfigService funcione en todo el app
     }),
+    ScheduleModule.forRoot(),
 
     PrismaModule,
     ProductsModule,
@@ -64,7 +66,7 @@ import { ReinforcementOptionsModule } from './reinforcement-options/reinforcemen
     DimensionPoliciesModule,
     GeoModule,
     BrandingsModule,
-    PaymentsModule,    
+    PaymentsModule,
     LogsModule,
     MuntinPatternsModule,
     MuntinTypesModule,
@@ -78,7 +80,7 @@ import { ReinforcementOptionsModule } from './reinforcement-options/reinforcemen
     AppService,
     { provide: APP_GUARD, useClass: SessionTouchGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
-    { provide: APP_GUARD, useClass: RolesGuard },    
+    { provide: APP_GUARD, useClass: RolesGuard },
   ],
 })
-export class AppModule {}
+export class AppModule { }
