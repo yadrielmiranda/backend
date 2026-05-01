@@ -24,31 +24,42 @@ model Role {
 }
 
 model User {
-  id                Int            @id @default(autoincrement())
-  username          String         @unique
+  id                Int       @id @default(autoincrement())
+  username          String    @unique
   firstName         String
   lastName          String
-  email             String         @unique
-  phone             String         @unique
+  email             String    @unique
+  phone             String    @unique
   password          String
-  passwordUpdatedAt DateTime       @default(now())
-  street            String         @db.VarChar(150)
-  city              String         @db.VarChar(100)
-  state             String         @db.VarChar(50)
-  postalCode        String         @db.VarChar(20)
-  markupOverride    Decimal?       @db.Decimal(10, 4)
-  isTaxExempt       Boolean        @default(false)
-  role              Role           @relation(fields: [idRole], references: [id])
-  idRole            Int
-  estimates         Estimate[]
-  payments          Payment[]
-  orders            Order[]
-  notifications     Notification[]
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  sessions          Session[]
-  branding          Branding? // 1:1 opcional (solo dealer la usará normalmente)
-  eventLogs         EventLog[]
+  passwordUpdatedAt DateTime  @default(now())
+
+  street     String @db.VarChar(150)
+  city       String @db.VarChar(100)
+  state      String @db.VarChar(50)
+  postalCode String @db.VarChar(20)
+
+  markupOverride Decimal? @db.Decimal(10, 4)
+  isTaxExempt    Boolean  @default(false)
+
+  isActive Boolean   @default(true)
+  deletedAt DateTime?
+
+  role   Role @relation(fields: [idRole], references: [id])
+  idRole Int
+
+  estimates     Estimate[]
+  payments      Payment[]
+  orders        Order[]
+  notifications Notification[]
+  sessions      Session[]
+  branding      Branding?
+  eventLogs     EventLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([deletedAt])
 }
 
 model Session {
@@ -116,22 +127,28 @@ model Branding {
 model Brand {
   id            Int            @id @default(autoincrement())
   name          String
+  isActive      Boolean        @default(true)
   pieces        Piece[]
   brandProducts BrandProduct[]
   pricingRules  PricingRule[]
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+
+  @@index([isActive])
 }
 
 model Product {
   id            Int            @id @default(autoincrement())
   name          String
+  isActive      Boolean        @default(true)
   configs       Config[]
   pieces        Piece[]
   brandProducts BrandProduct[]
   pricingRules  PricingRule[]
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+
+  @@index([isActive])
 }
 
 model BrandProduct {
@@ -146,11 +163,13 @@ model BrandProduct {
 }
 
 model System {
-  id           Int           @id @default(autoincrement())
+  id           Int          @id @default(autoincrement())
   name         String
-  brandProduct BrandProduct  @relation(fields: [idBrand, idProduct], references: [idBrand, idProduct])
+  brandProduct BrandProduct @relation(fields: [idBrand, idProduct], references: [idBrand, idProduct])
   idBrand      Int
   idProduct    Int
+
+  isActive Boolean @default(true)
 
   defaultCrystalId Int?
   defaultCrystal   Crystal? @relation("SystemDefaultCrystal", fields: [defaultCrystalId], references: [id], onDelete: SetNull)
@@ -160,10 +179,11 @@ model System {
   sysconfs     SysConf[]
   pieces       Piece[]
   pricingRules PricingRule[]
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([defaultCrystalId])
+  @@index([isActive])
 }
 
 model Config {
@@ -171,22 +191,25 @@ model Config {
   conf         String
   prod         Product       @relation(fields: [idProduct], references: [id])
   idProduct    Int
+  isActive     Boolean       @default(true)
+
   sysconfs     SysConf[]
   pieces       Piece[]
   pricingRules PricingRule[]
 
-  // Indican qué dimensiones son REQUERIDAS por esta configuración
   requiresWidth       Boolean @default(false)
   requiresHeight      Boolean @default(false)
   requiresHeightLeft  Boolean @default(false)
   requiresHeightRight Boolean @default(false)
   requiresLegHeight   Boolean @default(false)
 
-  // layout de paneles para muntin
   muntinLayout Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([idProduct, isActive])
 }
 
 model SysConf {
@@ -224,13 +247,13 @@ model SysConf {
 model SystemCrystal {
   idSystem  Int
   idCrystal Int
-  sortOrder Int @default(0)
+  sortOrder Int @default(0)  
 
   system  System  @relation(fields: [idSystem], references: [id], onDelete: Cascade)
   crystal Crystal @relation(fields: [idCrystal], references: [id], onDelete: Restrict)
 
   @@id([idSystem, idCrystal])
-  @@index([idCrystal])
+  @@index([idCrystal])  
   @@map("system_crystals")
 }
 
@@ -353,38 +376,51 @@ model SysConfReinforcementOption {
 model FrameColor {
   id        Int      @id @default(autoincrement())
   color     String
+  isActive  Boolean  @default(true)
   pieces    Piece[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([isActive])
 }
 
 model Crystal {
   id                Int               @id @default(autoincrement())
   glass             String
+  isActive          Boolean           @default(true)
+
   pieces            Piece[]
   pricingRules      PricingRule[]
   dimensionPolicies DimensionPolicy[] @relation("CrystalDimensionPolicies")
-  systemCrystals SystemCrystal[]
+  systemCrystals    SystemCrystal[]
   defaultForSystems System[] @relation("SystemDefaultCrystal")
 
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
 }
 
 model Tint {
   id        Int      @id @default(autoincrement())
   color     String
+  isActive  Boolean  @default(true)
   pieces    Piece[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([isActive])
 }
 
 model Coating {
   id        Int      @id @default(autoincrement())
   name      String
+  isActive  Boolean  @default(true)
   pieces    Piece[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([isActive])
 }
 
 model MuntinPattern {
