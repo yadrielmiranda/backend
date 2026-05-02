@@ -4,6 +4,8 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { Request } from 'express';
 import { ConfigService } from '@nestjs/config';
+import { UnauthorizedException } from '@nestjs/common';
+import { PrismaService } from '@/prisma/prisma.service';
 
 import type { AuthUser, RoleName } from '@/auth/types/auth-user.type';
 
@@ -28,7 +30,10 @@ function normalizeRoleName(role: RolePayload): RoleName | undefined {
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {
     const secret = config.get<string>('JWT_SECRET_KEY');
     if (!secret) {
       throw new Error('JWT_SECRET_KEY is not set in .env');
@@ -47,6 +52,19 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     const id = typeof payload.sub === 'string' ? Number(payload.sub) : payload.sub;
 
     const roleName = normalizeRoleName(payload.role);
+
+    const dbUser = await this.prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        isActive: true,
+        deletedAt: true,
+      },
+    });
+
+    if (!dbUser || !dbUser.isActive || dbUser.deletedAt) {
+      throw new UnauthorizedException('This user account is inactive.');
+    }
 
     return {
       id,

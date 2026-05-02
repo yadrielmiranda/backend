@@ -23,7 +23,7 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 @UseGuards(JwtAuthGuard)
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(private readonly usersService: UsersService) { }
 
   @Post()
   @Roles('admin')
@@ -55,6 +55,21 @@ export class UsersController {
     @Req() req: Request,
   ): Promise<UserSafe> {
     return this.usersService.updateUserAsAdmin(id, userData, req.user as AuthUser);
+  }
+
+  @Patch(':id/active')
+  @Roles('admin')
+  @UseGuards(RolesGuard)
+  async setUserActive(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { isActive: boolean },
+    @Req() req: Request,
+  ): Promise<UserSafe> {
+    return this.usersService.setUserActiveAsAdmin(
+      id,
+      body.isActive,
+      req.user as AuthUser,
+    );
   }
 
   @Delete(':id')

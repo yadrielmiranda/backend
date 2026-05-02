@@ -32,7 +32,7 @@ export class AuthService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private logs: LogsService,
-  ) {}
+  ) { }
 
   private accessTtl = process.env.JWT_ACCESS_TTL || '15m';
   private refreshTtl = process.env.JWT_REFRESH_TTL || '30d';
@@ -78,12 +78,12 @@ export class AuthService {
     userId?: number | null;
     sessionId?: string | null;
     reason:
-      | 'USER_LOGOUT'
-      | 'IDLE_TIMEOUT'
-      | 'REFRESH_INVALID'
-      | 'PASSWORD_CHANGED'
-      | 'SESSION_EXPIRED'
-      | 'SESSION_REVOKED';
+    | 'USER_LOGOUT'
+    | 'IDLE_TIMEOUT'
+    | 'REFRESH_INVALID'
+    | 'PASSWORD_CHANGED'
+    | 'SESSION_EXPIRED'
+    | 'SESSION_REVOKED';
     source: string;
   }) {
     const sid = params.sessionId ?? null;
@@ -179,6 +179,10 @@ export class AuthService {
   async validateUser(identifier: string, pass: string) {
     const user = await this.usersService.findOneByIdentifier(identifier);
     if (!user) throw new UnauthorizedException('Credenciales inválidas.');
+
+    if (!user.isActive || user.deletedAt) {
+      throw new UnauthorizedException('This user account is inactive.');
+    }
 
     const ok = await bcrypt.compare(pass, user.password);
     if (!ok) throw new UnauthorizedException('Credenciales inválidas.');
@@ -445,6 +449,22 @@ export class AuthService {
       include: { role: true },
     });
     if (!user) throw new UnauthorizedException('Usuario no existe.');
+
+    if (!user.isActive || user.deletedAt) {
+      await this.prisma.session.update({
+        where: { id: session.id },
+        data: { revokedAt: new Date() },
+      });
+
+      await this.logSessionLogout({
+        userId: session.userId,
+        sessionId: session.id,
+        reason: 'SESSION_REVOKED',
+        source: 'AuthService.refreshFromToken(user-inactive)',
+      });
+
+      throw new UnauthorizedException('This user account is inactive.');
+    }
 
     if (payload.iat) {
       const refreshIatMs = payload.iat * 1000;

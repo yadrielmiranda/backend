@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { Prisma, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
@@ -21,9 +21,8 @@ export class UsersService {
   constructor(
     private prisma: PrismaService,
     private logs: LogsService,
-  ) {}
+  ) { }
 
-  //  SELECT “safe”: NUNCA trae password
   private readonly safeSelect = {
     id: true,
     username: true,
@@ -37,6 +36,8 @@ export class UsersService {
     postalCode: true,
     markupOverride: true,
     isTaxExempt: true,
+    isActive: true,
+    deletedAt: true,
     idRole: true,
     passwordUpdatedAt: true,
     createdAt: true,
@@ -44,11 +45,6 @@ export class UsersService {
     role: true,
   } satisfies Prisma.UserSelect;
 
-  // =====================================================
-  // Helpers
-  // =====================================================
-
-  //  snapshot "safe" para before/after (no incluye password)
   private userSnapshot(u: UserSafe) {
     return {
       id: u.id,
@@ -65,12 +61,13 @@ export class UsersService {
       roleName: u.role?.name ?? null,
       markupOverride: u.markupOverride ?? null,
       isTaxExempt: u.isTaxExempt ?? null,
+      isActive: u.isActive ?? null,
+      deletedAt: u.deletedAt ?? null,
       passwordUpdatedAt: u.passwordUpdatedAt ?? null,
     };
   }
 
   private diffChangedFields(before: UserSafe, after: UserSafe, dto: UpdateUserDto) {
-    //  solo auditamos campos que vinieron en el DTO
     const changed: string[] = [];
     const cmp = (a: any, b: any) => (a ?? null) !== (b ?? null);
 
@@ -85,31 +82,36 @@ export class UsersService {
     if ('postalCode' in dto && cmp(before.postalCode, after.postalCode)) changed.push('postalCode');
     if ('idRole' in dto && cmp(before.idRole, after.idRole)) changed.push('idRole');
 
-    if ('markupOverride' in dto && cmp(before.markupOverride, after.markupOverride))
+    if ('markupOverride' in dto && cmp(before.markupOverride, after.markupOverride)) {
       changed.push('markupOverride');
+    }
 
-    if ('isTaxExempt' in dto && cmp(before.isTaxExempt, after.isTaxExempt))
+    if ('isTaxExempt' in dto && cmp(before.isTaxExempt, after.isTaxExempt)) {
       changed.push('isTaxExempt');
+    }
 
-    // comentario en espanol: password se marca como cambio sin guardar el valor
+    if ('isActive' in dto && cmp(before.isActive, after.isActive)) {
+      changed.push('isActive');
+    }
+
     const passwordChanged = Boolean((dto as any)?.password);
     if (passwordChanged) changed.push('password');
 
     return { changedFields: changed, passwordChanged };
   }
 
-  // =====================================================
-  // CRUD "safe" existentes
-  // =====================================================
-
   async userSafe(userWhereUniqueInput: Prisma.UserWhereUniqueInput): Promise<UserSafe> {
-    const user = await this.prisma.user.findUnique({
-      where: userWhereUniqueInput,
+    const user = await this.prisma.user.findFirst({
+      where: {
+        ...userWhereUniqueInput,
+        deletedAt: null,
+      },
       select: this.safeSelect,
     });
 
-    if (!user)
+    if (!user) {
       throw new NotFoundException(`User with ID #${userWhereUniqueInput.id} not found.`);
+    }
 
     return user as UserSafe;
   }
@@ -122,14 +124,19 @@ export class UsersService {
     orderBy?: Prisma.UserOrderByWithRelationInput;
   }): Promise<UserSafe[]> {
     const { skip, take, cursor, where, orderBy } = params;
+
     const users = await this.prisma.user.findMany({
       skip,
       take,
       cursor,
-      where,
+      where: {
+        deletedAt: null,
+        ...(where ?? {}),
+      },
       orderBy,
       select: this.safeSelect,
     });
+
     return users as UserSafe[];
   }
 
@@ -156,6 +163,18 @@ export class UsersService {
     const { where, data: userData } = params;
     const { idRole, ...rest } = userData;
 
+    const existing = await this.prisma.user.findFirst({
+      where: {
+        ...where,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`User with ID #${where.id} not found.`);
+    }
+
     const dataForPrisma: Prisma.UserUpdateInput = {
       ...rest,
     };
@@ -173,36 +192,65 @@ export class UsersService {
       dataForPrisma.markupOverride = userData.markupOverride;
     }
 
-    try {
-      const updated = await this.prisma.user.update({
-        where,
-        data: dataForPrisma,
-        select: this.safeSelect,
-      });
+    const updated = await this.prisma.user.update({
+      where,
+      data: dataForPrisma,
+      select: this.safeSelect,
+    });
 
-      return updated as UserSafe;
-    } catch (error) {
-      // comentario en espanol: mantenemos el mismo comportamiento de antes
-      console.error('Error updating user:', error);
-      throw new NotFoundException(`User with ID #${where.id} not found or update failed.`);
-    }
+    return updated as UserSafe;
   }
 
   async deleteUser(where: Prisma.UserWhereUniqueInput): Promise<UserSafe> {
-    try {
-      const deleted = await this.prisma.user.delete({
-        where,
+    const userId = where.id;
+
+    if (!userId) {
+      throw new BadRequestException('User id is required.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          username: true,
+          email: true,
+          phone: true,
+          deletedAt: true,
+        },
+      });
+
+      if (!user || user.deletedAt) {
+        throw new NotFoundException(`User with ID #${userId} not found.`);
+      }
+
+      const now = new Date();
+
+      await tx.session.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+
+      await tx.branding.updateMany({
+        where: { userId },
+        data: { isActive: false },
+      });
+
+      const deleted = await tx.user.update({
+        where: { id: userId },
+        data: {
+          isActive: false,
+          deletedAt: now,
+          username: `deleted_${user.id}_${user.username}`,
+          email: `deleted_${user.id}_${user.email}`,
+          phone: `+1000000${String(user.id).padStart(4, '0')}`,
+        },
         select: this.safeSelect,
       });
-      return deleted as UserSafe;
-    } catch (error) {
-      throw new NotFoundException(`User with ID #${where.id} not found`);
-    }
-  }
 
-  // =====================================================
-  //  ADMIN wrappers: logs + before/after + revoke sessions
-  // =====================================================
+      return deleted as UserSafe;
+    });
+  }
 
   async createUserAsAdmin(userData: CreateUserDto, actor: AuthUser): Promise<UserSafe> {
     const created = await this.createUser(userData);
@@ -211,7 +259,7 @@ export class UsersService {
       action: 'CREATE',
       entityType: 'User',
       entityId: created.id,
-      userId: actor.id, //  admin que creó
+      userId: actor.id,
       message: `User created (#${created.id})`,
       after: this.userSnapshot(created),
       meta: {
@@ -229,16 +277,17 @@ export class UsersService {
     userData: UpdateUserDto,
     actor: AuthUser,
   ): Promise<UserSafe> {
-    // 1) before
+    if (userId === actor.id && userData.isActive === false) {
+      throw new BadRequestException('You cannot deactivate your own user.');
+    }
+
     const before = await this.userSafe({ id: userId });
 
-    // 2) update
     const updated = await this.updateUser({
       where: { id: userId },
       data: userData,
     });
 
-    // 3) diff + log UPDATE
     const { changedFields, passwordChanged } = this.diffChangedFields(before, updated, userData);
 
     await this.logs.log({
@@ -258,7 +307,6 @@ export class UsersService {
       },
     });
 
-    // 4) si password cambió => revocar sesiones + LOGOUT por cada una
     if (passwordChanged) {
       const sessions = await this.prisma.session.findMany({
         where: { userId, revokedAt: null },
@@ -274,8 +322,8 @@ export class UsersService {
         await this.logs.log({
           action: 'LOGOUT',
           entityType: 'Session',
-          entityId: 0, // entityId es Int requerido; el sessionId (UUID) va en meta
-          userId: userId, // dueño de la sesión
+          entityId: 0,
+          userId,
           message: `Session ended (password changed by admin) (sid: ${s.id})`,
           meta: {
             source: 'UsersService.updateUserAsAdmin',
@@ -292,9 +340,86 @@ export class UsersService {
     return updated;
   }
 
-  async deleteUserAsAdmin(userId: number, actor: AuthUser): Promise<UserSafe> {
-    // comentario en espanol: tomamos before para log, luego borramos
+  async setUserActiveAsAdmin(
+    userId: number,
+    isActive: boolean,
+    actor: AuthUser,
+  ): Promise<UserSafe> {
+    if (userId === actor.id && !isActive) {
+      throw new BadRequestException('You cannot deactivate your own user.');
+    }
+
     const before = await this.userSafe({ id: userId });
+
+    const updated = await this.updateUser({
+      where: { id: userId },
+      data: { isActive },
+    });
+
+    if (!isActive) {
+      const sessions = await this.prisma.session.findMany({
+        where: { userId, revokedAt: null },
+        select: { id: true },
+      });
+
+      await this.prisma.session.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+
+      for (const s of sessions) {
+        await this.logs.log({
+          action: 'LOGOUT',
+          entityType: 'Session',
+          entityId: 0,
+          userId,
+          message: `Session ended (user deactivated by admin) (sid: ${s.id})`,
+          meta: {
+            source: 'UsersService.setUserActiveAsAdmin',
+            reason: 'USER_DEACTIVATED',
+            sessionId: s.id,
+            actorUserId: actor.id,
+            actorRole: getRoleName(actor) ?? null,
+            targetUserId: userId,
+          },
+        });
+      }
+    }
+
+    await this.logs.log({
+      action: 'UPDATE',
+      entityType: 'User',
+      entityId: updated.id,
+      userId: actor.id,
+      message: isActive
+        ? `User activated (#${updated.id})`
+        : `User deactivated (#${updated.id})`,
+      before: this.userSnapshot(before),
+      after: this.userSnapshot(updated),
+      meta: {
+        source: 'UsersService.setUserActiveAsAdmin',
+        actorUserId: actor.id,
+        actorRole: getRoleName(actor) ?? null,
+        targetUserId: updated.id,
+        changedFields: ['isActive'],
+      },
+    });
+
+    return updated;
+  }
+
+  async deleteUserAsAdmin(userId: number, actor: AuthUser): Promise<UserSafe> {
+    if (userId === actor.id) {
+      throw new BadRequestException('You cannot delete your own user.');
+    }
+
+    const before = await this.userSafe({ id: userId });
+
+    const sessions = await this.prisma.session.findMany({
+      where: { userId, revokedAt: null },
+      select: { id: true },
+    });
+
     const deleted = await this.deleteUser({ id: userId });
 
     await this.logs.log({
@@ -304,33 +429,59 @@ export class UsersService {
       userId: actor.id,
       message: `User deleted (#${before.id})`,
       before: this.userSnapshot(before),
+      after: this.userSnapshot(deleted),
       meta: {
         source: 'UsersService.deleteUserAsAdmin',
         actorUserId: actor.id,
         actorRole: getRoleName(actor) ?? null,
         targetUserId: before.id,
+        revokedSessionIds: sessions.map((s) => s.id),
       },
     });
+
+    for (const s of sessions) {
+      await this.logs.log({
+        action: 'LOGOUT',
+        entityType: 'Session',
+        entityId: 0,
+        userId,
+        message: `Session ended (user deleted by admin) (sid: ${s.id})`,
+        meta: {
+          source: 'UsersService.deleteUserAsAdmin',
+          reason: 'USER_DELETED',
+          sessionId: s.id,
+          actorUserId: actor.id,
+          actorRole: getRoleName(actor) ?? null,
+          targetUserId: userId,
+        },
+      });
+    }
 
     return deleted;
   }
 
-  // ------------------------------------------------------------
-  //  Métodos INTERNOS (para Auth)
-  // ------------------------------------------------------------
-
   async userWithPassword(where: Prisma.UserWhereUniqueInput): Promise<UserWithRoleAndPassword> {
-    const user = await this.prisma.user.findUnique({
-      where,
+    const user = await this.prisma.user.findFirst({
+      where: {
+        ...where,
+        deletedAt: null,
+        isActive: true,
+      },
       include: { role: true },
     });
-    if (!user) throw new NotFoundException(`User with ID #${where.id} not found.`);
+
+    if (!user) {
+      throw new NotFoundException(`User with ID #${where.id} not found.`);
+    }
+
     return user;
   }
 
   async findOneByIdentifier(identifier: string): Promise<UserWithRoleAndPassword | null> {
     return this.prisma.user.findFirst({
       where: {
+        deletedAt: null,
+        isActive: true,
         OR: [{ username: identifier }, { email: identifier }],
       },
       include: { role: true },
