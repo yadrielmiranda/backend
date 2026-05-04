@@ -16,6 +16,7 @@ import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 import { Roles } from '@/auth/roles.decorator';
 import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options.dto';
 import { UpdateSystemCrystalsDto } from './dto/update-system-crystals.dto';
+import { UpdateSystemFrameColorsDto } from './dto/update-system-frame-colors.dto';
 
 @Controller('systems')
 export class SystemsController {
@@ -106,6 +107,20 @@ export class SystemsController {
     @Body() body: UpdateSystemCrystalsDto,
   ) {
     return this.systemsService.updateSystemCrystals(id, body);
+  }
+
+  @Get(':id/frame-colors/manage')
+  async getSystemFrameColorsForManage(@Param('id', ParseIntPipe) id: number) {
+    return this.systemsService.getSystemFrameColorsForManage(id);
+  }
+
+  @Roles('admin')
+  @Patch(':id/frame-colors/manage')
+  async updateSystemFrameColors(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: UpdateSystemFrameColorsDto,
+  ) {
+    return this.systemsService.updateSystemFrameColors(id, body);
   }
 
   @Get(':id')

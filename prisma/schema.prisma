@@ -174,7 +174,11 @@ model System {
   defaultCrystalId Int?
   defaultCrystal   Crystal? @relation("SystemDefaultCrystal", fields: [defaultCrystalId], references: [id], onDelete: SetNull)
 
-  systemCrystals SystemCrystal[]
+  defaultFrameColorId Int?
+  defaultFrameColor   FrameColor? @relation("SystemDefaultFrameColor", fields: [defaultFrameColorId], references: [id], onDelete: SetNull)
+
+  systemCrystals    SystemCrystal[]
+  systemFrameColors SystemFrameColor[]
 
   sysconfs     SysConf[]
   pieces       Piece[]
@@ -183,6 +187,7 @@ model System {
   updatedAt    DateTime @updatedAt
 
   @@index([defaultCrystalId])
+  @@index([defaultFrameColorId])
   @@index([isActive])
 }
 
@@ -374,14 +379,31 @@ model SysConfReinforcementOption {
 }
 
 model FrameColor {
-  id        Int      @id @default(autoincrement())
-  color     String
-  isActive  Boolean  @default(true)
-  pieces    Piece[]
+  id       Int     @id @default(autoincrement())
+  color    String
+  isActive Boolean @default(true)
+
+  pieces            Piece[]
+  systemFrameColors SystemFrameColor[]
+  defaultForSystems System[] @relation("SystemDefaultFrameColor")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([isActive])
+}
+
+model SystemFrameColor {
+  idSystem     Int
+  idFrameColor Int
+  sortOrder    Int @default(0)
+
+  system     System     @relation(fields: [idSystem], references: [id], onDelete: Cascade)
+  frameColor FrameColor @relation(fields: [idFrameColor], references: [id], onDelete: Restrict)
+
+  @@id([idSystem, idFrameColor])
+  @@index([idFrameColor])
+  @@map("system_frame_colors")
 }
 
 model Crystal {

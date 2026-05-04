@@ -10,7 +10,7 @@ import { UpdateSystemDto } from './dto/update-system.dto';
 import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options.dto';
 import { UpdateSystemCrystalsDto } from './dto/update-system-crystals.dto';
-
+import { UpdateSystemFrameColorsDto } from './dto/update-system-frame-colors.dto';
 
 @Injectable()
 export class SystemsService {
@@ -40,6 +40,15 @@ export class SystemsService {
         systemCrystals: {
           include: {
             crystal: true,
+          },
+          orderBy: {
+            sortOrder: 'asc',
+          },
+        },
+        defaultFrameColor: true,
+        systemFrameColors: {
+          include: {
+            frameColor: true,
           },
           orderBy: {
             sortOrder: 'asc',
@@ -86,6 +95,15 @@ export class SystemsService {
         systemCrystals: {
           include: {
             crystal: true,
+          },
+          orderBy: {
+            sortOrder: 'asc',
+          },
+        },
+        defaultFrameColor: true,
+        systemFrameColors: {
+          include: {
+            frameColor: true,
           },
           orderBy: {
             sortOrder: 'asc',
@@ -157,6 +175,15 @@ export class SystemsService {
         systemCrystals: {
           include: {
             crystal: true,
+          },
+          orderBy: {
+            sortOrder: 'asc',
+          },
+        },
+        defaultFrameColor: true,
+        systemFrameColors: {
+          include: {
+            frameColor: true,
           },
           orderBy: {
             sortOrder: 'asc',
@@ -242,6 +269,15 @@ export class SystemsService {
         systemCrystals: {
           include: {
             crystal: true,
+          },
+          orderBy: {
+            sortOrder: 'asc',
+          },
+        },
+        defaultFrameColor: true,
+        systemFrameColors: {
+          include: {
+            frameColor: true,
           },
           orderBy: {
             sortOrder: 'asc',
@@ -748,6 +784,114 @@ export class SystemsService {
     });
 
     return this.getSystemCrystalsForManage(systemId);
+  }
+
+  async getSystemFrameColorsForManage(systemId: number) {
+    const system = await this.prisma.system.findUnique({
+      where: { id: systemId },
+      include: {
+        brandProduct: {
+          include: {
+            brand: true,
+            product: true,
+          },
+        },
+        systemFrameColors: {
+          include: {
+            frameColor: true,
+          },
+          orderBy: {
+            sortOrder: 'asc',
+          },
+        },
+        defaultFrameColor: true,
+      },
+    });
+
+    if (!system) {
+      throw new NotFoundException(`System with ID #${systemId} not found.`);
+    }
+
+    const frameColorsCatalog = await this.prisma.frameColor.findMany({
+      orderBy: {
+        color: 'asc',
+      },
+    });
+
+    return {
+      system: {
+        id: system.id,
+        name: system.name,
+        idBrand: system.idBrand,
+        idProduct: system.idProduct,
+        brand: system.brandProduct.brand,
+        product: system.brandProduct.product,
+      },
+      selectedFrameColorIds: system.systemFrameColors.map((x) => x.idFrameColor),
+      defaultFrameColorId: system.defaultFrameColorId,
+      frameColorsCatalog,
+    };
+  }
+
+  async updateSystemFrameColors(
+    systemId: number,
+    data: UpdateSystemFrameColorsDto,
+  ) {
+    const system = await this.prisma.system.findUnique({
+      where: { id: systemId },
+      select: { id: true },
+    });
+
+    if (!system) {
+      throw new NotFoundException(`System with ID #${systemId} not found.`);
+    }
+
+    const validFrameColors = await this.prisma.frameColor.findMany({
+      where: {
+        id: { in: data.frameColorIds },
+      },
+      select: { id: true },
+    });
+
+    if (validFrameColors.length !== data.frameColorIds.length) {
+      throw new BadRequestException('One or more frame colors are invalid.');
+    }
+
+    if (
+      data.defaultFrameColorId &&
+      !data.frameColorIds.includes(data.defaultFrameColorId)
+    ) {
+      throw new BadRequestException(
+        'Default frame color must be one of the selected frame colors.',
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.systemFrameColor.deleteMany({
+        where: {
+          idSystem: systemId,
+        },
+      });
+
+      if (data.frameColorIds.length > 0) {
+        await tx.systemFrameColor.createMany({
+          data: data.frameColorIds.map((frameColorId, index) => ({
+            idSystem: systemId,
+            idFrameColor: frameColorId,
+            sortOrder: index,
+          })),
+        });
+      }
+
+      await tx.system.update({
+        where: { id: systemId },
+        data: {
+          defaultFrameColorId: data.defaultFrameColorId ?? null,
+        },
+      });
+    });
+
+    return this.getSystemFrameColorsForManage(systemId);
   }
 
   /**
