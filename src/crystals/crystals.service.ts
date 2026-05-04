@@ -1,6 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, Crystal } from '@prisma/client';
-import { PrismaService } from '@/prisma/prisma.service';
+import { Injectable, NotFoundException, ConflictException } from "@nestjs/common";
+import { Prisma, Crystal } from "@prisma/client";
+import { PrismaService } from "@/prisma/prisma.service";
 
 @Injectable()
 export class CrystalService {
@@ -12,6 +12,7 @@ export class CrystalService {
     if (!crystal) {
       throw new NotFoundException(`Crystal with ID #${where.id} not found.`);
     }
+
     return crystal;
   }
 
@@ -23,7 +24,14 @@ export class CrystalService {
     orderBy?: Prisma.CrystalOrderByWithRelationInput;
   }): Promise<Crystal[]> {
     const { skip, take, cursor, where, orderBy } = params;
-    return this.prisma.crystal.findMany({ skip, take, cursor, where, orderBy });
+
+    return this.prisma.crystal.findMany({
+      skip,
+      take,
+      cursor,
+      where,
+      orderBy: orderBy ?? { glass: "asc" },
+    });
   }
 
   async createCrystal(data: Prisma.CrystalCreateInput): Promise<Crystal> {
@@ -37,11 +45,12 @@ export class CrystalService {
     const { where, data } = params;
 
     try {
-      return await this.prisma.crystal.update({ data, where });
+      return await this.prisma.crystal.update({ where, data });
     } catch (e: any) {
-      if (e?.code === 'P2025') {
+      if (e?.code === "P2025") {
         throw new NotFoundException(`Crystal with ID #${where.id} not found.`);
       }
+
       throw e;
     }
   }
@@ -50,9 +59,16 @@ export class CrystalService {
     try {
       return await this.prisma.crystal.delete({ where });
     } catch (e: any) {
-      if (e?.code === 'P2025') {
+      if (e?.code === "P2025") {
         throw new NotFoundException(`Crystal with ID #${where.id} not found.`);
       }
+
+      if (e?.code === "P2003") {
+        throw new ConflictException(
+          "This glass type is being used and cannot be deleted. Deactivate it instead.",
+        );
+      }
+
       throw e;
     }
   }

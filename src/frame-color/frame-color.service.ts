@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { FrameColor, Prisma } from '@prisma/client';
 
@@ -8,9 +12,11 @@ export class FrameColorService {
 
   async color(where: Prisma.FrameColorWhereUniqueInput): Promise<FrameColor> {
     const color = await this.prisma.frameColor.findUnique({ where });
+
     if (!color) {
       throw new NotFoundException(`FrameColor with ID #${where.id} not found.`);
     }
+
     return color;
   }
 
@@ -21,11 +27,16 @@ export class FrameColorService {
     where?: Prisma.FrameColorWhereInput;
     orderBy?: Prisma.FrameColorOrderByWithRelationInput;
   }): Promise<FrameColor[]> {
-    return this.prisma.frameColor.findMany(params);
+    return this.prisma.frameColor.findMany({
+      ...params,
+      orderBy: params.orderBy ?? { color: 'asc' },
+    });
   }
 
   async createColor(data: Prisma.FrameColorCreateInput): Promise<FrameColor> {
-    return this.prisma.frameColor.create({ data });
+    return this.prisma.frameColor.create({
+      data,
+    });
   }
 
   async updateColor(params: {
@@ -33,12 +44,17 @@ export class FrameColorService {
     data: Prisma.FrameColorUpdateInput;
   }): Promise<FrameColor> {
     const { where, data } = params;
+
     try {
-      return await this.prisma.frameColor.update({ data, where });
+      return await this.prisma.frameColor.update({
+        where,
+        data,
+      });
     } catch (e: any) {
       if (e?.code === 'P2025') {
         throw new NotFoundException(`FrameColor with ID #${where.id} not found.`);
       }
+
       throw e;
     }
   }
@@ -50,6 +66,13 @@ export class FrameColorService {
       if (e?.code === 'P2025') {
         throw new NotFoundException(`FrameColor with ID #${where.id} not found.`);
       }
+
+      if (e?.code === 'P2003') {
+        throw new ConflictException(
+          'This frame color is being used and cannot be deleted. Deactivate it instead.',
+        );
+      }
+
       throw e;
     }
   }

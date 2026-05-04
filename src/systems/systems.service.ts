@@ -187,7 +187,7 @@ export class SystemsService {
     }
 
     return this.prisma.system.create({
-      data: { name, idBrand, idProduct },
+      data: { name, idBrand, idProduct, isActive: true },
     });
   }
 
@@ -214,6 +214,13 @@ export class SystemsService {
       if (e?.code === 'P2025') {
         throw new NotFoundException(`System with ID #${where.id} not found.`);
       }
+
+      if (e?.code === 'P2003') {
+        throw new BadRequestException(
+          'This system is being used and cannot be deleted. Deactivate it instead.',
+        );
+      }
+
       throw e;
     }
   }
@@ -751,7 +758,7 @@ export class SystemsService {
   async getAvailableConfigsForSystem(systemId: number) {
     const system = await this.prisma.system.findUnique({
       where: { id: systemId },
-      select: { idProduct: true },
+      select: { idProduct: true, isActive: true },
     });
 
     if (!system) {
@@ -768,6 +775,7 @@ export class SystemsService {
     return this.prisma.config.findMany({
       where: {
         idProduct: system.idProduct,
+        isActive: true,
         id: associatedConfigIds.length
           ? { notIn: associatedConfigIds }
           : undefined,
@@ -787,16 +795,24 @@ export class SystemsService {
     const [system, config] = await Promise.all([
       this.prisma.system.findUnique({
         where: { id: systemId },
-        select: { id: true, idProduct: true },
+        select: { id: true, idProduct: true, isActive: true },
       }),
       this.prisma.config.findUnique({
         where: { id: configId },
-        select: { id: true, idProduct: true },
+        select: { id: true, idProduct: true, isActive: true },
       }),
     ]);
 
     if (!system) throw new NotFoundException(`System #${systemId} not found.`);
     if (!config) throw new NotFoundException(`Config #${configId} not found.`);
+
+    if (!system.isActive) {
+      throw new BadRequestException('Inactive systems cannot be modified.');
+    }
+
+    if (!config.isActive) {
+      throw new BadRequestException('Inactive configs cannot be linked to a system.');
+    }
 
     if (system.idProduct !== config.idProduct) {
       throw new BadRequestException(

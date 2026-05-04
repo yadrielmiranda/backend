@@ -16,7 +16,7 @@ import { Roles } from '@/auth/roles.decorator';
 
 @Controller('configs')
 export class ConfigSController {
-  constructor(private readonly configSService: ConfigSService) {}
+  constructor(private readonly configSService: ConfigSService) { }
 
   private toMuntinLayoutJson(
     muntinLayout?: CreateConfigDto['muntinLayout'] | UpdateConfigDto['muntinLayout'],
@@ -80,6 +80,11 @@ export class ConfigSController {
       where: { id },
       data: {
         ...(confData.conf !== undefined ? { conf: confData.conf } : {}),
+        
+        ...(confData.isActive !== undefined
+          ? { isActive: confData.isActive }
+          : {}),
+
         ...(confData.idProduct !== undefined
           ? { prod: { connect: { id: confData.idProduct } } }
           : {}),
@@ -102,8 +107,8 @@ export class ConfigSController {
 
         ...(confData.muntinLayout !== undefined
           ? {
-              muntinLayout: this.toMuntinLayoutJson(confData.muntinLayout),
-            }
+            muntinLayout: this.toMuntinLayoutJson(confData.muntinLayout),
+          }
           : {}),
       },
     });

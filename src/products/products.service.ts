@@ -1,23 +1,30 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '@/prisma/prisma.service';
-import { Prisma, Product } from '@prisma/client';
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+} from "@nestjs/common";
+import { PrismaService } from "@/prisma/prisma.service";
+import { Prisma, Product } from "@prisma/client";
+
+function clampInt(v: any, def: number, min: number, max: number) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(Math.max(n, min), max);
+}
 
 @Injectable()
 export class ProductsService {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
-  async product(
-    productWhereUniqueInput: Prisma.ProductWhereUniqueInput
-  ): Promise<Product> {
+  async product(where: Prisma.ProductWhereUniqueInput): Promise<Product> {
     const product = await this.prisma.product.findUnique({
-      where: productWhereUniqueInput,
+      where,
     });
 
     if (!product) {
-      throw new NotFoundException(
-        `Product with ID #${productWhereUniqueInput.id} not found`,
-      );
+      throw new NotFoundException(`Product with ID #${where.id} not found`);
     }
+
     return product;
   }
 
@@ -28,20 +35,33 @@ export class ProductsService {
     where?: Prisma.ProductWhereInput;
     orderBy?: Prisma.ProductOrderByWithRelationInput;
   }): Promise<Product[]> {
-    const { skip, take, cursor, where, orderBy } = params;
+    const take = clampInt(params.take, 50, 1, 100);
+    const skip = clampInt(params.skip, 0, 0, 10_000);
+
     return this.prisma.product.findMany({
       skip,
       take,
-      cursor,
-      where,
-      orderBy,
+      cursor: params.cursor,
+      where: params.where,
+      orderBy: params.orderBy ?? { name: "asc" },
     });
   }
 
   async createProduct(data: Prisma.ProductCreateInput): Promise<Product> {
-    return this.prisma.product.create({
-      data,
-    });
+    try {
+      return await this.prisma.product.create({
+        data: {
+          ...data,
+          isActive: data.isActive ?? true,
+        },
+      });
+    } catch (e: any) {
+      if (e?.code === "P2002") {
+        throw new ConflictException("Product already exists.");
+      }
+
+      throw e;
+    }
   }
 
   async updateProduct(params: {
@@ -49,13 +69,22 @@ export class ProductsService {
     data: Prisma.ProductUpdateInput;
   }): Promise<Product> {
     const { where, data } = params;
+
     try {
       return await this.prisma.product.update({
-        data,
         where,
+        data,
       });
-    } catch (error) {
-      throw new NotFoundException(`Product with ID #${where.id} not found`);
+    } catch (e: any) {
+      if (e?.code === "P2025") {
+        throw new NotFoundException(`Product with ID #${where.id} not found`);
+      }
+
+      if (e?.code === "P2002") {
+        throw new ConflictException("Product name already exists.");
+      }
+
+      throw e;
     }
   }
 
@@ -64,33 +93,34 @@ export class ProductsService {
       return await this.prisma.product.delete({
         where,
       });
-    } catch (error) {
-      throw new NotFoundException(`Product with ID #${where.id} not found`);
+    } catch (e: any) {
+      if (e?.code === "P2025") {
+        throw new NotFoundException(`Product with ID #${where.id} not found`);
+      }
+
+      if (e?.code === "P2003") {
+        throw new ConflictException(
+          "This product is being used and cannot be deleted. Deactivate it instead.",
+        );
+      }
+
+      throw e;
     }
   }
 
-  /**
-   * ✅ NUEVO MÉTODO AÑADIDO
-   * Obtiene todos los productos e incluye las marcas asociadas a cada uno.
-   * Esto es para la precarga de datos en el frontend.
-   */
   async findAllWithBrands(opts?: { take?: number; skip?: number }): Promise<Product[]> {
-  const takeRaw = opts?.take ?? 100;
-  const skipRaw = opts?.skip ?? 0;
+    const take = clampInt(opts?.take, 100, 1, 200);
+    const skip = clampInt(opts?.skip, 0, 0, 10_000);
 
-  const take = Number.isFinite(takeRaw) ? Math.min(Math.max(takeRaw, 1), 200) : 100;
-  const skip = Number.isFinite(skipRaw) ? Math.max(skipRaw, 0) : 0;
-
-  return this.prisma.product.findMany({
-    include: {
-      brandProducts: {
-        include: { brand: true },
+    return this.prisma.product.findMany({
+      include: {
+        brandProducts: {
+          include: { brand: true },
+        },
       },
-    },
-    orderBy: { id: 'asc' },
-    take,
-    skip,
-  });
-}
-
+      orderBy: { id: "asc" },
+      take,
+      skip,
+    });
+  }
 }

@@ -1,6 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, Coating } from '@prisma/client';
-import { PrismaService } from '@/prisma/prisma.service';
+import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { Prisma, Coating } from "@prisma/client";
+import { PrismaService } from "@/prisma/prisma.service";
 
 @Injectable()
 export class CoatingService {
@@ -24,7 +24,14 @@ export class CoatingService {
     orderBy?: Prisma.CoatingOrderByWithRelationInput;
   }): Promise<Coating[]> {
     const { skip, take, cursor, where, orderBy } = params;
-    return this.prisma.coating.findMany({ skip, take, cursor, where, orderBy });
+
+    return this.prisma.coating.findMany({
+      skip,
+      take,
+      cursor,
+      where,
+      orderBy: orderBy ?? { name: "asc" },
+    });
   }
 
   async createCoating(data: Prisma.CoatingCreateInput): Promise<Coating> {
@@ -38,12 +45,12 @@ export class CoatingService {
     const { where, data } = params;
 
     try {
-      return await this.prisma.coating.update({ data, where });
+      return await this.prisma.coating.update({ where, data });
     } catch (e: any) {
-      // P2025: record not found
-      if (e?.code === 'P2025') {
+      if (e?.code === "P2025") {
         throw new NotFoundException(`Coating with ID #${where.id} not found.`);
       }
+
       throw e;
     }
   }
@@ -52,9 +59,16 @@ export class CoatingService {
     try {
       return await this.prisma.coating.delete({ where });
     } catch (e: any) {
-      if (e?.code === 'P2025') {
+      if (e?.code === "P2025") {
         throw new NotFoundException(`Coating with ID #${where.id} not found.`);
       }
+
+      if (e?.code === "P2003") {
+        throw new ConflictException(
+          "This coating is being used and cannot be deleted. Deactivate it instead.",
+        );
+      }
+
       throw e;
     }
   }

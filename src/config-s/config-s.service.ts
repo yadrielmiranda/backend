@@ -1,10 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { Config, Prisma } from '@prisma/client';
 
 @Injectable()
 export class ConfigSService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   async config(where: Prisma.ConfigWhereUniqueInput): Promise<Config> {
     const config = await this.prisma.config.findUnique({
@@ -73,6 +73,13 @@ export class ConfigSService {
       if (e?.code === 'P2025') {
         throw new NotFoundException(`Config with ID #${where.id} not found.`);
       }
+
+      if (e?.code === 'P2003') {
+        throw new BadRequestException(
+          'This config is being used and cannot be deleted. Deactivate it instead.',
+        );
+      }
+
       throw e;
     }
   }

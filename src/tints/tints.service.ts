@@ -1,23 +1,18 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, Tint } from '@prisma/client';
-import { PrismaService } from '@/prisma/prisma.service';
+import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { Prisma, Tint } from "@prisma/client";
+import { PrismaService } from "@/prisma/prisma.service";
 
 @Injectable()
 export class TintService {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
-  async tint(
-    tintWhereUniqueInput: Prisma.TintWhereUniqueInput
-  ): Promise<Tint> {
-    const tint = await this.prisma.tint.findUnique({
-      where: tintWhereUniqueInput,
-    });
+  async tint(where: Prisma.TintWhereUniqueInput): Promise<Tint> {
+    const tint = await this.prisma.tint.findUnique({ where });
 
     if (!tint) {
-      throw new NotFoundException(
-        `Tint with ID #${tintWhereUniqueInput.id} not found`,
-      );
+      throw new NotFoundException(`Tint with ID #${where.id} not found.`);
     }
+
     return tint;
   }
 
@@ -29,19 +24,18 @@ export class TintService {
     orderBy?: Prisma.TintOrderByWithRelationInput;
   }): Promise<Tint[]> {
     const { skip, take, cursor, where, orderBy } = params;
+
     return this.prisma.tint.findMany({
       skip,
       take,
       cursor,
       where,
-      orderBy,
+      orderBy: orderBy ?? { color: "asc" },
     });
   }
 
   async createTint(data: Prisma.TintCreateInput): Promise<Tint> {
-    return this.prisma.tint.create({
-      data,
-    });
+    return this.prisma.tint.create({ data });
   }
 
   async updateTint(params: {
@@ -49,23 +43,36 @@ export class TintService {
     data: Prisma.TintUpdateInput;
   }): Promise<Tint> {
     const { where, data } = params;
+
     try {
       return await this.prisma.tint.update({
-        data,
         where,
+        data,
       });
-    } catch (error) {
-      throw new NotFoundException(`Tint with ID #${where.id} not found`);
+    } catch (e: any) {
+      if (e?.code === "P2025") {
+        throw new NotFoundException(`Tint with ID #${where.id} not found.`);
+      }
+
+      throw e;
     }
   }
 
   async deleteTint(where: Prisma.TintWhereUniqueInput): Promise<Tint> {
     try {
-      return await this.prisma.tint.delete({
-        where,
-      });
-    } catch (error) {
-      throw new NotFoundException(`Tint with ID #${where.id} not found`);
+      return await this.prisma.tint.delete({ where });
+    } catch (e: any) {
+      if (e?.code === "P2025") {
+        throw new NotFoundException(`Tint with ID #${where.id} not found.`);
+      }
+
+      if (e?.code === "P2003") {
+        throw new ConflictException(
+          "This tint is being used and cannot be deleted. Deactivate it instead.",
+        );
+      }
+
+      throw e;
     }
   }
 }
