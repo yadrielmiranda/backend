@@ -173,9 +173,7 @@ model System {
 
   defaultCrystalId Int?
   defaultCrystal   Crystal? @relation("SystemDefaultCrystal", fields: [defaultCrystalId], references: [id], onDelete: SetNull)
-
-  defaultFrameColorId Int?
-  defaultFrameColor   FrameColor? @relation("SystemDefaultFrameColor", fields: [defaultFrameColorId], references: [id], onDelete: SetNull)
+  
 
   systemCrystals    SystemCrystal[]
   systemFrameColors SystemFrameColor[]
@@ -186,8 +184,7 @@ model System {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  @@index([defaultCrystalId])
-  @@index([defaultFrameColorId])
+  @@index([defaultCrystalId])  
   @@index([isActive])
 }
 
@@ -382,10 +379,10 @@ model FrameColor {
   id       Int     @id @default(autoincrement())
   color    String
   isActive Boolean @default(true)
+  isGlobal Boolean @default(false)
 
   pieces            Piece[]
-  systemFrameColors SystemFrameColor[]
-  defaultForSystems System[] @relation("SystemDefaultFrameColor")
+  systemFrameColors SystemFrameColor[]  
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

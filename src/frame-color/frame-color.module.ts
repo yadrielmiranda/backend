@@ -7,5 +7,6 @@ import { PrismaModule } from '@/prisma/prisma.module';
   imports: [PrismaModule],
   controllers: [FrameColorController],
   providers: [FrameColorService],
+  exports: [FrameColorService],
 })
 export class FrameColorModule { }

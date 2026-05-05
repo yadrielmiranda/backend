@@ -44,8 +44,7 @@ export class SystemsService {
           orderBy: {
             sortOrder: 'asc',
           },
-        },
-        defaultFrameColor: true,
+        },        
         systemFrameColors: {
           include: {
             frameColor: true,
@@ -99,8 +98,7 @@ export class SystemsService {
           orderBy: {
             sortOrder: 'asc',
           },
-        },
-        defaultFrameColor: true,
+        },        
         systemFrameColors: {
           include: {
             frameColor: true,
@@ -179,8 +177,7 @@ export class SystemsService {
           orderBy: {
             sortOrder: 'asc',
           },
-        },
-        defaultFrameColor: true,
+        },        
         systemFrameColors: {
           include: {
             frameColor: true,
@@ -273,8 +270,7 @@ export class SystemsService {
           orderBy: {
             sortOrder: 'asc',
           },
-        },
-        defaultFrameColor: true,
+        },        
         systemFrameColors: {
           include: {
             frameColor: true,
@@ -803,8 +799,7 @@ export class SystemsService {
           orderBy: {
             sortOrder: 'asc',
           },
-        },
-        defaultFrameColor: true,
+        },        
       },
     });
 
@@ -827,8 +822,7 @@ export class SystemsService {
         brand: system.brandProduct.brand,
         product: system.brandProduct.product,
       },
-      selectedFrameColorIds: system.systemFrameColors.map((x) => x.idFrameColor),
-      defaultFrameColorId: system.defaultFrameColorId,
+      selectedFrameColorIds: system.systemFrameColors.map((x) => x.idFrameColor),      
       frameColorsCatalog,
     };
   }
@@ -857,14 +851,7 @@ export class SystemsService {
       throw new BadRequestException('One or more frame colors are invalid.');
     }
 
-    if (
-      data.defaultFrameColorId &&
-      !data.frameColorIds.includes(data.defaultFrameColorId)
-    ) {
-      throw new BadRequestException(
-        'Default frame color must be one of the selected frame colors.',
-      );
-    }
+   
 
     await this.prisma.$transaction(async (tx) => {
       await tx.systemFrameColor.deleteMany({
@@ -882,13 +869,7 @@ export class SystemsService {
           })),
         });
       }
-
-      await tx.system.update({
-        where: { id: systemId },
-        data: {
-          defaultFrameColorId: data.defaultFrameColorId ?? null,
-        },
-      });
+     
     });
 
     return this.getSystemFrameColorsForManage(systemId);

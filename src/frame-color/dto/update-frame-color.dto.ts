@@ -6,4 +6,8 @@ export class UpdateFrameColorDto extends PartialType(CreateFrameColorDto) {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isGlobal?: boolean;
 }

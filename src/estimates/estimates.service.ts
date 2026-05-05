@@ -30,6 +30,7 @@ import { computeBasePrice } from '@/pricing/price-formula';
 import { normalizeInchesToEighthStep } from '@/common/dimensions';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { isPrivileged } from '@/auth/utils/is-privileged';
+import { FrameColorService } from '@/frame-color/frame-color.service';
 
 // PDF on-the-fly
 import puppeteer from 'puppeteer';
@@ -38,6 +39,24 @@ import puppeteer from 'puppeteer';
 import { LogsService } from '@/logs/logs.service';
 // Cron Jobs
 import { Cron, CronExpression } from '@nestjs/schedule';
+// tipo exacto de config que usamos
+type ConfigSelect = {
+  conf: string;
+  requiresWidth: boolean;
+  requiresHeight: boolean;
+  requiresHeightLeft: boolean;
+  requiresHeightRight: boolean;
+  requiresLegHeight: boolean;
+  muntinLayout: unknown;
+};
+
+// cache por ejecucion (transaction-safe)
+type CalculationCache = {
+  config: Map<number, ConfigSelect | null>;
+  sysConf: Map<string, any>;
+  pricing: Map<string, any>;
+  systemFrameColor: Map<string, any>;
+};
 
 // Prisma Transaction Client Type
 type PrismaTransactionClient = Omit<
@@ -111,7 +130,18 @@ export class EstimatesService {
   constructor(
     private prisma: PrismaService,
     private logs: LogsService,
+    private frameColorService: FrameColorService,
   ) { }
+
+  // inicializa cache limpio por request
+  private createCalculationCache(): CalculationCache {
+    return {
+      config: new Map(),
+      sysConf: new Map(),
+      pricing: new Map(),
+      systemFrameColor: new Map(),
+    };
+  }
 
   private async getEstimateExpirationDate(tx: PrismaTransactionClient) {
     const validDaysParam = await tx.globalParameter.findUnique({
@@ -332,6 +362,7 @@ export class EstimatesService {
     return { widthIn, heightIn: heightIn || h };
   }
 
+
   private buildPieceMuntinCreateInput(
     muntin?: CreatePieceDto['muntin'] | UpsertPieceDto['muntin'] | null,
   ) {
@@ -495,12 +526,13 @@ export class EstimatesService {
       user.markupOverride !== null
         ? new Decimal(user.markupOverride.toString())
         : new Decimal(user.role.markup.toString());
-
+    const cache = this.createCalculationCache();
     const calculated: CalculatedPieceCombined =
       await this.internalCalculatePieceMetrics(
         pieceDto,
         effectiveMarkupDecimal,
         this.prisma as PrismaTransactionClient,
+        cache,
       );
 
     return {
@@ -711,10 +743,19 @@ export class EstimatesService {
         ...estimateHeaderData
       } = dto;
 
-      const calculatedPiecesPromises = pieceDtos.map((p) =>
-        this.internalCalculatePieceMetrics(p, effectiveMarkupDecimal, tx as PrismaTransactionClient),
-      );
-      const calculatedPieces: CalculatedPieceCombined[] = await Promise.all(calculatedPiecesPromises);
+      const cache = this.createCalculationCache();
+      const calculatedPieces: CalculatedPieceCombined[] = [];
+
+      for (const p of pieceDtos) {
+        const result = await this.internalCalculatePieceMetrics(
+          p,
+          effectiveMarkupDecimal,
+          tx as PrismaTransactionClient,
+          cache
+        );
+
+        calculatedPieces.push(result);
+      }
 
       const estimateTotals = this.internalCalculateEstimateTotals(
         calculatedPieces,
@@ -984,11 +1025,19 @@ export class EstimatesService {
       await tx.piece.deleteMany({
         where: { idEst: estimateId, NOT: { id: { in: incomingPieceIds } } },
       });
+      const cache = this.createCalculationCache();
+      const calculatedPieces: CalculatedPieceCombined[] = [];
 
-      const calculatedPiecesPromises = pieceDtos.map((p) =>
-        this.internalCalculatePieceMetrics(p, effectiveMarkupDecimal, tx as PrismaTransactionClient),
-      );
-      const calculatedPieces: CalculatedPieceCombined[] = await Promise.all(calculatedPiecesPromises);
+      for (const p of pieceDtos) {
+        const result = await this.internalCalculatePieceMetrics(
+          p,
+          effectiveMarkupDecimal,
+          tx as PrismaTransactionClient,
+          cache
+        );
+
+        calculatedPieces.push(result);
+      }
 
       const estimateTotals = this.internalCalculateEstimateTotals(
         calculatedPieces,
@@ -1376,19 +1425,22 @@ export class EstimatesService {
 
         qty: p.qty,
 
-        // comentario en espanol: en DB está guardado como decimal 0.15, pero el cálculo espera 15
+        //  en DB está guardado como decimal 0.15, pero el cálculo espera 15
         dealerMarkup: Number(p.dealerMarkup ?? 0) * 100,
       }));
+      const cache = this.createCalculationCache();
+      const calculatedPieces: CalculatedPieceCombined[] = [];
 
-      const calculatedPieces = await Promise.all(
-        pieceDtos.map((p) =>
-          this.internalCalculatePieceMetrics(
-            p,
-            effectiveMarkupDecimal,
-            tx as PrismaTransactionClient,
-          ),
-        ),
-      );
+      for (const p of pieceDtos) {
+        const result = await this.internalCalculatePieceMetrics(
+          p,
+          effectiveMarkupDecimal,
+          tx as PrismaTransactionClient,
+          cache
+        );
+
+        calculatedPieces.push(result);
+      }
 
       const estimateTotals = this.internalCalculateEstimateTotals(
         calculatedPieces,
@@ -1577,7 +1629,7 @@ export class EstimatesService {
       if (!estimate) {
         throw new NotFoundException(`Estimate #${where.id} not found.`);
       }
-      
+
       if (estimate.order) {
         throw new BadRequestException(
           `Estimate #${where.id} ya tiene una orden y no se puede borrar.`,
@@ -1737,55 +1789,70 @@ export class EstimatesService {
     };
   }
 
+
   // --- internalCalculatePieceMetrics ---
   private async internalCalculatePieceMetrics(
     pieceDto: CreatePieceDto | UpsertPieceDto,
     effectiveMarkup: Decimal,
     tx: PrismaTransactionClient,
+    cache: CalculationCache,
   ): Promise<CalculatedPieceCombined> {
-    const config = await tx.config.findUnique({
-      where: { id: pieceDto.idConf },
-      select: {
-        conf: true,
-        requiresWidth: true,
-        requiresHeight: true,
-        requiresHeightLeft: true,
-        requiresHeightRight: true,
-        requiresLegHeight: true,
-        muntinLayout: true,
-      },
-    });
+    // usamos cache para evitar queries repetidas
+    let config = cache.config.get(pieceDto.idConf);
+
+    if (!config) {
+      const dbConfig = await tx.config.findUnique({
+        where: { id: pieceDto.idConf },
+        select: {
+          conf: true,
+          requiresWidth: true,
+          requiresHeight: true,
+          requiresHeightLeft: true,
+          requiresHeightRight: true,
+          requiresLegHeight: true,
+          muntinLayout: true,
+        },
+      });
+
+      if (dbConfig) {
+        cache.config.set(pieceDto.idConf, dbConfig);
+        config = dbConfig;
+      }
+    }
 
     if (!config) {
       throw new NotFoundException(`Config ID #${pieceDto.idConf} not found.`);
     }
 
-    // comentario en espanol: validamos que la config realmente pertenezca al system
+    // validamos que la config realmente pertenezca al system
     // y leemos allowScreen desde SysConf
-    const sysConf = await tx.sysConf.findUnique({
-      where: {
-        idSystem_idConfig: {
-          idSystem: pieceDto.idSyst,
-          idConfig: pieceDto.idConf,
-        },
-      },
-      select: {
-        allowScreen: true,
 
-        activeOptions: {
-          select: { optionId: true },
+    const sysConfKey = `${pieceDto.idSyst}-${pieceDto.idConf}`;
+
+    let sysConf = cache.sysConf.get(sysConfKey);
+
+    if (!sysConf) {
+      const dbSysConf = await tx.sysConf.findUnique({
+        where: {
+          idSystem_idConfig: {
+            idSystem: pieceDto.idSyst,
+            idConfig: pieceDto.idConf,
+          },
         },
-        preparationOptions: {
-          select: { optionId: true },
+        select: {
+          allowScreen: true,
+          activeOptions: { select: { optionId: true } },
+          preparationOptions: { select: { optionId: true } },
+          sillOptions: { select: { optionId: true } },
+          reinforcementOptions: { select: { optionId: true } },
         },
-        sillOptions: {
-          select: { optionId: true },
-        },
-        reinforcementOptions: {
-          select: { optionId: true },
-        },
-      },
-    });
+      });
+
+      if (dbSysConf) {
+        cache.sysConf.set(sysConfKey, dbSysConf);
+        sysConf = dbSysConf;
+      }
+    }
 
     if (!sysConf) {
       throw new BadRequestException(
@@ -1793,26 +1860,60 @@ export class EstimatesService {
       );
     }
 
-    // comentario en espanol: screen solo se permite si SysConf.allowScreen = true
+    if (!pieceDto.idFC) {
+      throw new BadRequestException('Frame color is required');
+    }
+
+    const sfcKey = `${pieceDto.idSyst}-${pieceDto.idFC}`;
+
+    let systemFrameColor = cache.systemFrameColor.get(sfcKey);
+
+    if (!systemFrameColor) {
+      const dbSystemFrameColor = await tx.systemFrameColor.findUnique({
+        where: {
+          idSystem_idFrameColor: {
+            idSystem: pieceDto.idSyst,
+            idFrameColor: pieceDto.idFC,
+          },
+        },
+        select: {
+          idSystem: true,
+          idFrameColor: true,
+        },
+      });
+
+      if (dbSystemFrameColor) {
+        cache.systemFrameColor.set(sfcKey, dbSystemFrameColor);
+        systemFrameColor = dbSystemFrameColor;
+      }
+    }
+
+    if (!systemFrameColor) {
+      throw new BadRequestException(
+        'The selected frame color is not available for the selected system.',
+      );
+    }
+
+    // screen solo se permite si SysConf.allowScreen = true
     if (pieceDto.screen && !sysConf.allowScreen) {
       throw new BadRequestException(
         'Screen is not allowed for the selected configuration.',
       );
     }
 
-    const allowedActiveOptionIds = new Set(
+    const allowedActiveOptionIds = new Set<number>(
       sysConf.activeOptions.map((x) => x.optionId),
     );
 
-    const allowedPreparationOptionIds = new Set(
+    const allowedPreparationOptionIds = new Set<number>(
       sysConf.preparationOptions.map((x) => x.optionId),
     );
 
-    const allowedSillOptionIds = new Set(
+    const allowedSillOptionIds = new Set<number>(
       sysConf.sillOptions.map((x) => x.optionId),
     );
 
-    const allowedReinforcementOptionIds = new Set(
+    const allowedReinforcementOptionIds = new Set<number>(
       sysConf.reinforcementOptions.map((x) => x.optionId),
     );
 
@@ -1929,20 +2030,33 @@ export class EstimatesService {
 
     const { areaFt2, perimeterFt } = areaPerimeterFor(config.conf, dimsFt);
 
-    const rule = await tx.pricingRule.findUnique({
-      where: {
-        idBrand_idProduct_idSystem_idConfig_idCrystal: {
-          idBrand: pieceDto.idBrand,
-          idProduct: pieceDto.idProd,
-          idSystem: pieceDto.idSyst,
-          idConfig: pieceDto.idConf,
-          idCrystal: pieceDto.idCryst,
-        },
-      },
-    });
+    const pricingKey = `${pieceDto.idBrand}-${pieceDto.idProd}-${pieceDto.idSyst}-${pieceDto.idConf}-${pieceDto.idCryst}`;
+
+    let rule = cache.pricing.get(pricingKey);
 
     if (!rule) {
-      throw new NotFoundException(`No pricing rule for piece: ${pieceDto.mark}.`);
+      const dbRule = await tx.pricingRule.findUnique({
+        where: {
+          idBrand_idProduct_idSystem_idConfig_idCrystal: {
+            idBrand: pieceDto.idBrand,
+            idProduct: pieceDto.idProd,
+            idSystem: pieceDto.idSyst,
+            idConfig: pieceDto.idConf,
+            idCrystal: pieceDto.idCryst,
+          },
+        },
+      });
+
+      if (dbRule) {
+        cache.pricing.set(pricingKey, dbRule);
+        rule = dbRule;
+      }
+    }
+
+    if (!rule) {
+      throw new NotFoundException(
+        `No pricing rule for piece: ${pieceDto.mark}.`,
+      );
     }
 
     const A = new Decimal(rule.costoA.toString());

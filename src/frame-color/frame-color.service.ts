@@ -8,7 +8,7 @@ import { FrameColor, Prisma } from '@prisma/client';
 
 @Injectable()
 export class FrameColorService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   async color(where: Prisma.FrameColorWhereUniqueInput): Promise<FrameColor> {
     const color = await this.prisma.frameColor.findUnique({ where });
@@ -30,6 +30,17 @@ export class FrameColorService {
     return this.prisma.frameColor.findMany({
       ...params,
       orderBy: params.orderBy ?? { color: 'asc' },
+    });
+  }
+
+
+  async getGlobalDefaults() {
+    return this.prisma.frameColor.findMany({
+      where: {
+        isActive: true,
+        isGlobal: true,
+      },
+      orderBy: { color: 'asc' },
     });
   }
 

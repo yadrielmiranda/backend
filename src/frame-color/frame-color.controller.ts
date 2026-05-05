@@ -16,7 +16,7 @@ import { Roles } from '@/auth/roles.decorator';
 
 @Controller('framecolors')
 export class FrameColorController {
-  constructor(private readonly frameColorService: FrameColorService) {}
+  constructor(private readonly frameColorService: FrameColorService) { }
 
   // 🔒 WRITE: solo admin
   @Roles('admin')
@@ -31,6 +31,11 @@ export class FrameColorController {
   @Get()
   async getAllFColors(): Promise<FrameColorModel[]> {
     return this.frameColorService.colors({});
+  }
+
+  @Get('globals')
+  getGlobals() {
+    return this.frameColorService.getGlobalDefaults();
   }
 
   // ✅ READ: todos los usuarios autenticados
