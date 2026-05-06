@@ -10,6 +10,7 @@ import {
   ParseIntPipe,
   UseGuards,
   Req,
+  Query
 } from '@nestjs/common';
 import { Request } from 'express';
 import { UsersService, UserSafe } from './users.service';
@@ -35,8 +36,17 @@ export class UsersController {
   @Get()
   @Roles('admin')
   @UseGuards(RolesGuard)
-  async getAllUsers(): Promise<UserSafe[]> {
-    return this.usersService.usersSafe({});
+  async getAllUsers(
+    @Query('includeDeleted') includeDeleted?: string,
+  ): Promise<UserSafe[]> {
+    return this.usersService.usersSafe({
+      includeDeleted: includeDeleted === 'true',
+    });
+  }
+
+  @Delete('me')
+  async deleteOwnUser(@Req() req: Request): Promise<UserSafe> {
+    return this.usersService.deleteOwnUser(req.user as AuthUser);
   }
 
   @Get(':id')

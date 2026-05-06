@@ -76,7 +76,7 @@ export class AuthController {
       sessionId,
     );
 
-    // ✅ crea sesión + LOG LOGIN dentro del service
+    // crea sesión + LOG LOGIN dentro del service
     await this.authService.createSession({
       sessionId,
       userId: user.id,

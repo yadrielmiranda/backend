@@ -122,6 +122,7 @@ export class UsersService {
     cursor?: Prisma.UserWhereUniqueInput;
     where?: Prisma.UserWhereInput;
     orderBy?: Prisma.UserOrderByWithRelationInput;
+    includeDeleted?: boolean;
   }): Promise<UserSafe[]> {
     const { skip, take, cursor, where, orderBy } = params;
 
@@ -130,7 +131,7 @@ export class UsersService {
       take,
       cursor,
       where: {
-        deletedAt: null,
+        ...(params.includeDeleted ? {} : { deletedAt: null }),
         ...(where ?? {}),
       },
       orderBy,
@@ -406,6 +407,60 @@ export class UsersService {
     });
 
     return updated;
+  }
+
+  async deleteOwnUser(actor: AuthUser): Promise<UserSafe> {
+    const actorRole = getRoleName(actor);
+
+    if (actorRole === 'admin') {
+      throw new BadRequestException('Admins cannot delete themselves.');
+    }
+
+    const before = await this.userSafe({ id: actor.id });
+
+    const sessions = await this.prisma.session.findMany({
+      where: { userId: actor.id, revokedAt: null },
+      select: { id: true },
+    });
+
+    const deleted = await this.deleteUser({ id: actor.id });
+
+    await this.logs.log({
+      action: 'DELETE',
+      entityType: 'User',
+      entityId: before.id,
+      userId: before.id,
+      message: `User deleted own account (#${before.id})`,
+      before: this.userSnapshot(before),
+      after: this.userSnapshot(deleted),
+      meta: {
+        source: 'UsersService.deleteOwnUser',
+        actorUserId: actor.id,
+        actorRole,
+        targetUserId: before.id,
+        revokedSessionIds: sessions.map((s) => s.id),
+      },
+    });
+
+    for (const s of sessions) {
+      await this.logs.log({
+        action: 'LOGOUT',
+        entityType: 'Session',
+        entityId: 0,
+        userId: actor.id,
+        message: `Session ended (user deleted own account) (sid: ${s.id})`,
+        meta: {
+          source: 'UsersService.deleteOwnUser',
+          reason: 'USER_SELF_DELETED',
+          sessionId: s.id,
+          actorUserId: actor.id,
+          actorRole,
+          targetUserId: actor.id,
+        },
+      });
+    }
+
+    return deleted;
   }
 
   async deleteUserAsAdmin(userId: number, actor: AuthUser): Promise<UserSafe> {
