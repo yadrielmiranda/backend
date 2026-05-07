@@ -734,8 +734,11 @@ export class EstimatesService {
       const rawCustomerTaxRate = dto.customerTaxRate ?? 0;
       const customerTaxRate = new Decimal(rawCustomerTaxRate);
 
-      const lastEstimate = await tx.estimate.findFirst({ orderBy: { number: 'desc' } });
-      const nextNumber = !lastEstimate ? '190909' : String(parseInt(lastEstimate.number, 10) + 1);
+      const seq = await tx.estimateSequence.create({
+        data: {},
+      });
+
+      const nextNumber = String(190909 + seq.id);
 
       const {
         pieces: pieceDtos,

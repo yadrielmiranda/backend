@@ -564,6 +564,11 @@ model EstimateStatus {
   estimates Estimate[]
 }
 
+model EstimateSequence {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now())
+}
+
 model Estimate {
   id     Int      @id @default(autoincrement())
   number String   @unique
