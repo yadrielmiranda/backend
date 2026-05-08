@@ -91,9 +91,9 @@ export class AuthController {
       userAgent: req.headers['user-agent'] as string | undefined,
       ip: req.ip as string | undefined,
     });
-    console.log('CLEAR COOKIE DOMAIN =>', process.env.COOKIE_DOMAIN);
+    console.log('SET COOKIE DOMAIN =>', process.env.COOKIE_DOMAIN);
 
-    
+
     res.cookie(ACCESS_COOKIE, accessToken, this.cookieOptions(1000 * 60 * 15)); // 15m
     res.cookie(
       REFRESH_COOKIE,
