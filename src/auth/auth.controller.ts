@@ -32,32 +32,36 @@ export class AuthController {
   ) { }
 
   private cookieOptions(maxAgeMs: number): CookieOptions {
-  const isProd = process.env.NODE_ENV === 'production';
+    const isProd = process.env.NODE_ENV === 'production';
 
-  return {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: 'lax',
-    maxAge: maxAgeMs,
-    path: '/',
-    domain: isProd
-      ? process.env.COOKIE_DOMAIN : undefined,
-  };
-}
+    return {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax',
+      maxAge: maxAgeMs,
+      path: '/',
+      domain: isProd
+        ? process.env.COOKIE_DOMAIN : undefined,
+    };
+  }
 
-private clearCookieOptions(): CookieOptions {
-  const isProd = process.env.NODE_ENV === 'production';
+  private clearCookieOptions(): CookieOptions {
+    const isProd = process.env.NODE_ENV === 'production';
 
-  return {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: 'lax',
-    expires: new Date(0),
-    path: '/',
-    domain: isProd
-      ? process.env.COOKIE_DOMAIN : undefined,
-  };
-}
+    return {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax',
+      expires: new Date(0),
+      maxAge: 0,
+      path: '/',
+      domain: isProd
+        ? process.env.COOKIE_DOMAIN
+        : undefined,
+    };
+  }
+
+
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('login')
