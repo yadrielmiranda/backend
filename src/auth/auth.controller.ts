@@ -29,7 +29,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly usersService: UsersService,
-  ) {}
+  ) { }
 
   private cookieOptions(maxAgeMs: number): CookieOptions {
     const isProd = process.env.NODE_ENV === 'production';
@@ -37,7 +37,7 @@ export class AuthController {
     return {
       httpOnly: true,
       secure: isProd,
-      sameSite: (isProd ? 'strict' : 'lax') as CookieOptions['sameSite'],
+      sameSite: 'lax',
       maxAge: maxAgeMs,
       path: '/',
     };
@@ -49,7 +49,7 @@ export class AuthController {
     return {
       httpOnly: true,
       secure: isProd,
-      sameSite: (isProd ? 'strict' : 'lax') as CookieOptions['sameSite'],
+      sameSite: 'lax',
       expires: new Date(0),
       path: '/',
     };

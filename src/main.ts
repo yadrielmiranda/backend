@@ -26,7 +26,7 @@ async function bootstrap() {
   );
 
   app.enableCors({
-    origin: ["http://localhost:3000", "http://10.0.0.4:3000"],
+    origin: process.env.FRONTEND_URL?.split(",") || [],
     credentials: true,
   });
 
@@ -35,14 +35,14 @@ async function bootstrap() {
   });
 
   const config = new DocumentBuilder()
-    .setTitle("Impact PLUS")
-    .setDescription("The Impact PLUS API description")
+    .setTitle("Authentic Evolution API")
+    .setDescription("API documentation for Authentic Evolution, a company specializing in windows and doors.")
     .setVersion("1.0")
     .addTag("windows and doors")
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup("api", app, document);
+  SwaggerModule.setup("docs", app, document);
 
   await app.listen(process.env.PORT ?? 4000);
 }
