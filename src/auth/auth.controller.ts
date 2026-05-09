@@ -91,7 +91,7 @@ export class AuthController {
       userAgent: req.headers['user-agent'] as string | undefined,
       ip: req.ip as string | undefined,
     });
-    
+
     res.cookie(ACCESS_COOKIE, accessToken, this.cookieOptions(1000 * 60 * 15)); // 15m
     res.cookie(
       REFRESH_COOKIE,
@@ -144,9 +144,9 @@ export class AuthController {
         source: 'AuthController.logout',
       });
     }
-    
-    res.cookie(ACCESS_COOKIE, '', this.clearCookieOptions());
-    res.cookie(REFRESH_COOKIE, '', this.clearCookieOptions());
+
+    res.clearCookie(ACCESS_COOKIE, this.clearCookieOptions());
+    res.clearCookie(REFRESH_COOKIE, this.clearCookieOptions());
 
     return { message: 'Sesión cerrada exitosamente' };
   }
