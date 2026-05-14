@@ -1,5 +1,5 @@
 -- AlterTable
-ALTER TABLE `piece` ADD COLUMN `doorWidth` DECIMAL(10, 3) NULL,
+ALTER TABLE `Piece` ADD COLUMN `doorWidth` DECIMAL(10, 3) NULL,
     ADD COLUMN `horizontalHeights` JSON NULL,
     ADD COLUMN `leftPanels` INTEGER NULL,
     ADD COLUMN `leftSideliteWidth` DECIMAL(10, 3) NULL,
