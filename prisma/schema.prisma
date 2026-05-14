@@ -215,11 +215,12 @@ model Config {
 }
 
 model SysConf {
-  system      System @relation(fields: [idSystem], references: [id])
-  idSystem    Int
-  config      Config @relation(fields: [idConfig], references: [id])
-  idConfig    Int
-  allowScreen Boolean @default(false)
+  system        System        @relation(fields: [idSystem], references: [id])
+  idSystem      Int
+  config        Config        @relation(fields: [idConfig], references: [id])
+  idConfig      Int
+  allowScreen   Boolean       @default(false)
+  dimensionMode DimensionMode @default(STANDARD)
 
   defaultActiveOptionId        Int?
   defaultPreparationOptionId   Int?
@@ -639,11 +640,21 @@ model Piece {
   fColor           FrameColor @relation(fields: [idFC], references: [id])
   idFC             Int
 
-  width            Decimal?   @db.Decimal(10, 3)
-  height           Decimal?   @db.Decimal(10, 3)
-  heightLeft       Decimal?   @db.Decimal(10, 3)
-  heightRight      Decimal?   @db.Decimal(10, 3)
-  legHeight        Decimal?   @db.Decimal(10, 3)
+  width              Decimal? @db.Decimal(10, 3)
+  height             Decimal? @db.Decimal(10, 3)
+  heightLeft         Decimal? @db.Decimal(10, 3)
+  heightRight        Decimal? @db.Decimal(10, 3)
+  legHeight          Decimal? @db.Decimal(10, 3)
+
+  doorWidth          Decimal? @db.Decimal(10, 3)
+  leftSideliteWidth  Decimal? @db.Decimal(10, 3)
+  rightSideliteWidth Decimal? @db.Decimal(10, 3)
+
+  leftPanels         Int?
+  rightPanels        Int?
+
+  panelCount         Int?
+  horizontalHeights  Json?
 
   cryst            Crystal    @relation(fields: [idCryst], references: [id])
   idCryst          Int
@@ -768,6 +779,13 @@ enum DimensionSizeBasis {
 enum DimensionRounding {
   ROUND_UP_TO_NEXT
   NEAREST
+}
+
+enum DimensionMode {
+  STANDARD
+  ECO_WINDOWS_DOOR
+  ECO_NOVO_DOOR
+  WINDOW_WALL
 }
 
 model DimensionPolicy {
