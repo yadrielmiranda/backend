@@ -1,0 +1,542 @@
+import { Injectable, BadRequestException } from '@nestjs/common';
+import {
+  DimensionMode,
+  DimensionRuleType,
+  PrismaClient,
+} from '@prisma/client';
+
+import { normalizeInchesToEighthStep } from '@/common/dimensions';
+import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
+import { UpsertPieceDto } from '../dto/update-estimate.dto';
+
+export type PrismaTransactionClient = Omit<
+  PrismaClient,
+  | '$connect'
+  | '$disconnect'
+  | '$on'
+  | '$transaction'
+  | '$use'
+  | '$extends'
+>;
+
+export type DimensionValidationResult = {
+  ok: boolean;
+  reason?: 'NOT_RATED' | 'OVERSIZE';
+  dpPos?: number;
+  dpNeg?: number;
+  anchorsPerJamb?: number;
+  extraAnchor?: boolean;
+  usedRange?: { w: [number, number]; h: [number, number] };
+  suggestion?: {
+    maxWidthIn?: number;
+    maxHeightIn?: number;
+    minWidthIn?: number;
+    minHeightIn?: number;
+  };
+  belowMinimum?: boolean;
+  note?: string;
+};
+
+type DimensionValidationCheck = {
+  ruleType: DimensionRuleType;
+  widthIn: number;
+  heightIn: number;
+  label: string;
+};
+
+@Injectable()
+export class EstimateDimensionValidationService {
+  numberInchesOrZero(
+    value: string | number | null | undefined,
+    label: string,
+  ) {
+    return value == null || value === ''
+      ? 0
+      : normalizeInchesToEighthStep(value, label, 1);
+  }
+
+  resolveEcoNovoOverallWidth(dto: {
+    width?: string | number | null;
+    doorWidth?: string | number | null;
+    leftSideliteWidth?: string | number | null;
+    rightSideliteWidth?: string | number | null;
+    leftPanels?: number | string | null;
+    rightPanels?: number | string | null;
+  }) {
+    const fallbackWidth = this.numberInchesOrZero(dto.width, 'Width');
+
+    const doorWidth = this.numberInchesOrZero(dto.doorWidth, 'Door Width');
+    const leftSideliteWidth = this.numberInchesOrZero(
+      dto.leftSideliteWidth,
+      'Left Sidelite Width',
+    );
+    const rightSideliteWidth = this.numberInchesOrZero(
+      dto.rightSideliteWidth,
+      'Right Sidelite Width',
+    );
+
+    const leftPanels = Number(dto.leftPanels ?? 0);
+    const rightPanels = Number(dto.rightPanels ?? 0);
+
+    const hasSegmentedWidth =
+      doorWidth > 0 || leftSideliteWidth > 0 || rightSideliteWidth > 0;
+
+    if (!hasSegmentedWidth) {
+      return fallbackWidth;
+    }
+
+    if (doorWidth <= 0) {
+      throw new BadRequestException('Door Width is required.');
+    }
+
+    if (
+      leftSideliteWidth > 0 &&
+      (!Number.isFinite(leftPanels) || leftPanels < 1)
+    ) {
+      throw new BadRequestException('Left Panels is required.');
+    }
+
+    if (
+      rightSideliteWidth > 0 &&
+      (!Number.isFinite(rightPanels) || rightPanels < 1)
+    ) {
+      throw new BadRequestException('Right Panels is required.');
+    }
+
+    return (
+      doorWidth +
+      leftSideliteWidth * Math.trunc(leftPanels || 0) +
+      rightSideliteWidth * Math.trunc(rightPanels || 0)
+    );
+  }
+
+  // Estima la altura gobernante.
+  // STANDARD usa los flags viejos de Config para no romper Picture/Tombstone/Eyebrow.
+  // Los modos nuevos usan dimensionMode desde SysConf.
+  async computeGoverningDimsFromConfig(
+    pieceDto: {
+      idSyst: number;
+      idConf: number;
+      width?: string | number | null;
+      height?: string | number | null;
+      heightLeft?: string | number | null;
+      heightRight?: string | number | null;
+      legHeight?: string | number | null;
+      doorWidth?: string | number | null;
+      leftSideliteWidth?: string | number | null;
+      rightSideliteWidth?: string | number | null;
+      leftPanels?: number | string | null;
+      rightPanels?: number | string | null;
+      panelCount?: number | string | null;
+      horizontalHeights?: number[] | null;
+    },
+    tx: PrismaTransactionClient,
+  ): Promise<{ widthIn: number; heightIn: number }> {
+    const [cfg, sysConf] = await Promise.all([
+      tx.config.findUnique({
+        where: { id: pieceDto.idConf },
+        select: {
+          requiresHeightLeft: true,
+          requiresHeightRight: true,
+          requiresLegHeight: true,
+        },
+      }),
+      tx.sysConf.findUnique({
+        where: {
+          idSystem_idConfig: {
+            idSystem: pieceDto.idSyst,
+            idConfig: pieceDto.idConf,
+          },
+        },
+        select: {
+          dimensionMode: true,
+        },
+      }),
+    ]);
+
+    if (!sysConf) {
+      throw new BadRequestException(
+        'The selected configuration does not belong to the selected system.',
+      );
+    }
+
+    const dimensionMode = sysConf.dimensionMode ?? DimensionMode.STANDARD;
+
+    const num = (v: any, label: string) =>
+      v == null || v === '' ? 0 : normalizeInchesToEighthStep(v, label, 1);
+
+    const h = num(pieceDto.height, 'Height');
+
+    if (dimensionMode === DimensionMode.ECO_WINDOWS_DOOR) {
+      return {
+        widthIn: num(pieceDto.width, 'Open Width'),
+        heightIn: h,
+      };
+    }
+
+    if (dimensionMode === DimensionMode.ECO_NOVO_DOOR) {
+      return {
+        widthIn: this.resolveEcoNovoOverallWidth(pieceDto),
+        heightIn: h,
+      };
+    }
+
+    if (dimensionMode === DimensionMode.WINDOW_WALL) {
+      return {
+        widthIn: num(pieceDto.width, 'Open Width'),
+        heightIn: h,
+      };
+    }
+
+    // comentario en espanol: comportamiento viejo intacto para STANDARD
+    const widthIn = num(pieceDto.width, 'Width');
+
+    const hl = cfg?.requiresHeightLeft
+      ? num(pieceDto.heightLeft, 'Height Left')
+      : 0;
+
+    const hr = cfg?.requiresHeightRight
+      ? num(pieceDto.heightRight, 'Height Right')
+      : 0;
+
+    const lh = cfg?.requiresLegHeight
+      ? num(pieceDto.legHeight, 'Leg Height')
+      : 0;
+
+    const heightIn = Math.max(h, hl, hr, lh);
+
+    return { widthIn, heightIn: heightIn || h };
+  }
+
+  async validateAgainstDimensionPolicy(
+    dto: CreatePieceDto | UpsertPieceDto,
+    tx: PrismaTransactionClient,
+  ): Promise<DimensionValidationResult> {
+    const policy = await tx.dimensionPolicy.findFirst({
+      where: {
+        idSystem: dto.idSyst,
+        idConfig: dto.idConf,
+        idCrystal: dto.idCryst,
+        isActive: true,
+      },
+      include: { rules: true },
+    });
+
+    if (!policy || !policy.rules || policy.rules.length === 0) {
+      return { ok: false, reason: 'NOT_RATED' };
+    }
+
+    const checks = await this.buildDimensionValidationChecks(dto, tx);
+
+    if (checks.length === 0) {
+      return { ok: false, reason: 'NOT_RATED' };
+    }
+
+    const passed: Array<{
+      check: DimensionValidationCheck;
+      result: DimensionValidationResult;
+    }> = [];
+
+    for (const check of checks) {
+      const result = this.validateDimensionCheckAgainstRules(policy, check);
+
+      if (!result.ok) {
+        return {
+          ...result,
+          note: result.note
+            ? `${check.label}: ${result.note}`
+            : `${check.label}`,
+        };
+      }
+
+      passed.push({ check, result });
+    }
+
+    const dpPosValues = passed
+      .map((x) => x.result.dpPos)
+      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+
+    const dpNegValues = passed
+      .map((x) => x.result.dpNeg)
+      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+
+    const first = passed[0]?.result;
+
+    return {
+      ok: true,
+      dpPos: dpPosValues.length ? Math.min(...dpPosValues) : first?.dpPos,
+      dpNeg: dpNegValues.length ? Math.max(...dpNegValues) : first?.dpNeg,
+      usedRange: first?.usedRange,
+      note: passed
+        .map((x) => `${x.check.label}: ${x.result.note ?? 'OK'}`)
+        .join(' | '),
+    };
+  }
+
+  private async buildDimensionValidationChecks(
+    dto: CreatePieceDto | UpsertPieceDto,
+    tx: PrismaTransactionClient,
+  ): Promise<DimensionValidationCheck[]> {
+    const [cfg, sysConf] = await Promise.all([
+      tx.config.findUnique({
+        where: { id: dto.idConf },
+        select: {
+          requiresHeightLeft: true,
+          requiresHeightRight: true,
+          requiresLegHeight: true,
+        },
+      }),
+      tx.sysConf.findUnique({
+        where: {
+          idSystem_idConfig: {
+            idSystem: dto.idSyst,
+            idConfig: dto.idConf,
+          },
+        },
+        select: {
+          dimensionMode: true,
+          requiresDoorWidth: true,
+          requiresLeftSideliteWidth: true,
+          requiresRightSideliteWidth: true,
+          requiresPanelCount: true,
+        },
+      }),
+    ]);
+
+    if (!sysConf) {
+      throw new BadRequestException(
+        'The selected configuration does not belong to the selected system.',
+      );
+    }
+
+    const dimensionMode = sysConf.dimensionMode ?? DimensionMode.STANDARD;
+
+    const num = (value: unknown, label: string) =>
+      value == null || value === ''
+        ? 0
+        : normalizeInchesToEighthStep(value as any, label, 1);
+
+    const heightIn = num(dto.height, 'Height');
+
+    if (dimensionMode === DimensionMode.STANDARD) {
+      const widthIn = num(dto.width, 'Width');
+      const heightLeft = cfg?.requiresHeightLeft
+        ? num(dto.heightLeft, 'Height Left')
+        : 0;
+      const heightRight = cfg?.requiresHeightRight
+        ? num(dto.heightRight, 'Height Right')
+        : 0;
+      const legHeight = cfg?.requiresLegHeight
+        ? num(dto.legHeight, 'Leg Height')
+        : 0;
+
+      return [
+        {
+          ruleType: DimensionRuleType.MAIN,
+          widthIn,
+          heightIn: Math.max(heightIn, heightLeft, heightRight, legHeight),
+          label: 'MAIN',
+        },
+      ];
+    }
+
+    if (dimensionMode === DimensionMode.WINDOW_WALL) {
+      const openWidth = num(dto.width, 'Open Width');
+      const panelCount = Number((dto as any).panelCount ?? 0);
+
+      if (!Number.isFinite(panelCount) || panelCount < 1) {
+        throw new BadRequestException('Panel Count is required.');
+      }
+
+      return [
+        {
+          ruleType: DimensionRuleType.MAIN,
+          widthIn: normalizeInchesToEighthStep(
+            openWidth / Math.trunc(panelCount),
+            'Panel Width',
+            1,
+          ),
+          heightIn,
+          label: 'MAIN panel',
+        },
+      ];
+    }
+
+    const checks: DimensionValidationCheck[] = [];
+
+    const doorWidthRaw = (dto as any).doorWidth;
+    const leftSideliteWidthRaw = (dto as any).leftSideliteWidth;
+    const rightSideliteWidthRaw = (dto as any).rightSideliteWidth;
+
+    const hasDoorWidth = doorWidthRaw != null && doorWidthRaw !== '';
+    const hasLeftSideliteWidth =
+      leftSideliteWidthRaw != null && leftSideliteWidthRaw !== '';
+    const hasRightSideliteWidth =
+      rightSideliteWidthRaw != null && rightSideliteWidthRaw !== '';
+
+    if (hasDoorWidth) {
+      checks.push({
+        ruleType: DimensionRuleType.DOOR,
+        widthIn: num(doorWidthRaw, 'Door Width'),
+        heightIn,
+        label: 'DOOR',
+      });
+    }
+
+    if (hasLeftSideliteWidth) {
+      checks.push({
+        ruleType: DimensionRuleType.SIDELITE,
+        widthIn: num(leftSideliteWidthRaw, 'Left Sidelite Width'),
+        heightIn,
+        label: 'LEFT SIDELITE',
+      });
+    }
+
+    if (hasRightSideliteWidth) {
+      checks.push({
+        ruleType: DimensionRuleType.SIDELITE,
+        widthIn: num(rightSideliteWidthRaw, 'Right Sidelite Width'),
+        heightIn,
+        label: 'RIGHT SIDELITE',
+      });
+    }
+
+    // comentario en espanol: puertas simples X/XX pueden venir solo con width.
+    // En modos de puerta, si no hay doorWidth ni sidelites, validamos width como DOOR.
+    if (checks.length === 0) {
+      checks.push({
+        ruleType: DimensionRuleType.DOOR,
+        widthIn: num(dto.width, 'Door Width'),
+        heightIn,
+        label: 'DOOR',
+      });
+    }
+
+    return checks;
+  }
+
+  private validateDimensionCheckAgainstRules(
+    policy: any,
+    check: DimensionValidationCheck,
+  ): DimensionValidationResult {
+    const rules = (policy.rules ?? []).filter(
+      (r: any) => r.ruleType === check.ruleType,
+    );
+
+    if (rules.length === 0) {
+      return {
+        ok: false,
+        reason: 'NOT_RATED',
+        note: `No ${check.ruleType} rules found for this policy.`,
+      };
+    }
+
+    const allWidths = rules.map((r: any) => Number(r.widthIn));
+    const allHeights = rules.map((r: any) => Number(r.heightIn));
+    const minW = Math.min(...allWidths);
+    const minH = Math.min(...allHeights);
+
+    if (check.widthIn < minW || check.heightIn < minH) {
+      return {
+        ok: false,
+        reason: 'OVERSIZE',
+        belowMinimum: true,
+        suggestion: {
+          minWidthIn: minW,
+          minHeightIn: minH,
+          maxWidthIn: minW,
+          maxHeightIn: minH,
+        },
+        note: `${check.ruleType} below minimum.`,
+      };
+    }
+
+    const pickExactRule = (w: number, h: number) =>
+      rules.find(
+        (r: any) => Number(r.widthIn) === w && Number(r.heightIn) === h,
+      ) ?? null;
+
+    const uniqueSorted = (arr: number[]) =>
+      [...new Set(arr)].sort((a, b) => a - b);
+
+    const widthValues = uniqueSorted(rules.map((r: any) => Number(r.widthIn)));
+    const heightValues = uniqueSorted(rules.map((r: any) => Number(r.heightIn)));
+
+    const nextOrSame = (values: number[], v: number): number | null => {
+      for (const val of values) {
+        if (val >= v) return val;
+      }
+      return null;
+    };
+
+    const nearest = (values: number[], v: number): number | null => {
+      if (!values.length) return null;
+
+      let best = values[0];
+      let bestDist = Math.abs(values[0] - v);
+
+      for (const val of values) {
+        const d = Math.abs(val - v);
+        if (d < bestDist) {
+          bestDist = d;
+          best = val;
+        }
+      }
+
+      return best;
+    };
+
+    let rule: any | null = pickExactRule(check.widthIn, check.heightIn);
+    let suggestion: { maxWidthIn?: number; maxHeightIn?: number } | undefined;
+
+    if (!rule) {
+      if (policy.roundingRule === 'ROUND_UP_TO_NEXT') {
+        const wNext = nextOrSame(widthValues, check.widthIn);
+        const hNext = nextOrSame(heightValues, check.heightIn);
+
+        if (wNext != null && hNext != null) {
+          rule = pickExactRule(wNext, hNext);
+          if (!rule) {
+            suggestion = { maxWidthIn: wNext, maxHeightIn: hNext };
+          }
+        }
+      } else {
+        const wNear = nearest(widthValues, check.widthIn);
+        const hNear = nearest(heightValues, check.heightIn);
+
+        if (wNear != null && hNear != null) {
+          rule = pickExactRule(wNear, hNear);
+          if (!rule) {
+            suggestion = { maxWidthIn: wNear, maxHeightIn: hNear };
+          }
+        }
+      }
+    }
+
+    if (!rule) {
+      const maxW = widthValues[widthValues.length - 1];
+      const maxH = heightValues[heightValues.length - 1];
+
+      return {
+        ok: false,
+        reason: 'OVERSIZE',
+        suggestion: suggestion ?? {
+          maxWidthIn: maxW,
+          maxHeightIn: maxH,
+        },
+        note: `${check.ruleType} exceeds NOA limits.`,
+      };
+    }
+
+    return {
+      ok: true,
+      dpPos: Number(rule.dpPosPsf),
+      dpNeg: Number(rule.dpNegPsf),
+      usedRange: {
+        w: [Number(rule.widthIn), Number(rule.widthIn)],
+        h: [Number(rule.heightIn), Number(rule.heightIn)],
+      },
+      note: rule.note ?? undefined,
+    };
+  }
+}

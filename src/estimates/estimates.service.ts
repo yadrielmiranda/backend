@@ -16,8 +16,6 @@ import {
   Order,
   BrandingType,
   Branding,
-  DimensionMode,
-  DimensionRuleType,
 } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { CreateEstimateDto } from './dto/create-estimate.dto';
@@ -26,39 +24,21 @@ import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 
 // --- Importación Estándar ---
 import Decimal from 'decimal.js';
-import { dimsInchesToFeet } from '@/pricing/units';
-import { areaPerimeterFor } from '@/pricing/shape-geometry';
-import { computeBasePrice } from '@/pricing/price-formula';
-import { normalizeInchesToEighthStep } from '@/common/dimensions';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { isPrivileged } from '@/auth/utils/is-privileged';
-import { FrameColorService } from '@/frame-color/frame-color.service';
-
-// PDF on-the-fly
-import puppeteer from 'puppeteer';
+import { EstimatePdfService } from './pdf/estimate-pdf.service';
+import { EstimateDimensionValidationService } from './dimensions/estimate-dimension-validation.service';
+import { EstimateMuntinService } from './muntins/estimate-muntin.service';
+import {
+  EstimatePieceCalculatorService,
+  type CalculatedPieceCombined,
+} from './calculation/estimate-piece-calculator.service';
+import { EstimateAuditSnapshotBuilder } from './audit/estimate-audit-snapshot.builder';
 
 // Logs (EventLog + TempLog)
 import { LogsService } from '@/logs/logs.service';
 // Cron Jobs
 import { Cron, CronExpression } from '@nestjs/schedule';
-// tipo exacto de config que usamos
-type ConfigSelect = {
-  conf: string;
-  requiresWidth: boolean;
-  requiresHeight: boolean;
-  requiresHeightLeft: boolean;
-  requiresHeightRight: boolean;
-  requiresLegHeight: boolean;
-  muntinLayout: unknown;
-};
-
-// cache por ejecucion (transaction-safe)
-type CalculationCache = {
-  config: Map<number, ConfigSelect | null>;
-  sysConf: Map<string, any>;
-  pricing: Map<string, any>;
-  systemFrameColor: Map<string, any>;
-};
 
 // Prisma Transaction Client Type
 type PrismaTransactionClient = Omit<
@@ -71,49 +51,10 @@ type PrismaTransactionClient = Omit<
   | '$extends'
 >;
 
-// Tipo interno SÓLO para las métricas calculadas (usando Decimal.js)
-type CalculatedMetricsInternal = {
-  rate: Decimal; // costo fabrica (unitario)
-  price: Decimal; // tu precio al dealer/cliente (unitario)
-  netProfit: Decimal; // tu ganancia (unitaria)
-  markup: Decimal; // tu markup (0.30, etc.)
-  subtotal: Decimal; // tu subtotal
-  dealerMarkupDecimal: Decimal; // markup dealer en fracción (0.15)
-  netProfitD: Decimal; // ganancia dealer (total)
-  customerPrice: Decimal; // precio unitario al cliente final
-  customerSubtotal: Decimal; // precio * qty al cliente final
-  dpPosPsf: Decimal;
-  dpNegPsf: Decimal;
-};
 
-// Contiene el DTO original + las métricas internas
-type CalculatedPieceCombined = (CreatePieceDto | UpsertPieceDto) &
-  CalculatedMetricsInternal;
 
-type DimensionValidationResult = {
-  ok: boolean;
-  reason?: 'NOT_RATED' | 'OVERSIZE';
-  dpPos?: number;
-  dpNeg?: number;
-  anchorsPerJamb?: number;
-  extraAnchor?: boolean;
-  usedRange?: { w: [number, number]; h: [number, number] };
-  suggestion?: {
-    maxWidthIn?: number;
-    maxHeightIn?: number;
-    minWidthIn?: number;
-    minHeightIn?: number;
-  };
-  belowMinimum?: boolean;
-  note?: string;
-};
 
-type DimensionValidationCheck = {
-  ruleType: DimensionRuleType;
-  widthIn: number;
-  heightIn: number;
-  label: string;
-};
+
 
 // --- Tipos con Relaciones (para salida final) ---
 type PieceWithRelations = Piece & {
@@ -156,19 +97,12 @@ export type PdfView = 'client' | 'dealer_internal' | 'dealer_public' | 'admin';
 export class EstimatesService {
   constructor(
     private prisma: PrismaService,
-    private logs: LogsService,
-    private frameColorService: FrameColorService,
+    private logs: LogsService,    
+    private estimatePdfService: EstimatePdfService,
+    private dimensionValidationService: EstimateDimensionValidationService,
+    private pieceCalculator: EstimatePieceCalculatorService,
+    private muntinService: EstimateMuntinService,
   ) { }
-
-  // inicializa cache limpio por request
-  private createCalculationCache(): CalculationCache {
-    return {
-      config: new Map(),
-      sysConf: new Map(),
-      pricing: new Map(),
-      systemFrameColor: new Map(),
-    };
-  }
 
   private decimalOrNull(value: string | number | null | undefined) {
     return value == null || value === '' ? null : new Prisma.Decimal(value);
@@ -241,457 +175,6 @@ export class EstimatesService {
     await this.expireOldActiveEstimates();
   }
 
-  // =====================================================
-  // ✅ Audit snapshot helper
-  // =====================================================
-  private buildEstimateAuditSnapshot(est: any) {
-    // comentario en espanol: snapshot "estable" para auditoria (no metemos TODO el objeto gigante)
-    return {
-      id: est.id,
-      number: est.number,
-      name: est.name,
-      idUser: est.idUser,
-      expiresAt: est.expiresAt ?? null,
-      statusId: est.statusId,
-      statusName: est.status?.name ?? null,
-      orderId: est.order?.id ?? null,
-
-      units: est.units,
-
-      // totales
-      rateT: est.rateT ?? null,
-      priceT: est.priceT ?? null,
-      netProfit: est.netProfit ?? null,
-      taxRate: est.taxRate ?? null,
-      taxAmount: est.taxAmount ?? null,
-      totalPayable: est.totalPayable ?? null,
-
-      customerPriceT: est.customerPriceT ?? null,
-      customerTaxRate: est.customerTaxRate ?? null,
-      customerTaxAmount: est.customerTaxAmount ?? null,
-      customerTotalPayable: est.customerTotalPayable ?? null,
-
-      netProfitD: est.netProfitD ?? null,
-
-      // customer
-      customerFirstName: est.customerFirstName ?? null,
-      customerLastName: est.customerLastName ?? null,
-      customerEmail: est.customerEmail ?? null,
-      customerPhone: est.customerPhone ?? null,
-      customerStreet: est.customerStreet ?? null,
-      customerCity: est.customerCity ?? null,
-      customerState: est.customerState ?? null,
-      customerPostalCode: est.customerPostalCode ?? null,
-
-      // piezas (resumen)
-      pieces: Array.isArray(est.pieces)
-        ? est.pieces.map((p: any) => ({
-          id: p.id ?? null,
-          mark: p.mark ?? null,
-          qty: p.qty ?? null,
-
-          // dims
-          width: p.width ?? null,
-          height: p.height ?? null,
-          heightLeft: p.heightLeft ?? null,
-          heightRight: p.heightRight ?? null,
-          legHeight: p.legHeight ?? null,
-          doorWidth: p.doorWidth ?? null,
-          leftSideliteWidth: p.leftSideliteWidth ?? null,
-          rightSideliteWidth: p.rightSideliteWidth ?? null,
-          leftPanels: p.leftPanels ?? null,
-          rightPanels: p.rightPanels ?? null,
-          panelCount: p.panelCount ?? null,
-          horizontalHeights: p.horizontalHeights ?? null,
-
-          // ids de relaciones
-          idProd: p.idProd ?? null,
-          idBrand: p.idBrand ?? null,
-          idSyst: p.idSyst ?? null,
-          idConf: p.idConf ?? null,
-          idFC: p.idFC ?? null,
-          idCryst: p.idCryst ?? null,
-          idTint: p.idTint ?? null,
-          idCoat: p.idCoat ?? null,
-
-          // money
-          rate: p.rate ?? null,
-          price: p.price ?? null,
-          subtotal: p.subtotal ?? null,
-          netProfit: p.netProfit ?? null,
-
-          dealerMarkup: p.dealerMarkup ?? null,
-          netProfitD: p.netProfitD ?? null,
-
-          customerPrice: p.customerPrice ?? null,
-          customerSubtotal: p.customerSubtotal ?? null,
-
-          dpPosPsf: p.dpPosPsf ?? null,
-          dpNegPsf: p.dpNegPsf ?? null,
-
-          // flags
-          privacy: p.privacy ?? null,
-          screen: p.screen ?? null,
-
-          muntin:
-            p.pieceMuntin
-              ? {
-                id: p.pieceMuntin.id ?? null,
-                patternId: p.pieceMuntin.patternId ?? null,
-                patternName: p.pieceMuntin.pattern?.name ?? null,
-                typeId: p.pieceMuntin.typeId ?? null,
-                typeName: p.pieceMuntin.type?.name ?? null,
-                totalLites: p.pieceMuntin.totalLites ?? null,
-                panels: Array.isArray(p.pieceMuntin.panels)
-                  ? p.pieceMuntin.panels.map((mp: any) => ({
-                    id: mp.id ?? null,
-                    panelIndex: mp.panelIndex ?? null,
-                    panelCode: mp.panelCode ?? null,
-                    panelLabel: mp.panelLabel ?? null,
-                    horizontalLites: mp.horizontalLites ?? null,
-                    verticalLites: mp.verticalLites ?? null,
-                  }))
-                  : [],
-              }
-              : null,
-        }))
-        : [],
-      piecesCount: Array.isArray(est.pieces) ? est.pieces.length : 0,
-    };
-  }
-
-  // =====================================================
-  // Helpers PDF: permisos por rol
-  // =====================================================
-  private assertPdfViewAllowed(view: PdfView, roleName: string | null) {
-    // comentario en espanol: bloqueamos vistas que no corresponden al rol
-    if (roleName === 'client') {
-      if (view !== 'client') {
-        throw new BadRequestException('View not allowed.');
-      }
-      return;
-    }
-
-    if (roleName === 'dealer') {
-      if (view !== 'dealer_internal' && view !== 'dealer_public') {
-        throw new BadRequestException('View not allowed.');
-      }
-      return;
-    }
-
-    if (roleName === 'admin' || roleName === 'operator') {
-      // comentario en espanol: admin/operator pueden imprimir todo
-      return;
-    }
-
-    throw new BadRequestException('Role not allowed.');
-  }
-
-  private numberInchesOrZero(
-    value: string | number | null | undefined,
-    label: string,
-  ) {
-    return value == null || value === ''
-      ? 0
-      : normalizeInchesToEighthStep(value, label, 1);
-  }
-
-  private resolveEcoNovoOverallWidth(dto: {
-    width?: string | number | null;
-    doorWidth?: string | number | null;
-    leftSideliteWidth?: string | number | null;
-    rightSideliteWidth?: string | number | null;
-    leftPanels?: number | string | null;
-    rightPanels?: number | string | null;
-  }) {
-    const fallbackWidth = this.numberInchesOrZero(dto.width, 'Width');
-
-    const doorWidth = this.numberInchesOrZero(dto.doorWidth, 'Door Width');
-    const leftSideliteWidth = this.numberInchesOrZero(
-      dto.leftSideliteWidth,
-      'Left Sidelite Width',
-    );
-    const rightSideliteWidth = this.numberInchesOrZero(
-      dto.rightSideliteWidth,
-      'Right Sidelite Width',
-    );
-
-    const leftPanels = Number(dto.leftPanels ?? 0);
-    const rightPanels = Number(dto.rightPanels ?? 0);
-
-    const hasSegmentedWidth =
-      doorWidth > 0 || leftSideliteWidth > 0 || rightSideliteWidth > 0;
-
-    if (!hasSegmentedWidth) {
-      return fallbackWidth;
-    }
-
-    if (doorWidth <= 0) {
-      throw new BadRequestException('Door Width is required.');
-    }
-
-    if (leftSideliteWidth > 0 && (!Number.isFinite(leftPanels) || leftPanels < 1)) {
-      throw new BadRequestException('Left Panels is required.');
-    }
-
-    if (rightSideliteWidth > 0 && (!Number.isFinite(rightPanels) || rightPanels < 1)) {
-      throw new BadRequestException('Right Panels is required.');
-    }
-
-    return (
-      doorWidth +
-      leftSideliteWidth * Math.trunc(leftPanels || 0) +
-      rightSideliteWidth * Math.trunc(rightPanels || 0)
-    );
-  }
-
-  // Estima la altura gobernante.
-  // STANDARD usa los flags viejos de Config para no romper Picture/Tombstone/Eyebrow.
-  // Los modos nuevos usan dimensionMode desde SysConf.
-  private async computeGoverningDimsFromConfig(
-    pieceDto: {
-      idSyst: number;
-      idConf: number;
-      width?: string | number | null;
-      height?: string | number | null;
-      heightLeft?: string | number | null;
-      heightRight?: string | number | null;
-      legHeight?: string | number | null;
-      doorWidth?: string | number | null;
-      leftSideliteWidth?: string | number | null;
-      rightSideliteWidth?: string | number | null;
-      leftPanels?: number | string | null;
-      rightPanels?: number | string | null;
-      panelCount?: number | string | null;
-      horizontalHeights?: number[] | null;
-    },
-    tx: PrismaTransactionClient,
-  ): Promise<{ widthIn: number; heightIn: number }> {
-    const [cfg, sysConf] = await Promise.all([
-      tx.config.findUnique({
-        where: { id: pieceDto.idConf },
-        select: {
-          requiresHeightLeft: true,
-          requiresHeightRight: true,
-          requiresLegHeight: true,
-        },
-      }),
-      tx.sysConf.findUnique({
-        where: {
-          idSystem_idConfig: {
-            idSystem: pieceDto.idSyst,
-            idConfig: pieceDto.idConf,
-          },
-        },
-        select: {
-          dimensionMode: true,
-        },
-      }),
-    ]);
-
-    if (!sysConf) {
-      throw new BadRequestException(
-        'The selected configuration does not belong to the selected system.',
-      );
-    }
-
-    const dimensionMode = sysConf.dimensionMode ?? DimensionMode.STANDARD;
-
-    const num = (v: any, label: string) =>
-      v == null || v === '' ? 0 : normalizeInchesToEighthStep(v, label, 1);
-
-    const h = num(pieceDto.height, 'Height');
-
-    if (dimensionMode === DimensionMode.ECO_WINDOWS_DOOR) {
-      return {
-        widthIn: num(pieceDto.width, 'Open Width'),
-        heightIn: h,
-      };
-    }
-
-    if (dimensionMode === DimensionMode.ECO_NOVO_DOOR) {
-      return {
-        widthIn: this.resolveEcoNovoOverallWidth(pieceDto),
-        heightIn: h,
-      };
-    }
-
-    if (dimensionMode === DimensionMode.WINDOW_WALL) {
-      return {
-        widthIn: num(pieceDto.width, 'Open Width'),
-        heightIn: h,
-      };
-    }
-
-    // comentario en espanol: comportamiento viejo intacto para STANDARD
-    const widthIn = num(pieceDto.width, 'Width');
-
-    const hl = cfg?.requiresHeightLeft
-      ? num(pieceDto.heightLeft, 'Height Left')
-      : 0;
-
-    const hr = cfg?.requiresHeightRight
-      ? num(pieceDto.heightRight, 'Height Right')
-      : 0;
-
-    const lh = cfg?.requiresLegHeight
-      ? num(pieceDto.legHeight, 'Leg Height')
-      : 0;
-
-    const heightIn = Math.max(h, hl, hr, lh);
-
-    return { widthIn, heightIn: heightIn || h };
-  }
-
-
-  private buildPieceMuntinCreateInput(
-    muntin?: CreatePieceDto['muntin'] | UpsertPieceDto['muntin'] | null,
-  ) {
-    if (!muntin) return undefined;
-
-    const panels = Array.isArray(muntin.panels) ? muntin.panels : [];
-
-    const totalLites = panels.reduce((sum, panel) => {
-      const h = Number(panel.horizontalLites || 0);
-      const v = Number(panel.verticalLites || 0);
-      return sum + h * v;
-    }, 0);
-
-    return {
-      pattern: { connect: { id: muntin.idPattern } },
-      ...(muntin.idType ? { type: { connect: { id: muntin.idType } } } : {}),
-      totalLites,
-      ...(panels.length > 0
-        ? {
-          panels: {
-            create: panels.map((panel) => ({
-              panelIndex: panel.panelIndex,
-              panelCode: panel.panelCode ?? null,
-              panelLabel: panel.panelLabel,
-              horizontalLites: panel.horizontalLites,
-              verticalLites: panel.verticalLites,
-            })),
-          },
-        }
-        : {}),
-    };
-  }
-
-  private parseConfigMuntinLayout(layout: unknown): Array<{
-    panelIndex: number;
-    panelCode?: string | null;
-    panelLabel: string;
-  }> {
-    if (!Array.isArray(layout)) return [];
-
-    return layout
-      .map((item: any) => ({
-        panelIndex: Number(item?.panelIndex),
-        panelCode:
-          item?.panelCode == null || String(item.panelCode).trim() === ""
-            ? null
-            : String(item.panelCode).trim(),
-        panelLabel: String(item?.panelLabel ?? "").trim(),
-      }))
-      .filter(
-        (item) =>
-          Number.isInteger(item.panelIndex) &&
-          item.panelIndex >= 1 &&
-          item.panelLabel.length > 0,
-      )
-      .sort((a, b) => a.panelIndex - b.panelIndex);
-  }
-
-  private buildDefaultPanelsFromConfigLayout(
-    configLayout: Array<{ panelIndex: number; panelCode?: string | null; panelLabel: string }>,
-    incomingPanels?: Array<{
-      panelIndex?: number;
-      panelCode?: string;
-      panelLabel?: string;
-      horizontalLites?: number;
-      verticalLites?: number;
-    }>,
-  ) {
-    const incomingByIndex = new Map<number, (typeof incomingPanels)[number]>();
-
-    for (const panel of incomingPanels ?? []) {
-      const idx = Number(panel?.panelIndex);
-      if (Number.isInteger(idx) && idx >= 1) {
-        incomingByIndex.set(idx, panel);
-      }
-    }
-
-    return configLayout.map((panel) => {
-      const incoming = incomingByIndex.get(panel.panelIndex);
-
-      return {
-        panelIndex: panel.panelIndex,
-        panelCode: panel.panelCode ?? null,
-        panelLabel: panel.panelLabel,
-        horizontalLites: Math.max(1, Number(incoming?.horizontalLites ?? 1)),
-        verticalLites: Math.max(1, Number(incoming?.verticalLites ?? 1)),
-      };
-    });
-  }
-
-  private async normalizePieceMuntinFromCatalog(
-    muntin: CreatePieceDto['muntin'] | UpsertPieceDto['muntin'] | null | undefined,
-    configLayoutRaw: unknown,
-    tx: PrismaTransactionClient,
-  ) {
-    if (!muntin) return null;
-
-    const pattern = await tx.muntinPattern.findUnique({
-      where: { id: muntin.idPattern },
-      select: {
-        id: true,
-        requiresLites: true,
-      },
-    });
-
-    if (!pattern) {
-      throw new BadRequestException(`Muntin pattern #${muntin.idPattern} not found.`);
-    }
-
-    if (muntin.idType) {
-      const type = await tx.muntinType.findUnique({
-        where: { id: muntin.idType },
-        select: { id: true },
-      });
-
-      if (!type) {
-        throw new BadRequestException(`Muntin type #${muntin.idType} not found.`);
-      }
-    }
-
-    const configLayout = this.parseConfigMuntinLayout(configLayoutRaw);
-
-    // Full View o cualquier pattern sin lites
-    if (!pattern.requiresLites) {
-      return {
-        idPattern: muntin.idPattern,
-        idType: muntin.idType ?? null,
-        panels: [],
-      };
-    }
-
-    // Si requiere lites, la config debe definir layout
-    if (configLayout.length === 0) {
-      throw new BadRequestException(
-        'This configuration does not define a muntin layout.',
-      );
-    }
-
-    return {
-      idPattern: muntin.idPattern,
-      idType: muntin.idType ?? null,
-      panels: this.buildDefaultPanelsFromConfigLayout(
-        configLayout,
-        Array.isArray(muntin.panels) ? muntin.panels : [],
-      ),
-    };
-  }
-
   // --- calculateAndReturnPieceMetrics (Public) ---
   async calculateAndReturnPieceMetrics(
     pieceDto: CreatePieceDto,
@@ -707,9 +190,9 @@ export class EstimatesService {
       user.markupOverride !== null
         ? new Decimal(user.markupOverride.toString())
         : new Decimal(user.role.markup.toString());
-    const cache = this.createCalculationCache();
+    const cache = this.pieceCalculator.createCalculationCache();
     const calculated: CalculatedPieceCombined =
-      await this.internalCalculatePieceMetrics(
+      await this.pieceCalculator.calculatePieceMetrics(
         pieceDto,
         effectiveMarkupDecimal,
         this.prisma as PrismaTransactionClient,
@@ -927,11 +410,11 @@ export class EstimatesService {
         ...estimateHeaderData
       } = dto;
 
-      const cache = this.createCalculationCache();
+      const cache = this.pieceCalculator.createCalculationCache();
       const calculatedPieces: CalculatedPieceCombined[] = [];
 
       for (const p of pieceDtos) {
-        const result = await this.internalCalculatePieceMetrics(
+        const result = await this.pieceCalculator.calculatePieceMetrics(
           p,
           effectiveMarkupDecimal,
           tx as PrismaTransactionClient,
@@ -941,7 +424,7 @@ export class EstimatesService {
         calculatedPieces.push(result);
       }
 
-      const estimateTotals = this.internalCalculateEstimateTotals(
+      const estimateTotals = this.pieceCalculator.calculateEstimateTotals(
         calculatedPieces,
         factoryTaxRate,
         customerTaxRate,
@@ -950,7 +433,7 @@ export class EstimatesService {
       const totalUnits = calculatedPieces.reduce((sum, p) => sum + (p.qty || 0), 0);
 
       const piecesToCreate: Prisma.PieceCreateWithoutEstimInput[] = calculatedPieces.map((p) => {
-        const pieceMuntinCreate = this.buildPieceMuntinCreateInput(p.muntin);
+        const pieceMuntinCreate = this.muntinService.buildPieceMuntinCreateInput(p.muntin);
 
         const dataForPrisma: Prisma.PieceCreateWithoutEstimInput = {
           mark: p.mark,
@@ -1116,7 +599,7 @@ export class EstimatesService {
         userId,
         message: `Estimate created (#${createdEstimate.number})`,
         before: null,
-        after: this.buildEstimateAuditSnapshot(createdEstimate),
+        after: EstimateAuditSnapshotBuilder.build(createdEstimate),
         meta: { source: 'EstimatesService.createEstimate' },
       });
 
@@ -1216,11 +699,11 @@ export class EstimatesService {
       await tx.piece.deleteMany({
         where: { idEst: estimateId, NOT: { id: { in: incomingPieceIds } } },
       });
-      const cache = this.createCalculationCache();
+      const cache = this.pieceCalculator.createCalculationCache();
       const calculatedPieces: CalculatedPieceCombined[] = [];
 
       for (const p of pieceDtos) {
-        const result = await this.internalCalculatePieceMetrics(
+        const result = await this.pieceCalculator.calculatePieceMetrics(
           p,
           effectiveMarkupDecimal,
           tx as PrismaTransactionClient,
@@ -1230,7 +713,7 @@ export class EstimatesService {
         calculatedPieces.push(result);
       }
 
-      const estimateTotals = this.internalCalculateEstimateTotals(
+      const estimateTotals = this.pieceCalculator.calculateEstimateTotals(
         calculatedPieces,
         factoryTaxRate,
         customerTaxRate,
@@ -1397,7 +880,7 @@ export class EstimatesService {
           continue;
         }
 
-        const muntinCreate = this.buildPieceMuntinCreateInput(sourcePiece.muntin);
+        const muntinCreate = this.muntinService.buildPieceMuntinCreateInput(sourcePiece.muntin);
 
         if (!muntinCreate) continue;
 
@@ -1474,8 +957,8 @@ export class EstimatesService {
         entityId: refreshedEstimate.id,
         userId,
         message: `Estimate updated (#${refreshedEstimate.number})`,
-        before: this.buildEstimateAuditSnapshot(beforeEstimate),
-        after: this.buildEstimateAuditSnapshot(refreshedEstimate),
+        before: EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after: EstimateAuditSnapshotBuilder.build(refreshedEstimate),
         meta: { source: 'EstimatesService.updateEstimate' },
       });
 
@@ -1643,11 +1126,11 @@ export class EstimatesService {
         //  en DB está guardado como decimal 0.15, pero el cálculo espera 15
         dealerMarkup: Number(p.dealerMarkup ?? 0) * 100,
       }));
-      const cache = this.createCalculationCache();
+      const cache = this.pieceCalculator.createCalculationCache();
       const calculatedPieces: CalculatedPieceCombined[] = [];
 
       for (const p of pieceDtos) {
-        const result = await this.internalCalculatePieceMetrics(
+        const result = await this.pieceCalculator.calculatePieceMetrics(
           p,
           effectiveMarkupDecimal,
           tx as PrismaTransactionClient,
@@ -1657,7 +1140,7 @@ export class EstimatesService {
         calculatedPieces.push(result);
       }
 
-      const estimateTotals = this.internalCalculateEstimateTotals(
+      const estimateTotals = this.pieceCalculator.calculateEstimateTotals(
         calculatedPieces,
         factoryTaxRate,
         customerTaxRate,
@@ -1733,7 +1216,7 @@ export class EstimatesService {
         });
 
         if (p.muntin) {
-          const muntinCreate = this.buildPieceMuntinCreateInput(p.muntin);
+          const muntinCreate = this.muntinService.buildPieceMuntinCreateInput(p.muntin);
 
           if (muntinCreate) {
             await tx.pieceMuntin.create({
@@ -1822,8 +1305,8 @@ export class EstimatesService {
         entityId: refreshedEstimate.id,
         userId: user.id,
         message: `Estimate recalculated (#${refreshedEstimate.number})`,
-        before: this.buildEstimateAuditSnapshot(beforeEstimate),
-        after: this.buildEstimateAuditSnapshot(refreshedEstimate),
+        before: EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after: EstimateAuditSnapshotBuilder.build(refreshedEstimate),
         meta: { source: 'EstimatesService.recalculateExpiredEstimate' },
       });
 
@@ -1859,7 +1342,7 @@ export class EstimatesService {
         );
       }
 
-      const beforeSnapshot = this.buildEstimateAuditSnapshot(estimate);
+      const beforeSnapshot = EstimateAuditSnapshotBuilder.build(estimate);
 
       await tx.piece.deleteMany({ where: { idEst: where.id } });
       await tx.estimate.delete({ where: { id: where.id } });
@@ -1878,848 +1361,6 @@ export class EstimatesService {
 
       return estimate as unknown as Estimate;
     });
-  }
-
-  // --- Dimension Policy Validation (Oversize blocker) ---
-  private async validateAgainstDimensionPolicy(
-    dto: CreatePieceDto | UpsertPieceDto,
-    tx: PrismaTransactionClient,
-  ): Promise<DimensionValidationResult> {
-    const policy = await tx.dimensionPolicy.findFirst({
-      where: {
-        idSystem: dto.idSyst,
-        idConfig: dto.idConf,
-        idCrystal: dto.idCryst,
-        isActive: true,
-      },
-      include: { rules: true },
-    });
-
-    if (!policy || !policy.rules || policy.rules.length === 0) {
-      return { ok: false, reason: 'NOT_RATED' };
-    }
-
-    const checks = await this.buildDimensionValidationChecks(dto, tx);
-
-    if (checks.length === 0) {
-      return { ok: false, reason: 'NOT_RATED' };
-    }
-
-    const passed: Array<{
-      check: DimensionValidationCheck;
-      result: DimensionValidationResult;
-    }> = [];
-
-    for (const check of checks) {
-      const result = this.validateDimensionCheckAgainstRules(
-        policy,
-        check,
-      );
-
-      if (!result.ok) {
-        return {
-          ...result,
-          note: result.note
-            ? `${check.label}: ${result.note}`
-            : `${check.label}`,
-        };
-      }
-
-      passed.push({ check, result });
-    }
-
-    const dpPosValues = passed
-      .map((x) => x.result.dpPos)
-      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
-
-    const dpNegValues = passed
-      .map((x) => x.result.dpNeg)
-      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
-
-    const first = passed[0]?.result;
-
-    return {
-      ok: true,
-      dpPos: dpPosValues.length ? Math.min(...dpPosValues) : first?.dpPos,
-      dpNeg: dpNegValues.length ? Math.max(...dpNegValues) : first?.dpNeg,
-      usedRange: first?.usedRange,
-      note: passed
-        .map((x) => `${x.check.label}: ${x.result.note ?? 'OK'}`)
-        .join(' | '),
-    };
-  }
-
-  private async buildDimensionValidationChecks(
-    dto: CreatePieceDto | UpsertPieceDto,
-    tx: PrismaTransactionClient,
-  ): Promise<DimensionValidationCheck[]> {
-    const [cfg, sysConf] = await Promise.all([
-      tx.config.findUnique({
-        where: { id: dto.idConf },
-        select: {
-          requiresHeightLeft: true,
-          requiresHeightRight: true,
-          requiresLegHeight: true,
-        },
-      }),
-      tx.sysConf.findUnique({
-        where: {
-          idSystem_idConfig: {
-            idSystem: dto.idSyst,
-            idConfig: dto.idConf,
-          },
-        },
-        select: {
-          dimensionMode: true,
-          requiresDoorWidth: true,
-          requiresLeftSideliteWidth: true,
-          requiresRightSideliteWidth: true,
-          requiresPanelCount: true,
-        },
-      }),
-    ]);
-
-    if (!sysConf) {
-      throw new BadRequestException(
-        'The selected configuration does not belong to the selected system.',
-      );
-    }
-
-    const dimensionMode = sysConf.dimensionMode ?? DimensionMode.STANDARD;
-
-    const num = (value: unknown, label: string) =>
-      value == null || value === ''
-        ? 0
-        : normalizeInchesToEighthStep(value as any, label, 1);
-
-    const heightIn = num(dto.height, 'Height');
-
-    if (dimensionMode === DimensionMode.STANDARD) {
-      const widthIn = num(dto.width, 'Width');
-      const heightLeft = cfg?.requiresHeightLeft
-        ? num(dto.heightLeft, 'Height Left')
-        : 0;
-      const heightRight = cfg?.requiresHeightRight
-        ? num(dto.heightRight, 'Height Right')
-        : 0;
-      const legHeight = cfg?.requiresLegHeight
-        ? num(dto.legHeight, 'Leg Height')
-        : 0;
-
-      return [
-        {
-          ruleType: DimensionRuleType.MAIN,
-          widthIn,
-          heightIn: Math.max(heightIn, heightLeft, heightRight, legHeight),
-          label: 'MAIN',
-        },
-      ];
-    }
-
-    if (dimensionMode === DimensionMode.WINDOW_WALL) {
-      const openWidth = num(dto.width, 'Open Width');
-      const panelCount = Number((dto as any).panelCount ?? 0);
-
-      if (!Number.isFinite(panelCount) || panelCount < 1) {
-        throw new BadRequestException('Panel Count is required.');
-      }
-
-      return [
-        {
-          ruleType: DimensionRuleType.MAIN,
-          widthIn: normalizeInchesToEighthStep(
-            openWidth / Math.trunc(panelCount),
-            'Panel Width',
-            1,
-          ),
-          heightIn,
-          label: 'MAIN panel',
-        },
-      ];
-    }
-
-    const checks: DimensionValidationCheck[] = [];
-
-    const doorWidthRaw = (dto as any).doorWidth;
-    const leftSideliteWidthRaw = (dto as any).leftSideliteWidth;
-    const rightSideliteWidthRaw = (dto as any).rightSideliteWidth;
-
-    const hasDoorWidth = doorWidthRaw != null && doorWidthRaw !== '';
-    const hasLeftSideliteWidth =
-      leftSideliteWidthRaw != null && leftSideliteWidthRaw !== '';
-    const hasRightSideliteWidth =
-      rightSideliteWidthRaw != null && rightSideliteWidthRaw !== '';
-
-    if (hasDoorWidth) {
-      checks.push({
-        ruleType: DimensionRuleType.DOOR,
-        widthIn: num(doorWidthRaw, 'Door Width'),
-        heightIn,
-        label: 'DOOR',
-      });
-    }
-
-    if (hasLeftSideliteWidth) {
-      checks.push({
-        ruleType: DimensionRuleType.SIDELITE,
-        widthIn: num(leftSideliteWidthRaw, 'Left Sidelite Width'),
-        heightIn,
-        label: 'LEFT SIDELITE',
-      });
-    }
-
-    if (hasRightSideliteWidth) {
-      checks.push({
-        ruleType: DimensionRuleType.SIDELITE,
-        widthIn: num(rightSideliteWidthRaw, 'Right Sidelite Width'),
-        heightIn,
-        label: 'RIGHT SIDELITE',
-      });
-    }
-
-    // comentario en espanol: puertas simples X/XX pueden venir solo con width.
-    // En modos de puerta, si no hay doorWidth ni sidelites, validamos width como DOOR.
-    if (checks.length === 0) {
-      checks.push({
-        ruleType: DimensionRuleType.DOOR,
-        widthIn: num(dto.width, 'Door Width'),
-        heightIn,
-        label: 'DOOR',
-      });
-    }
-
-    return checks;
-  }
-
-  private validateDimensionCheckAgainstRules(
-    policy: any,
-    check: DimensionValidationCheck,
-  ): DimensionValidationResult {
-    const rules = (policy.rules ?? []).filter(
-      (r: any) => r.ruleType === check.ruleType,
-    );
-
-    if (rules.length === 0) {
-      return {
-        ok: false,
-        reason: 'NOT_RATED',
-        note: `No ${check.ruleType} rules found for this policy.`,
-      };
-    }
-
-    const allWidths = rules.map((r: any) => Number(r.widthIn));
-    const allHeights = rules.map((r: any) => Number(r.heightIn));
-    const minW = Math.min(...allWidths);
-    const minH = Math.min(...allHeights);
-
-    if (check.widthIn < minW || check.heightIn < minH) {
-      return {
-        ok: false,
-        reason: 'OVERSIZE',
-        belowMinimum: true,
-        suggestion: {
-          minWidthIn: minW,
-          minHeightIn: minH,
-          maxWidthIn: minW,
-          maxHeightIn: minH,
-        },
-        note: `${check.ruleType} below minimum.`,
-      };
-    }
-
-    const pickExactRule = (w: number, h: number) =>
-      rules.find(
-        (r: any) => Number(r.widthIn) === w && Number(r.heightIn) === h,
-      ) ?? null;
-
-    const uniqueSorted = (arr: number[]) =>
-      [...new Set(arr)].sort((a, b) => a - b);
-
-    const widthValues = uniqueSorted(rules.map((r: any) => Number(r.widthIn)));
-    const heightValues = uniqueSorted(rules.map((r: any) => Number(r.heightIn)));
-
-    const nextOrSame = (values: number[], v: number): number | null => {
-      for (const val of values) {
-        if (val >= v) return val;
-      }
-      return null;
-    };
-
-    const nearest = (values: number[], v: number): number | null => {
-      if (!values.length) return null;
-
-      let best = values[0];
-      let bestDist = Math.abs(values[0] - v);
-
-      for (const val of values) {
-        const d = Math.abs(val - v);
-        if (d < bestDist) {
-          bestDist = d;
-          best = val;
-        }
-      }
-
-      return best;
-    };
-
-    let rule: any | null = pickExactRule(check.widthIn, check.heightIn);
-    let suggestion: { maxWidthIn?: number; maxHeightIn?: number } | undefined;
-
-    if (!rule) {
-      if (policy.roundingRule === 'ROUND_UP_TO_NEXT') {
-        const wNext = nextOrSame(widthValues, check.widthIn);
-        const hNext = nextOrSame(heightValues, check.heightIn);
-
-        if (wNext != null && hNext != null) {
-          rule = pickExactRule(wNext, hNext);
-          if (!rule) {
-            suggestion = { maxWidthIn: wNext, maxHeightIn: hNext };
-          }
-        }
-      } else {
-        const wNear = nearest(widthValues, check.widthIn);
-        const hNear = nearest(heightValues, check.heightIn);
-
-        if (wNear != null && hNear != null) {
-          rule = pickExactRule(wNear, hNear);
-          if (!rule) {
-            suggestion = { maxWidthIn: wNear, maxHeightIn: hNear };
-          }
-        }
-      }
-    }
-
-    if (!rule) {
-      const maxW = widthValues[widthValues.length - 1];
-      const maxH = heightValues[heightValues.length - 1];
-
-      return {
-        ok: false,
-        reason: 'OVERSIZE',
-        suggestion: suggestion ?? {
-          maxWidthIn: maxW,
-          maxHeightIn: maxH,
-        },
-        note: `${check.ruleType} exceeds NOA limits.`,
-      };
-    }
-
-    return {
-      ok: true,
-      dpPos: Number(rule.dpPosPsf),
-      dpNeg: Number(rule.dpNegPsf),
-      usedRange: {
-        w: [Number(rule.widthIn), Number(rule.widthIn)],
-        h: [Number(rule.heightIn), Number(rule.heightIn)],
-      },
-      note: rule.note ?? undefined,
-    };
-  }
-
-  // --- internalCalculatePieceMetrics ---
-  private async internalCalculatePieceMetrics(
-    pieceDto: CreatePieceDto | UpsertPieceDto,
-    effectiveMarkup: Decimal,
-    tx: PrismaTransactionClient,
-    cache: CalculationCache,
-  ): Promise<CalculatedPieceCombined> {
-    // usamos cache para evitar queries repetidas
-    let config = cache.config.get(pieceDto.idConf);
-
-    if (!config) {
-      const dbConfig = await tx.config.findUnique({
-        where: { id: pieceDto.idConf },
-        select: {
-          conf: true,
-          requiresWidth: true,
-          requiresHeight: true,
-          requiresHeightLeft: true,
-          requiresHeightRight: true,
-          requiresLegHeight: true,
-          muntinLayout: true,
-        },
-      });
-
-      if (dbConfig) {
-        cache.config.set(pieceDto.idConf, dbConfig);
-        config = dbConfig;
-      }
-    }
-
-    if (!config) {
-      throw new NotFoundException(`Config ID #${pieceDto.idConf} not found.`);
-    }
-
-    // validamos que la config realmente pertenezca al system
-    // y leemos allowScreen desde SysConf
-
-    const sysConfKey = `${pieceDto.idSyst}-${pieceDto.idConf}`;
-
-    let sysConf = cache.sysConf.get(sysConfKey);
-
-    if (!sysConf) {
-      const dbSysConf = await tx.sysConf.findUnique({
-        where: {
-          idSystem_idConfig: {
-            idSystem: pieceDto.idSyst,
-            idConfig: pieceDto.idConf,
-          },
-        },
-        select: {
-          allowScreen: true,
-          dimensionMode: true,
-
-          requiresWidth: true,
-          requiresHeight: true,
-          requiresHeightLeft: true,
-          requiresHeightRight: true,
-          requiresLegHeight: true,
-          requiresDoorWidth: true,
-          requiresLeftSideliteWidth: true,
-          requiresRightSideliteWidth: true,
-          requiresLeftPanels: true,
-          requiresRightPanels: true,
-          requiresPanelCount: true,
-          requiresHorizontalHeights: true,
-
-          activeOptions: { select: { optionId: true } },
-          preparationOptions: { select: { optionId: true } },
-          sillOptions: { select: { optionId: true } },
-          reinforcementOptions: { select: { optionId: true } },
-        },
-      });
-
-      if (dbSysConf) {
-        cache.sysConf.set(sysConfKey, dbSysConf);
-        sysConf = dbSysConf;
-      }
-    }
-
-    if (!sysConf) {
-      throw new BadRequestException(
-        'The selected configuration does not belong to the selected system.',
-      );
-    }
-
-    if (!pieceDto.idFC) {
-      throw new BadRequestException('Frame color is required');
-    }
-
-    const sfcKey = `${pieceDto.idSyst}-${pieceDto.idFC}`;
-
-    let systemFrameColor = cache.systemFrameColor.get(sfcKey);
-
-    if (!systemFrameColor) {
-      const dbSystemFrameColor = await tx.systemFrameColor.findUnique({
-        where: {
-          idSystem_idFrameColor: {
-            idSystem: pieceDto.idSyst,
-            idFrameColor: pieceDto.idFC,
-          },
-        },
-        select: {
-          idSystem: true,
-          idFrameColor: true,
-        },
-      });
-
-      if (dbSystemFrameColor) {
-        cache.systemFrameColor.set(sfcKey, dbSystemFrameColor);
-        systemFrameColor = dbSystemFrameColor;
-      }
-    }
-
-    if (!systemFrameColor) {
-      throw new BadRequestException(
-        'The selected frame color is not available for the selected system.',
-      );
-    }
-
-    // screen solo se permite si SysConf.allowScreen = true
-    if (pieceDto.screen && !sysConf.allowScreen) {
-      throw new BadRequestException(
-        'Screen is not allowed for the selected configuration.',
-      );
-    }
-
-    const allowedActiveOptionIds = new Set<number>(
-      sysConf.activeOptions.map((x) => x.optionId),
-    );
-
-    const allowedPreparationOptionIds = new Set<number>(
-      sysConf.preparationOptions.map((x) => x.optionId),
-    );
-
-    const allowedSillOptionIds = new Set<number>(
-      sysConf.sillOptions.map((x) => x.optionId),
-    );
-
-    const allowedReinforcementOptionIds = new Set<number>(
-      sysConf.reinforcementOptions.map((x) => x.optionId),
-    );
-
-    const validateSingleSysConfOption = (
-      label: string,
-      selectedId: number | undefined | null,
-      allowedIds: Set<number>,
-    ) => {
-      // si este SysConf no tiene opciones para ese campo, no permitimos que manden un valor      
-      if (allowedIds.size === 0) {
-        if (selectedId != null) {
-          throw new BadRequestException(
-            `${label} is not allowed for the selected configuration.`,
-          );
-        }
-        return;
-      }
-
-      // si el SysConf si tiene opciones configuradas, exigimos que el usuario seleccione una valida      
-      if (selectedId == null) {
-        throw new BadRequestException(
-          `${label} is required for the selected configuration.`,
-        );
-      }
-
-      if (!allowedIds.has(selectedId)) {
-        throw new BadRequestException(
-          `${label} is invalid for the selected configuration.`,
-        );
-      }
-    };
-
-    validateSingleSysConfOption(
-      'Active option',
-      pieceDto.idActiveOption,
-      allowedActiveOptionIds,
-    );
-
-    validateSingleSysConfOption(
-      'Preparation option',
-      pieceDto.idPreparationOption,
-      allowedPreparationOptionIds,
-    );
-
-    validateSingleSysConfOption(
-      'Sill option',
-      pieceDto.idSillOption,
-      allowedSillOptionIds,
-    );
-
-    validateSingleSysConfOption(
-      'Reinforcement option',
-      pieceDto.idReinforcementOption,
-      allowedReinforcementOptionIds,
-    );
-
-    const normalizedMuntin = await this.normalizePieceMuntinFromCatalog(
-      pieceDto.muntin,
-      config.muntinLayout,
-      tx,
-    );
-
-    const need = (v?: number | boolean | null) => v === 1 || v === true;
-    const missing: string[] = [];
-
-    const dimensionMode: DimensionMode =
-      sysConf.dimensionMode ?? DimensionMode.STANDARD;
-
-    const isBlank = (value: unknown) => value == null || value === '';
-
-    const requireField = (
-      enabled: boolean,
-      fieldName: string,
-      value: unknown,
-    ) => {
-      if (enabled && isBlank(value)) {
-        missing.push(fieldName);
-      }
-    };
-
-    if (dimensionMode === DimensionMode.STANDARD) {
-      // comentario en espanol: comportamiento viejo intacto para configs normales
-      if (need(config.requiresWidth) && isBlank(pieceDto.width)) {
-        missing.push('width');
-      }
-
-      if (need(config.requiresHeight) && isBlank(pieceDto.height)) {
-        missing.push('height');
-      }
-
-      if (need(config.requiresHeightLeft) && isBlank(pieceDto.heightLeft)) {
-        missing.push('heightLeft');
-      }
-
-      if (need(config.requiresHeightRight) && isBlank(pieceDto.heightRight)) {
-        missing.push('heightRight');
-      }
-
-      if (need(config.requiresLegHeight) && isBlank(pieceDto.legHeight)) {
-        missing.push('legHeight');
-      }
-    } else {
-      // comentario en espanol: modos nuevos usan SysConf, no nombres como X/OX/XO
-      requireField(sysConf.requiresWidth, 'width', pieceDto.width);
-      requireField(sysConf.requiresHeight, 'height', pieceDto.height);
-      requireField(sysConf.requiresHeightLeft, 'heightLeft', pieceDto.heightLeft);
-      requireField(sysConf.requiresHeightRight, 'heightRight', pieceDto.heightRight);
-      requireField(sysConf.requiresLegHeight, 'legHeight', pieceDto.legHeight);
-
-      requireField(
-        sysConf.requiresDoorWidth,
-        'doorWidth',
-        (pieceDto as any).doorWidth,
-      );
-
-      requireField(
-        sysConf.requiresLeftSideliteWidth,
-        'leftSideliteWidth',
-        (pieceDto as any).leftSideliteWidth,
-      );
-
-      requireField(
-        sysConf.requiresRightSideliteWidth,
-        'rightSideliteWidth',
-        (pieceDto as any).rightSideliteWidth,
-      );
-
-      requireField(
-        sysConf.requiresLeftPanels,
-        'leftPanels',
-        (pieceDto as any).leftPanels,
-      );
-
-      requireField(
-        sysConf.requiresRightPanels,
-        'rightPanels',
-        (pieceDto as any).rightPanels,
-      );
-
-      requireField(
-        sysConf.requiresPanelCount,
-        'panelCount',
-        (pieceDto as any).panelCount,
-      );
-
-      if (
-        sysConf.requiresHorizontalHeights &&
-        (!Array.isArray((pieceDto as any).horizontalHeights) ||
-          (pieceDto as any).horizontalHeights.length === 0)
-      ) {
-        missing.push('horizontalHeights');
-      }
-    }
-
-    if (missing.length) {
-      throw new BadRequestException(
-        `Missing required dimensions: ${missing.join(', ')}`,
-      );
-    }
-
-    const governingDims = await this.computeGoverningDimsFromConfig(pieceDto, tx);
-
-    const dimsFt =
-      dimensionMode === DimensionMode.STANDARD
-        ? dimsInchesToFeet({
-          width: pieceDto.width,
-          height: pieceDto.height,
-          heightLeft: pieceDto.heightLeft,
-          heightRight: pieceDto.heightRight,
-          legHeight: pieceDto.legHeight,
-        })
-        : dimsInchesToFeet({
-          width: String(governingDims.widthIn),
-          height: String(governingDims.heightIn),
-        });
-
-    const dpCheck = await this.validateAgainstDimensionPolicy(pieceDto, tx);
-    if (!dpCheck.ok) {
-      if (dpCheck.reason === 'NOT_RATED') {
-        throw new BadRequestException(
-          'No dimension policy exists for this System + Config + Crystal combination.',
-        );
-      }
-
-      if (dpCheck.reason === 'OVERSIZE') {
-        const minW = dpCheck.suggestion?.minWidthIn;
-        const minH = dpCheck.suggestion?.minHeightIn;
-        const hasMinSuggestion = minW != null || minH != null;
-
-        if (hasMinSuggestion) {
-          const sug = ` Minimum allowed size: W=${minW ?? '-'}″, H=${minH ?? '-'}″.`;
-          throw new BadRequestException(`Please review the dimensions.${sug}`);
-        }
-
-        const maxW = dpCheck.suggestion?.maxWidthIn;
-        const maxH = dpCheck.suggestion?.maxHeightIn;
-        const hasMaxSuggestion = maxW != null || maxH != null;
-
-        const sug = hasMaxSuggestion
-          ? ` Maximum allowed size: W=${maxW ?? '-'}″, H=${maxH ?? '-'}″.`
-          : '';
-
-        throw new BadRequestException(
-          `The piece exceeds the NOA limits for this combination.${sug}`,
-        );
-      }
-    }
-
-    const dpPosPsf = new Decimal(dpCheck.dpPos ?? 0).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-    const dpNegPsf = new Decimal(dpCheck.dpNeg ?? 0).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-
-    const { areaFt2, perimeterFt } = areaPerimeterFor(config.conf, dimsFt);
-
-    const pricingKey = `${pieceDto.idBrand}-${pieceDto.idProd}-${pieceDto.idSyst}-${pieceDto.idConf}-${pieceDto.idCryst}`;
-
-    let rule = cache.pricing.get(pricingKey);
-
-    if (!rule) {
-      const dbRule = await tx.pricingRule.findUnique({
-        where: {
-          idBrand_idProduct_idSystem_idConfig_idCrystal: {
-            idBrand: pieceDto.idBrand,
-            idProduct: pieceDto.idProd,
-            idSystem: pieceDto.idSyst,
-            idConfig: pieceDto.idConf,
-            idCrystal: pieceDto.idCryst,
-          },
-        },
-      });
-
-      if (dbRule) {
-        cache.pricing.set(pricingKey, dbRule);
-        rule = dbRule;
-      }
-    }
-
-    if (!rule) {
-      throw new NotFoundException(
-        `No pricing rule for piece: ${pieceDto.mark}.`,
-      );
-    }
-
-    const A = new Decimal(rule.costoA.toString());
-    const B = new Decimal(rule.costoB.toString());
-    const C = new Decimal(rule.costoC.toString());
-    const areaFt2Dec = new Decimal(areaFt2);
-    const perimeterFtDec = new Decimal(perimeterFt);
-
-    const rate = computeBasePrice(areaFt2Dec, perimeterFtDec, A, B, C);
-
-    const markupAmount = rate.mul(effectiveMarkup);
-    const price = rate.add(markupAmount);
-    const netProfit = price.sub(rate);
-
-    const dealerMarkupFromDto = new Decimal((pieceDto as any).dealerMarkup || 0);
-    const dealerMarkupDecimal = dealerMarkupFromDto.div(100);
-
-    const qtyDec = new Decimal(pieceDto.qty || 1);
-
-    const rateR = rate.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-    const priceR = price.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-    const netProfitR = netProfit.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-    const markupR = effectiveMarkup.toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
-    const dealerMarkupDecimalR = dealerMarkupDecimal.toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
-
-    const subtotalR = priceR.mul(qtyDec).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-
-    const netProfitDR = subtotalR.mul(dealerMarkupDecimalR).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-
-    const customerSubtotalR = subtotalR.add(netProfitDR).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-
-    const customerPriceR = qtyDec.gt(0)
-      ? customerSubtotalR.div(qtyDec).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
-      : new Decimal(0);
-
-    const result: CalculatedPieceCombined = {
-      ...(pieceDto as any),
-      muntin: normalizedMuntin,
-
-      rate: rateR,
-      price: priceR,
-      netProfit: netProfitR,
-      markup: markupR,
-      dealerMarkupDecimal: dealerMarkupDecimalR,
-      netProfitD: netProfitDR,
-      subtotal: subtotalR,
-      customerPrice: customerPriceR,
-      customerSubtotal: customerSubtotalR,
-      dpPosPsf,
-      dpNegPsf,
-    };
-
-    return result;
-  }
-
-  private internalCalculateEstimateTotals(
-    pieces: CalculatedPieceCombined[],
-    factoryTaxRate: Decimal,
-    customerTaxRate: Decimal,
-  ): {
-    rateT: Prisma.Decimal;
-    priceT: Prisma.Decimal;
-    netProfit: Prisma.Decimal;
-    taxRate: Prisma.Decimal;
-    taxAmount: Prisma.Decimal;
-    totalPayable: Prisma.Decimal;
-    customerPriceT: Prisma.Decimal;
-    customerTaxRate: Prisma.Decimal;
-    customerTaxAmount: Prisma.Decimal;
-    customerTotalPayable: Prisma.Decimal;
-    netProfitD: Prisma.Decimal;
-  } {
-    const zero = new Decimal(0);
-
-    const totals = pieces.reduce(
-      (acc, piece) => {
-        const qty = new Decimal(piece.qty || 0);
-
-        acc.rateT = acc.rateT.add(piece.rate.mul(qty));
-        acc.priceT = acc.priceT.add(piece.price.mul(qty));
-
-        acc.customerPriceT = acc.customerPriceT.add(piece.customerPrice.mul(qty));
-
-        const dealerProfitPiece = piece.price.mul(piece.dealerMarkupDecimal);
-        acc.netProfitD = acc.netProfitD.add(dealerProfitPiece.mul(qty));
-
-        return acc;
-      },
-      {
-        rateT: zero,
-        priceT: zero,
-        customerPriceT: zero,
-        netProfitD: zero,
-      } as {
-        rateT: Decimal;
-        priceT: Decimal;
-        customerPriceT: Decimal;
-        netProfitD: Decimal;
-      },
-    );
-
-    const yourNetProfit = totals.priceT.sub(totals.rateT);
-
-    const taxAmount = totals.priceT.mul(factoryTaxRate);
-    const totalPayable = totals.priceT.add(taxAmount);
-
-    const customerTaxAmount = totals.customerPriceT.mul(customerTaxRate);
-    const customerTotalPayable = totals.customerPriceT.add(customerTaxAmount);
-
-    return {
-      rateT: new Prisma.Decimal(totals.rateT.toFixed(2)),
-      priceT: new Prisma.Decimal(totals.priceT.toFixed(2)),
-      netProfit: new Prisma.Decimal(yourNetProfit.toFixed(2)),
-
-      taxRate: new Prisma.Decimal(factoryTaxRate.toFixed(4)),
-      taxAmount: new Prisma.Decimal(taxAmount.toFixed(2)),
-      totalPayable: new Prisma.Decimal(totalPayable.toFixed(2)),
-
-      customerPriceT: new Prisma.Decimal(totals.customerPriceT.toFixed(2)),
-      customerTaxRate: new Prisma.Decimal(customerTaxRate.toFixed(4)),
-      customerTaxAmount: new Prisma.Decimal(customerTaxAmount.toFixed(2)),
-      customerTotalPayable: new Prisma.Decimal(customerTotalPayable.toFixed(2)),
-
-      netProfitD: new Prisma.Decimal(totals.netProfitD.toFixed(2)),
-    };
   }
 
   async previewDimensionValidation(input: {
@@ -2772,7 +1413,11 @@ export class EstimatesService {
           : undefined,
       };
 
-      const res = await this.validateAgainstDimensionPolicy(dto, tx);
+      const res =
+        await this.dimensionValidationService.validateAgainstDimensionPolicy(
+          dto,
+          tx as any,
+        );
       if (!res.ok) return res;
       return {
         ok: true,
@@ -2785,615 +1430,20 @@ export class EstimatesService {
   }
 
   // =====================================================
-  // ✅ PDF on-the-fly (Buffer) con 4 vistas
+  // PDF on-the-fly (Buffer) con 4 vistas
   // =====================================================
   async generateEstimatePdfBufferForUser(
     estimateId: number,
     user: AuthUser,
     view: PdfView,
   ): Promise<Buffer> {
-    // comentario en espanol: respetamos la misma regla de acceso que findOneForUser
     const estimate = await this.findOneForUser(estimateId, user);
 
-    const viewerRole =
-      (user as any)?.role?.name ??
-      (user as any)?.roleName ??
-      (estimate as any)?.user?.role?.name ??
-      null;
-
-    // comentario en espanol: valida que esa vista sea permitida para el rol
-    this.assertPdfViewAllowed(view, viewerRole);
-
-    const html = this.buildEstimatePdfHtml(estimate, view);
-
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    return this.estimatePdfService.generateEstimatePdfBuffer({
+      estimate,
+      user,
+      view,
     });
-
-    try {
-      const page = await browser.newPage();
-
-      // comentario en espanol: si el logoUrl es externo, esto ayuda a que cargue completo
-      await page.setContent(html, { waitUntil: 'networkidle0' });
-
-      const pdf = await page.pdf({
-        format: 'Letter',
-        printBackground: true,
-        displayHeaderFooter: false,
-        preferCSSPageSize: true,
-        // ✅ ahora SI se nota el margen, porque no lo anulamos en CSS
-        margin: {
-          top: '24mm',
-          right: '16mm',
-          bottom: '12mm',
-          left: '16mm',
-        },
-      });
-
-      return Buffer.from(pdf);
-    } finally {
-      await browser.close();
-    }
   }
 
-  // =====================================================
-  // ✅ HTML del PDF basado en tus 4 vistas reales
-  // =====================================================
-  private buildEstimatePdfHtml(
-    estimate: EstimateWithRelations,
-    view: PdfView,
-  ): string {
-    const b = (estimate as any).branding as Branding | null;
-
-    const brandingName = b?.name ?? 'Impact Plus';
-    const addressLine =
-      b?.street || b?.city || b?.state || b?.postalCode
-        ? [b?.street, b?.city, b?.state, b?.postalCode].filter(Boolean).join(', ')
-        : '';
-
-    const esc = (v: any) =>
-      String(v ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;');
-
-    const money = (n: any) => {
-      const v = Number(n) || 0;
-      return v.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-    };
-
-    const dateLabel = (() => {
-      try {
-        const d = new Date((estimate as any).date);
-        return d.toLocaleDateString('en-US', {
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-        });
-      } catch {
-        return '';
-      }
-    })();
-
-    const expiresAtLabel = (() => {
-      try {
-        const d = new Date((estimate as any).expiresAt);
-        return d.toLocaleDateString('en-US', {
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-        });
-      } catch {
-        return '';
-      }
-    })();
-
-    const logo = b?.logoUrl
-      ? `<div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
-           <img src="${esc(b.logoUrl)}" style="height:48px; object-fit:contain;" />
-         </div>`
-      : '';
-
-    // =====================================================
-    // ✅ lógica igual a tu frontend (admin => base view depende del owner)
-    // =====================================================
-
-    // comentario en espanol: rol del duenio del estimate (quien lo creo)
-    const ownerRole = String((estimate as any)?.user?.role?.name ?? '')
-      .trim()
-      .toLowerCase();
-
-    // comentario en espanol: si admin imprime, el "base view" depende del owner
-    const effectiveView: PdfView =
-      view === 'admin' ? (ownerRole === 'dealer' ? 'dealer_internal' : 'client') : view;
-
-    const isPublic = effectiveView === 'dealer_public';
-
-    // DealerSummary solo cuando base view es dealer_internal
-    const showDealerSummary = effectiveView === 'dealer_internal';
-
-    // AdminSummary solo cuando la vista solicitada es admin
-    const showAdminSummary = view === 'admin';
-
-    // =====================================================
-    // ✅ Helpers de descripcion (igual a PieceDescriptionCell)
-    // =====================================================
-
-    // comentario en espanol: formatea pulgadas en pasos de 1/8 como "60 3/8"
-    const formatInchesFromEighthStep = (raw: any) => {
-      const n = Number(raw);
-      if (!Number.isFinite(n)) return '?';
-
-      const sign = n < 0 ? '-' : '';
-      const abs = Math.abs(n);
-
-      const whole = Math.floor(abs);
-      const frac = abs - whole;
-
-      // redondeo a octavos
-      let eighths = Math.round(frac * 8);
-
-      // carry si se fue a 8/8
-      let w = whole;
-      if (eighths >= 8) {
-        w += 1;
-        eighths = 0;
-      }
-
-      if (eighths === 0) return `${sign}${w}`;
-
-      const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
-      const g = gcd(eighths, 8);
-      const num = eighths / g;
-      const den = 8 / g;
-
-      return w > 0 ? `${sign}${w} ${num}/${den}` : `${sign}${num}/${den}`;
-    };
-
-    // comentario en espanol: formatea PSF como "+70.0 -80.0"
-    const formatPsf = (raw: any) => {
-      const n = Number(raw);
-      if (!Number.isFinite(n)) return '';
-      const s = n >= 0 ? '+' : '';
-      return `${s}${n.toFixed(1)}`;
-    };
-
-    // comentario en espanol: construye lineas tipo frontend (PieceDescriptionCell)
-    const buildPieceDescriptionLines = (p: any): string[] => {
-      const header = [p.prod?.name, p.bran?.name, p.syst?.name, p.conf?.conf]
-        .filter(Boolean)
-        .join(' ');
-
-      const w = p.width != null ? formatInchesFromEighthStep(p.width) : '?';
-      const h = p.height != null ? formatInchesFromEighthStep(p.height) : '?';
-
-      const sizeParts: string[] = [`${w} x ${h}`];
-
-      if (p.heightLeft != null) sizeParts.push(`HL ${formatInchesFromEighthStep(p.heightLeft)}`);
-      if (p.heightRight != null) sizeParts.push(`HR ${formatInchesFromEighthStep(p.heightRight)}`);
-      if (p.legHeight != null) sizeParts.push(`Leg ${formatInchesFromEighthStep(p.legHeight)}`);
-      if (p.doorWidth != null) {
-        sizeParts.push(`Door ${formatInchesFromEighthStep(p.doorWidth)}`);
-      }
-
-      if (p.leftSideliteWidth != null) {
-        sizeParts.push(`Left SL ${formatInchesFromEighthStep(p.leftSideliteWidth)}`);
-      }
-
-      if (p.rightSideliteWidth != null) {
-        sizeParts.push(`Right SL ${formatInchesFromEighthStep(p.rightSideliteWidth)}`);
-      }
-
-      if (p.leftPanels != null) {
-        sizeParts.push(`Left Panels ${p.leftPanels}`);
-      }
-
-      if (p.rightPanels != null) {
-        sizeParts.push(`Right Panels ${p.rightPanels}`);
-      }
-
-      if (p.panelCount != null) {
-        sizeParts.push(`Panels ${p.panelCount}`);
-      }
-
-      if (Array.isArray(p.horizontalHeights) && p.horizontalHeights.length > 0) {
-        sizeParts.push(
-          `Horizontals ${p.horizontalHeights
-            .map((h: any) => formatInchesFromEighthStep(h))
-            .join(', ')}`,
-        );
-      }
-
-      const sizeLine = `Size: ${sizeParts.join(' / ')}`;
-
-      const glassTokens: string[] = [];
-      if (p.cryst?.glass) glassTokens.push(p.cryst.glass);
-      if (p.tin?.color) glassTokens.push(p.tin.color);
-      if (p.coat?.name) glassTokens.push(p.coat.name);
-
-      const glassLine = glassTokens.length ? `Glass: ${glassTokens.join(' + ')}` : '';
-
-      const optionsLine = [
-        `Screen: ${p.screen ? 'Yes' : 'No'}`,
-        `Muntin: ${p.pieceMuntin ? 'Yes' : 'No'}`,
-        `Privacy: ${p.privacy ? 'Yes' : 'No'}`,
-      ].join(' | ');
-
-      const pos = p.dpPosPsf;
-      const neg = p.dpNegPsf;
-      const psfLine = pos != null && neg != null ? `PSF: ${formatPsf(pos)} ${formatPsf(neg)}` : '';
-
-      return [header, sizeLine, glassLine, optionsLine, psfLine].filter(
-        (l) => l && l.trim() !== '',
-      );
-    };
-
-    // =====================================================
-    // ✅ tabla de piezas segun vista (dealer_public usa customerPrice)
-    // =====================================================
-
-    const getUnitPrice = (p: any) => {
-      if (effectiveView === 'dealer_public') return Number(p.customerPrice ?? p.price) || 0;
-      return Number(p.price) || 0;
-    };
-
-    const getSubtotal = (p: any) => {
-      if (effectiveView === 'dealer_public') {
-        const unit = getUnitPrice(p);
-        const qty = Number(p.qty) || 0;
-        return unit * qty;
-      }
-      // comentario en espanol: en vistas internas ya viene subtotal calculado por backend
-      return Number(p.subtotal ?? 0) || 0;
-    };
-
-    const rows = (estimate.pieces ?? [])
-      .map((p: any) => {
-        const lines = buildPieceDescriptionLines(p);
-
-        const unitPrice = getUnitPrice(p);
-        const qty = Number(p.qty) || 0;
-        const subtotal = getSubtotal(p);
-
-        const descHtml = lines
-          .map((line, idx) =>
-            idx === 0 ? `<div class="h">${esc(line)}</div>` : `<div class="s">${esc(line)}</div>`,
-          )
-          .join('');
-
-        return `
-          <tr>
-            <td class="td mark">${esc(p.mark)}</td>
-            <td class="td desc">
-              ${descHtml}
-            </td>
-            <td class="td center">${esc(qty)}</td>
-            <td class="td right">${money(unitPrice)}</td>
-            <td class="td right strong">${money(subtotal)}</td>
-          </tr>
-        `;
-      })
-      .join('');
-
-    // =====================================================
-    // ✅ totales segun vista (igual que TotalsPublic / TotalsInternal)
-    // =====================================================
-
-    const subtotalInternal = Number((estimate as any).priceT ?? 0) || 0;
-    const taxRate = Number((estimate as any).taxRate ?? 0) || 0;
-    const taxAmount = Number((estimate as any).taxAmount ?? 0) || 0;
-    const totalPayable = Number((estimate as any).totalPayable ?? 0) || 0;
-
-    const customerSubtotal = Number((estimate as any).customerPriceT ?? 0) || 0;
-    const customerTaxRate = Number((estimate as any).customerTaxRate ?? 0) || 0;
-    const customerTaxAmount = Number((estimate as any).customerTaxAmount ?? 0) || 0;
-    const customerTotal = Number((estimate as any).customerTotalPayable ?? 0) || 0;
-
-    // Dealer summary (como tu DealerSummary)
-    const dealerTotalDueToImpact = totalPayable;
-    const dealerFinalPriceCustomer = customerSubtotal;
-    const dealerProfit = Number((estimate as any).netProfitD ?? 0) || 0;
-
-    // Admin summary (como tu AdminSummary)
-    const adminRateT = Number((estimate as any).rateT ?? 0) || 0;
-    const adminPriceT = subtotalInternal;
-    const adminProfit = Number((estimate as any).netProfit ?? 0) || 0;
-
-    return `
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Estimate ${esc((estimate as any).number)}</title>
-  <style>
-    * { box-sizing: border-box; }
-
-    html, body {
-      margin: 0;
-      padding: 0;
-      background: #fff;
-      font-family: Arial, Helvetica, sans-serif;
-      color: #111;
-    }
-
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      padding-bottom: 10px;
-      border-bottom: 1px solid #e5e7eb;
-    }
-
-    .title { font-size: 26px; font-weight: 700; margin: 0; }
-    .muted { color: #6b7280; font-size: 12px; margin-top: 6px; }
-
-    .brand { text-align: right; font-size: 12px; color: #6b7280; }
-    .brand .name { font-size: 18px; font-weight: 700; color: #374151; margin-top: 6px; }
-
-    .grid {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      margin-top: 12px;
-    }
-
-    .label {
-      font-size: 11px;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      color: #6b7280;
-      font-weight: 700;
-      margin-bottom: 6px;
-    }
-
-    .value { font-size: 16px; font-weight: 700; color: #111827; }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 10px;
-    }
-
-    thead th {
-      background: #f9fafb;
-      font-size: 11px;
-      text-transform: uppercase;
-      color: #374151;
-      padding: 9px 10px;
-      text-align: left;
-      border-bottom: 1px solid #e5e7eb;
-    }
-
-    .td {
-      padding: 10px;
-      border-bottom: 1px solid #e5e7eb;
-      vertical-align: top;
-      font-size: 12px;
-    }
-
-    .center { text-align: center; }
-    .right { text-align: right; }
-    .strong { font-weight: 700; }
-
-    .h { font-weight: 700; color: #111827; font-size: 12px; }
-    .s { color: #6b7280; font-size: 11px; margin-top: 4px; line-height: 1.35; }
-
-    .totals { display: flex; justify-content: flex-end; margin-top: 10px; }
-    .totbox { min-width: 300px; }
-
-    .sectionTitle {
-      font-size: 12px;
-      font-weight: 700;
-      color: #374151;
-      margin: 0 0 6px 0;
-    }
-
-    .line {
-      display: flex;
-      justify-content: space-between;
-      padding: 6px 0;
-      font-size: 12px;
-      color: #374151;
-    }
-
-    .line.total {
-      border-top: 2px solid #e5e7eb;
-      padding-top: 8px;
-      font-size: 14px;
-      font-weight: 800;
-      color: #111827;
-    }
-
-    .summary {
-      margin-top: 14px;
-      padding: 12px;
-      border-radius: 10px;
-      border: 1px solid #e5e7eb;
-      background: #f9fafb;
-      font-size: 12px;
-      color: #374151;
-    }
-
-    .summary h3 {
-      margin: 0 0 10px 0;
-      font-size: 14px;
-      font-weight: 800;
-      color: #111827;
-    }
-
-    .summary .row {
-      display: flex;
-      justify-content: space-between;
-      padding: 6px 0;
-      border-top: 1px solid #e5e7eb;
-    }
-
-    .summary .row:first-of-type { border-top: none; padding-top: 0; }
-
-    .summary .profit {
-      font-weight: 900;
-      color: #065f46;
-    }
-
-    .summary .adminprofit {
-      font-weight: 900;
-      color: #991b1b;
-    }
-
-    .footer {
-      margin-top: 14px;
-      padding-top: 10px;
-      border-top: 1px solid #e5e7eb;
-      text-align: center;
-      font-size: 10px;
-      color: #6b7280;
-    }
-  </style>
-</head>
-<body>
-  <div>
-    <div class="header">
-      <div>
-        <h1 class="title">Estimate</h1>
-        <div class="muted">Number: ${esc((estimate as any).number)}</div>
-      </div>
-
-      <div class="brand">
-        ${logo}
-        <div class="name">${esc(brandingName)}</div>
-        ${addressLine ? `<div>${esc(addressLine)}</div>` : ``}
-        ${b?.email ? `<div>${esc(b.email)}</div>` : ``}
-        ${b?.phone ? `<div>${esc(b.phone)}</div>` : ``}
-        ${b?.website ? `<div>${esc(b.website)}</div>` : ``}
-      </div>
-    </div>
-
-    <div class="grid">
-      <div>
-        <div class="label">Prepared For</div>
-        <div class="value">${esc((estimate as any).name)}</div>
-      </div>
-      <div style="text-align:right;">
-        <div class="muted">Date: ${esc(dateLabel)}</div>
-      </div>
-    </div>
-
-    <div style="margin-top:16px; font-weight:700; color:#111827;">Pieces Detail</div>
-
-    <table>
-      <thead>
-        <tr>
-          <th style="width:80px;">Mark</th>
-          <th>Description</th>
-          <th style="width:70px; text-align:center;">Qty</th>
-          <th style="width:120px; text-align:right;">Unit Price</th>
-          <th style="width:120px; text-align:right;">Subtotal</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows}
-      </tbody>
-    </table>
-
-    <div class="totals">
-      <div class="totbox">
-        ${isPublic
-        ? `
-              <div class="line">
-                <span>Subtotal:</span>
-                <span>${money(customerSubtotal)}</span>
-              </div>
-              <div class="line">
-                <span>Sales Tax (${(customerTaxRate * 100).toFixed(2)}%):</span>
-                <span>${money(customerTaxAmount)}</span>
-              </div>
-              <div class="line total">
-                <span>Total:</span>
-                <span>${money(customerTotal)}</span>
-              </div>
-            `
-        : effectiveView === 'dealer_internal'
-          ? `
-                <div class="sectionTitle">Customer View Total</div>
-                <div class="line">
-                  <span>Subtotal:</span>
-                  <span>${money(customerSubtotal)}</span>
-                </div>
-                <div class="line">
-                  <span>Sales Tax (${(customerTaxRate * 100).toFixed(2)}%):</span>
-                  <span>${money(customerTaxAmount)}</span>
-                </div>
-                <div class="line total">
-                  <span>Total:</span>
-                  <span>${money(customerTotal)}</span>
-                </div>
-
-                <div style="height:14px;"></div>
-
-                <div class="sectionTitle">Internal Totals</div>
-                <div class="line">
-                  <span>Subtotal:</span>
-                  <span>${money(subtotalInternal)}</span>
-                </div>
-                <div class="line">
-                  <span>Sales Tax (${(taxRate * 100).toFixed(2)}%):</span>
-                  <span>${money(taxAmount)}</span>
-                </div>
-                <div class="line total">
-                  <span>Total:</span>
-                  <span>${money(totalPayable)}</span>
-                </div>
-              `
-          : `
-                <div class="line">
-                  <span>Subtotal:</span>
-                  <span>${money(subtotalInternal)}</span>
-                </div>
-                <div class="line">
-                  <span>Sales Tax (${(taxRate * 100).toFixed(2)}%):</span>
-                  <span>${money(taxAmount)}</span>
-                </div>
-                <div class="line total">
-                  <span>Total:</span>
-                  <span>${money(totalPayable)}</span>
-                </div>
-              `
-      }
-      </div>
-    </div>
-
-    ${showDealerSummary
-        ? `
-          <div class="summary" style="background:#ecfdf5; border-color:#bbf7d0;">
-            <h3 style="color:#065f46;">Dealer Summary</h3>
-            <div class="row"><span>Total Due to Impact Plus:</span><span>${money(dealerTotalDueToImpact)}</span></div>
-            <div class="row"><span>Final Price for Your Customer:</span><span>${money(dealerFinalPriceCustomer)}</span></div>
-            <div class="row"><span>Your Profit (Net Profit):</span><span class="profit">${money(dealerProfit)}</span></div>
-          </div>
-        `
-        : ''
-      }
-
-    ${showAdminSummary
-        ? `
-          <div class="summary" style="background:#fef2f2; border-color:#fecaca;">
-            <h3 style="color:#991b1b;">Admin Summary</h3>
-            <div class="row"><span>Total Production Cost (Rate):</span><span>${money(adminRateT)}</span></div>
-            <div class="row"><span>Sale Price (Before Taxes):</span><span>${money(adminPriceT)}</span></div>
-            <div class="row"><span>Impact Plus Profit (Net Profit):</span><span class="adminprofit">${money(adminProfit)}</span></div>
-          </div>
-        `
-        : ''
-      }
-
-    <div class="footer">
-      This estimate is valid until ${esc(expiresAtLabel)}. Thank you for your business.
-    </div>
-  </div>
-</body>
-</html>
-    `;
-  }
 }
