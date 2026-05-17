@@ -1,5 +1,14 @@
 import { Type } from 'class-transformer';
-import { IsNumber, IsInt, IsOptional, IsString, ValidateNested, IsArray } from 'class-validator';
+import {
+  IsNumber,
+  IsInt,
+  IsOptional,
+  IsString,
+  ValidateNested,
+  IsArray,
+  IsEnum,
+} from 'class-validator';
+import { DimensionRuleType } from '@prisma/client';
 
 export class RuleRowDto {
   @IsNumber()
@@ -7,6 +16,10 @@ export class RuleRowDto {
 
   @IsNumber()
   heightIn: number;
+
+  @IsOptional()
+  @IsEnum(DimensionRuleType)
+  ruleType?: DimensionRuleType;
 
   @IsNumber()
   dpPosPsf: number;
@@ -23,6 +36,10 @@ export class RuleRowDto {
 }
 
 export class BulkUpsertRulesDto {
+  @IsOptional()
+  @IsEnum(DimensionRuleType)
+  ruleType?: DimensionRuleType;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => RuleRowDto)

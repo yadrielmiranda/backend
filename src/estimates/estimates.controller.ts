@@ -35,23 +35,57 @@ export class EstimatesController {
       idSyst: number;
       idConf: number;
       idCryst: number;
-      width: number;
+
+      width?: number;
       height: number;
       heightLeft?: number;
       heightRight?: number;
       legHeight?: number;
+
+      doorWidth?: number;
+      leftSideliteWidth?: number;
+      rightSideliteWidth?: number;
+      leftPanels?: number;
+      rightPanels?: number;
+      panelCount?: number;
+      horizontalHeights?: number[];
     },
   ) {
     for (const [k, v] of Object.entries({
       idSyst: body.idSyst,
       idConf: body.idConf,
       idCryst: body.idCryst,
-      width: body.width,
       height: body.height,
     })) {
       if (!Number.isFinite(v as number)) {
-        throw new NotFoundException(`Parámetro inválido: ${k}`);
+        throw new BadRequestException(`Invalid parameter: ${k}`);
       }
+    }
+
+    const optionalNumbers = {
+      width: body.width,
+      heightLeft: body.heightLeft,
+      heightRight: body.heightRight,
+      legHeight: body.legHeight,
+      doorWidth: body.doorWidth,
+      leftSideliteWidth: body.leftSideliteWidth,
+      rightSideliteWidth: body.rightSideliteWidth,
+      leftPanels: body.leftPanels,
+      rightPanels: body.rightPanels,
+      panelCount: body.panelCount,
+    };
+
+    for (const [k, v] of Object.entries(optionalNumbers)) {
+      if (v !== undefined && v !== null && !Number.isFinite(v as number)) {
+        throw new BadRequestException(`Invalid parameter: ${k}`);
+      }
+    }
+
+    if (
+      body.horizontalHeights !== undefined &&
+      !Array.isArray(body.horizontalHeights)
+    ) {
+      throw new BadRequestException('Invalid parameter: horizontalHeights');
     }
 
     return this.estimatesService.previewDimensionValidation(body);

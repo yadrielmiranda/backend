@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { Prisma } from '@prisma/client';
+import { DimensionRuleType } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { LogsService } from '@/logs/logs.service';
 
@@ -27,7 +27,7 @@ export class DimensionPoliciesService {
   constructor(
     private prisma: PrismaService,
     private logs: LogsService,
-  ) {}
+  ) { }
 
   // -------------------------------------------------
   // Helpers de mapeo
@@ -204,6 +204,7 @@ export class DimensionPoliciesService {
     return {
       ...this.toPolicyView(p),
       rules: p.rules.map((r) => ({
+        ruleType: r.ruleType ?? DimensionRuleType.MAIN,
         widthIn: Number(r.widthIn),
         heightIn: Number(r.heightIn),
         dpPosPsf: Number(r.dpPosPsf),
@@ -314,8 +315,10 @@ export class DimensionPoliciesService {
     });
     if (!policy) throw new NotFoundException('Policy not found');
 
+    const ruleType = dto.ruleType ?? DimensionRuleType.MAIN;
+
     // Validaciones básicas
-    this.validateRows(dto.rows);
+    this.validateRows(dto.rows, ruleType);
 
     // before (solo count)
     const beforeCount = await this.prisma.dimensionRule.count({
@@ -323,10 +326,16 @@ export class DimensionPoliciesService {
     });
 
     await this.prisma.$transaction([
-      this.prisma.dimensionRule.deleteMany({ where: { idPolicy: policyId } }),
+      this.prisma.dimensionRule.deleteMany({
+        where: {
+          idPolicy: policyId,
+          ruleType,
+        },
+      }),
       this.prisma.dimensionRule.createMany({
         data: dto.rows.map((r) => ({
           idPolicy: policyId,
+          ruleType,
           widthIn: r.widthIn,
           heightIn: r.heightIn,
           dpPosPsf: r.dpPosPsf,
@@ -353,6 +362,7 @@ export class DimensionPoliciesService {
       meta: {
         source: 'DimensionPoliciesService.bulkUpsertRules',
         actorUserId: actor?.id ?? null,
+        ruleType,
         rowsInPayload: dto.rows.length,
       },
     });
@@ -360,7 +370,7 @@ export class DimensionPoliciesService {
     return { ok: true, count: dto.rows.length };
   }
 
-  private validateRows(rows: RuleRowDto[]) {
+  private validateRows(rows: RuleRowDto[], defaultRuleType: DimensionRuleType) {
     if (!rows || rows.length === 0) {
       throw new BadRequestException('No rows provided');
     }
@@ -381,15 +391,17 @@ export class DimensionPoliciesService {
       }
     });
 
-    // 2) Evitar duplicados W+H dentro del mismo CSV
+    // 2) Evitar duplicados por ruleType + W + H dentro del mismo CSV
     const keySet = new Set<string>();
     rows.forEach((r, i) => {
-      const key = `${r.widthIn}x${r.heightIn}`;
+      const key = `${defaultRuleType}:${r.widthIn}x${r.heightIn}`;
+
       if (keySet.has(key)) {
         throw new BadRequestException(
-          `Duplicate size (widthIn/heightIn) in row ${i}: ${key}`,
+          `Duplicate size (ruleType/widthIn/heightIn) in row ${i}: ${key}`,
         );
       }
+
       keySet.add(key);
     });
   }
@@ -403,6 +415,7 @@ export class DimensionPoliciesService {
     idCrystal: number;
     widthIn: number;
     heightIn: number;
+    ruleType?: DimensionRuleType;
   }) {
     const policy = await this.prisma.dimensionPolicy.findFirst({
       where: {
@@ -414,12 +427,15 @@ export class DimensionPoliciesService {
       include: { rules: true },
     });
 
-    if (!policy || !policy.rules || policy.rules.length === 0) {
+    const ruleType = params.ruleType ?? DimensionRuleType.MAIN;
+    const rules = policy?.rules?.filter((r) => r.ruleType === ruleType) ?? [];
+
+    if (!policy || rules.length === 0) {
       return { ok: false, reason: 'NOT_RATED' as const };
     }
 
-    const widths = policy.rules.map((r) => Number(r.widthIn));
-    const heights = policy.rules.map((r) => Number(r.heightIn));
+    const widths = rules.map((r) => Number(r.widthIn));
+    const heights = rules.map((r) => Number(r.heightIn));
     const minW = Math.min(...widths);
     const minH = Math.min(...heights);
 
@@ -437,14 +453,14 @@ export class DimensionPoliciesService {
 
     const { rule, suggestion } = this.pickRuleWithRounding(
       policy.roundingRule as DimensionRounding,
-      policy.rules,
+      rules,
       params.widthIn,
       params.heightIn,
     );
 
     if (!rule) {
-      const widths = policy.rules.map((r) => Number(r.widthIn));
-      const heights = policy.rules.map((r) => Number(r.heightIn));
+      const widths = rules.map((r) => Number(r.widthIn));
+      const heights = rules.map((r) => Number(r.heightIn));
       const maxW = widths.length ? Math.max(...widths) : undefined;
       const maxH = heights.length ? Math.max(...heights) : undefined;
 

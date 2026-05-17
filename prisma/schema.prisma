@@ -222,6 +222,22 @@ model SysConf {
   allowScreen   Boolean       @default(false)
   dimensionMode DimensionMode @default(STANDARD)
 
+  requiresWidth              Boolean @default(false)
+  requiresHeight             Boolean @default(false)
+  requiresHeightLeft         Boolean @default(false)
+  requiresHeightRight        Boolean @default(false)
+  requiresLegHeight          Boolean @default(false)
+
+  requiresDoorWidth          Boolean @default(false)
+  requiresLeftSideliteWidth  Boolean @default(false)
+  requiresRightSideliteWidth Boolean @default(false)
+
+  requiresLeftPanels         Boolean @default(false)
+  requiresRightPanels        Boolean @default(false)
+
+  requiresPanelCount         Boolean @default(false)
+  requiresHorizontalHeights  Boolean @default(false)
+
   defaultActiveOptionId        Int?
   defaultPreparationOptionId   Int?
   defaultSillOptionId          Int?
@@ -788,6 +804,12 @@ enum DimensionMode {
   WINDOW_WALL
 }
 
+enum DimensionRuleType {
+  MAIN
+  DOOR
+  SIDELITE
+}
+
 model DimensionPolicy {
   id Int @id @default(autoincrement())
 
@@ -820,6 +842,8 @@ model DimensionRule {
   id       Int @id @default(autoincrement())
   idPolicy Int
 
+  ruleType DimensionRuleType @default(MAIN)
+
   widthIn  Decimal @db.Decimal(10, 3)
   heightIn Decimal @db.Decimal(10, 3)
   dpPosPsf Decimal @db.Decimal(10, 2)
@@ -834,6 +858,9 @@ model DimensionRule {
   policy DimensionPolicy @relation(fields: [idPolicy], references: [id], onDelete: Cascade)
 
   @@index([idPolicy, widthIn, heightIn], map: "idx_rule_policy_dims")
+  @@index([idPolicy, ruleType], map: "idx_rule_policy_type")
+  @@index([idPolicy, ruleType, widthIn, heightIn], map: "idx_rule_policy_type_dims")
+  @@unique([idPolicy, ruleType, widthIn, heightIn], map: "uq_rule_policy_type_dims")
 }
 
 // =======================================

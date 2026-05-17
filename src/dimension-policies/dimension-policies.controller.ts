@@ -14,12 +14,13 @@ import { Request } from 'express';
 import { DimensionPoliciesService } from './dimension-policies.service';
 import { CreatePolicyDto, UpdatePolicyDto } from './dto/create-dimension-policy.dto';
 import { BulkUpsertRulesDto } from './dto/rule.dto';
+import { DimensionRuleType } from '@prisma/client';
 import { Roles } from '@/auth/roles.decorator';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 
 @Controller('dimension-policies')
 export class DimensionPoliciesController {
-  constructor(private svc: DimensionPoliciesService) {}
+  constructor(private svc: DimensionPoliciesService) { }
 
   // WRITE: solo admin
   @Post()
@@ -52,6 +53,7 @@ export class DimensionPoliciesController {
     @Query('idCrystal', ParseIntPipe) idCrystal: number,
     @Query('widthIn') widthIn: string,
     @Query('heightIn') heightIn: string,
+    @Query('ruleType') ruleType?: DimensionRuleType,
   ) {
     return this.svc.previewValidate({
       idSystem,
@@ -59,6 +61,7 @@ export class DimensionPoliciesController {
       idCrystal,
       widthIn: Number(widthIn),
       heightIn: Number(heightIn),
+      ruleType,
     });
   }
 

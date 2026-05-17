@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, System } from '@prisma/client';
+import { DimensionMode, Prisma, System } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { CreateSystemDto } from './dto/create-system.dto';
 import { UpdateSystemDto } from './dto/update-system.dto';
@@ -44,7 +44,7 @@ export class SystemsService {
           orderBy: {
             sortOrder: 'asc',
           },
-        },        
+        },
         systemFrameColors: {
           include: {
             frameColor: true,
@@ -98,7 +98,7 @@ export class SystemsService {
           orderBy: {
             sortOrder: 'asc',
           },
-        },        
+        },
         systemFrameColors: {
           include: {
             frameColor: true,
@@ -177,7 +177,7 @@ export class SystemsService {
           orderBy: {
             sortOrder: 'asc',
           },
-        },        
+        },
         systemFrameColors: {
           include: {
             frameColor: true,
@@ -270,7 +270,7 @@ export class SystemsService {
           orderBy: {
             sortOrder: 'asc',
           },
-        },        
+        },
         systemFrameColors: {
           include: {
             frameColor: true,
@@ -327,6 +327,20 @@ export class SystemsService {
       idSystem: systemId,
       idConfig: configId,
       allowScreen: sysConf.allowScreen,
+
+      dimensionMode: sysConf.dimensionMode,
+      requiresWidth: sysConf.requiresWidth,
+      requiresHeight: sysConf.requiresHeight,
+      requiresHeightLeft: sysConf.requiresHeightLeft,
+      requiresHeightRight: sysConf.requiresHeightRight,
+      requiresLegHeight: sysConf.requiresLegHeight,
+      requiresDoorWidth: sysConf.requiresDoorWidth,
+      requiresLeftSideliteWidth: sysConf.requiresLeftSideliteWidth,
+      requiresRightSideliteWidth: sysConf.requiresRightSideliteWidth,
+      requiresLeftPanels: sysConf.requiresLeftPanels,
+      requiresRightPanels: sysConf.requiresRightPanels,
+      requiresPanelCount: sysConf.requiresPanelCount,
+      requiresHorizontalHeights: sysConf.requiresHorizontalHeights,
 
       defaultActiveOptionId: sysConf.defaultActiveOptionId,
       defaultPreparationOptionId: sysConf.defaultPreparationOptionId,
@@ -432,6 +446,20 @@ export class SystemsService {
       system: sysConf.system,
       config: sysConf.config,
       allowScreen: sysConf.allowScreen,
+
+      dimensionMode: sysConf.dimensionMode,
+      requiresWidth: sysConf.requiresWidth,
+      requiresHeight: sysConf.requiresHeight,
+      requiresHeightLeft: sysConf.requiresHeightLeft,
+      requiresHeightRight: sysConf.requiresHeightRight,
+      requiresLegHeight: sysConf.requiresLegHeight,
+      requiresDoorWidth: sysConf.requiresDoorWidth,
+      requiresLeftSideliteWidth: sysConf.requiresLeftSideliteWidth,
+      requiresRightSideliteWidth: sysConf.requiresRightSideliteWidth,
+      requiresLeftPanels: sysConf.requiresLeftPanels,
+      requiresRightPanels: sysConf.requiresRightPanels,
+      requiresPanelCount: sysConf.requiresPanelCount,
+      requiresHorizontalHeights: sysConf.requiresHorizontalHeights,
 
       defaultActiveOptionId: sysConf.defaultActiveOptionId,
       defaultPreparationOptionId: sysConf.defaultPreparationOptionId,
@@ -667,6 +695,47 @@ export class SystemsService {
           defaultSillOptionId: data.defaultSillOptionId ?? null,
           defaultReinforcementOptionId:
             data.defaultReinforcementOptionId ?? null,
+
+          ...(data.dimensionMode !== undefined
+            ? { dimensionMode: data.dimensionMode }
+            : {}),
+
+          ...(data.requiresWidth !== undefined
+            ? { requiresWidth: data.requiresWidth }
+            : {}),
+          ...(data.requiresHeight !== undefined
+            ? { requiresHeight: data.requiresHeight }
+            : {}),
+          ...(data.requiresHeightLeft !== undefined
+            ? { requiresHeightLeft: data.requiresHeightLeft }
+            : {}),
+          ...(data.requiresHeightRight !== undefined
+            ? { requiresHeightRight: data.requiresHeightRight }
+            : {}),
+          ...(data.requiresLegHeight !== undefined
+            ? { requiresLegHeight: data.requiresLegHeight }
+            : {}),
+          ...(data.requiresDoorWidth !== undefined
+            ? { requiresDoorWidth: data.requiresDoorWidth }
+            : {}),
+          ...(data.requiresLeftSideliteWidth !== undefined
+            ? { requiresLeftSideliteWidth: data.requiresLeftSideliteWidth }
+            : {}),
+          ...(data.requiresRightSideliteWidth !== undefined
+            ? { requiresRightSideliteWidth: data.requiresRightSideliteWidth }
+            : {}),
+          ...(data.requiresLeftPanels !== undefined
+            ? { requiresLeftPanels: data.requiresLeftPanels }
+            : {}),
+          ...(data.requiresRightPanels !== undefined
+            ? { requiresRightPanels: data.requiresRightPanels }
+            : {}),
+          ...(data.requiresPanelCount !== undefined
+            ? { requiresPanelCount: data.requiresPanelCount }
+            : {}),
+          ...(data.requiresHorizontalHeights !== undefined
+            ? { requiresHorizontalHeights: data.requiresHorizontalHeights }
+            : {}),
         },
       });
     });
@@ -799,7 +868,7 @@ export class SystemsService {
           orderBy: {
             sortOrder: 'asc',
           },
-        },        
+        },
       },
     });
 
@@ -822,7 +891,7 @@ export class SystemsService {
         brand: system.brandProduct.brand,
         product: system.brandProduct.product,
       },
-      selectedFrameColorIds: system.systemFrameColors.map((x) => x.idFrameColor),      
+      selectedFrameColorIds: system.systemFrameColors.map((x) => x.idFrameColor),
       frameColorsCatalog,
     };
   }
@@ -851,7 +920,7 @@ export class SystemsService {
       throw new BadRequestException('One or more frame colors are invalid.');
     }
 
-   
+
 
     await this.prisma.$transaction(async (tx) => {
       await tx.systemFrameColor.deleteMany({
@@ -869,7 +938,7 @@ export class SystemsService {
           })),
         });
       }
-     
+
     });
 
     return this.getSystemFrameColorsForManage(systemId);
@@ -952,6 +1021,20 @@ export class SystemsService {
         idSystem: systemId,
         idConfig: configId,
         allowScreen: false,
+        dimensionMode: DimensionMode.STANDARD,
+
+        requiresWidth: false,
+        requiresHeight: false,
+        requiresHeightLeft: false,
+        requiresHeightRight: false,
+        requiresLegHeight: false,
+        requiresDoorWidth: false,
+        requiresLeftSideliteWidth: false,
+        requiresRightSideliteWidth: false,
+        requiresLeftPanels: false,
+        requiresRightPanels: false,
+        requiresPanelCount: false,
+        requiresHorizontalHeights: false,
       },
     });
 
@@ -993,7 +1076,7 @@ export class SystemsService {
         },
       },
       data: {
-        allowScreen: data.allowScreen,
+        allowScreen: data.allowScreen,        
       },
     });
 

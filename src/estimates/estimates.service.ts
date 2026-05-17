@@ -16,6 +16,8 @@ import {
   Order,
   BrandingType,
   Branding,
+  DimensionMode,
+  DimensionRuleType,
 } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { CreateEstimateDto } from './dto/create-estimate.dto';
@@ -88,6 +90,31 @@ type CalculatedMetricsInternal = {
 type CalculatedPieceCombined = (CreatePieceDto | UpsertPieceDto) &
   CalculatedMetricsInternal;
 
+type DimensionValidationResult = {
+  ok: boolean;
+  reason?: 'NOT_RATED' | 'OVERSIZE';
+  dpPos?: number;
+  dpNeg?: number;
+  anchorsPerJamb?: number;
+  extraAnchor?: boolean;
+  usedRange?: { w: [number, number]; h: [number, number] };
+  suggestion?: {
+    maxWidthIn?: number;
+    maxHeightIn?: number;
+    minWidthIn?: number;
+    minHeightIn?: number;
+  };
+  belowMinimum?: boolean;
+  note?: string;
+};
+
+type DimensionValidationCheck = {
+  ruleType: DimensionRuleType;
+  widthIn: number;
+  heightIn: number;
+  label: string;
+};
+
 // --- Tipos con Relaciones (para salida final) ---
 type PieceWithRelations = Piece & {
   prod: Prisma.ProductGetPayload<{}>;
@@ -141,6 +168,26 @@ export class EstimatesService {
       pricing: new Map(),
       systemFrameColor: new Map(),
     };
+  }
+
+  private decimalOrNull(value: string | number | null | undefined) {
+    return value == null || value === '' ? null : new Prisma.Decimal(value);
+  }
+
+  private intOrNull(value: number | string | null | undefined) {
+    if (value == null || value === '') return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  }
+
+  private jsonArrayOrNull(
+    value: unknown,
+  ): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+    if (!Array.isArray(value)) return Prisma.JsonNull;
+
+    return value
+      .map((item) => Number(item))
+      .filter((item) => Number.isFinite(item)) as Prisma.InputJsonValue;
   }
 
   private async getEstimateExpirationDate(tx: PrismaTransactionClient) {
@@ -249,6 +296,13 @@ export class EstimatesService {
           heightLeft: p.heightLeft ?? null,
           heightRight: p.heightRight ?? null,
           legHeight: p.legHeight ?? null,
+          doorWidth: p.doorWidth ?? null,
+          leftSideliteWidth: p.leftSideliteWidth ?? null,
+          rightSideliteWidth: p.rightSideliteWidth ?? null,
+          leftPanels: p.leftPanels ?? null,
+          rightPanels: p.rightPanels ?? null,
+          panelCount: p.panelCount ?? null,
+          horizontalHeights: p.horizontalHeights ?? null,
 
           // ids de relaciones
           idProd: p.idProd ?? null,
@@ -313,14 +367,14 @@ export class EstimatesService {
     // comentario en espanol: bloqueamos vistas que no corresponden al rol
     if (roleName === 'client') {
       if (view !== 'client') {
-        throw new BadRequestException('Vista no permitida.');
+        throw new BadRequestException('View not allowed.');
       }
       return;
     }
 
     if (roleName === 'dealer') {
       if (view !== 'dealer_internal' && view !== 'dealer_public') {
-        throw new BadRequestException('Vista no permitida.');
+        throw new BadRequestException('View not allowed.');
       }
       return;
     }
@@ -330,35 +384,162 @@ export class EstimatesService {
       return;
     }
 
-    throw new BadRequestException('Rol no permitido.');
+    throw new BadRequestException('Role not allowed.');
   }
 
-  // Estima la altura gobernante en función de los flags de Config.
-  // FRAME-only: no hacemos conversiones a DLO.
+  private numberInchesOrZero(
+    value: string | number | null | undefined,
+    label: string,
+  ) {
+    return value == null || value === ''
+      ? 0
+      : normalizeInchesToEighthStep(value, label, 1);
+  }
+
+  private resolveEcoNovoOverallWidth(dto: {
+    width?: string | number | null;
+    doorWidth?: string | number | null;
+    leftSideliteWidth?: string | number | null;
+    rightSideliteWidth?: string | number | null;
+    leftPanels?: number | string | null;
+    rightPanels?: number | string | null;
+  }) {
+    const fallbackWidth = this.numberInchesOrZero(dto.width, 'Width');
+
+    const doorWidth = this.numberInchesOrZero(dto.doorWidth, 'Door Width');
+    const leftSideliteWidth = this.numberInchesOrZero(
+      dto.leftSideliteWidth,
+      'Left Sidelite Width',
+    );
+    const rightSideliteWidth = this.numberInchesOrZero(
+      dto.rightSideliteWidth,
+      'Right Sidelite Width',
+    );
+
+    const leftPanels = Number(dto.leftPanels ?? 0);
+    const rightPanels = Number(dto.rightPanels ?? 0);
+
+    const hasSegmentedWidth =
+      doorWidth > 0 || leftSideliteWidth > 0 || rightSideliteWidth > 0;
+
+    if (!hasSegmentedWidth) {
+      return fallbackWidth;
+    }
+
+    if (doorWidth <= 0) {
+      throw new BadRequestException('Door Width is required.');
+    }
+
+    if (leftSideliteWidth > 0 && (!Number.isFinite(leftPanels) || leftPanels < 1)) {
+      throw new BadRequestException('Left Panels is required.');
+    }
+
+    if (rightSideliteWidth > 0 && (!Number.isFinite(rightPanels) || rightPanels < 1)) {
+      throw new BadRequestException('Right Panels is required.');
+    }
+
+    return (
+      doorWidth +
+      leftSideliteWidth * Math.trunc(leftPanels || 0) +
+      rightSideliteWidth * Math.trunc(rightPanels || 0)
+    );
+  }
+
+  // Estima la altura gobernante.
+  // STANDARD usa los flags viejos de Config para no romper Picture/Tombstone/Eyebrow.
+  // Los modos nuevos usan dimensionMode desde SysConf.
   private async computeGoverningDimsFromConfig(
     pieceDto: {
+      idSyst: number;
       idConf: number;
-      width?: string | number;
-      height?: string | number;
-      heightLeft?: string | number;
-      heightRight?: string | number;
-      legHeight?: string | number;
+      width?: string | number | null;
+      height?: string | number | null;
+      heightLeft?: string | number | null;
+      heightRight?: string | number | null;
+      legHeight?: string | number | null;
+      doorWidth?: string | number | null;
+      leftSideliteWidth?: string | number | null;
+      rightSideliteWidth?: string | number | null;
+      leftPanels?: number | string | null;
+      rightPanels?: number | string | null;
+      panelCount?: number | string | null;
+      horizontalHeights?: number[] | null;
     },
-    tx: any,
+    tx: PrismaTransactionClient,
   ): Promise<{ widthIn: number; heightIn: number }> {
-    const cfg = await tx.config.findUnique({ where: { id: pieceDto.idConf } });
+    const [cfg, sysConf] = await Promise.all([
+      tx.config.findUnique({
+        where: { id: pieceDto.idConf },
+        select: {
+          requiresHeightLeft: true,
+          requiresHeightRight: true,
+          requiresLegHeight: true,
+        },
+      }),
+      tx.sysConf.findUnique({
+        where: {
+          idSystem_idConfig: {
+            idSystem: pieceDto.idSyst,
+            idConfig: pieceDto.idConf,
+          },
+        },
+        select: {
+          dimensionMode: true,
+        },
+      }),
+    ]);
+
+    if (!sysConf) {
+      throw new BadRequestException(
+        'The selected configuration does not belong to the selected system.',
+      );
+    }
+
+    const dimensionMode = sysConf.dimensionMode ?? DimensionMode.STANDARD;
 
     const num = (v: any, label: string) =>
-      v == null || v === '' ? 0 : normalizeInchesToEighthStep(v, label, 1); // 👈 mínimo 1"
-
-    const widthIn = num(pieceDto.width, 'Width');
+      v == null || v === '' ? 0 : normalizeInchesToEighthStep(v, label, 1);
 
     const h = num(pieceDto.height, 'Height');
-    const hl = cfg?.requiresHeightLeft ? num(pieceDto.heightLeft, 'Height Left') : 0;
-    const hr = cfg?.requiresHeightRight ? num(pieceDto.heightRight, 'Height Right') : 0;
-    const lh = cfg?.requiresLegHeight ? num(pieceDto.legHeight, 'Leg Height') : 0;
+
+    if (dimensionMode === DimensionMode.ECO_WINDOWS_DOOR) {
+      return {
+        widthIn: num(pieceDto.width, 'Open Width'),
+        heightIn: h,
+      };
+    }
+
+    if (dimensionMode === DimensionMode.ECO_NOVO_DOOR) {
+      return {
+        widthIn: this.resolveEcoNovoOverallWidth(pieceDto),
+        heightIn: h,
+      };
+    }
+
+    if (dimensionMode === DimensionMode.WINDOW_WALL) {
+      return {
+        widthIn: num(pieceDto.width, 'Open Width'),
+        heightIn: h,
+      };
+    }
+
+    // comentario en espanol: comportamiento viejo intacto para STANDARD
+    const widthIn = num(pieceDto.width, 'Width');
+
+    const hl = cfg?.requiresHeightLeft
+      ? num(pieceDto.heightLeft, 'Height Left')
+      : 0;
+
+    const hr = cfg?.requiresHeightRight
+      ? num(pieceDto.heightRight, 'Height Right')
+      : 0;
+
+    const lh = cfg?.requiresLegHeight
+      ? num(pieceDto.legHeight, 'Leg Height')
+      : 0;
 
     const heightIn = Math.max(h, hl, hr, lh);
+
     return { widthIn, heightIn: heightIn || h };
   }
 
@@ -819,12 +1000,19 @@ export class EstimatesService {
           customerPrice: new Prisma.Decimal(p.customerPrice.toFixed(2)),
           customerSubtotal: new Prisma.Decimal(p.customerSubtotal.toFixed(2)),
 
-          width: p.width ? new Prisma.Decimal(p.width) : null,
-          height: p.height ? new Prisma.Decimal(p.height) : null,
-          heightLeft: p.heightLeft ? new Prisma.Decimal(p.heightLeft) : null,
-          heightRight: p.heightRight ? new Prisma.Decimal(p.heightRight) : null,
-          legHeight: p.legHeight ? new Prisma.Decimal(p.legHeight) : null,
+          width: this.decimalOrNull(p.width),
+          height: this.decimalOrNull(p.height),
+          heightLeft: this.decimalOrNull(p.heightLeft),
+          heightRight: this.decimalOrNull(p.heightRight),
+          legHeight: this.decimalOrNull(p.legHeight),
 
+          doorWidth: this.decimalOrNull((p as any).doorWidth),
+          leftSideliteWidth: this.decimalOrNull((p as any).leftSideliteWidth),
+          rightSideliteWidth: this.decimalOrNull((p as any).rightSideliteWidth),
+          leftPanels: this.intOrNull((p as any).leftPanels),
+          rightPanels: this.intOrNull((p as any).rightPanels),
+          panelCount: this.intOrNull((p as any).panelCount),
+          horizontalHeights: this.jsonArrayOrNull((p as any).horizontalHeights),
           prod: { connect: { id: p.idProd } },
           bran: { connect: { id: p.idBrand } },
           syst: { connect: { id: p.idSyst } },
@@ -1001,13 +1189,13 @@ export class EstimatesService {
 
       if (beforeEstimate.status?.name !== 'Active') {
         throw new BadRequestException(
-          `Estimate #${estimateId} no se puede editar (status: ${beforeEstimate.status?.name ?? 'UNKNOWN'}).`,
+          `Estimate #${estimateId} cannot be edited because its status is ${beforeEstimate.status?.name ?? 'UNKNOWN'}.`,
         );
       }
 
       if (beforeEstimate.order) {
         throw new BadRequestException(
-          `Estimate #${estimateId} ya tiene una orden y no se puede editar.`,
+          `Estimate #${estimateId} already has an order and cannot be edited.`,
         );
       }
 
@@ -1073,11 +1261,19 @@ export class EstimatesService {
           customerPrice: new Prisma.Decimal(p.customerPrice.toFixed(2)),
           customerSubtotal: new Prisma.Decimal(p.customerSubtotal.toFixed(2)),
 
-          width: p.width ? new Prisma.Decimal(p.width) : null,
-          height: p.height ? new Prisma.Decimal(p.height) : null,
-          heightLeft: p.heightLeft ? new Prisma.Decimal(p.heightLeft) : null,
-          heightRight: p.heightRight ? new Prisma.Decimal(p.heightRight) : null,
-          legHeight: p.legHeight ? new Prisma.Decimal(p.legHeight) : null,
+          width: this.decimalOrNull(p.width),
+          height: this.decimalOrNull(p.height),
+          heightLeft: this.decimalOrNull(p.heightLeft),
+          heightRight: this.decimalOrNull(p.heightRight),
+          legHeight: this.decimalOrNull(p.legHeight),
+
+          doorWidth: this.decimalOrNull((p as any).doorWidth),
+          leftSideliteWidth: this.decimalOrNull((p as any).leftSideliteWidth),
+          rightSideliteWidth: this.decimalOrNull((p as any).rightSideliteWidth),
+          leftPanels: this.intOrNull((p as any).leftPanels),
+          rightPanels: this.intOrNull((p as any).rightPanels),
+          panelCount: this.intOrNull((p as any).panelCount),
+          horizontalHeights: this.jsonArrayOrNull((p as any).horizontalHeights),
 
           idProd: p.idProd,
           idBrand: p.idBrand,
@@ -1401,6 +1597,22 @@ export class EstimatesService {
         heightRight: p.heightRight == null ? null : p.heightRight.toString(),
         legHeight: p.legHeight == null ? null : p.legHeight.toString(),
 
+        doorWidth: (p as any).doorWidth == null ? null : (p as any).doorWidth.toString(),
+        leftSideliteWidth:
+          (p as any).leftSideliteWidth == null
+            ? null
+            : (p as any).leftSideliteWidth.toString(),
+        rightSideliteWidth:
+          (p as any).rightSideliteWidth == null
+            ? null
+            : (p as any).rightSideliteWidth.toString(),
+        leftPanels: (p as any).leftPanels ?? null,
+        rightPanels: (p as any).rightPanels ?? null,
+        panelCount: (p as any).panelCount ?? null,
+        horizontalHeights: Array.isArray((p as any).horizontalHeights)
+          ? ((p as any).horizontalHeights as number[])
+          : null,
+
         idCryst: p.idCryst,
         idTint: p.idTint,
         privacy: p.privacy,
@@ -1488,11 +1700,19 @@ export class EstimatesService {
               p.customerSubtotal.toFixed(2),
             ),
 
-            width: p.width ? new Prisma.Decimal(p.width) : null,
-            height: p.height ? new Prisma.Decimal(p.height) : null,
-            heightLeft: p.heightLeft ? new Prisma.Decimal(p.heightLeft) : null,
-            heightRight: p.heightRight ? new Prisma.Decimal(p.heightRight) : null,
-            legHeight: p.legHeight ? new Prisma.Decimal(p.legHeight) : null,
+            width: this.decimalOrNull(p.width),
+            height: this.decimalOrNull(p.height),
+            heightLeft: this.decimalOrNull(p.heightLeft),
+            heightRight: this.decimalOrNull(p.heightRight),
+            legHeight: this.decimalOrNull(p.legHeight),
+
+            doorWidth: this.decimalOrNull((p as any).doorWidth),
+            leftSideliteWidth: this.decimalOrNull((p as any).leftSideliteWidth),
+            rightSideliteWidth: this.decimalOrNull((p as any).rightSideliteWidth),
+            leftPanels: this.intOrNull((p as any).leftPanels),
+            rightPanels: this.intOrNull((p as any).rightPanels),
+            panelCount: this.intOrNull((p as any).panelCount),
+            horizontalHeights: this.jsonArrayOrNull((p as any).horizontalHeights),
 
             idProd: p.idProd,
             idBrand: p.idBrand,
@@ -1635,7 +1855,7 @@ export class EstimatesService {
 
       if (estimate.order) {
         throw new BadRequestException(
-          `Estimate #${where.id} ya tiene una orden y no se puede borrar.`,
+          `Estimate #${where.id} already has an order and cannot be deleted.`,
         );
       }
 
@@ -1664,23 +1884,7 @@ export class EstimatesService {
   private async validateAgainstDimensionPolicy(
     dto: CreatePieceDto | UpsertPieceDto,
     tx: PrismaTransactionClient,
-  ): Promise<{
-    ok: boolean;
-    reason?: 'NOT_RATED' | 'OVERSIZE';
-    dpPos?: number;
-    dpNeg?: number;
-    anchorsPerJamb?: number;
-    extraAnchor?: boolean;
-    usedRange?: { w: [number, number]; h: [number, number] };
-    suggestion?: {
-      maxWidthIn?: number;
-      maxHeightIn?: number;
-      minWidthIn?: number;
-      minHeightIn?: number;
-    };
-    belowMinimum?: boolean;
-    note?: string;
-  }> {
+  ): Promise<DimensionValidationResult> {
     const policy = await tx.dimensionPolicy.findFirst({
       where: {
         idSystem: dto.idSyst,
@@ -1695,16 +1899,220 @@ export class EstimatesService {
       return { ok: false, reason: 'NOT_RATED' };
     }
 
-    const { widthIn, heightIn } = await this.computeGoverningDimsFromConfig(dto, tx);
+    const checks = await this.buildDimensionValidationChecks(dto, tx);
 
-    const rules = policy.rules;
+    if (checks.length === 0) {
+      return { ok: false, reason: 'NOT_RATED' };
+    }
+
+    const passed: Array<{
+      check: DimensionValidationCheck;
+      result: DimensionValidationResult;
+    }> = [];
+
+    for (const check of checks) {
+      const result = this.validateDimensionCheckAgainstRules(
+        policy,
+        check,
+      );
+
+      if (!result.ok) {
+        return {
+          ...result,
+          note: result.note
+            ? `${check.label}: ${result.note}`
+            : `${check.label}`,
+        };
+      }
+
+      passed.push({ check, result });
+    }
+
+    const dpPosValues = passed
+      .map((x) => x.result.dpPos)
+      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+
+    const dpNegValues = passed
+      .map((x) => x.result.dpNeg)
+      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+
+    const first = passed[0]?.result;
+
+    return {
+      ok: true,
+      dpPos: dpPosValues.length ? Math.min(...dpPosValues) : first?.dpPos,
+      dpNeg: dpNegValues.length ? Math.max(...dpNegValues) : first?.dpNeg,
+      usedRange: first?.usedRange,
+      note: passed
+        .map((x) => `${x.check.label}: ${x.result.note ?? 'OK'}`)
+        .join(' | '),
+    };
+  }
+
+  private async buildDimensionValidationChecks(
+    dto: CreatePieceDto | UpsertPieceDto,
+    tx: PrismaTransactionClient,
+  ): Promise<DimensionValidationCheck[]> {
+    const [cfg, sysConf] = await Promise.all([
+      tx.config.findUnique({
+        where: { id: dto.idConf },
+        select: {
+          requiresHeightLeft: true,
+          requiresHeightRight: true,
+          requiresLegHeight: true,
+        },
+      }),
+      tx.sysConf.findUnique({
+        where: {
+          idSystem_idConfig: {
+            idSystem: dto.idSyst,
+            idConfig: dto.idConf,
+          },
+        },
+        select: {
+          dimensionMode: true,
+          requiresDoorWidth: true,
+          requiresLeftSideliteWidth: true,
+          requiresRightSideliteWidth: true,
+          requiresPanelCount: true,
+        },
+      }),
+    ]);
+
+    if (!sysConf) {
+      throw new BadRequestException(
+        'The selected configuration does not belong to the selected system.',
+      );
+    }
+
+    const dimensionMode = sysConf.dimensionMode ?? DimensionMode.STANDARD;
+
+    const num = (value: unknown, label: string) =>
+      value == null || value === ''
+        ? 0
+        : normalizeInchesToEighthStep(value as any, label, 1);
+
+    const heightIn = num(dto.height, 'Height');
+
+    if (dimensionMode === DimensionMode.STANDARD) {
+      const widthIn = num(dto.width, 'Width');
+      const heightLeft = cfg?.requiresHeightLeft
+        ? num(dto.heightLeft, 'Height Left')
+        : 0;
+      const heightRight = cfg?.requiresHeightRight
+        ? num(dto.heightRight, 'Height Right')
+        : 0;
+      const legHeight = cfg?.requiresLegHeight
+        ? num(dto.legHeight, 'Leg Height')
+        : 0;
+
+      return [
+        {
+          ruleType: DimensionRuleType.MAIN,
+          widthIn,
+          heightIn: Math.max(heightIn, heightLeft, heightRight, legHeight),
+          label: 'MAIN',
+        },
+      ];
+    }
+
+    if (dimensionMode === DimensionMode.WINDOW_WALL) {
+      const openWidth = num(dto.width, 'Open Width');
+      const panelCount = Number((dto as any).panelCount ?? 0);
+
+      if (!Number.isFinite(panelCount) || panelCount < 1) {
+        throw new BadRequestException('Panel Count is required.');
+      }
+
+      return [
+        {
+          ruleType: DimensionRuleType.MAIN,
+          widthIn: normalizeInchesToEighthStep(
+            openWidth / Math.trunc(panelCount),
+            'Panel Width',
+            1,
+          ),
+          heightIn,
+          label: 'MAIN panel',
+        },
+      ];
+    }
+
+    const checks: DimensionValidationCheck[] = [];
+
+    const doorWidthRaw = (dto as any).doorWidth;
+    const leftSideliteWidthRaw = (dto as any).leftSideliteWidth;
+    const rightSideliteWidthRaw = (dto as any).rightSideliteWidth;
+
+    const hasDoorWidth = doorWidthRaw != null && doorWidthRaw !== '';
+    const hasLeftSideliteWidth =
+      leftSideliteWidthRaw != null && leftSideliteWidthRaw !== '';
+    const hasRightSideliteWidth =
+      rightSideliteWidthRaw != null && rightSideliteWidthRaw !== '';
+
+    if (hasDoorWidth) {
+      checks.push({
+        ruleType: DimensionRuleType.DOOR,
+        widthIn: num(doorWidthRaw, 'Door Width'),
+        heightIn,
+        label: 'DOOR',
+      });
+    }
+
+    if (hasLeftSideliteWidth) {
+      checks.push({
+        ruleType: DimensionRuleType.SIDELITE,
+        widthIn: num(leftSideliteWidthRaw, 'Left Sidelite Width'),
+        heightIn,
+        label: 'LEFT SIDELITE',
+      });
+    }
+
+    if (hasRightSideliteWidth) {
+      checks.push({
+        ruleType: DimensionRuleType.SIDELITE,
+        widthIn: num(rightSideliteWidthRaw, 'Right Sidelite Width'),
+        heightIn,
+        label: 'RIGHT SIDELITE',
+      });
+    }
+
+    // comentario en espanol: puertas simples X/XX pueden venir solo con width.
+    // En modos de puerta, si no hay doorWidth ni sidelites, validamos width como DOOR.
+    if (checks.length === 0) {
+      checks.push({
+        ruleType: DimensionRuleType.DOOR,
+        widthIn: num(dto.width, 'Door Width'),
+        heightIn,
+        label: 'DOOR',
+      });
+    }
+
+    return checks;
+  }
+
+  private validateDimensionCheckAgainstRules(
+    policy: any,
+    check: DimensionValidationCheck,
+  ): DimensionValidationResult {
+    const rules = (policy.rules ?? []).filter(
+      (r: any) => r.ruleType === check.ruleType,
+    );
+
+    if (rules.length === 0) {
+      return {
+        ok: false,
+        reason: 'NOT_RATED',
+        note: `No ${check.ruleType} rules found for this policy.`,
+      };
+    }
 
     const allWidths = rules.map((r: any) => Number(r.widthIn));
     const allHeights = rules.map((r: any) => Number(r.heightIn));
     const minW = Math.min(...allWidths);
     const minH = Math.min(...allHeights);
 
-    if (widthIn < minW || heightIn < minH) {
+    if (check.widthIn < minW || check.heightIn < minH) {
       return {
         ok: false,
         reason: 'OVERSIZE',
@@ -1715,13 +2123,17 @@ export class EstimatesService {
           maxWidthIn: minW,
           maxHeightIn: minH,
         },
+        note: `${check.ruleType} below minimum.`,
       };
     }
 
     const pickExactRule = (w: number, h: number) =>
-      rules.find((r: any) => Number(r.widthIn) === w && Number(r.heightIn) === h) ?? null;
+      rules.find(
+        (r: any) => Number(r.widthIn) === w && Number(r.heightIn) === h,
+      ) ?? null;
 
-    const uniqueSorted = (arr: number[]) => [...new Set(arr)].sort((a, b) => a - b);
+    const uniqueSorted = (arr: number[]) =>
+      [...new Set(arr)].sort((a, b) => a - b);
 
     const widthValues = uniqueSorted(rules.map((r: any) => Number(r.widthIn)));
     const heightValues = uniqueSorted(rules.map((r: any) => Number(r.heightIn)));
@@ -1735,8 +2147,10 @@ export class EstimatesService {
 
     const nearest = (values: number[], v: number): number | null => {
       if (!values.length) return null;
+
       let best = values[0];
       let bestDist = Math.abs(values[0] - v);
+
       for (const val of values) {
         const d = Math.abs(val - v);
         if (d < bestDist) {
@@ -1744,28 +2158,33 @@ export class EstimatesService {
           best = val;
         }
       }
+
       return best;
     };
 
-    let rule: any | null = pickExactRule(widthIn, heightIn);
+    let rule: any | null = pickExactRule(check.widthIn, check.heightIn);
     let suggestion: { maxWidthIn?: number; maxHeightIn?: number } | undefined;
 
     if (!rule) {
       if (policy.roundingRule === 'ROUND_UP_TO_NEXT') {
-        const wNext = nextOrSame(widthValues, widthIn);
-        const hNext = nextOrSame(heightValues, heightIn);
+        const wNext = nextOrSame(widthValues, check.widthIn);
+        const hNext = nextOrSame(heightValues, check.heightIn);
 
         if (wNext != null && hNext != null) {
           rule = pickExactRule(wNext, hNext);
-          if (!rule) suggestion = { maxWidthIn: wNext, maxHeightIn: hNext };
+          if (!rule) {
+            suggestion = { maxWidthIn: wNext, maxHeightIn: hNext };
+          }
         }
       } else {
-        const wNear = nearest(widthValues, widthIn);
-        const hNear = nearest(heightValues, heightIn);
+        const wNear = nearest(widthValues, check.widthIn);
+        const hNear = nearest(heightValues, check.heightIn);
 
         if (wNear != null && hNear != null) {
           rule = pickExactRule(wNear, hNear);
-          if (!rule) suggestion = { maxWidthIn: wNear, maxHeightIn: hNear };
+          if (!rule) {
+            suggestion = { maxWidthIn: wNear, maxHeightIn: hNear };
+          }
         }
       }
     }
@@ -1773,10 +2192,15 @@ export class EstimatesService {
     if (!rule) {
       const maxW = widthValues[widthValues.length - 1];
       const maxH = heightValues[heightValues.length - 1];
+
       return {
         ok: false,
         reason: 'OVERSIZE',
-        suggestion: suggestion ?? { maxWidthIn: maxW, maxHeightIn: maxH },
+        suggestion: suggestion ?? {
+          maxWidthIn: maxW,
+          maxHeightIn: maxH,
+        },
+        note: `${check.ruleType} exceeds NOA limits.`,
       };
     }
 
@@ -1791,7 +2215,6 @@ export class EstimatesService {
       note: rule.note ?? undefined,
     };
   }
-
 
   // --- internalCalculatePieceMetrics ---
   private async internalCalculatePieceMetrics(
@@ -1844,6 +2267,21 @@ export class EstimatesService {
         },
         select: {
           allowScreen: true,
+          dimensionMode: true,
+
+          requiresWidth: true,
+          requiresHeight: true,
+          requiresHeightLeft: true,
+          requiresHeightRight: true,
+          requiresLegHeight: true,
+          requiresDoorWidth: true,
+          requiresLeftSideliteWidth: true,
+          requiresRightSideliteWidth: true,
+          requiresLeftPanels: true,
+          requiresRightPanels: true,
+          requiresPanelCount: true,
+          requiresHorizontalHeights: true,
+
           activeOptions: { select: { optionId: true } },
           preparationOptions: { select: { optionId: true } },
           sillOptions: { select: { optionId: true } },
@@ -1981,28 +2419,123 @@ export class EstimatesService {
 
     const need = (v?: number | boolean | null) => v === 1 || v === true;
     const missing: string[] = [];
-    if (need(config.requiresWidth) && pieceDto.width == null) missing.push('width');
-    if (need(config.requiresHeight) && pieceDto.height == null) missing.push('height');
-    if (need(config.requiresHeightLeft) && pieceDto.heightLeft == null) missing.push('heightLeft');
-    if (need(config.requiresHeightRight) && pieceDto.heightRight == null) missing.push('heightRight');
-    if (need(config.requiresLegHeight) && pieceDto.legHeight == null) missing.push('legHeight');
-    if (missing.length) {
-      throw new BadRequestException(`Faltan dimensiones requeridas: ${missing.join(', ')}`);
+
+    const dimensionMode: DimensionMode =
+      sysConf.dimensionMode ?? DimensionMode.STANDARD;
+
+    const isBlank = (value: unknown) => value == null || value === '';
+
+    const requireField = (
+      enabled: boolean,
+      fieldName: string,
+      value: unknown,
+    ) => {
+      if (enabled && isBlank(value)) {
+        missing.push(fieldName);
+      }
+    };
+
+    if (dimensionMode === DimensionMode.STANDARD) {
+      // comentario en espanol: comportamiento viejo intacto para configs normales
+      if (need(config.requiresWidth) && isBlank(pieceDto.width)) {
+        missing.push('width');
+      }
+
+      if (need(config.requiresHeight) && isBlank(pieceDto.height)) {
+        missing.push('height');
+      }
+
+      if (need(config.requiresHeightLeft) && isBlank(pieceDto.heightLeft)) {
+        missing.push('heightLeft');
+      }
+
+      if (need(config.requiresHeightRight) && isBlank(pieceDto.heightRight)) {
+        missing.push('heightRight');
+      }
+
+      if (need(config.requiresLegHeight) && isBlank(pieceDto.legHeight)) {
+        missing.push('legHeight');
+      }
+    } else {
+      // comentario en espanol: modos nuevos usan SysConf, no nombres como X/OX/XO
+      requireField(sysConf.requiresWidth, 'width', pieceDto.width);
+      requireField(sysConf.requiresHeight, 'height', pieceDto.height);
+      requireField(sysConf.requiresHeightLeft, 'heightLeft', pieceDto.heightLeft);
+      requireField(sysConf.requiresHeightRight, 'heightRight', pieceDto.heightRight);
+      requireField(sysConf.requiresLegHeight, 'legHeight', pieceDto.legHeight);
+
+      requireField(
+        sysConf.requiresDoorWidth,
+        'doorWidth',
+        (pieceDto as any).doorWidth,
+      );
+
+      requireField(
+        sysConf.requiresLeftSideliteWidth,
+        'leftSideliteWidth',
+        (pieceDto as any).leftSideliteWidth,
+      );
+
+      requireField(
+        sysConf.requiresRightSideliteWidth,
+        'rightSideliteWidth',
+        (pieceDto as any).rightSideliteWidth,
+      );
+
+      requireField(
+        sysConf.requiresLeftPanels,
+        'leftPanels',
+        (pieceDto as any).leftPanels,
+      );
+
+      requireField(
+        sysConf.requiresRightPanels,
+        'rightPanels',
+        (pieceDto as any).rightPanels,
+      );
+
+      requireField(
+        sysConf.requiresPanelCount,
+        'panelCount',
+        (pieceDto as any).panelCount,
+      );
+
+      if (
+        sysConf.requiresHorizontalHeights &&
+        (!Array.isArray((pieceDto as any).horizontalHeights) ||
+          (pieceDto as any).horizontalHeights.length === 0)
+      ) {
+        missing.push('horizontalHeights');
+      }
     }
 
-    const dimsFt = dimsInchesToFeet({
-      width: pieceDto.width,
-      height: pieceDto.height,
-      heightLeft: pieceDto.heightLeft,
-      heightRight: pieceDto.heightRight,
-      legHeight: pieceDto.legHeight,
-    });
+    if (missing.length) {
+      throw new BadRequestException(
+        `Missing required dimensions: ${missing.join(', ')}`,
+      );
+    }
+
+    const governingDims = await this.computeGoverningDimsFromConfig(pieceDto, tx);
+
+    const dimsFt =
+      dimensionMode === DimensionMode.STANDARD
+        ? dimsInchesToFeet({
+          width: pieceDto.width,
+          height: pieceDto.height,
+          heightLeft: pieceDto.heightLeft,
+          heightRight: pieceDto.heightRight,
+          legHeight: pieceDto.legHeight,
+        })
+        : dimsInchesToFeet({
+          width: String(governingDims.widthIn),
+          height: String(governingDims.heightIn),
+        });
 
     const dpCheck = await this.validateAgainstDimensionPolicy(pieceDto, tx);
     if (!dpCheck.ok) {
       if (dpCheck.reason === 'NOT_RATED') {
         throw new BadRequestException(
-          'No hay política de dimensiones (NOT_RATED) para este System+Config+Crystal.',
+          'No dimension policy exists for this System + Config + Crystal combination.',
         );
       }
 
@@ -2012,18 +2545,20 @@ export class EstimatesService {
         const hasMinSuggestion = minW != null || minH != null;
 
         if (hasMinSuggestion) {
-          const sug = ` El tamaño mínimo permitido es W=${minW ?? '-'}″, H=${minH ?? '-'}″.`;
-          throw new BadRequestException(`Revise las dimensiones.${sug}`);
+          const sug = ` Minimum allowed size: W=${minW ?? '-'}″, H=${minH ?? '-'}″.`;
+          throw new BadRequestException(`Please review the dimensions.${sug}`);
         }
 
         const maxW = dpCheck.suggestion?.maxWidthIn;
         const maxH = dpCheck.suggestion?.maxHeightIn;
         const hasMaxSuggestion = maxW != null || maxH != null;
 
-        const sug = hasMaxSuggestion ? ` Sugerido máx: W=${maxW ?? '-'}″, H=${maxH ?? '-'}″.` : '';
+        const sug = hasMaxSuggestion
+          ? ` Maximum allowed size: W=${maxW ?? '-'}″, H=${maxH ?? '-'}″.`
+          : '';
 
         throw new BadRequestException(
-          `La pieza excede los límites del NOA para esta combinación.${sug}`,
+          `The piece exceeds the NOA limits for this combination.${sug}`,
         );
       }
     }
@@ -2191,22 +2726,50 @@ export class EstimatesService {
     idSyst: number;
     idConf: number;
     idCryst: number;
-    width: number;
+    width?: number;
     height: number;
     heightLeft?: number;
     heightRight?: number;
     legHeight?: number;
+
+    doorWidth?: number;
+    leftSideliteWidth?: number;
+    rightSideliteWidth?: number;
+    leftPanels?: number;
+    rightPanels?: number;
+    panelCount?: number;
+    horizontalHeights?: number[];
   }) {
     return this.prisma.$transaction(async (tx) => {
       const dto: any = {
         idSyst: input.idSyst,
         idConf: input.idConf,
         idCryst: input.idCryst,
-        width: String(input.width),
-        height: String(input.height),
-        heightLeft: input.heightLeft != null ? String(input.heightLeft) : undefined,
-        heightRight: input.heightRight != null ? String(input.heightRight) : undefined,
-        legHeight: input.legHeight != null ? String(input.legHeight) : undefined,
+        width: input.width != null ? String(input.width) : undefined,
+        height: input.height != null ? String(input.height) : undefined,
+        heightLeft:
+          input.heightLeft != null ? String(input.heightLeft) : undefined,
+        heightRight:
+          input.heightRight != null ? String(input.heightRight) : undefined,
+        legHeight:
+          input.legHeight != null ? String(input.legHeight) : undefined,
+
+        doorWidth:
+          input.doorWidth != null ? String(input.doorWidth) : undefined,
+        leftSideliteWidth:
+          input.leftSideliteWidth != null
+            ? String(input.leftSideliteWidth)
+            : undefined,
+        rightSideliteWidth:
+          input.rightSideliteWidth != null
+            ? String(input.rightSideliteWidth)
+            : undefined,
+        leftPanels: input.leftPanels ?? undefined,
+        rightPanels: input.rightPanels ?? undefined,
+        panelCount: input.panelCount ?? undefined,
+        horizontalHeights: Array.isArray(input.horizontalHeights)
+          ? input.horizontalHeights
+          : undefined,
       };
 
       const res = await this.validateAgainstDimensionPolicy(dto, tx);
@@ -2411,6 +2974,37 @@ export class EstimatesService {
       if (p.heightLeft != null) sizeParts.push(`HL ${formatInchesFromEighthStep(p.heightLeft)}`);
       if (p.heightRight != null) sizeParts.push(`HR ${formatInchesFromEighthStep(p.heightRight)}`);
       if (p.legHeight != null) sizeParts.push(`Leg ${formatInchesFromEighthStep(p.legHeight)}`);
+      if (p.doorWidth != null) {
+        sizeParts.push(`Door ${formatInchesFromEighthStep(p.doorWidth)}`);
+      }
+
+      if (p.leftSideliteWidth != null) {
+        sizeParts.push(`Left SL ${formatInchesFromEighthStep(p.leftSideliteWidth)}`);
+      }
+
+      if (p.rightSideliteWidth != null) {
+        sizeParts.push(`Right SL ${formatInchesFromEighthStep(p.rightSideliteWidth)}`);
+      }
+
+      if (p.leftPanels != null) {
+        sizeParts.push(`Left Panels ${p.leftPanels}`);
+      }
+
+      if (p.rightPanels != null) {
+        sizeParts.push(`Right Panels ${p.rightPanels}`);
+      }
+
+      if (p.panelCount != null) {
+        sizeParts.push(`Panels ${p.panelCount}`);
+      }
+
+      if (Array.isArray(p.horizontalHeights) && p.horizontalHeights.length > 0) {
+        sizeParts.push(
+          `Horizontals ${p.horizontalHeights
+            .map((h: any) => formatInchesFromEighthStep(h))
+            .join(', ')}`,
+        );
+      }
 
       const sizeLine = `Size: ${sizeParts.join(' / ')}`;
 

@@ -114,6 +114,49 @@ export class CreatePieceDto {
   @IsNumberString()
   legHeight?: string;
 
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumberString()
+  doorWidth?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumberString()
+  leftSideliteWidth?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumberString()
+  rightSideliteWidth?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  leftPanels?: number | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  rightPanels?: number | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  panelCount?: number | null;
+
+  @ApiPropertyOptional({ type: [Number] })
+  @IsOptional()
+  @IsArray()
+  @Type(() => Number)
+  @IsNumber({}, { each: true })
+  horizontalHeights?: number[] | null;
+
   @ApiProperty()
   @IsInt()
   @IsNotEmpty()
