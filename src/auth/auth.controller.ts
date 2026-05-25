@@ -19,6 +19,8 @@ import { RegisterUserDto } from './dto/register-user.dto';
 import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { Public } from '@/auth/public.decorator';
 import { AuthUser } from './types/auth-user.type';
 import { UsersService, UserSafe } from '@/users/users.service';
@@ -123,6 +125,20 @@ export class AuthController {
     );
 
     return { message: 'Token refrescado' };
+  }
+
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @Post('forgot-password')
+  async forgotPassword(@Body() forgotPasswordDto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(forgotPasswordDto);
+  }
+
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @Post('reset-password')
+  async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
+    return this.authService.resetPassword(resetPasswordDto);
   }
 
   @UseGuards(JwtAuthGuard)

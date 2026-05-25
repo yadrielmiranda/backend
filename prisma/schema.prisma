@@ -24,14 +24,14 @@ model Role {
 }
 
 model User {
-  id                Int       @id @default(autoincrement())
-  username          String    @unique
+  id                Int      @id @default(autoincrement())
+  username          String   @unique
   firstName         String
   lastName          String
-  email             String    @unique
-  phone             String    @unique
+  email             String   @unique
+  phone             String   @unique
   password          String
-  passwordUpdatedAt DateTime  @default(now())
+  passwordUpdatedAt DateTime @default(now())
 
   street     String @db.VarChar(150)
   city       String @db.VarChar(100)
@@ -41,19 +41,20 @@ model User {
   markupOverride Decimal? @db.Decimal(10, 4)
   isTaxExempt    Boolean  @default(false)
 
-  isActive Boolean   @default(true)
+  isActive  Boolean   @default(true)
   deletedAt DateTime?
 
   role   Role @relation(fields: [idRole], references: [id])
   idRole Int
 
-  estimates     Estimate[]
-  payments      Payment[]
-  orders        Order[]
-  notifications Notification[]
-  sessions      Session[]
-  branding      Branding?
-  eventLogs     EventLog[]
+  estimates           Estimate[]
+  payments            Payment[]
+  orders              Order[]
+  notifications       Notification[]
+  sessions            Session[]
+  passwordResetTokens PasswordResetToken[]
+  branding            Branding?
+  eventLogs           EventLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -80,6 +81,21 @@ model Session {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  tokenHash String    @db.VarChar(255)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
 }
 
 enum BrandingType {
@@ -173,7 +189,6 @@ model System {
 
   defaultCrystalId Int?
   defaultCrystal   Crystal? @relation("SystemDefaultCrystal", fields: [defaultCrystalId], references: [id], onDelete: SetNull)
-  
 
   systemCrystals    SystemCrystal[]
   systemFrameColors SystemFrameColor[]
@@ -181,19 +196,19 @@ model System {
   sysconfs     SysConf[]
   pieces       Piece[]
   pricingRules PricingRule[]
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
 
-  @@index([defaultCrystalId])  
+  @@index([defaultCrystalId])
   @@index([isActive])
 }
 
 model Config {
-  id           Int           @id @default(autoincrement())
-  conf         String
-  prod         Product       @relation(fields: [idProduct], references: [id])
-  idProduct    Int
-  isActive     Boolean       @default(true)
+  id        Int     @id @default(autoincrement())
+  conf      String
+  prod      Product @relation(fields: [idProduct], references: [id])
+  idProduct Int
+  isActive  Boolean @default(true)
 
   sysconfs     SysConf[]
   pieces       Piece[]
@@ -222,30 +237,30 @@ model SysConf {
   allowScreen   Boolean       @default(false)
   dimensionMode DimensionMode @default(STANDARD)
 
-  requiresWidth              Boolean @default(false)
-  requiresHeight             Boolean @default(false)
-  requiresHeightLeft         Boolean @default(false)
-  requiresHeightRight        Boolean @default(false)
-  requiresLegHeight          Boolean @default(false)
+  requiresWidth       Boolean @default(false)
+  requiresHeight      Boolean @default(false)
+  requiresHeightLeft  Boolean @default(false)
+  requiresHeightRight Boolean @default(false)
+  requiresLegHeight   Boolean @default(false)
 
   requiresDoorWidth          Boolean @default(false)
   requiresLeftSideliteWidth  Boolean @default(false)
   requiresRightSideliteWidth Boolean @default(false)
 
-  requiresLeftPanels         Boolean @default(false)
-  requiresRightPanels        Boolean @default(false)
+  requiresLeftPanels  Boolean @default(false)
+  requiresRightPanels Boolean @default(false)
 
-  requiresPanelCount         Boolean @default(false)
-  requiresHorizontalHeights  Boolean @default(false)
+  requiresPanelCount        Boolean @default(false)
+  requiresHorizontalHeights Boolean @default(false)
 
   defaultActiveOptionId        Int?
   defaultPreparationOptionId   Int?
   defaultSillOptionId          Int?
   defaultReinforcementOptionId Int?
 
-  defaultActiveOption ActiveOption? @relation("SysConfDefaultActiveOption", fields: [defaultActiveOptionId], references: [id], onDelete: SetNull)
-  defaultPreparationOption PreparationOption? @relation("SysConfDefaultPreparationOption", fields: [defaultPreparationOptionId], references: [id], onDelete: SetNull)
-  defaultSillOption SillOption? @relation("SysConfDefaultSillOption", fields: [defaultSillOptionId], references: [id], onDelete: SetNull)
+  defaultActiveOption        ActiveOption?        @relation("SysConfDefaultActiveOption", fields: [defaultActiveOptionId], references: [id], onDelete: SetNull)
+  defaultPreparationOption   PreparationOption?   @relation("SysConfDefaultPreparationOption", fields: [defaultPreparationOptionId], references: [id], onDelete: SetNull)
+  defaultSillOption          SillOption?          @relation("SysConfDefaultSillOption", fields: [defaultSillOptionId], references: [id], onDelete: SetNull)
   defaultReinforcementOption ReinforcementOption? @relation("SysConfDefaultReinforcementOption", fields: [defaultReinforcementOptionId], references: [id], onDelete: SetNull)
 
   dimensionPolicies DimensionPolicy[] @relation("SysConfDimensionPolicies")
@@ -266,13 +281,13 @@ model SysConf {
 model SystemCrystal {
   idSystem  Int
   idCrystal Int
-  sortOrder Int @default(0)  
+  sortOrder Int @default(0)
 
   system  System  @relation(fields: [idSystem], references: [id], onDelete: Cascade)
   crystal Crystal @relation(fields: [idCrystal], references: [id], onDelete: Restrict)
 
   @@id([idSystem, idCrystal])
-  @@index([idCrystal])  
+  @@index([idCrystal])
   @@map("system_crystals")
 }
 
@@ -284,9 +299,9 @@ model ActiveOption {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sysConfOptions SysConfActiveOption[]
-  pieces         Piece[]
-  defaultForSysConfs SysConf[] @relation("SysConfDefaultActiveOption")
+  sysConfOptions     SysConfActiveOption[]
+  pieces             Piece[]
+  defaultForSysConfs SysConf[]             @relation("SysConfDefaultActiveOption")
 
   @@map("active_options")
 }
@@ -299,9 +314,9 @@ model PreparationOption {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sysConfOptions SysConfPreparationOption[]
-  pieces         Piece[]
-  defaultForSysConfs SysConf[] @relation("SysConfDefaultPreparationOption")
+  sysConfOptions     SysConfPreparationOption[]
+  pieces             Piece[]
+  defaultForSysConfs SysConf[]                  @relation("SysConfDefaultPreparationOption")
 
   @@map("preparation_options")
 }
@@ -314,9 +329,9 @@ model SillOption {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sysConfOptions SysConfSillOption[]
-  pieces         Piece[]
-  defaultForSysConfs SysConf[] @relation("SysConfDefaultSillOption")
+  sysConfOptions     SysConfSillOption[]
+  pieces             Piece[]
+  defaultForSysConfs SysConf[]           @relation("SysConfDefaultSillOption")
 
   @@map("sill_options")
 }
@@ -329,9 +344,9 @@ model ReinforcementOption {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sysConfOptions SysConfReinforcementOption[]
-  pieces         Piece[]
-  defaultForSysConfs SysConf[] @relation("SysConfDefaultReinforcementOption")
+  sysConfOptions     SysConfReinforcementOption[]
+  pieces             Piece[]
+  defaultForSysConfs SysConf[]                    @relation("SysConfDefaultReinforcementOption")
 
   @@map("reinforcement_options")
 }
@@ -356,8 +371,8 @@ model SysConfPreparationOption {
   optionId  Int
   sortOrder Int @default(0)
 
-  sysConf SysConf            @relation(fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
-  option  PreparationOption  @relation(fields: [optionId], references: [id], onDelete: Restrict)
+  sysConf SysConf           @relation(fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
+  option  PreparationOption @relation(fields: [optionId], references: [id], onDelete: Restrict)
 
   @@id([idSystem, idConfig, optionId])
   @@index([optionId])
@@ -399,7 +414,7 @@ model FrameColor {
   isGlobal Boolean @default(false)
 
   pieces            Piece[]
-  systemFrameColors SystemFrameColor[]  
+  systemFrameColors SystemFrameColor[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -421,15 +436,15 @@ model SystemFrameColor {
 }
 
 model Crystal {
-  id                Int               @id @default(autoincrement())
-  glass             String
-  isActive          Boolean           @default(true)
+  id       Int     @id @default(autoincrement())
+  glass    String
+  isActive Boolean @default(true)
 
   pieces            Piece[]
   pricingRules      PricingRule[]
   dimensionPolicies DimensionPolicy[] @relation("CrystalDimensionPolicies")
   systemCrystals    SystemCrystal[]
-  defaultForSystems System[] @relation("SystemDefaultCrystal")
+  defaultForSystems System[]          @relation("SystemDefaultCrystal")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -517,8 +532,8 @@ model PieceMuntinPanel {
   pieceMuntinId Int
 
   panelIndex Int
-  panelCode  String?  @db.VarChar(20)
-  panelLabel String @db.VarChar(100)
+  panelCode  String? @db.VarChar(20)
+  panelLabel String  @db.VarChar(100)
 
   horizontalLites Int @default(1)
   verticalLites   Int @default(1)
@@ -587,10 +602,10 @@ model EstimateSequence {
 }
 
 model Estimate {
-  id     Int      @id @default(autoincrement())
-  number String   @unique
-  name   String
-  date   DateTime @default(now())
+  id        Int       @id @default(autoincrement())
+  number    String    @unique
+  name      String
+  date      DateTime  @default(now())
   expiresAt DateTime?
 
   // --- BASE ---
@@ -641,73 +656,73 @@ model Estimate {
 }
 
 model Piece {
-  id               Int        @id @default(autoincrement())
-  estim            Estimate   @relation(fields: [idEst], references: [id])
-  idEst            Int
-  mark             String
-  prod             Product    @relation(fields: [idProd], references: [id])
-  idProd           Int
-  bran             Brand      @relation(fields: [idBrand], references: [id])
-  idBrand          Int
-  syst             System     @relation(fields: [idSyst], references: [id])
-  idSyst           Int
-  conf             Config     @relation(fields: [idConf], references: [id])
-  idConf           Int
-  fColor           FrameColor @relation(fields: [idFC], references: [id])
-  idFC             Int
+  id      Int        @id @default(autoincrement())
+  estim   Estimate   @relation(fields: [idEst], references: [id])
+  idEst   Int
+  mark    String
+  prod    Product    @relation(fields: [idProd], references: [id])
+  idProd  Int
+  bran    Brand      @relation(fields: [idBrand], references: [id])
+  idBrand Int
+  syst    System     @relation(fields: [idSyst], references: [id])
+  idSyst  Int
+  conf    Config     @relation(fields: [idConf], references: [id])
+  idConf  Int
+  fColor  FrameColor @relation(fields: [idFC], references: [id])
+  idFC    Int
 
-  width              Decimal? @db.Decimal(10, 3)
-  height             Decimal? @db.Decimal(10, 3)
-  heightLeft         Decimal? @db.Decimal(10, 3)
-  heightRight        Decimal? @db.Decimal(10, 3)
-  legHeight          Decimal? @db.Decimal(10, 3)
+  width       Decimal? @db.Decimal(10, 3)
+  height      Decimal? @db.Decimal(10, 3)
+  heightLeft  Decimal? @db.Decimal(10, 3)
+  heightRight Decimal? @db.Decimal(10, 3)
+  legHeight   Decimal? @db.Decimal(10, 3)
 
   doorWidth          Decimal? @db.Decimal(10, 3)
   leftSideliteWidth  Decimal? @db.Decimal(10, 3)
   rightSideliteWidth Decimal? @db.Decimal(10, 3)
 
-  leftPanels         Int?
-  rightPanels        Int?
+  leftPanels  Int?
+  rightPanels Int?
 
-  panelCount         Int?
-  horizontalHeights  Json?
+  panelCount        Int?
+  horizontalHeights Json?
 
-  cryst            Crystal    @relation(fields: [idCryst], references: [id])
-  idCryst          Int
-  tin              Tint       @relation(fields: [idTint], references: [id])
-  idTint           Int
-  privacy          Boolean
-  coat             Coating    @relation(fields: [idCoat], references: [id])
-  idCoat           Int
+  cryst   Crystal @relation(fields: [idCryst], references: [id])
+  idCryst Int
+  tin     Tint    @relation(fields: [idTint], references: [id])
+  idTint  Int
+  privacy Boolean
+  coat    Coating @relation(fields: [idCoat], references: [id])
+  idCoat  Int
 
-  dpPosPsf         Decimal?   @db.Decimal(10, 2)
-  dpNegPsf         Decimal?   @db.Decimal(10, 2)
-  screen           Boolean
+  dpPosPsf Decimal? @db.Decimal(10, 2)
+  dpNegPsf Decimal? @db.Decimal(10, 2)
+  screen   Boolean
 
-  activeOption         ActiveOption?         @relation(fields: [idActiveOption], references: [id])
-  idActiveOption       Int?
+  activeOption   ActiveOption? @relation(fields: [idActiveOption], references: [id])
+  idActiveOption Int?
 
-  preparationOption    PreparationOption?    @relation(fields: [idPreparationOption], references: [id])
-  idPreparationOption  Int?
+  preparationOption   PreparationOption? @relation(fields: [idPreparationOption], references: [id])
+  idPreparationOption Int?
 
-  sillOption           SillOption?           @relation(fields: [idSillOption], references: [id])
-  idSillOption         Int?
+  sillOption   SillOption? @relation(fields: [idSillOption], references: [id])
+  idSillOption Int?
 
   reinforcementOption   ReinforcementOption? @relation(fields: [idReinforcementOption], references: [id])
   idReinforcementOption Int?
 
   qty              Int
-  rate             Decimal    @db.Decimal(12, 2)
-  markup           Decimal    @default(0) @db.Decimal(10, 4)
-  price            Decimal    @db.Decimal(12, 2)
-  subtotal         Decimal    @db.Decimal(12, 2)
-  netProfit        Decimal    @db.Decimal(12, 2)
-  dealerMarkup     Decimal    @default(0) @db.Decimal(10, 4)
-  customerPrice    Decimal    @db.Decimal(12, 2)
-  customerSubtotal Decimal    @db.Decimal(12, 2)
-  netProfitD       Decimal    @db.Decimal(12, 2)
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
+  rate             Decimal  @db.Decimal(12, 2)
+  markup           Decimal  @default(0) @db.Decimal(10, 4)
+  price            Decimal  @db.Decimal(12, 2)
+  subtotal         Decimal  @db.Decimal(12, 2)
+  netProfit        Decimal  @db.Decimal(12, 2)
+  dealerMarkup     Decimal  @default(0) @db.Decimal(10, 4)
+  customerPrice    Decimal  @db.Decimal(12, 2)
+  customerSubtotal Decimal  @db.Decimal(12, 2)
+  netProfitD       Decimal  @db.Decimal(12, 2)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   pieceMuntin PieceMuntin?
 
@@ -857,10 +872,10 @@ model DimensionRule {
 
   policy DimensionPolicy @relation(fields: [idPolicy], references: [id], onDelete: Cascade)
 
+  @@unique([idPolicy, ruleType, widthIn, heightIn], map: "uq_rule_policy_type_dims")
   @@index([idPolicy, widthIn, heightIn], map: "idx_rule_policy_dims")
   @@index([idPolicy, ruleType], map: "idx_rule_policy_type")
   @@index([idPolicy, ruleType, widthIn, heightIn], map: "idx_rule_policy_type_dims")
-  @@unique([idPolicy, ruleType, widthIn, heightIn], map: "uq_rule_policy_type_dims")
 }
 
 // =======================================

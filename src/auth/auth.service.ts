@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
   ConflictException,
   InternalServerErrorException,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '@/prisma/prisma.service';
@@ -12,9 +13,12 @@ import { RegisterUserDto } from './dto/register-user.dto';
 import * as bcrypt from 'bcrypt';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { addDays } from 'date-fns';
-import { randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { LogsService } from '@/logs/logs.service';
+import { MailService } from '@/mail/mail.service';
 
 type JwtRolePayload = string | undefined;
 
@@ -32,6 +36,7 @@ export class AuthService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private logs: LogsService,
+    private mail: MailService,
   ) { }
 
   private accessTtl = process.env.JWT_ACCESS_TTL || '15m';
@@ -43,6 +48,22 @@ export class AuthService {
   );
 
   private idleMinutes = parseInt(process.env.SESSION_IDLE_MINUTES ?? '0', 10);
+
+  private passwordResetMinutes = parseInt(
+    process.env.PASSWORD_RESET_EXPIRES_MINUTES ?? '30',
+    10,
+  );
+
+  private hashResetToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private buildResetPasswordUrl(token: string) {
+    const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3000';
+    const normalizedFrontendUrl = frontendUrl.replace(/\/$/, '');
+
+    return `${normalizedFrontendUrl}/reset-password?token=${encodeURIComponent(token)}`;
+  }
 
   // =====================================================
   // ✅ Helpers logs: inicio / fin de sesión
@@ -243,6 +264,153 @@ export class AuthService {
 
   newSessionId() {
     return randomUUID();
+  }
+
+  async forgotPassword(
+    dto: ForgotPasswordDto,
+  ): Promise<{ message: string }> {
+    const genericMessage =
+      'If an account exists with that email, a password reset link has been sent.';
+
+    const email = dto.email.trim().toLowerCase();
+
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        email: true,
+        isActive: true,
+        deletedAt: true,
+      },
+    });
+
+    // No revelamos si el email existe o no.
+    if (!user || !user.isActive || user.deletedAt) {
+      return { message: genericMessage };
+    }
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = this.hashResetToken(rawToken);
+
+    const expiresAt = new Date(
+      Date.now() + this.passwordResetMinutes * 60 * 1000,
+    );
+
+    await this.prisma.$transaction([
+      this.prisma.passwordResetToken.updateMany({
+        where: {
+          userId: user.id,
+          usedAt: null,
+        },
+        data: {
+          usedAt: new Date(),
+        },
+      }),
+
+      this.prisma.passwordResetToken.create({
+        data: {
+          userId: user.id,
+          tokenHash,
+          expiresAt,
+        },
+      }),
+    ]);
+
+    const resetLink = this.buildResetPasswordUrl(rawToken);
+
+    await this.mail.sendPasswordResetEmail({
+      to: user.email,
+      resetLink,
+      expiresInMinutes: this.passwordResetMinutes,
+    });
+
+    return { message: genericMessage };
+  }
+
+  async resetPassword(dto: ResetPasswordDto): Promise<{ message: string }> {
+    const token = dto.token.trim();
+
+    if (!token) {
+      throw new BadRequestException('Invalid or expired password reset link.');
+    }
+
+    const tokenHash = this.hashResetToken(token);
+
+    const resetToken = await this.prisma.passwordResetToken.findFirst({
+      where: {
+        tokenHash,
+        usedAt: null,
+        expiresAt: {
+          gt: new Date(),
+        },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            isActive: true,
+            deletedAt: true,
+          },
+        },
+      },
+    });
+
+    if (!resetToken || !resetToken.user.isActive || resetToken.user.deletedAt) {
+      throw new BadRequestException('Invalid or expired password reset link.');
+    }
+
+    const hashedPassword = await bcrypt.hash(dto.password, this.bcryptRounds);
+
+    const activeSessions = await this.prisma.session.findMany({
+      where: {
+        userId: resetToken.userId,
+        revokedAt: null,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: resetToken.userId },
+        data: {
+          password: hashedPassword,
+          passwordUpdatedAt: new Date(),
+        },
+      }),
+
+      this.prisma.passwordResetToken.updateMany({
+        where: {
+          userId: resetToken.userId,
+          usedAt: null,
+        },
+        data: {
+          usedAt: new Date(),
+        },
+      }),
+
+      this.prisma.session.updateMany({
+        where: {
+          userId: resetToken.userId,
+          revokedAt: null,
+        },
+        data: {
+          revokedAt: new Date(),
+        },
+      }),
+    ]);
+
+    for (const session of activeSessions) {
+      await this.logSessionLogout({
+        userId: resetToken.userId,
+        sessionId: session.id,
+        reason: 'PASSWORD_CHANGED',
+        source: 'AuthService.resetPassword',
+      });
+    }
+
+    return { message: 'Password updated successfully. You can now sign in.' };
   }
 
   async changePasswordSelf(
