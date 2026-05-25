@@ -58,11 +58,20 @@ export class AuthService {
     return createHash('sha256').update(token).digest('hex');
   }
 
-  private buildResetPasswordUrl(token: string) {
-    const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3000';
-    const normalizedFrontendUrl = frontendUrl.replace(/\/$/, '');
+  private getPublicFrontendUrl() {
+    const publicFrontendUrl = process.env.PUBLIC_FRONTEND_URL;
 
-    return `${normalizedFrontendUrl}/reset-password?token=${encodeURIComponent(token)}`;
+    if (!publicFrontendUrl) {
+      throw new InternalServerErrorException(
+        'PUBLIC_FRONTEND_URL is not configured.',
+      );
+    }
+
+    return publicFrontendUrl.replace(/\/$/, '');
+  }
+
+  private buildResetPasswordUrl(token: string) {
+    return `${this.getPublicFrontendUrl()}/reset-password?token=${encodeURIComponent(token)}`;
   }
 
   // =====================================================
