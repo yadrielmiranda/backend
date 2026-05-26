@@ -1,0 +1,42 @@
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index 99d1e10..5bd8860 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -347,6 +347,7 @@ model ReinforcementOption {
+   sysConfOptions     SysConfReinforcementOption[]
+   pieces             Piece[]
+   defaultForSysConfs SysConf[]                    @relation("SysConfDefaultReinforcementOption")
++  dimensionPolicies  DimensionPolicy[]            @relation("ReinforcementDimensionPolicies")
+ 
+   @@map("reinforcement_options")
+ }
+@@ -833,10 +834,16 @@ model DimensionPolicy {
+   idConfig Int
+   sysConf  SysConf @relation("SysConfDimensionPolicies", fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
+ 
+-  // 🔗 Referencia a Crystal (Int en tu esquema)
++  // 🔗 Referencia a Crystal
+   idCrystal Int
+   crystal   Crystal @relation("CrystalDimensionPolicies", fields: [idCrystal], references: [id], onDelete: Restrict)
+ 
++  // 🔗 Referencia opcional a Reinforcement
++  // null = esta policy no depende de reinforcement
++  // valor = esta policy aplica solo para ese reinforcement option
++  idReinforcementOption Int?
++  reinforcementOption   ReinforcementOption? @relation("ReinforcementDimensionPolicies", fields: [idReinforcementOption], references: [id], onDelete: Restrict)
++
+   // Parámetros de interpretación de la tabla
+   sizeBasis    DimensionSizeBasis @default(FRAME)
+   roundingRule DimensionRounding  @default(ROUND_UP_TO_NEXT)
+@@ -848,8 +855,9 @@ model DimensionPolicy {
+ 
+   rules DimensionRule[]
+ 
+-  // Una política por combinación System+Config+Crystal
+-  @@unique([idSystem, idConfig, idCrystal], map: "uq_policy_sysconf_crystal")
++  // Una política por combinación System+Config+Crystal+Reinforcement
++  @@unique([idSystem, idConfig, idCrystal, idReinforcementOption], map: "uq_policy_sysconf_crystal_reinf")
++  @@index([idReinforcementOption])
+   @@map("dimension_policy")
+ }
+ 

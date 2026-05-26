@@ -347,6 +347,7 @@ model ReinforcementOption {
   sysConfOptions     SysConfReinforcementOption[]
   pieces             Piece[]
   defaultForSysConfs SysConf[]                    @relation("SysConfDefaultReinforcementOption")
+  dimensionPolicies  DimensionPolicy[]            @relation("ReinforcementDimensionPolicies")
 
   @@map("reinforcement_options")
 }
@@ -833,9 +834,13 @@ model DimensionPolicy {
   idConfig Int
   sysConf  SysConf @relation("SysConfDimensionPolicies", fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
 
-  // 🔗 Referencia a Crystal (Int en tu esquema)
+  // 🔗 Referencia a Crystal
   idCrystal Int
   crystal   Crystal @relation("CrystalDimensionPolicies", fields: [idCrystal], references: [id], onDelete: Restrict)
+
+  // 🔗 Referencia opcional a Reinforcement / Interlock
+  idReinforcementOption Int?
+  reinforcementOption   ReinforcementOption? @relation("ReinforcementDimensionPolicies", fields: [idReinforcementOption], references: [id], onDelete: Restrict)
 
   // Parámetros de interpretación de la tabla
   sizeBasis    DimensionSizeBasis @default(FRAME)
@@ -848,8 +853,13 @@ model DimensionPolicy {
 
   rules DimensionRule[]
 
-  // Una política por combinación System+Config+Crystal
-  @@unique([idSystem, idConfig, idCrystal], map: "uq_policy_sysconf_crystal")
+  // Ahora sí: una policy por System + Config + Crystal + Reinforcement/Interlock.
+  @@unique([idSystem, idConfig, idCrystal, idReinforcementOption], map: "uq_policy_sysconf_crystal_reinf")
+  // Índice dedicado para sostener el FK hacia sys_conf.
+  // Esto evita depender del unique viejo para idSystem/idConfig.
+  @@index([idSystem, idConfig], map: "idx_dimension_policy_sysconf")
+  // Índice para el FK opcional hacia reinforcement_options.
+  @@index([idReinforcementOption], map: "idx_dimension_policy_reinforcement")
   @@map("dimension_policy")
 }
 
