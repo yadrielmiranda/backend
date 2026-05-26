@@ -406,6 +406,7 @@ export class EstimatePieceCalculatorService {
         if (!dpCheck.ok) {
             if (dpCheck.reason === 'NOT_RATED') {
                 throw new BadRequestException(
+                    dpCheck.note ??
                     'No dimension policy exists for this System + Config + Crystal combination.',
                 );
             }

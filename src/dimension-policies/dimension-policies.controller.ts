@@ -32,15 +32,20 @@ export class DimensionPoliciesController {
   //  READ: todos los usuarios autenticados
   @Get()
   list(
-    @Query('idSystem') idSystem?: number,
-    @Query('idConfig') idConfig?: number,
-    @Query('idCrystal') idCrystal?: number,
+    @Query('idSystem') idSystem?: string,
+    @Query('idConfig') idConfig?: string,
+    @Query('idCrystal') idCrystal?: string,
+    @Query('idReinforcementOption') idReinforcementOption?: string,
     @Query('activeOnly') activeOnly?: string,
   ) {
     return this.svc.listPolicies({
       idSystem: idSystem ? Number(idSystem) : undefined,
       idConfig: idConfig ? Number(idConfig) : undefined,
       idCrystal: idCrystal ? Number(idCrystal) : undefined,
+      idReinforcementOption:
+        idReinforcementOption != null && idReinforcementOption !== ''
+          ? Number(idReinforcementOption)
+          : undefined,
       activeOnly: activeOnly === 'true',
     });
   }
@@ -51,6 +56,7 @@ export class DimensionPoliciesController {
     @Query('idSystem', ParseIntPipe) idSystem: number,
     @Query('idConfig', ParseIntPipe) idConfig: number,
     @Query('idCrystal', ParseIntPipe) idCrystal: number,
+    @Query('idReinforcementOption') idReinforcementOption: string | undefined,
     @Query('widthIn') widthIn: string,
     @Query('heightIn') heightIn: string,
     @Query('ruleType') ruleType?: DimensionRuleType,
@@ -59,6 +65,10 @@ export class DimensionPoliciesController {
       idSystem,
       idConfig,
       idCrystal,
+      idReinforcementOption:
+        idReinforcementOption != null && idReinforcementOption !== ''
+          ? Number(idReinforcementOption)
+          : undefined,
       widthIn: Number(widthIn),
       heightIn: Number(heightIn),
       ruleType,

@@ -208,22 +208,82 @@ export class EstimateDimensionValidationService {
     return { widthIn, heightIn: heightIn || h };
   }
 
+  private async resolveDimensionPolicyReinforcement(
+    dto: CreatePieceDto | UpsertPieceDto,
+    tx: PrismaTransactionClient,
+  ): Promise<number | null> {
+    const selectedId = dto.idReinforcementOption ?? null;
+
+    const associatedOptions = await tx.sysConfReinforcementOption.findMany({
+      where: {
+        idSystem: dto.idSyst,
+        idConfig: dto.idConf,
+      },
+      select: {
+        optionId: true,
+      },
+    });
+
+    // comentario en español: si esta SysConf no usa reinforcement,
+    // la DimensionPolicy debe buscarse con idReinforcementOption = null.
+    if (associatedOptions.length === 0) {
+      if (selectedId != null) {
+        throw new BadRequestException(
+          'Reinforcement option is not allowed for the selected configuration.',
+        );
+      }
+
+      return null;
+    }
+
+    // comentario en español: si esta SysConf sí usa reinforcement,
+    // la pieza debe traer una opción válida.
+    if (selectedId == null) {
+      throw new BadRequestException(
+        'Reinforcement option is required for the selected configuration.',
+      );
+    }
+
+    const isAllowed = associatedOptions.some(
+      (option) => option.optionId === selectedId,
+    );
+
+    if (!isAllowed) {
+      throw new BadRequestException(
+        'Reinforcement option is invalid for the selected configuration.',
+      );
+    }
+
+    return selectedId;
+  }
+
   async validateAgainstDimensionPolicy(
     dto: CreatePieceDto | UpsertPieceDto,
     tx: PrismaTransactionClient,
   ): Promise<DimensionValidationResult> {
+    const idReinforcementOption =
+      await this.resolveDimensionPolicyReinforcement(dto, tx);
+
     const policy = await tx.dimensionPolicy.findFirst({
       where: {
         idSystem: dto.idSyst,
         idConfig: dto.idConf,
         idCrystal: dto.idCryst,
+        idReinforcementOption,
         isActive: true,
       },
       include: { rules: true },
     });
 
     if (!policy || !policy.rules || policy.rules.length === 0) {
-      return { ok: false, reason: 'NOT_RATED' };
+      return {
+        ok: false,
+        reason: 'NOT_RATED',
+        note:
+          idReinforcementOption == null
+            ? 'No dimension policy exists for this System + Config + Crystal.'
+            : 'No dimension policy exists for this System + Config + Crystal + Reinforcement.',
+      };
     }
 
     const checks = await this.buildDimensionValidationChecks(dto, tx);

@@ -35,6 +35,7 @@ export class EstimatesController {
       idSyst: number;
       idConf: number;
       idCryst: number;
+      idReinforcementOption?: number | null;
 
       width?: number;
       height: number;
@@ -63,6 +64,7 @@ export class EstimatesController {
     }
 
     const optionalNumbers = {
+      idReinforcementOption: body.idReinforcementOption,
       width: body.width,
       heightLeft: body.heightLeft,
       heightRight: body.heightRight,

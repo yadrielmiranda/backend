@@ -97,7 +97,7 @@ export type PdfView = 'client' | 'dealer_internal' | 'dealer_public' | 'admin';
 export class EstimatesService {
   constructor(
     private prisma: PrismaService,
-    private logs: LogsService,    
+    private logs: LogsService,
     private estimatePdfService: EstimatePdfService,
     private dimensionValidationService: EstimateDimensionValidationService,
     private pieceCalculator: EstimatePieceCalculatorService,
@@ -1367,6 +1367,7 @@ export class EstimatesService {
     idSyst: number;
     idConf: number;
     idCryst: number;
+    idReinforcementOption?: number | null;
     width?: number;
     height: number;
     heightLeft?: number;
@@ -1386,6 +1387,7 @@ export class EstimatesService {
         idSyst: input.idSyst,
         idConf: input.idConf,
         idCryst: input.idCryst,
+        idReinforcementOption: input.idReinforcementOption ?? null,
         width: input.width != null ? String(input.width) : undefined,
         height: input.height != null ? String(input.height) : undefined,
         heightLeft:

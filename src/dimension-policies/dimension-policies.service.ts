@@ -38,6 +38,7 @@ export class DimensionPoliciesService {
       idSystem: p.idSystem,
       idConfig: p.idConfig,
       idCrystal: p.idCrystal,
+      idReinforcementOption: p.idReinforcementOption ?? null,
       sizeBasis: p.sizeBasis,
       roundingRule: p.roundingRule,
       notes: p.notes,
@@ -45,6 +46,7 @@ export class DimensionPoliciesService {
       systemName: p.sysConf?.system?.name ?? '',
       configName: p.sysConf?.config?.conf ?? '',
       crystalName: p.crystal?.glass ?? '',
+      reinforcementName: p.reinforcementOption?.name ?? null,
     };
   }
 
@@ -57,6 +59,7 @@ export class DimensionPoliciesService {
         },
       },
       crystal: { select: { glass: true } },
+      reinforcementOption: { select: { name: true } },
     };
   }
 
@@ -76,6 +79,7 @@ export class DimensionPoliciesService {
       idSystem: p.idSystem,
       idConfig: p.idConfig,
       idCrystal: p.idCrystal,
+      idReinforcementOption: p.idReinforcementOption ?? null,
       sizeBasis: p.sizeBasis,
       roundingRule: p.roundingRule,
       notes: p.notes ?? null,
@@ -83,6 +87,7 @@ export class DimensionPoliciesService {
       systemName: p.sysConf?.system?.name ?? '',
       configName: p.sysConf?.config?.conf ?? '',
       crystalName: p.crystal?.glass ?? '',
+      reinforcementName: p.reinforcementOption?.name ?? null,
       rulesCount,
     };
   }
@@ -113,6 +118,93 @@ export class DimensionPoliciesService {
     });
   }
 
+  private async resolvePolicyReinforcementInput(params: {
+    idSystem: number;
+    idConfig: number;
+    idReinforcementOption?: number | null;
+  }) {
+    const selectedId = params.idReinforcementOption ?? null;
+
+    const associatedOptions =
+      await this.prisma.sysConfReinforcementOption.findMany({
+        where: {
+          idSystem: params.idSystem,
+          idConfig: params.idConfig,
+        },
+        select: {
+          optionId: true,
+          option: {
+            select: {
+              id: true,
+              name: true,
+              isActive: true,
+            },
+          },
+        },
+      });
+
+    // comentario en español: si la SysConf no tiene opciones de reinforcement,
+    // la policy no debe depender de reinforcement/interlock.
+    if (associatedOptions.length === 0) {
+      if (selectedId != null) {
+        throw new BadRequestException(
+          'This System + Config does not use reinforcement/interlock options.',
+        );
+      }
+
+      return null;
+    }
+
+    // comentario en español: si la SysConf sí tiene opciones asociadas,
+    // entonces la policy debe indicar cuál aplica.
+    if (selectedId == null) {
+      throw new BadRequestException(
+        'Reinforcement option is required for this System + Config.',
+      );
+    }
+
+    const found = associatedOptions.find((x) => x.optionId === selectedId);
+
+    if (!found) {
+      throw new BadRequestException(
+        'The selected reinforcement/interlock option is not associated with this System + Config.',
+      );
+    }
+
+    if (!found.option?.isActive) {
+      throw new BadRequestException(
+        'The selected reinforcement/interlock option is inactive.',
+      );
+    }
+
+    return selectedId;
+  }
+
+  private async assertPolicyCombinationAvailable(params: {
+    idSystem: number;
+    idConfig: number;
+    idCrystal: number;
+    idReinforcementOption: number | null;
+    excludeId?: number;
+  }) {
+    const existing = await this.prisma.dimensionPolicy.findFirst({
+      where: {
+        idSystem: params.idSystem,
+        idConfig: params.idConfig,
+        idCrystal: params.idCrystal,
+        idReinforcementOption: params.idReinforcementOption,
+        ...(params.excludeId ? { NOT: { id: params.excludeId } } : {}),
+      },
+      select: { id: true },
+    });
+
+    if (existing) {
+      throw new BadRequestException(
+        'A policy already exists for this System + Config + Crystal + Reinforcement combination.',
+      );
+    }
+  }
+
   // -------------------------------------------------
   //                 Policies
   // -------------------------------------------------
@@ -133,6 +225,20 @@ export class DimensionPoliciesService {
       );
     }
 
+    const idReinforcementOption =
+      await this.resolvePolicyReinforcementInput({
+        idSystem: dto.idSystem,
+        idConfig: dto.idConfig,
+        idReinforcementOption: dto.idReinforcementOption,
+      });
+
+    await this.assertPolicyCombinationAvailable({
+      idSystem: dto.idSystem,
+      idConfig: dto.idConfig,
+      idCrystal: dto.idCrystal,
+      idReinforcementOption,
+    });
+
     // 2) Creamos la policy
     try {
       const created = await this.prisma.dimensionPolicy.create({
@@ -140,6 +246,7 @@ export class DimensionPoliciesService {
           idSystem: dto.idSystem,
           idConfig: dto.idConfig,
           idCrystal: dto.idCrystal,
+          idReinforcementOption,
           sizeBasis: dto.sizeBasis,
           roundingRule: dto.roundingRule,
           notes: dto.notes,
@@ -170,6 +277,7 @@ export class DimensionPoliciesService {
           idSystem: dto.idSystem,
           idConfig: dto.idConfig,
           idCrystal: dto.idCrystal,
+          idReinforcementOption,
         },
         source: 'DimensionPoliciesService.createPolicy',
       });
@@ -178,7 +286,7 @@ export class DimensionPoliciesService {
     } catch (e: any) {
       if (e.code === 'P2002') {
         throw new BadRequestException(
-          'A policy already exists for this exact System + Config + Crystal combination.',
+          'A policy already exists for this System + Config + Crystal + Reinforcement combination.',
         );
       }
       if (e.code === 'P2003') {
@@ -219,12 +327,18 @@ export class DimensionPoliciesService {
     idSystem?: number;
     idConfig?: number;
     idCrystal?: number;
+    idReinforcementOption?: number | null;
     activeOnly?: boolean;
   }) {
     const where: any = {};
     if (params?.idSystem != null) where.idSystem = params.idSystem;
     if (params?.idConfig != null) where.idConfig = params.idConfig;
     if (params?.idCrystal != null) where.idCrystal = params.idCrystal;
+
+    if (params?.idReinforcementOption !== undefined) {
+      where.idReinforcementOption = params.idReinforcementOption;
+    }
+
     if (params?.activeOnly) where.isActive = true;
 
     const list = await this.prisma.dimensionPolicy.findMany({
@@ -234,6 +348,7 @@ export class DimensionPoliciesService {
         { idSystem: 'asc' },
         { idConfig: 'asc' },
         { idCrystal: 'asc' },
+        { idReinforcementOption: 'asc' },
       ],
     });
 
@@ -244,9 +359,43 @@ export class DimensionPoliciesService {
     const beforeSnap = await this.policySnapshot(id);
     if (!beforeSnap) throw new NotFoundException('Policy not found');
 
+    const current = await this.prisma.dimensionPolicy.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        idSystem: true,
+        idConfig: true,
+        idCrystal: true,
+        idReinforcementOption: true,
+      },
+    });
+
+    if (!current) throw new NotFoundException('Policy not found');
+
+    const data: any = { ...dto };
+
+    if (Object.prototype.hasOwnProperty.call(dto, 'idReinforcementOption')) {
+      const idReinforcementOption =
+        await this.resolvePolicyReinforcementInput({
+          idSystem: current.idSystem,
+          idConfig: current.idConfig,
+          idReinforcementOption: dto.idReinforcementOption,
+        });
+
+      await this.assertPolicyCombinationAvailable({
+        idSystem: current.idSystem,
+        idConfig: current.idConfig,
+        idCrystal: current.idCrystal,
+        idReinforcementOption,
+        excludeId: id,
+      });
+
+      data.idReinforcementOption = idReinforcementOption;
+    }
+
     await this.prisma.dimensionPolicy.update({
       where: { id },
-      data: dto,
+      data,
     });
 
     const full = await this.prisma.dimensionPolicy.findUnique({
@@ -261,10 +410,40 @@ export class DimensionPoliciesService {
     const changedFields: string[] = [];
     const cmp = (a: any, b: any) => (a ?? null) !== (b ?? null);
 
-    if ('sizeBasis' in dto && cmp(beforeSnap.sizeBasis, afterSnap?.sizeBasis)) changedFields.push('sizeBasis');
-    if ('roundingRule' in dto && cmp(beforeSnap.roundingRule, afterSnap?.roundingRule)) changedFields.push('roundingRule');
-    if ('notes' in dto && cmp(beforeSnap.notes, afterSnap?.notes)) changedFields.push('notes');
-    if ('isActive' in dto && cmp(beforeSnap.isActive, afterSnap?.isActive)) changedFields.push('isActive');
+    if (
+      'sizeBasis' in dto &&
+      cmp(beforeSnap.sizeBasis, afterSnap?.sizeBasis)
+    ) {
+      changedFields.push('sizeBasis');
+    }
+
+    if (
+      'roundingRule' in dto &&
+      cmp(beforeSnap.roundingRule, afterSnap?.roundingRule)
+    ) {
+      changedFields.push('roundingRule');
+    }
+
+    if (
+      'notes' in dto &&
+      cmp(beforeSnap.notes, afterSnap?.notes)
+    ) {
+      changedFields.push('notes');
+    }
+
+    if (
+      'isActive' in dto &&
+      cmp(beforeSnap.isActive, afterSnap?.isActive)
+    ) {
+      changedFields.push('isActive');
+    }
+
+    if (
+      'idReinforcementOption' in dto &&
+      cmp(beforeSnap.idReinforcementOption, afterSnap?.idReinforcementOption)
+    ) {
+      changedFields.push('idReinforcementOption');
+    }
 
     // ✅ LOG UPDATE (before/after liviano)
     await this.logPolicy({
@@ -350,11 +529,11 @@ export class DimensionPoliciesService {
       where: { idPolicy: policyId },
     });
 
-    // ✅ LOG UPDATE (bulk rules) - NO guardamos filas completas
+    // LOG UPDATE (bulk rules) - NO guardamos filas completas
     await this.logs.log({
       action: 'UPDATE',
       entityType: 'DimensionPolicyRules',
-      entityId: policyId, // ✅ int, no null
+      entityId: policyId, // int, no null
       userId: actor?.id ?? null,
       message: `DimensionPolicy rules bulk upsert (#${policyId})`,
       before: { rulesCount: beforeCount },
@@ -413,6 +592,7 @@ export class DimensionPoliciesService {
     idSystem: number;
     idConfig: number;
     idCrystal: number;
+    idReinforcementOption?: number | null;
     widthIn: number;
     heightIn: number;
     ruleType?: DimensionRuleType;
@@ -422,6 +602,9 @@ export class DimensionPoliciesService {
         idSystem: params.idSystem,
         idConfig: params.idConfig,
         idCrystal: params.idCrystal,
+        ...(params.idReinforcementOption !== undefined
+          ? { idReinforcementOption: params.idReinforcementOption }
+          : {}),
         isActive: true,
       },
       include: { rules: true },
