@@ -22,11 +22,15 @@ import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
 import { Request, Response } from 'express';
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 import type { AuthUser } from '@/auth/types/auth-user.type';
+import { EstimatePublicShareService } from './public-share/estimate-public-share.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('estimates')
 export class EstimatesController {
-  constructor(private readonly estimatesService: EstimatesService) { }
+  constructor(
+    private readonly estimatesService: EstimatesService,
+    private readonly estimatePublicShareService: EstimatePublicShareService,
+  ) { }
 
   @Post('preview-dimension')
   async previewDimension(
@@ -108,6 +112,19 @@ export class EstimatesController {
   @Get()
   findAll(@Req() req: Request) {
     return this.estimatesService.findAllForUser(req.user as AuthUser);
+  }
+
+  @Post(':id/public-token')
+  getOrCreatePublicToken(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthUser;
+
+    return this.estimatePublicShareService.getOrCreatePublicLinkToken(
+      id,
+      user,
+    );
   }
 
   @Get(':id')

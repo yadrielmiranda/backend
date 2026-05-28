@@ -9,10 +9,26 @@ import { EstimatePdfService } from './pdf/estimate-pdf.service';
 import { EstimateDimensionValidationService } from './dimensions/estimate-dimension-validation.service';
 import { EstimatePieceCalculatorService } from './calculation/estimate-piece-calculator.service';
 import { EstimateMuntinService } from './muntins/estimate-muntin.service';
+import { EstimatePublicShareService } from './public-share/estimate-public-share.service';
+import { PublicEstimatesController } from './public-share/public-estimates.controller';
+import { NotificationsModule } from '@/notifications/notifications.module';
 
 @Module({
-  imports: [PrismaModule, PricingRulesModule, LogsModule, FrameColorModule ],
-  controllers: [EstimatesController],
-  providers: [EstimatesService, EstimatePdfService, EstimateDimensionValidationService, EstimatePieceCalculatorService, EstimateMuntinService],
+  imports: [
+  PrismaModule,
+  PricingRulesModule,
+  LogsModule,
+  FrameColorModule,
+  NotificationsModule,
+],
+  controllers: [EstimatesController, PublicEstimatesController],
+  providers: [
+    EstimatesService,
+    EstimatePdfService,
+    EstimateDimensionValidationService,
+    EstimatePieceCalculatorService,
+    EstimateMuntinService,
+    EstimatePublicShareService,
+  ],
 })
-export class EstimatesModule {}
+export class EstimatesModule { }

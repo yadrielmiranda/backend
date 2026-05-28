@@ -609,6 +609,10 @@ model Estimate {
   date      DateTime  @default(now())
   expiresAt DateTime?
 
+  publicToken          String?   @unique @db.VarChar(64)
+  publicTokenEnabled   Boolean   @default(true)
+  publicTokenCreatedAt DateTime?
+
   // --- BASE ---
   units Int // suma de qty de todas las piezas
 
