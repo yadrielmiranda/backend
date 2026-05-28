@@ -303,18 +303,22 @@ export class EstimatesService {
   // --- estimates (Get List) ---
   async estimates(params: {
     where?: Prisma.EstimateWhereInput;
-  }): Promise<EstimateWithRelations[]> {
+  }) {
     const estimates = await this.prisma.estimate.findMany({
       where: params.where,
       include: {
-        user: true,
+        user: {
+          include: {
+            role: true,
+          },
+        },
         status: true,
         order: true,
       },
       orderBy: { date: 'desc' },
     });
 
-    return estimates as EstimateWithRelations[];
+    return estimates;
   }
 
   async findAllForUser(user: AuthUser) {
