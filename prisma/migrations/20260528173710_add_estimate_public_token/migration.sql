@@ -5,7 +5,7 @@
 
 */
 -- AlterTable
-ALTER TABLE `estimate` ADD COLUMN `publicToken` VARCHAR(64) NULL,
+ALTER TABLE `Estimate` ADD COLUMN `publicToken` VARCHAR(64) NULL,
     ADD COLUMN `publicTokenCreatedAt` DATETIME(3) NULL,
     ADD COLUMN `publicTokenEnabled` BOOLEAN NOT NULL DEFAULT true;
 
