@@ -180,6 +180,45 @@ export class DimensionPoliciesService {
     return selectedId;
   }
 
+  private async assertCrystalAssociatedWithSystem(params: {
+    idSystem: number;
+    idCrystal: number;
+  }) {
+    const crystal = await this.prisma.crystal.findUnique({
+      where: { id: params.idCrystal },
+      select: {
+        id: true,
+        glass: true,
+        isActive: true,
+      },
+    });
+
+    if (!crystal) {
+      throw new BadRequestException('The selected Crystal does not exist.');
+    }
+
+    if (!crystal.isActive) {
+      throw new BadRequestException('The selected Crystal is inactive.');
+    }
+
+    const link = await this.prisma.systemCrystal.findFirst({
+      where: {
+        idSystem: params.idSystem,
+        idCrystal: params.idCrystal,
+      },
+      select: {
+        idSystem: true,
+        idCrystal: true,
+      },
+    });
+
+    if (!link) {
+      throw new BadRequestException(
+        'The selected Crystal is not associated with this System.',
+      );
+    }
+  }
+
   private async assertPolicyCombinationAvailable(params: {
     idSystem: number;
     idConfig: number;
@@ -224,6 +263,11 @@ export class DimensionPoliciesService {
         'No System + Config relationship found in sys_conf for those IDs. Please check the system associations.',
       );
     }
+
+    await this.assertCrystalAssociatedWithSystem({
+      idSystem: dto.idSystem,
+      idCrystal: dto.idCrystal,
+    });
 
     const idReinforcementOption =
       await this.resolvePolicyReinforcementInput({
@@ -374,22 +418,60 @@ export class DimensionPoliciesService {
 
     const data: any = { ...dto };
 
-    if (Object.prototype.hasOwnProperty.call(dto, 'idReinforcementOption')) {
+    const hasIdentityChange =
+      Object.prototype.hasOwnProperty.call(dto, 'idSystem') ||
+      Object.prototype.hasOwnProperty.call(dto, 'idConfig') ||
+      Object.prototype.hasOwnProperty.call(dto, 'idCrystal') ||
+      Object.prototype.hasOwnProperty.call(dto, 'idReinforcementOption');
+
+    if (hasIdentityChange) {
+      const nextIdSystem = dto.idSystem ?? current.idSystem;
+      const nextIdConfig = dto.idConfig ?? current.idConfig;
+      const nextIdCrystal = dto.idCrystal ?? current.idCrystal;
+
+      const nextSysConf = await this.prisma.sysConf.findUnique({
+        where: {
+          idSystem_idConfig: {
+            idSystem: nextIdSystem,
+            idConfig: nextIdConfig,
+          },
+        },
+      });
+
+      if (!nextSysConf) {
+        throw new BadRequestException(
+          'No System + Config relationship found in sys_conf for those IDs. Please check the system associations.',
+        );
+      }
+
+      await this.assertCrystalAssociatedWithSystem({
+        idSystem: nextIdSystem,
+        idCrystal: nextIdCrystal,
+      });
+
+      const nextReinforcementOption =
+        Object.prototype.hasOwnProperty.call(dto, 'idReinforcementOption')
+          ? dto.idReinforcementOption
+          : current.idReinforcementOption;
+
       const idReinforcementOption =
         await this.resolvePolicyReinforcementInput({
-          idSystem: current.idSystem,
-          idConfig: current.idConfig,
-          idReinforcementOption: dto.idReinforcementOption,
+          idSystem: nextIdSystem,
+          idConfig: nextIdConfig,
+          idReinforcementOption: nextReinforcementOption,
         });
 
       await this.assertPolicyCombinationAvailable({
-        idSystem: current.idSystem,
-        idConfig: current.idConfig,
-        idCrystal: current.idCrystal,
+        idSystem: nextIdSystem,
+        idConfig: nextIdConfig,
+        idCrystal: nextIdCrystal,
         idReinforcementOption,
         excludeId: id,
       });
 
+      data.idSystem = nextIdSystem;
+      data.idConfig = nextIdConfig;
+      data.idCrystal = nextIdCrystal;
       data.idReinforcementOption = idReinforcementOption;
     }
 
@@ -409,6 +491,18 @@ export class DimensionPoliciesService {
 
     const changedFields: string[] = [];
     const cmp = (a: any, b: any) => (a ?? null) !== (b ?? null);
+
+    if ('idSystem' in dto && cmp(beforeSnap.idSystem, afterSnap?.idSystem)) {
+      changedFields.push('idSystem');
+    }
+
+    if ('idConfig' in dto && cmp(beforeSnap.idConfig, afterSnap?.idConfig)) {
+      changedFields.push('idConfig');
+    }
+
+    if ('idCrystal' in dto && cmp(beforeSnap.idCrystal, afterSnap?.idCrystal)) {
+      changedFields.push('idCrystal');
+    }
 
     if (
       'sizeBasis' in dto &&

@@ -46,6 +46,26 @@ export class CreatePolicyDto {
 
 export class UpdatePolicyDto {
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  idSystem?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  idConfig?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  idCrystal?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  idReinforcementOption?: number | null;
+
+  @IsOptional()
   @IsEnum(DimensionSizeBasis)
   sizeBasis?: DimensionSizeBasis;
 
@@ -60,9 +80,4 @@ export class UpdatePolicyDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  idReinforcementOption?: number | null;
 }
