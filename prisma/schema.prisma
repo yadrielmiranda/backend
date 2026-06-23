@@ -141,14 +141,15 @@ model Branding {
 // =======================================
 
 model Brand {
-  id            Int            @id @default(autoincrement())
-  name          String
-  isActive      Boolean        @default(true)
-  pieces        Piece[]
-  brandProducts BrandProduct[]
-  pricingRules  PricingRule[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  id                Int            @id @default(autoincrement())
+  name              String
+  isActive          Boolean        @default(true)
+  highBottomPercent Decimal?       @db.Decimal(10, 4)
+  pieces            Piece[]
+  brandProducts     BrandProduct[]
+  pricingRules      PricingRule[]
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
 
   @@index([isActive])
 }
@@ -186,6 +187,8 @@ model System {
   idProduct    Int
 
   isActive Boolean @default(true)
+
+  allowHighBottom Boolean @default(false)
 
   defaultCrystalId Int?
   defaultCrystal   Crystal? @relation("SystemDefaultCrystal", fields: [defaultCrystalId], references: [id], onDelete: SetNull)
@@ -703,6 +706,9 @@ model Piece {
   dpPosPsf Decimal? @db.Decimal(10, 2)
   dpNegPsf Decimal? @db.Decimal(10, 2)
   screen   Boolean
+
+  highBottom        Boolean  @default(false)
+  highBottomPercent Decimal? @db.Decimal(10, 4)
 
   activeOption   ActiveOption? @relation(fields: [idActiveOption], references: [id])
   idActiveOption Int?
