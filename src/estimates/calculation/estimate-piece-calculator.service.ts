@@ -37,6 +37,7 @@ type ConfigSelect = {
     requiresHeightLeft: boolean;
     requiresHeightRight: boolean;
     requiresLegHeight: boolean;
+    requiresSashHeight: boolean;
     muntinLayout: unknown;
 };
 
@@ -103,6 +104,7 @@ export class EstimatePieceCalculatorService {
                     requiresHeightLeft: true,
                     requiresHeightRight: true,
                     requiresLegHeight: true,
+                    requiresSashHeight: true,
                     muntinLayout: true,
                 },
             });
@@ -389,6 +391,10 @@ export class EstimatePieceCalculatorService {
             if (need(config.requiresLegHeight) && isBlank(pieceDto.legHeight)) {
                 missing.push('legHeight');
             }
+
+            if (need(config.requiresSashHeight) && isBlank((pieceDto as any).sashHeight)) {
+                missing.push('sashHeight');
+            }
         } else {
             // comentario en espanol: modos nuevos usan SysConf, no nombres como X/OX/XO
             requireField(sysConf.requiresWidth, 'width', pieceDto.width);
@@ -446,6 +452,18 @@ export class EstimatePieceCalculatorService {
             throw new BadRequestException(
                 `Missing required dimensions: ${missing.join(', ')}`,
             );
+        }
+
+        const sashHeightRaw = (pieceDto as any).sashHeight;
+
+        if (!isBlank(sashHeightRaw)) {
+            const sashHeight = new Decimal(String(sashHeightRaw));
+
+            if (sashHeight.lt(19.625)) {
+                throw new BadRequestException(
+                    'Sash Height cannot be less than 19.625 inches.',
+                );
+            }
         }
 
         const governingDims =

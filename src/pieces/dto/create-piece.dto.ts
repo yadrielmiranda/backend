@@ -117,6 +117,11 @@ export class CreatePieceDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumberString()
+  sashHeight?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumberString()
   doorWidth?: string | null;
 
   @ApiPropertyOptional()

@@ -43,6 +43,7 @@ export class ConfigSController {
       requiresHeightLeft: confData.requiresHeightLeft,
       requiresHeightRight: confData.requiresHeightRight,
       requiresLegHeight: confData.requiresLegHeight,
+      requiresSashHeight: confData.requiresSashHeight,
 
       // layout de muntin por config
       muntinLayout: this.toMuntinLayoutJson(confData.muntinLayout),
@@ -80,7 +81,7 @@ export class ConfigSController {
       where: { id },
       data: {
         ...(confData.conf !== undefined ? { conf: confData.conf } : {}),
-        
+
         ...(confData.isActive !== undefined
           ? { isActive: confData.isActive }
           : {}),
@@ -103,6 +104,9 @@ export class ConfigSController {
           : {}),
         ...(confData.requiresLegHeight !== undefined
           ? { requiresLegHeight: confData.requiresLegHeight }
+          : {}),
+        ...(confData.requiresSashHeight !== undefined
+          ? { requiresSashHeight: confData.requiresSashHeight }
           : {}),
 
         ...(confData.muntinLayout !== undefined

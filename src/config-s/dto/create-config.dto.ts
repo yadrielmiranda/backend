@@ -56,6 +56,10 @@ export class CreateConfigDto {
   requiresLegHeight?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  requiresSashHeight?: boolean;
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => CreateConfigMuntinLayoutItemDto)

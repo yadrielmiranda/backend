@@ -222,6 +222,7 @@ model Config {
   requiresHeightLeft  Boolean @default(false)
   requiresHeightRight Boolean @default(false)
   requiresLegHeight   Boolean @default(false)
+  requiresSashHeight  Boolean @default(false)
 
   muntinLayout Json?
 
@@ -684,6 +685,7 @@ model Piece {
   heightLeft  Decimal? @db.Decimal(10, 3)
   heightRight Decimal? @db.Decimal(10, 3)
   legHeight   Decimal? @db.Decimal(10, 3)
+  sashHeight  Decimal? @db.Decimal(10, 3)
 
   doorWidth          Decimal? @db.Decimal(10, 3)
   leftSideliteWidth  Decimal? @db.Decimal(10, 3)
