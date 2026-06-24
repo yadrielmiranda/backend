@@ -45,6 +45,7 @@ export type CalculationCache = {
     sysConf: Map<string, any>;
     pricing: Map<string, any>;
     systemFrameColor: Map<string, any>;
+    highBottomSettings: Map<string, any>;
 };
 
 export type CalculatedMetricsInternal = {
@@ -59,6 +60,8 @@ export type CalculatedMetricsInternal = {
     customerSubtotal: Decimal;
     dpPosPsf: Decimal;
     dpNegPsf: Decimal;
+    highBottom: boolean;
+    highBottomPercent: Decimal | null;
 };
 
 export type CalculatedPieceCombined = (CreatePieceDto | UpsertPieceDto) &
@@ -77,6 +80,7 @@ export class EstimatePieceCalculatorService {
             sysConf: new Map(),
             pricing: new Map(),
             systemFrameColor: new Map(),
+            highBottomSettings: new Map(),
         };
     }
 
@@ -204,6 +208,72 @@ export class EstimatePieceCalculatorService {
                 'Screen is not allowed for the selected configuration.',
             );
         }
+
+        const highBottom = (pieceDto as any).highBottom === true;
+
+        const highBottomSettingsKey = `${pieceDto.idBrand}-${pieceDto.idSyst}`;
+
+        let highBottomSettings = cache.highBottomSettings.get(highBottomSettingsKey);
+
+        if (!highBottomSettings) {
+            const dbSystem = await tx.system.findUnique({
+                where: { id: pieceDto.idSyst },
+                select: {
+                    id: true,
+                    idBrand: true,
+                    allowHighBottom: true,
+                    brandProduct: {
+                        select: {
+                            brand: {
+                                select: {
+                                    id: true,
+                                    highBottomPercent: true,
+                                },
+                            },
+                        },
+                    },
+                },
+            });
+
+            if (dbSystem) {
+                cache.highBottomSettings.set(highBottomSettingsKey, dbSystem);
+                highBottomSettings = dbSystem;
+            }
+        }
+
+        if (!highBottomSettings) {
+            throw new NotFoundException(`System ID #${pieceDto.idSyst} not found.`);
+        }
+
+        if (highBottomSettings.idBrand !== pieceDto.idBrand) {
+            throw new BadRequestException(
+                'The selected System does not belong to the selected Brand.',
+            );
+        }
+
+        const brandHighBottomPercent =
+            highBottomSettings.brandProduct?.brand?.highBottomPercent == null
+                ? null
+                : new Decimal(
+                    highBottomSettings.brandProduct.brand.highBottomPercent.toString(),
+                );
+
+        if (highBottom && !highBottomSettings.allowHighBottom) {
+            throw new BadRequestException(
+                'High Bottom is not allowed for the selected System.',
+            );
+        }
+
+        if (
+            highBottom &&
+            (!brandHighBottomPercent || brandHighBottomPercent.lte(0))
+        ) {
+            throw new BadRequestException(
+                'High Bottom percentage is not configured for this Brand.',
+            );
+        }
+
+        const highBottomPercent = highBottom ? brandHighBottomPercent! : null;
 
         const allowedActiveOptionIds = new Set<number>(
             sysConf.activeOptions.map((x) => x.optionId),
@@ -475,7 +545,11 @@ export class EstimatePieceCalculatorService {
         const areaFt2Dec = new Decimal(areaFt2);
         const perimeterFtDec = new Decimal(perimeterFt);
 
-        const rate = computeBasePrice(areaFt2Dec, perimeterFtDec, A, B, C);
+        const baseRate = computeBasePrice(areaFt2Dec, perimeterFtDec, A, B, C);
+
+        const rate = highBottomPercent
+            ? baseRate.mul(new Decimal(1).add(highBottomPercent.div(100)))
+            : baseRate;
 
         const markupAmount = rate.mul(effectiveMarkup);
         const price = rate.add(markupAmount);
@@ -505,6 +579,10 @@ export class EstimatePieceCalculatorService {
         const result: CalculatedPieceCombined = {
             ...(pieceDto as any),
             muntin: normalizedMuntin,
+            highBottom,
+            highBottomPercent: highBottomPercent
+                ? highBottomPercent.toDecimalPlaces(4, Decimal.ROUND_HALF_UP)
+                : null,
 
             rate: rateR,
             price: priceR,

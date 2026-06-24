@@ -203,6 +203,10 @@ export class EstimatesService {
       ...pieceDto,
       muntin: calculated.muntin ?? null,
       id: (pieceDto as UpsertPieceDto).id,
+      highBottom: calculated.highBottom,
+      highBottomPercent: calculated.highBottomPercent
+        ? new Prisma.Decimal(calculated.highBottomPercent.toFixed(4))
+        : null,
       rate: new Prisma.Decimal(calculated.rate.toFixed(2)),
       price: new Prisma.Decimal(calculated.price.toFixed(2)),
       netProfit: new Prisma.Decimal(calculated.netProfit.toFixed(2)),
@@ -443,6 +447,10 @@ export class EstimatesService {
           mark: p.mark,
           privacy: p.privacy,
           screen: p.screen,
+          highBottom: p.highBottom,
+          highBottomPercent: p.highBottomPercent
+            ? new Prisma.Decimal(p.highBottomPercent.toFixed(4))
+            : null,
           qty: p.qty,
 
           ...(p.idActiveOption
@@ -731,6 +739,10 @@ export class EstimatesService {
           mark: p.mark,
           privacy: p.privacy,
           screen: p.screen,
+          highBottom: p.highBottom,
+          highBottomPercent: p.highBottomPercent
+            ? new Prisma.Decimal(p.highBottomPercent.toFixed(4))
+            : null,
           qty: p.qty,
 
           idActiveOption: p.idActiveOption ?? null,
@@ -1105,6 +1117,7 @@ export class EstimatesService {
         privacy: p.privacy,
         idCoat: p.idCoat,
         screen: p.screen,
+        highBottom: (p as any).highBottom ?? false,
 
         idActiveOption: p.idActiveOption ?? null,
         idPreparationOption: p.idPreparationOption ?? null,
@@ -1166,6 +1179,10 @@ export class EstimatesService {
             mark: p.mark,
             privacy: p.privacy,
             screen: p.screen,
+            highBottom: p.highBottom,
+            highBottomPercent: p.highBottomPercent
+              ? new Prisma.Decimal(p.highBottomPercent.toFixed(4))
+              : null,
             qty: p.qty,
 
             idActiveOption: p.idActiveOption ?? null,

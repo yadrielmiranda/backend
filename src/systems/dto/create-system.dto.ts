@@ -1,5 +1,5 @@
-import { IsNotEmpty, IsNumber, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
+import { IsBoolean, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateSystemDto {
   @IsNotEmpty()
@@ -15,4 +15,8 @@ export class CreateSystemDto {
   @IsNumber()
   @IsNotEmpty()
   idBrand: number;
+
+  @IsOptional()
+  @IsBoolean()
+  allowHighBottom?: boolean;
 }

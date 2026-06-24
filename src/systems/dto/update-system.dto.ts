@@ -6,4 +6,8 @@ export class UpdateSystemDto extends PartialType(CreateSystemDto) {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allowHighBottom?: boolean;
 }

@@ -180,6 +180,11 @@ export class CreatePieceDto {
   @IsBoolean()
   screen: boolean;
 
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  highBottom?: boolean;
+
   @ApiProperty()
   @IsInt()
   @IsNotEmpty()

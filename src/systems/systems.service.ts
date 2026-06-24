@@ -194,7 +194,7 @@ export class SystemsService {
   }
 
   async createSystem(systemData: CreateSystemDto): Promise<System> {
-    const { name, idBrand, idProduct } = systemData;
+    const { name, idBrand, idProduct, allowHighBottom } = systemData;
 
     // Verifica que exista la pareja (brand, product) en la tabla pivote
     const brandProductExists = await this.prisma.brandProduct.findUnique({
@@ -211,7 +211,13 @@ export class SystemsService {
     }
 
     return this.prisma.system.create({
-      data: { name, idBrand, idProduct, isActive: true },
+      data: {
+        name,
+        idBrand,
+        idProduct,
+        isActive: true,
+        allowHighBottom: allowHighBottom ?? false,
+      },
     });
   }
 
@@ -1076,7 +1082,7 @@ export class SystemsService {
         },
       },
       data: {
-        allowScreen: data.allowScreen,        
+        allowScreen: data.allowScreen,
       },
     });
 
