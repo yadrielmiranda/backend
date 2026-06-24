@@ -454,15 +454,29 @@ export class EstimatePieceCalculatorService {
             );
         }
 
+        const MIN_SASH_HEIGHT_IN = new Decimal(19.625);
+
         const sashHeightRaw = (pieceDto as any).sashHeight;
+        const totalHeightRaw = pieceDto.height;
 
         if (!isBlank(sashHeightRaw)) {
             const sashHeight = new Decimal(String(sashHeightRaw));
 
-            if (sashHeight.lt(19.625)) {
+            if (sashHeight.lt(MIN_SASH_HEIGHT_IN)) {
                 throw new BadRequestException(
-                    'Sash Height cannot be less than 19.625 inches.',
+                    `Sash Height cannot be less than ${MIN_SASH_HEIGHT_IN.toString()} inches.`,
                 );
+            }
+
+            if (!isBlank(totalHeightRaw)) {
+                const totalHeight = new Decimal(String(totalHeightRaw));
+                const maxSashHeight = totalHeight.div(2);
+
+                if (sashHeight.gt(maxSashHeight)) {
+                    throw new BadRequestException(
+                        `Sash Height cannot be greater than half of the total height (${maxSashHeight.toDecimalPlaces(3).toString()} inches).`,
+                    );
+                }
             }
         }
 
