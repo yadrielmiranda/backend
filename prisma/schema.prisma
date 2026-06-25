@@ -159,6 +159,7 @@ model Product {
   name          String
   isActive      Boolean        @default(true)
   configs       Config[]
+  configCategories ConfigCategory[]
   pieces        Piece[]
   brandProducts BrandProduct[]
   pricingRules  PricingRule[]
@@ -213,6 +214,9 @@ model Config {
   idProduct Int
   isActive  Boolean @default(true)
 
+  categoryId Int?
+  category   ConfigCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
   sysconfs     SysConf[]
   pieces       Piece[]
   pricingRules PricingRule[]
@@ -231,6 +235,27 @@ model Config {
 
   @@index([isActive])
   @@index([idProduct, isActive])
+  @@index([categoryId])
+}
+
+model ConfigCategory {
+  id        Int      @id @default(autoincrement())
+  name      String   @db.VarChar(100)
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+
+  product   Product @relation(fields: [idProduct], references: [id], onDelete: Cascade)
+  idProduct Int
+
+  configs   Config[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([idProduct, name])
+  @@index([idProduct])
+  @@index([isActive])
+  @@map("config_categories")
 }
 
 model SysConf {
