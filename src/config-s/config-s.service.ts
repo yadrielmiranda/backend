@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { Config, Prisma } from '@prisma/client';
 
@@ -6,15 +10,51 @@ import { Config, Prisma } from '@prisma/client';
 export class ConfigSService {
   constructor(private prisma: PrismaService) { }
 
+  private readonly configInclude = {
+    prod: true,
+    category: true,
+  } satisfies Prisma.ConfigInclude;
+
+  private async validateConfigCategory(
+    idProduct: number,
+    categoryId?: number | null,
+  ): Promise<void> {
+    if (categoryId === undefined || categoryId === null) return;
+
+    const category = await this.prisma.configCategory.findUnique({
+      where: { id: categoryId },
+      select: {
+        id: true,
+        idProduct: true,
+        isActive: true,
+      },
+    });
+
+    if (!category) {
+      throw new BadRequestException('Config category not found.');
+    }
+
+    if (!category.isActive) {
+      throw new BadRequestException('Config category is inactive.');
+    }
+
+    if (category.idProduct !== idProduct) {
+      throw new BadRequestException(
+        'Config category does not belong to the selected product.',
+      );
+    }
+  }
+
   async config(where: Prisma.ConfigWhereUniqueInput): Promise<Config> {
     const config = await this.prisma.config.findUnique({
       where,
-      include: { prod: true },
+      include: this.configInclude,
     });
 
     if (!config) {
       throw new NotFoundException(`Config with ID #${where.id} not found.`);
     }
+
     return config;
   }
 
@@ -23,7 +63,7 @@ export class ConfigSService {
     take?: number;
     cursor?: Prisma.ConfigWhereUniqueInput;
     where?: Prisma.ConfigWhereInput;
-    orderBy?: Prisma.ConfigOrderByWithRelationInput;
+    orderBy?: Prisma.ConfigOrderByWithRelationInput | Prisma.ConfigOrderByWithRelationInput[];
   }): Promise<Config[]> {
     const { skip, take, cursor, where, orderBy } = params;
 
@@ -32,34 +72,66 @@ export class ConfigSService {
       take,
       cursor,
       where,
-      orderBy,
-      include: { prod: true },
+      orderBy: orderBy ?? [
+        { prod: { name: 'asc' } },
+        { category: { sortOrder: 'asc' } },
+        { category: { name: 'asc' } },
+        { conf: 'asc' },
+      ],
+      include: this.configInclude,
     });
   }
 
-  async createConfig(data: Prisma.ConfigCreateInput): Promise<Config> {
+  async createConfig(params: {
+    data: Prisma.ConfigCreateInput;
+    idProduct: number;
+    categoryId?: number | null;
+  }): Promise<Config> {
+    const { data, idProduct, categoryId } = params;
+
+    await this.validateConfigCategory(idProduct, categoryId);
+
     return this.prisma.config.create({
       data,
-      include: { prod: true },
+      include: this.configInclude,
     });
   }
 
   async updateConfig(params: {
     where: Prisma.ConfigWhereUniqueInput;
     data: Prisma.ConfigUpdateInput;
+    idProduct?: number;
+    categoryId?: number | null;
   }): Promise<Config> {
-    const { where, data } = params;
+    const { where, data, idProduct, categoryId } = params;
+
+    const currentConfig = await this.prisma.config.findUnique({
+      where,
+      select: {
+        id: true,
+        idProduct: true,
+      },
+    });
+
+    if (!currentConfig) {
+      throw new NotFoundException(`Config with ID #${where.id} not found.`);
+    }
+
+    const finalProductId = idProduct ?? currentConfig.idProduct;
+
+    await this.validateConfigCategory(finalProductId, categoryId);
 
     try {
       return await this.prisma.config.update({
         data,
         where,
-        include: { prod: true },
+        include: this.configInclude,
       });
     } catch (e: any) {
       if (e?.code === 'P2025') {
         throw new NotFoundException(`Config with ID #${where.id} not found.`);
       }
+
       throw e;
     }
   }
@@ -87,12 +159,13 @@ export class ConfigSService {
   async getConfigWithProduct(where: Prisma.ConfigWhereUniqueInput): Promise<Config> {
     const config = await this.prisma.config.findUnique({
       where,
-      include: { prod: true },
+      include: this.configInclude,
     });
 
     if (!config) {
       throw new NotFoundException(`Config with ID #${where.id} not found.`);
     }
+
     return config;
   }
 }

@@ -35,6 +35,7 @@ import { ActiveOptionsModule } from './active-options/active-options.module';
 import { PreparationOptionsModule } from './preparation-options/preparation-options.module';
 import { SillOptionsModule } from './sill-options/sill-options.module';
 import { ReinforcementOptionsModule } from './reinforcement-options/reinforcement-options.module';
+import { ConfigCategoriesModule } from './config-categories/config-categories.module';
 import { ScheduleModule } from '@nestjs/schedule';
 
 
@@ -74,6 +75,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     PreparationOptionsModule,
     SillOptionsModule,
     ReinforcementOptionsModule,
+    ConfigCategoriesModule,
   ],
   controllers: [AppController],
   providers: [

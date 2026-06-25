@@ -30,33 +30,37 @@ export class ConfigSController {
     })) as Prisma.InputJsonValue;
   }
 
-  // WRITE: solo admin
   @Roles('admin')
   @Post()
   async createConfig(@Body() confData: CreateConfigDto): Promise<ConfigModel> {
     return this.configSService.createConfig({
-      conf: confData.conf,
-      prod: { connect: { id: confData.idProduct } },
+      idProduct: confData.idProduct,
+      categoryId: confData.categoryId,
+      data: {
+        conf: confData.conf.trim(),
+        prod: { connect: { id: confData.idProduct } },
 
-      requiresWidth: confData.requiresWidth,
-      requiresHeight: confData.requiresHeight,
-      requiresHeightLeft: confData.requiresHeightLeft,
-      requiresHeightRight: confData.requiresHeightRight,
-      requiresLegHeight: confData.requiresLegHeight,
-      requiresSashHeight: confData.requiresSashHeight,
+        ...(confData.categoryId !== undefined && confData.categoryId !== null
+          ? { category: { connect: { id: confData.categoryId } } }
+          : {}),
 
-      // layout de muntin por config
-      muntinLayout: this.toMuntinLayoutJson(confData.muntinLayout),
+        requiresWidth: confData.requiresWidth,
+        requiresHeight: confData.requiresHeight,
+        requiresHeightLeft: confData.requiresHeightLeft,
+        requiresHeightRight: confData.requiresHeightRight,
+        requiresLegHeight: confData.requiresLegHeight,
+        requiresSashHeight: confData.requiresSashHeight,
+
+        muntinLayout: this.toMuntinLayoutJson(confData.muntinLayout),
+      },
     });
   }
 
-  // READ: todos los usuarios autenticados
   @Get()
   async getAllConfigs(): Promise<ConfigModel[]> {
     return this.configSService.configs({});
   }
 
-  // READ: todos los usuarios autenticados
   @Get(':id/product')
   async getConfigWithProduct(
     @Param('id', ParseIntPipe) id: number,
@@ -64,13 +68,11 @@ export class ConfigSController {
     return this.configSService.getConfigWithProduct({ id });
   }
 
-  // READ: todos los usuarios autenticados
   @Get(':id')
   async getConfig(@Param('id', ParseIntPipe) id: number): Promise<ConfigModel> {
     return this.configSService.config({ id });
   }
 
-  // WRITE: solo admin
   @Roles('admin')
   @Patch(':id')
   async updateConfig(
@@ -79,8 +81,10 @@ export class ConfigSController {
   ): Promise<ConfigModel> {
     return this.configSService.updateConfig({
       where: { id },
+      idProduct: confData.idProduct,
+      categoryId: confData.categoryId,
       data: {
-        ...(confData.conf !== undefined ? { conf: confData.conf } : {}),
+        ...(confData.conf !== undefined ? { conf: confData.conf.trim() } : {}),
 
         ...(confData.isActive !== undefined
           ? { isActive: confData.isActive }
@@ -88,6 +92,12 @@ export class ConfigSController {
 
         ...(confData.idProduct !== undefined
           ? { prod: { connect: { id: confData.idProduct } } }
+          : {}),
+
+        ...(confData.categoryId !== undefined
+          ? confData.categoryId === null
+            ? { category: { disconnect: true } }
+            : { category: { connect: { id: confData.categoryId } } }
           : {}),
 
         ...(confData.requiresWidth !== undefined
@@ -118,7 +128,6 @@ export class ConfigSController {
     });
   }
 
-  // WRITE: solo admin
   @Roles('admin')
   @Delete(':id')
   async deleteConfig(@Param('id', ParseIntPipe) id: number): Promise<ConfigModel> {

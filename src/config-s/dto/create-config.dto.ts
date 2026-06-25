@@ -36,6 +36,11 @@ export class CreateConfigDto {
   idProduct: number;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  categoryId?: number | null;
+
+  @IsOptional()
   @IsBoolean()
   requiresWidth?: boolean;
 

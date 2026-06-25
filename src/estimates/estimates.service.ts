@@ -61,7 +61,11 @@ type PieceWithRelations = Piece & {
   prod: Prisma.ProductGetPayload<{}>;
   bran: Prisma.BrandGetPayload<{}>;
   syst: Prisma.SystemGetPayload<{}>;
-  conf: Prisma.ConfigGetPayload<{}>;
+  conf: Prisma.ConfigGetPayload<{
+    include: {
+      category: true;
+    };
+  }>;
   fColor: Prisma.FrameColorGetPayload<{}>;
   cryst: Prisma.CrystalGetPayload<{}>;
   tin: Prisma.TintGetPayload<{}>;
@@ -269,7 +273,11 @@ export class EstimatesService {
             prod: true,
             bran: true,
             syst: true,
-            conf: true,
+            conf: {
+              include: {
+                category: true,
+              },
+            },
             fColor: true,
             cryst: true,
             tin: true,
@@ -579,7 +587,11 @@ export class EstimatesService {
               prod: true,
               bran: true,
               syst: true,
-              conf: true,
+              conf: {
+                include: {
+                  category: true,
+                },
+              },
               fColor: true,
               cryst: true,
               tin: true,
@@ -843,7 +855,11 @@ export class EstimatesService {
               prod: true,
               bran: true,
               syst: true,
-              conf: true,
+              conf: {
+                include: {
+                  category: true,
+                },
+              },
               fColor: true,
               cryst: true,
               tin: true,
@@ -939,7 +955,11 @@ export class EstimatesService {
               prod: true,
               bran: true,
               syst: true,
-              conf: true,
+              conf: {
+                include: {
+                  category: true,
+                },
+              },
               fColor: true,
               cryst: true,
               tin: true,
@@ -1298,7 +1318,11 @@ export class EstimatesService {
               prod: true,
               bran: true,
               syst: true,
-              conf: true,
+              conf: {
+                include: {
+                  category: true,
+                },
+              },
               fColor: true,
               cryst: true,
               tin: true,

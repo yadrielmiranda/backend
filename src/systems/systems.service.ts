@@ -28,7 +28,11 @@ export class SystemsService {
         },
         sysconfs: {
           include: {
-            config: true,
+            config: {
+              include: {
+                category: true,
+              },
+            },
           },
           orderBy: {
             config: {
@@ -82,7 +86,11 @@ export class SystemsService {
         },
         sysconfs: {
           include: {
-            config: true,
+            config: {
+              include: {
+                category: true,
+              },
+            },
           },
           orderBy: {
             config: {
@@ -117,8 +125,11 @@ export class SystemsService {
       include: {
         sysconfs: {
           include: {
-            config: true,
-
+            config: {
+              include: {
+                category: true,
+              },
+            },
             activeOptions: {
               include: {
                 option: true,
@@ -260,7 +271,13 @@ export class SystemsService {
       where: { id: systemId },
       include: {
         sysconfs: {
-          include: { config: true },
+          include: {
+            config: {
+              include: {
+                category: true,
+              },
+            },
+          },
           orderBy: {
             config: {
               conf: 'asc',
@@ -411,6 +428,14 @@ export class SystemsService {
           select: {
             id: true,
             conf: true,
+            category: {
+              select: {
+                id: true,
+                name: true,
+                sortOrder: true,
+                isActive: true,
+              },
+            },
           },
         },
       },
@@ -980,7 +1005,14 @@ export class SystemsService {
           ? { notIn: associatedConfigIds }
           : undefined,
       },
-      orderBy: { conf: 'asc' },
+      include: {
+        category: true,
+      },
+      orderBy: [
+        { category: { sortOrder: 'asc' } },
+        { category: { name: 'asc' } },
+        { conf: 'asc' },
+      ],
     });
   }
 
