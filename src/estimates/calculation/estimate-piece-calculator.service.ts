@@ -195,6 +195,7 @@ export class EstimatePieceCalculatorService {
                     requiresHeightRight: true,
                     requiresLegHeight: true,
                     requiresDoorWidth: true,
+                    requiresDoorHeight: true,
                     requiresLeftSideliteWidth: true,
                     requiresRightSideliteWidth: true,
                     requiresLeftPanels: true,
@@ -375,6 +376,7 @@ export class EstimatePieceCalculatorService {
                 sashHeight: null,
 
                 doorWidth: null,
+                doorHeight: null,
                 leftSideliteWidth: null,
                 rightSideliteWidth: null,
                 leftPanels: null,
@@ -621,6 +623,12 @@ export class EstimatePieceCalculatorService {
             );
 
             requireField(
+                sysConf.requiresDoorHeight,
+                'doorHeight',
+                (pieceDto as any).doorHeight,
+            );
+
+            requireField(
                 sysConf.requiresLeftSideliteWidth,
                 'leftSideliteWidth',
                 (pieceDto as any).leftSideliteWidth,
@@ -686,6 +694,29 @@ export class EstimatePieceCalculatorService {
                 if (sashHeight.gt(maxSashHeight)) {
                     throw new BadRequestException(
                         `Sash Height cannot be greater than half of the total height (${maxSashHeight.toDecimalPlaces(3).toString()} inches).`,
+                    );
+                }
+            }
+        }
+
+        const doorHeightRaw = (pieceDto as any).doorHeight;
+        const openingHeightRaw = pieceDto.height;
+
+        if (!isBlank(doorHeightRaw)) {
+            const doorHeight = new Decimal(String(doorHeightRaw));
+
+            if (doorHeight.lte(0)) {
+                throw new BadRequestException(
+                    'Door Height must be greater than zero.',
+                );
+            }
+
+            if (!isBlank(openingHeightRaw)) {
+                const openingHeight = new Decimal(String(openingHeightRaw));
+
+                if (doorHeight.gt(openingHeight)) {
+                    throw new BadRequestException(
+                        'Door Height cannot be greater than Opening Height.',
                     );
                 }
             }

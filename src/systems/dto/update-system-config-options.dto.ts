@@ -77,6 +77,10 @@ export class UpdateSystemConfigOptionsDto {
 
   @IsOptional()
   @IsBoolean()
+  requiresDoorHeight?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   requiresLeftSideliteWidth?: boolean;
 
   @IsOptional()

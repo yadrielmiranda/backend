@@ -288,6 +288,7 @@ model SysConf {
   requiresLegHeight   Boolean @default(false)
 
   requiresDoorWidth          Boolean @default(false)
+  requiresDoorHeight         Boolean @default(false)
   requiresLeftSideliteWidth  Boolean @default(false)
   requiresRightSideliteWidth Boolean @default(false)
 
@@ -762,6 +763,7 @@ model Piece {
   sashHeight  Decimal? @db.Decimal(10, 3)
 
   doorWidth          Decimal? @db.Decimal(10, 3)
+  doorHeight         Decimal? @db.Decimal(10, 3)
   leftSideliteWidth  Decimal? @db.Decimal(10, 3)
   rightSideliteWidth Decimal? @db.Decimal(10, 3)
 

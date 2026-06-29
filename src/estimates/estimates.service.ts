@@ -511,6 +511,7 @@ export class EstimatesService {
           sashHeight: this.decimalOrNull((p as any).sashHeight),
 
           doorWidth: this.decimalOrNull((p as any).doorWidth),
+          doorHeight: this.decimalOrNull((p as any).doorHeight),
           leftSideliteWidth: this.decimalOrNull((p as any).leftSideliteWidth),
           rightSideliteWidth: this.decimalOrNull((p as any).rightSideliteWidth),
           leftPanels: this.intOrNull((p as any).leftPanels),
@@ -789,6 +790,7 @@ export class EstimatesService {
           sashHeight: this.decimalOrNull((p as any).sashHeight),
 
           doorWidth: this.decimalOrNull((p as any).doorWidth),
+          doorHeight: this.decimalOrNull((p as any).doorHeight),
           leftSideliteWidth: this.decimalOrNull((p as any).leftSideliteWidth),
           rightSideliteWidth: this.decimalOrNull((p as any).rightSideliteWidth),
           leftPanels: this.intOrNull((p as any).leftPanels),
@@ -1130,7 +1132,14 @@ export class EstimatesService {
             ? null
             : (p as any).sashHeight.toString(),
 
-        doorWidth: (p as any).doorWidth == null ? null : (p as any).doorWidth.toString(),
+        doorWidth:
+          (p as any).doorWidth == null
+            ? null
+            : (p as any).doorWidth.toString(),
+        doorHeight:
+          (p as any).doorHeight == null
+            ? null
+            : (p as any).doorHeight.toString(),
         leftSideliteWidth:
           (p as any).leftSideliteWidth == null
             ? null
@@ -1246,6 +1255,7 @@ export class EstimatesService {
             sashHeight: this.decimalOrNull((p as any).sashHeight),
 
             doorWidth: this.decimalOrNull((p as any).doorWidth),
+            doorHeight: this.decimalOrNull((p as any).doorHeight),
             leftSideliteWidth: this.decimalOrNull((p as any).leftSideliteWidth),
             rightSideliteWidth: this.decimalOrNull((p as any).rightSideliteWidth),
             leftPanels: this.intOrNull((p as any).leftPanels),
@@ -1435,6 +1445,7 @@ export class EstimatesService {
     legHeight?: number;
 
     doorWidth?: number;
+    doorHeight?: number;
     leftSideliteWidth?: number;
     rightSideliteWidth?: number;
     leftPanels?: number;
@@ -1459,6 +1470,8 @@ export class EstimatesService {
 
         doorWidth:
           input.doorWidth != null ? String(input.doorWidth) : undefined,
+        doorHeight:
+          input.doorHeight != null ? String(input.doorHeight) : undefined,
         leftSideliteWidth:
           input.leftSideliteWidth != null
             ? String(input.leftSideliteWidth)

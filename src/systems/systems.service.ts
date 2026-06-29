@@ -433,6 +433,7 @@ export class SystemsService {
       requiresHeightRight: sysConf.requiresHeightRight,
       requiresLegHeight: sysConf.requiresLegHeight,
       requiresDoorWidth: sysConf.requiresDoorWidth,
+      requiresDoorHeight: sysConf.requiresDoorHeight,
       requiresLeftSideliteWidth: sysConf.requiresLeftSideliteWidth,
       requiresRightSideliteWidth: sysConf.requiresRightSideliteWidth,
       requiresLeftPanels: sysConf.requiresLeftPanels,
@@ -560,6 +561,7 @@ export class SystemsService {
       requiresHeightRight: sysConf.requiresHeightRight,
       requiresLegHeight: sysConf.requiresLegHeight,
       requiresDoorWidth: sysConf.requiresDoorWidth,
+      requiresDoorHeight: sysConf.requiresDoorHeight,
       requiresLeftSideliteWidth: sysConf.requiresLeftSideliteWidth,
       requiresRightSideliteWidth: sysConf.requiresRightSideliteWidth,
       requiresLeftPanels: sysConf.requiresLeftPanels,
@@ -738,6 +740,7 @@ export class SystemsService {
         requiresHeightRight: false,
         requiresLegHeight: false,
         requiresDoorWidth: false,
+        requiresDoorHeight: false,
         requiresLeftSideliteWidth: false,
         requiresRightSideliteWidth: false,
         requiresLeftPanels: false,
@@ -767,6 +770,9 @@ export class SystemsService {
           : {}),
         ...(data.requiresDoorWidth !== undefined
           ? { requiresDoorWidth: data.requiresDoorWidth }
+          : {}),
+        ...(data.requiresDoorHeight !== undefined
+          ? { requiresDoorHeight: data.requiresDoorHeight }
           : {}),
         ...(data.requiresLeftSideliteWidth !== undefined
           ? { requiresLeftSideliteWidth: data.requiresLeftSideliteWidth }
@@ -1216,6 +1222,7 @@ export class SystemsService {
         requiresHeightRight: false,
         requiresLegHeight: false,
         requiresDoorWidth: false,
+        requiresDoorHeight: false,
         requiresLeftSideliteWidth: false,
         requiresRightSideliteWidth: false,
         requiresLeftPanels: false,
