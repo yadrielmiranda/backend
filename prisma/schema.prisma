@@ -141,32 +141,45 @@ model Branding {
 // =======================================
 
 model Brand {
-  id                Int            @id @default(autoincrement())
-  name              String
-  isActive          Boolean        @default(true)
-  highBottomPercent Decimal?       @db.Decimal(10, 4)
-  pieces            Piece[]
-  brandProducts     BrandProduct[]
-  pricingRules      PricingRule[]
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
+  id                 Int                 @id @default(autoincrement())
+  name               String
+  isActive           Boolean             @default(true)
+  highBottomPercent  Decimal?            @db.Decimal(10, 4)
+  pieces             Piece[]
+  brandProducts      BrandProduct[]
+  pricingRules       PricingRule[]
+  linearPricingRules LinearPricingRule[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 
   @@index([isActive])
 }
 
 model Product {
-  id            Int            @id @default(autoincrement())
-  name          String
-  isActive      Boolean        @default(true)
-  configs       Config[]
-  configCategories ConfigCategory[]
-  pieces        Piece[]
-  brandProducts BrandProduct[]
-  pricingRules  PricingRule[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  id       Int     @id @default(autoincrement())
+  name     String
+  isActive Boolean @default(true)
+
+  kind        ProductKind @default(GLAZED_UNIT)
+  pricingMode PricingMode @default(AREA_PERIMETER)
+
+  configs            Config[]
+  configCategories   ConfigCategory[]
+  pieces             Piece[]
+  brandProducts      BrandProduct[]
+  pricingRules       PricingRule[]
+  linearPricingRules LinearPricingRule[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([isActive])
+  @@index([kind])
+}
+
+enum ProductKind {
+  GLAZED_UNIT
+  LINEAR_MATERIAL
 }
 
 model BrandProduct {
@@ -197,11 +210,12 @@ model System {
   systemCrystals    SystemCrystal[]
   systemFrameColors SystemFrameColor[]
 
-  sysconfs     SysConf[]
-  pieces       Piece[]
-  pricingRules PricingRule[]
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  sysconfs           SysConf[]
+  pieces             Piece[]
+  pricingRules       PricingRule[]
+  linearPricingRules LinearPricingRule[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 
   @@index([defaultCrystalId])
   @@index([isActive])
@@ -217,9 +231,10 @@ model Config {
   categoryId Int?
   category   ConfigCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
 
-  sysconfs     SysConf[]
-  pieces       Piece[]
-  pricingRules PricingRule[]
+  sysconfs           SysConf[]
+  pieces             Piece[]
+  pricingRules       PricingRule[]
+  linearPricingRules LinearPricingRule[]
 
   requiresWidth       Boolean @default(false)
   requiresHeight      Boolean @default(false)
@@ -239,15 +254,15 @@ model Config {
 }
 
 model ConfigCategory {
-  id        Int      @id @default(autoincrement())
-  name      String   @db.VarChar(100)
-  sortOrder Int      @default(0)
-  isActive  Boolean  @default(true)
+  id        Int     @id @default(autoincrement())
+  name      String  @db.VarChar(100)
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
 
   product   Product @relation(fields: [idProduct], references: [id], onDelete: Cascade)
   idProduct Int
 
-  configs   Config[]
+  configs Config[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -616,6 +631,40 @@ model PricingRule {
   @@map("pricing_rules")
 }
 
+model LinearPricingRule {
+  id Int @id @default(autoincrement())
+
+  brand   Brand @relation(fields: [idBrand], references: [id])
+  idBrand Int
+
+  product   Product @relation(fields: [idProduct], references: [id])
+  idProduct Int
+
+  system   System @relation(fields: [idSystem], references: [id])
+  idSystem Int
+
+  config   Config @relation(fields: [idConfig], references: [id])
+  idConfig Int
+
+  costPerInch Decimal @db.Decimal(18, 8)
+
+  minLengthIn Decimal @default(20) @db.Decimal(10, 3)
+  maxLengthIn Decimal @default(288) @db.Decimal(10, 3)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([idBrand, idProduct, idSystem, idConfig], map: "uq_linear_pricing_rule")
+  @@index([idProduct])
+  @@index([idSystem, idConfig])
+  @@map("linear_pricing_rules")
+}
+
+enum PricingMode {
+  AREA_PERIMETER
+  LINEAR_INCH
+}
+
 // =======================================
 //        Modelos de Cotizaciones y Pedidos
 // =======================================
@@ -722,17 +771,20 @@ model Piece {
   panelCount        Int?
   horizontalHeights Json?
 
-  cryst   Crystal @relation(fields: [idCryst], references: [id])
-  idCryst Int
-  tin     Tint    @relation(fields: [idTint], references: [id])
-  idTint  Int
-  privacy Boolean
-  coat    Coating @relation(fields: [idCoat], references: [id])
-  idCoat  Int
+  cryst   Crystal? @relation(fields: [idCryst], references: [id])
+  idCryst Int?
+
+  tin    Tint? @relation(fields: [idTint], references: [id])
+  idTint Int?
+
+  privacy Boolean @default(false)
+
+  coat   Coating? @relation(fields: [idCoat], references: [id])
+  idCoat Int?
 
   dpPosPsf Decimal? @db.Decimal(10, 2)
   dpNegPsf Decimal? @db.Decimal(10, 2)
-  screen   Boolean
+  screen   Boolean  @default(false)
 
   highBottom        Boolean  @default(false)
   highBottomPercent Decimal? @db.Decimal(10, 4)

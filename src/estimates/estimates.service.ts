@@ -67,9 +67,9 @@ type PieceWithRelations = Piece & {
     };
   }>;
   fColor: Prisma.FrameColorGetPayload<{}>;
-  cryst: Prisma.CrystalGetPayload<{}>;
-  tin: Prisma.TintGetPayload<{}>;
-  coat: Prisma.CoatingGetPayload<{}>;
+  cryst: Prisma.CrystalGetPayload<{}> | null;
+  tin: Prisma.TintGetPayload<{}> | null;
+  coat: Prisma.CoatingGetPayload<{}> | null;
 
   activeOption: Prisma.ActiveOptionGetPayload<{}> | null;
   preparationOption: Prisma.PreparationOptionGetPayload<{}> | null;
@@ -204,7 +204,7 @@ export class EstimatesService {
       );
 
     return {
-      ...pieceDto,
+      ...calculated,
       muntin: calculated.muntin ?? null,
       id: (pieceDto as UpsertPieceDto).id,
       highBottom: calculated.highBottom,
@@ -453,9 +453,9 @@ export class EstimatesService {
 
         const dataForPrisma: Prisma.PieceCreateWithoutEstimInput = {
           mark: p.mark,
-          privacy: p.privacy,
-          screen: p.screen,
-          highBottom: p.highBottom,
+          privacy: p.privacy ?? false,
+          screen: p.screen ?? false,
+          highBottom: p.highBottom ?? false,
           highBottomPercent: p.highBottomPercent
             ? new Prisma.Decimal(p.highBottomPercent.toFixed(4))
             : null,
@@ -522,9 +522,17 @@ export class EstimatesService {
           syst: { connect: { id: p.idSyst } },
           conf: { connect: { id: p.idConf } },
           fColor: { connect: { id: p.idFC } },
-          cryst: { connect: { id: p.idCryst } },
-          tin: { connect: { id: p.idTint } },
-          coat: { connect: { id: p.idCoat } },
+          ...(p.idCryst
+            ? { cryst: { connect: { id: p.idCryst } } }
+            : {}),
+
+          ...(p.idTint
+            ? { tin: { connect: { id: p.idTint } } }
+            : {}),
+
+          ...(p.idCoat
+            ? { coat: { connect: { id: p.idCoat } } }
+            : {}),
 
           dpPosPsf: new Prisma.Decimal(p.dpPosPsf.toFixed(2)),
           dpNegPsf: new Prisma.Decimal(p.dpNegPsf.toFixed(2)),
@@ -750,9 +758,9 @@ export class EstimatesService {
         const upsertData: Omit<Prisma.PieceUncheckedUpdateInput, 'idEst'> &
           Omit<Prisma.PieceUncheckedCreateInput, 'idEst'> = {
           mark: p.mark,
-          privacy: p.privacy,
-          screen: p.screen,
-          highBottom: p.highBottom,
+          privacy: p.privacy ?? false,
+          screen: p.screen ?? false,
+          highBottom: p.highBottom ?? false,
           highBottomPercent: p.highBottomPercent
             ? new Prisma.Decimal(p.highBottomPercent.toFixed(4))
             : null,
@@ -793,9 +801,9 @@ export class EstimatesService {
           idSyst: p.idSyst,
           idConf: p.idConf,
           idFC: p.idFC,
-          idCryst: p.idCryst,
-          idTint: p.idTint,
-          idCoat: p.idCoat,
+          idCryst: p.idCryst ?? null,
+          idTint: p.idTint ?? null,
+          idCoat: p.idCoat ?? null,
 
           dpPosPsf: new Prisma.Decimal(p.dpPosPsf.toFixed(2)),
           dpNegPsf: new Prisma.Decimal(p.dpNegPsf.toFixed(2)),
@@ -1138,11 +1146,11 @@ export class EstimatesService {
           ? ((p as any).horizontalHeights as number[])
           : null,
 
-        idCryst: p.idCryst,
-        idTint: p.idTint,
-        privacy: p.privacy,
-        idCoat: p.idCoat,
-        screen: p.screen,
+        idCryst: p.idCryst ?? null,
+        idTint: p.idTint ?? null,
+        privacy: p.privacy ?? false,
+        idCoat: p.idCoat ?? null,
+        screen: p.screen ?? false,
         highBottom: (p as any).highBottom ?? false,
 
         idActiveOption: p.idActiveOption ?? null,
@@ -1203,9 +1211,9 @@ export class EstimatesService {
           where: { id: pieceId },
           data: {
             mark: p.mark,
-            privacy: p.privacy,
-            screen: p.screen,
-            highBottom: p.highBottom,
+            privacy: p.privacy ?? false,
+            screen: p.screen ?? false,
+            highBottom: p.highBottom ?? false,
             highBottomPercent: p.highBottomPercent
               ? new Prisma.Decimal(p.highBottomPercent.toFixed(4))
               : null,
@@ -1250,9 +1258,9 @@ export class EstimatesService {
             idSyst: p.idSyst,
             idConf: p.idConf,
             idFC: p.idFC,
-            idCryst: p.idCryst,
-            idTint: p.idTint,
-            idCoat: p.idCoat,
+            idCryst: p.idCryst ?? null,
+            idTint: p.idTint ?? null,
+            idCoat: p.idCoat ?? null,
 
             dpPosPsf: new Prisma.Decimal(p.dpPosPsf.toFixed(2)),
             dpNegPsf: new Prisma.Decimal(p.dpNegPsf.toFixed(2)),

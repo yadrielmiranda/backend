@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { DimensionMode, Prisma, System } from '@prisma/client';
+import { DimensionMode, Prisma, ProductKind, System } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { CreateSystemDto } from './dto/create-system.dto';
 import { UpdateSystemDto } from './dto/update-system.dto';
@@ -207,17 +207,34 @@ export class SystemsService {
   async createSystem(systemData: CreateSystemDto): Promise<System> {
     const { name, idBrand, idProduct, allowHighBottom } = systemData;
 
-    // Verifica que exista la pareja (brand, product) en la tabla pivote
     const brandProductExists = await this.prisma.brandProduct.findUnique({
       where: {
         idBrand_idProduct: { idBrand, idProduct },
       },
-      select: { idBrand: true, idProduct: true },
+      include: {
+        product: {
+          select: {
+            id: true,
+            name: true,
+            kind: true,
+            pricingMode: true,
+          },
+        },
+      },
     });
 
     if (!brandProductExists) {
       throw new NotFoundException(
         `Brand/Product pair not found (brandId=${idBrand}, productId=${idProduct}).`,
+      );
+    }
+
+    const isLinearMaterial =
+      brandProductExists.product.kind === ProductKind.LINEAR_MATERIAL;
+
+    if (isLinearMaterial && allowHighBottom) {
+      throw new BadRequestException(
+        'Linear material systems cannot allow high bottom.',
       );
     }
 
@@ -227,7 +244,7 @@ export class SystemsService {
         idBrand,
         idProduct,
         isActive: true,
-        allowHighBottom: allowHighBottom ?? false,
+        allowHighBottom: isLinearMaterial ? false : allowHighBottom ?? false,
       },
     });
   }
@@ -238,8 +255,66 @@ export class SystemsService {
   }): Promise<System> {
     const { where, data } = params;
 
+    const current = await this.prisma.system.findUnique({
+      where,
+      select: {
+        id: true,
+        idBrand: true,
+        idProduct: true,
+      },
+    });
+
+    if (!current) {
+      throw new NotFoundException(`System with ID #${where.id} not found.`);
+    }
+
+    const nextIdBrand = data.idBrand ?? current.idBrand;
+    const nextIdProduct = data.idProduct ?? current.idProduct;
+
+    const brandProduct = await this.prisma.brandProduct.findUnique({
+      where: {
+        idBrand_idProduct: {
+          idBrand: nextIdBrand,
+          idProduct: nextIdProduct,
+        },
+      },
+      include: {
+        product: {
+          select: {
+            id: true,
+            name: true,
+            kind: true,
+            pricingMode: true,
+          },
+        },
+      },
+    });
+
+    if (!brandProduct) {
+      throw new NotFoundException(
+        `Brand/Product pair not found (brandId=${nextIdBrand}, productId=${nextIdProduct}).`,
+      );
+    }
+
+    const isLinearMaterial =
+      brandProduct.product.kind === ProductKind.LINEAR_MATERIAL;
+
+    if (isLinearMaterial && data.allowHighBottom) {
+      throw new BadRequestException(
+        'Linear material systems cannot allow high bottom.',
+      );
+    }
+
     try {
-      return await this.prisma.system.update({ data, where });
+      return await this.prisma.system.update({
+        where,
+        data: {
+          ...data,
+          allowHighBottom: isLinearMaterial
+            ? false
+            : data.allowHighBottom,
+        },
+      });
     } catch (e: any) {
       if (e?.code === 'P2025') {
         throw new NotFoundException(`System with ID #${where.id} not found.`);
@@ -528,6 +603,19 @@ export class SystemsService {
       select: {
         idSystem: true,
         idConfig: true,
+        system: {
+          select: {
+            brandProduct: {
+              select: {
+                product: {
+                  select: {
+                    kind: true,
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     });
 
@@ -536,6 +624,9 @@ export class SystemsService {
         `System/Config link not found (systemId=${systemId}, configId=${configId}).`,
       );
     }
+
+    const isLinearMaterial =
+      sysConf.system.brandProduct.product.kind === ProductKind.LINEAR_MATERIAL;
 
     const [
       validActiveOptions,
@@ -599,7 +690,7 @@ export class SystemsService {
       );
     }
 
-    // 🔥 VALIDACIÓN DE DEFAULTS
+    // VALIDACIÓN DE DEFAULTS
     if (
       data.defaultActiveOptionId &&
       !data.activeOptionIds.includes(data.defaultActiveOptionId)
@@ -637,6 +728,65 @@ export class SystemsService {
         'Default reinforcement option must be one of the selected reinforcement options.',
       );
     }
+
+    const dimensionUpdateData = isLinearMaterial
+      ? {
+        dimensionMode: DimensionMode.STANDARD,
+        requiresWidth: true,
+        requiresHeight: false,
+        requiresHeightLeft: false,
+        requiresHeightRight: false,
+        requiresLegHeight: false,
+        requiresDoorWidth: false,
+        requiresLeftSideliteWidth: false,
+        requiresRightSideliteWidth: false,
+        requiresLeftPanels: false,
+        requiresRightPanels: false,
+        requiresPanelCount: false,
+        requiresHorizontalHeights: false,
+      }
+      : {
+        ...(data.dimensionMode !== undefined
+          ? { dimensionMode: data.dimensionMode }
+          : {}),
+
+        ...(data.requiresWidth !== undefined
+          ? { requiresWidth: data.requiresWidth }
+          : {}),
+        ...(data.requiresHeight !== undefined
+          ? { requiresHeight: data.requiresHeight }
+          : {}),
+        ...(data.requiresHeightLeft !== undefined
+          ? { requiresHeightLeft: data.requiresHeightLeft }
+          : {}),
+        ...(data.requiresHeightRight !== undefined
+          ? { requiresHeightRight: data.requiresHeightRight }
+          : {}),
+        ...(data.requiresLegHeight !== undefined
+          ? { requiresLegHeight: data.requiresLegHeight }
+          : {}),
+        ...(data.requiresDoorWidth !== undefined
+          ? { requiresDoorWidth: data.requiresDoorWidth }
+          : {}),
+        ...(data.requiresLeftSideliteWidth !== undefined
+          ? { requiresLeftSideliteWidth: data.requiresLeftSideliteWidth }
+          : {}),
+        ...(data.requiresRightSideliteWidth !== undefined
+          ? { requiresRightSideliteWidth: data.requiresRightSideliteWidth }
+          : {}),
+        ...(data.requiresLeftPanels !== undefined
+          ? { requiresLeftPanels: data.requiresLeftPanels }
+          : {}),
+        ...(data.requiresRightPanels !== undefined
+          ? { requiresRightPanels: data.requiresRightPanels }
+          : {}),
+        ...(data.requiresPanelCount !== undefined
+          ? { requiresPanelCount: data.requiresPanelCount }
+          : {}),
+        ...(data.requiresHorizontalHeights !== undefined
+          ? { requiresHorizontalHeights: data.requiresHorizontalHeights }
+          : {}),
+      };
 
     await this.prisma.$transaction(async (tx) => {
       await tx.sysConfActiveOption.deleteMany({
@@ -711,7 +861,7 @@ export class SystemsService {
         });
       }
 
-      // 🔥 GUARDAR DEFAULTS
+      //  GUARDAR DEFAULTS
       await tx.sysConf.update({
         where: {
           idSystem_idConfig: {
@@ -721,52 +871,12 @@ export class SystemsService {
         },
         data: {
           defaultActiveOptionId: data.defaultActiveOptionId ?? null,
-          defaultPreparationOptionId:
-            data.defaultPreparationOptionId ?? null,
+          defaultPreparationOptionId: data.defaultPreparationOptionId ?? null,
           defaultSillOptionId: data.defaultSillOptionId ?? null,
           defaultReinforcementOptionId:
             data.defaultReinforcementOptionId ?? null,
 
-          ...(data.dimensionMode !== undefined
-            ? { dimensionMode: data.dimensionMode }
-            : {}),
-
-          ...(data.requiresWidth !== undefined
-            ? { requiresWidth: data.requiresWidth }
-            : {}),
-          ...(data.requiresHeight !== undefined
-            ? { requiresHeight: data.requiresHeight }
-            : {}),
-          ...(data.requiresHeightLeft !== undefined
-            ? { requiresHeightLeft: data.requiresHeightLeft }
-            : {}),
-          ...(data.requiresHeightRight !== undefined
-            ? { requiresHeightRight: data.requiresHeightRight }
-            : {}),
-          ...(data.requiresLegHeight !== undefined
-            ? { requiresLegHeight: data.requiresLegHeight }
-            : {}),
-          ...(data.requiresDoorWidth !== undefined
-            ? { requiresDoorWidth: data.requiresDoorWidth }
-            : {}),
-          ...(data.requiresLeftSideliteWidth !== undefined
-            ? { requiresLeftSideliteWidth: data.requiresLeftSideliteWidth }
-            : {}),
-          ...(data.requiresRightSideliteWidth !== undefined
-            ? { requiresRightSideliteWidth: data.requiresRightSideliteWidth }
-            : {}),
-          ...(data.requiresLeftPanels !== undefined
-            ? { requiresLeftPanels: data.requiresLeftPanels }
-            : {}),
-          ...(data.requiresRightPanels !== undefined
-            ? { requiresRightPanels: data.requiresRightPanels }
-            : {}),
-          ...(data.requiresPanelCount !== undefined
-            ? { requiresPanelCount: data.requiresPanelCount }
-            : {}),
-          ...(data.requiresHorizontalHeights !== undefined
-            ? { requiresHorizontalHeights: data.requiresHorizontalHeights }
-            : {}),
+          ...dimensionUpdateData,
         },
       });
     });
@@ -827,11 +937,28 @@ export class SystemsService {
   ) {
     const system = await this.prisma.system.findUnique({
       where: { id: systemId },
-      select: { id: true },
+      select: {
+        id: true,
+        brandProduct: {
+          select: {
+            product: {
+              select: {
+                kind: true,
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!system) {
       throw new NotFoundException(`System with ID #${systemId} not found.`);
+    }
+
+    if (system.brandProduct.product.kind === ProductKind.LINEAR_MATERIAL) {
+      throw new BadRequestException(
+        'Linear material systems do not use glass options.',
+      );
     }
 
     const validCrystals = await this.prisma.crystal.findMany({
@@ -1027,7 +1154,23 @@ export class SystemsService {
     const [system, config] = await Promise.all([
       this.prisma.system.findUnique({
         where: { id: systemId },
-        select: { id: true, idProduct: true, isActive: true },
+        select: {
+          id: true,
+          idProduct: true,
+          isActive: true,
+          brandProduct: {
+            select: {
+              product: {
+                select: {
+                  id: true,
+                  name: true,
+                  kind: true,
+                  pricingMode: true,
+                },
+              },
+            },
+          },
+        },
       }),
       this.prisma.config.findUnique({
         where: { id: configId },
@@ -1043,7 +1186,9 @@ export class SystemsService {
     }
 
     if (!config.isActive) {
-      throw new BadRequestException('Inactive configs cannot be linked to a system.');
+      throw new BadRequestException(
+        'Inactive configs cannot be linked to a system.',
+      );
     }
 
     if (system.idProduct !== config.idProduct) {
@@ -1052,16 +1197,20 @@ export class SystemsService {
       );
     }
 
+    const isLinearMaterial =
+      system.brandProduct.product.kind === ProductKind.LINEAR_MATERIAL;
+
     await this.prisma.sysConf.upsert({
       where: { idSystem_idConfig: { idSystem: systemId, idConfig: configId } },
       update: {},
       create: {
         idSystem: systemId,
         idConfig: configId,
+
         allowScreen: false,
         dimensionMode: DimensionMode.STANDARD,
 
-        requiresWidth: false,
+        requiresWidth: isLinearMaterial,
         requiresHeight: false,
         requiresHeightLeft: false,
         requiresHeightRight: false,
@@ -1097,12 +1246,34 @@ export class SystemsService {
       select: {
         idSystem: true,
         idConfig: true,
+        system: {
+          select: {
+            brandProduct: {
+              select: {
+                product: {
+                  select: {
+                    kind: true,
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     });
 
     if (!existingLink) {
       throw new NotFoundException(
         `System/Config link not found (systemId=${systemId}, configId=${configId}).`,
+      );
+    }
+
+    const isLinearMaterial =
+      existingLink.system.brandProduct.product.kind === ProductKind.LINEAR_MATERIAL;
+
+    if (isLinearMaterial && data.allowScreen) {
+      throw new BadRequestException(
+        'Linear material configs cannot allow screen.',
       );
     }
 
@@ -1114,7 +1285,7 @@ export class SystemsService {
         },
       },
       data: {
-        allowScreen: data.allowScreen,
+        allowScreen: isLinearMaterial ? false : data.allowScreen,
       },
     });
 

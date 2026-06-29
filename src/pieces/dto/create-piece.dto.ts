@@ -162,28 +162,33 @@ export class CreatePieceDto {
   @IsNumber({}, { each: true })
   horizontalHeights?: number[] | null;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
   @IsInt()
-  @IsNotEmpty()
-  idCryst: number;
+  idCryst?: number | null;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
   @IsInt()
-  @IsNotEmpty()
-  idTint: number;
+  idTint?: number | null;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsBoolean()
-  privacy: boolean;
+  privacy?: boolean;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
   @IsInt()
-  @IsNotEmpty()
-  idCoat: number;
+  idCoat?: number | null;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsBoolean()
-  screen: boolean;
+  screen?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -192,6 +197,7 @@ export class CreatePieceDto {
 
   @ApiProperty()
   @IsInt()
+  @Min(1)
   @IsNotEmpty()
   qty: number;
 

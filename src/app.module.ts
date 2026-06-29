@@ -36,6 +36,7 @@ import { PreparationOptionsModule } from './preparation-options/preparation-opti
 import { SillOptionsModule } from './sill-options/sill-options.module';
 import { ReinforcementOptionsModule } from './reinforcement-options/reinforcement-options.module';
 import { ConfigCategoriesModule } from './config-categories/config-categories.module';
+import { LinearPricingRulesModule } from "./linear-pricing-rules/linear-pricing-rules.module";
 import { ScheduleModule } from '@nestjs/schedule';
 
 
@@ -76,6 +77,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     SillOptionsModule,
     ReinforcementOptionsModule,
     ConfigCategoriesModule,
+    LinearPricingRulesModule,
   ],
   controllers: [AppController],
   providers: [

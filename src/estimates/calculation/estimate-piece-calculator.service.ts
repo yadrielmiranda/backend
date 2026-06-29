@@ -5,8 +5,10 @@ import {
 } from '@nestjs/common';
 import {
     DimensionMode,
+    PricingMode,
     Prisma,
     PrismaClient,
+    ProductKind,
 } from '@prisma/client';
 
 import Decimal from 'decimal.js';
@@ -42,9 +44,11 @@ type ConfigSelect = {
 };
 
 export type CalculationCache = {
+    product: Map<number, any>;
     config: Map<number, ConfigSelect | null>;
     sysConf: Map<string, any>;
     pricing: Map<string, any>;
+    linearPricing: Map<string, any>;
     systemFrameColor: Map<string, any>;
     highBottomSettings: Map<string, any>;
 };
@@ -77,9 +81,11 @@ export class EstimatePieceCalculatorService {
 
     createCalculationCache(): CalculationCache {
         return {
+            product: new Map(),
             config: new Map(),
             sysConf: new Map(),
             pricing: new Map(),
+            linearPricing: new Map(),
             systemFrameColor: new Map(),
             highBottomSettings: new Map(),
         };
@@ -92,6 +98,51 @@ export class EstimatePieceCalculatorService {
         cache: CalculationCache,
     ): Promise<CalculatedPieceCombined> {
         // usamos cache para evitar queries repetidas
+        let product = cache.product.get(pieceDto.idProd);
+
+        if (!product) {
+            const dbProduct = await tx.product.findUnique({
+                where: { id: pieceDto.idProd },
+                select: {
+                    id: true,
+                    name: true,
+                    kind: true,
+                    pricingMode: true,
+                    isActive: true,
+                },
+            });
+
+            if (dbProduct) {
+                cache.product.set(pieceDto.idProd, dbProduct);
+                product = dbProduct;
+            }
+        }
+
+        if (!product) {
+            throw new NotFoundException(`Product ID #${pieceDto.idProd} not found.`);
+        }
+
+        if (!product.isActive) {
+            throw new BadRequestException(`Product #${pieceDto.idProd} is inactive.`);
+        }
+
+        if (!Number.isFinite(Number(pieceDto.qty)) || Number(pieceDto.qty) <= 0) {
+            throw new BadRequestException('Quantity must be greater than zero.');
+        }
+
+        const isLinearMaterial =
+            product.kind === ProductKind.LINEAR_MATERIAL &&
+            product.pricingMode === PricingMode.LINEAR_INCH;
+
+        const isGlazedUnit =
+            product.kind === ProductKind.GLAZED_UNIT &&
+            product.pricingMode === PricingMode.AREA_PERIMETER;
+
+        if (!isLinearMaterial && !isGlazedUnit) {
+            throw new BadRequestException(
+                `Invalid product classification for Product #${pieceDto.idProd}.`,
+            );
+        }
         let config = cache.config.get(pieceDto.idConf);
 
         if (!config) {
@@ -202,6 +253,166 @@ export class EstimatePieceCalculatorService {
             throw new BadRequestException(
                 'The selected frame color is not available for the selected system.',
             );
+        }
+
+        if (isLinearMaterial) {
+            if (!pieceDto.width) {
+                throw new BadRequestException('Width is required for linear material.');
+            }
+
+            if (pieceDto.screen) {
+                throw new BadRequestException(
+                    'Screen is not allowed for linear material.',
+                );
+            }
+
+            if ((pieceDto as any).muntin) {
+                throw new BadRequestException(
+                    'Muntins are not allowed for linear material.',
+                );
+            }
+
+            if ((pieceDto as any).highBottom) {
+                throw new BadRequestException(
+                    'High Bottom is not allowed for linear material.',
+                );
+            }
+
+            if (pieceDto.idCryst || pieceDto.idTint || pieceDto.idCoat) {
+                throw new BadRequestException(
+                    'Glass, tint and coating are not allowed for linear material.',
+                );
+            }
+
+            const linearPricingKey = `${pieceDto.idBrand}-${pieceDto.idProd}-${pieceDto.idSyst}-${pieceDto.idConf}`;
+
+            let linearRule = cache.linearPricing.get(linearPricingKey);
+
+            if (!linearRule) {
+                const dbLinearRule = await tx.linearPricingRule.findUnique({
+                    where: {
+                        idBrand_idProduct_idSystem_idConfig: {
+                            idBrand: pieceDto.idBrand,
+                            idProduct: pieceDto.idProd,
+                            idSystem: pieceDto.idSyst,
+                            idConfig: pieceDto.idConf,
+                        },
+                    },
+                });
+
+                if (dbLinearRule) {
+                    cache.linearPricing.set(linearPricingKey, dbLinearRule);
+                    linearRule = dbLinearRule;
+                }
+            }
+
+            if (!linearRule) {
+                throw new NotFoundException(
+                    `No linear pricing rule for piece: ${pieceDto.mark}.`,
+                );
+            }
+
+            const widthIn = new Decimal(String(pieceDto.width));
+
+            if (widthIn.lte(0)) {
+                throw new BadRequestException(
+                    'Width must be greater than zero for linear material.',
+                );
+            }
+
+            const minLengthIn = new Decimal(linearRule.minLengthIn.toString());
+            const maxLengthIn = new Decimal(linearRule.maxLengthIn.toString());
+
+            if (widthIn.lt(minLengthIn) || widthIn.gt(maxLengthIn)) {
+                throw new BadRequestException(
+                    `Linear material length must be between ${minLengthIn.toString()} and ${maxLengthIn.toString()} inches.`,
+                );
+            }
+
+            const costPerInch = new Decimal(linearRule.costPerInch.toString());
+
+            const rate = widthIn.mul(costPerInch);
+
+            const markupAmount = rate.mul(effectiveMarkup);
+            const price = rate.add(markupAmount);
+            const netProfit = price.sub(rate);
+
+            const dealerMarkupFromDto = new Decimal((pieceDto as any).dealerMarkup || 0);
+            const dealerMarkupDecimal = dealerMarkupFromDto.div(100);
+
+            const qtyDec = new Decimal(pieceDto.qty || 1);
+
+            const rateR = rate.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+            const priceR = price.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+            const netProfitR = netProfit.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+            const markupR = effectiveMarkup.toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+            const dealerMarkupDecimalR = dealerMarkupDecimal.toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+
+            const subtotalR = priceR.mul(qtyDec).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+            const netProfitDR = subtotalR.mul(dealerMarkupDecimalR).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+            const customerSubtotalR = subtotalR.add(netProfitDR).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+            const customerPriceR = qtyDec.gt(0)
+                ? customerSubtotalR.div(qtyDec).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+                : new Decimal(0);
+
+            const result: CalculatedPieceCombined = {
+                ...(pieceDto as any),
+
+                idCryst: null,
+                idTint: null,
+                idCoat: null,
+                privacy: false,
+                screen: false,
+                highBottom: false,
+                highBottomPercent: null,
+                muntin: null,
+
+                height: null,
+                heightLeft: null,
+                heightRight: null,
+                legHeight: null,
+                sashHeight: null,
+
+                doorWidth: null,
+                leftSideliteWidth: null,
+                rightSideliteWidth: null,
+                leftPanels: null,
+                rightPanels: null,
+                panelCount: null,
+                horizontalHeights: null,
+
+                idActiveOption: null,
+                idPreparationOption: null,
+                idSillOption: null,
+                idReinforcementOption: null,
+
+                rate: rateR,
+                price: priceR,
+                netProfit: netProfitR,
+                markup: markupR,
+                dealerMarkupDecimal: dealerMarkupDecimalR,
+                netProfitD: netProfitDR,
+                subtotal: subtotalR,
+                customerPrice: customerPriceR,
+                customerSubtotal: customerSubtotalR,
+                dpPosPsf: new Decimal(0),
+                dpNegPsf: new Decimal(0),
+            };
+
+            return result;
+        }
+
+        if (!pieceDto.idCryst) {
+            throw new BadRequestException('Glass is required.');
+        }
+
+        if (!pieceDto.idTint) {
+            throw new BadRequestException('Tint is required.');
+        }
+
+        if (!pieceDto.idCoat) {
+            throw new BadRequestException('Coating is required.');
         }
 
         // screen solo se permite si SysConf.allowScreen = true
