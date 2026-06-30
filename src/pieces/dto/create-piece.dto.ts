@@ -165,6 +165,10 @@ export class CreatePieceDto {
   @IsArray()
   @Type(() => Number)
   @IsNumber({}, { each: true })
+  @Min(18, {
+    each: true,
+    message: "Each Horizontal Height must be at least 18 inches.",
+  })
   horizontalHeights?: number[] | null;
 
   @ApiPropertyOptional()

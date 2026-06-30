@@ -673,6 +673,94 @@ export class EstimatePieceCalculatorService {
             );
         }
 
+        if (
+            dimensionMode === DimensionMode.WINDOW_WALL &&
+            sysConf.requiresHorizontalHeights
+        ) {
+            const horizontalHeightsRaw = (pieceDto as any).horizontalHeights;
+
+            if (
+                !Array.isArray(horizontalHeightsRaw) ||
+                horizontalHeightsRaw.length === 0
+            ) {
+                throw new BadRequestException("Horizontal Heights are required.");
+            }
+
+            const totalHeightForHorizontals = Number((pieceDto as any).height || 0);
+
+            if (
+                !Number.isFinite(totalHeightForHorizontals) ||
+                totalHeightForHorizontals <= 0
+            ) {
+                throw new BadRequestException(
+                    "Height is required to validate Horizontal Heights.",
+                );
+            }
+
+            const horizontalHeights = horizontalHeightsRaw.map(
+                (value: unknown, index: number) => ({
+                    value: Number(value),
+                    index,
+                }),
+            );
+
+            const invalidNumber = horizontalHeights.find(
+                (item) => !Number.isFinite(item.value),
+            );
+
+            if (invalidNumber) {
+                throw new BadRequestException(
+                    `Horizontal Height ${invalidNumber.index + 1} must be a valid number.`,
+                );
+            }
+
+            const sortedHorizontalHeights = [...horizontalHeights].sort(
+                (a, b) => a.value - b.value,
+            );
+
+            const outOfRange = sortedHorizontalHeights.find(
+                (item) => item.value <= 0 || item.value >= totalHeightForHorizontals,
+            );
+
+            if (outOfRange) {
+                throw new BadRequestException(
+                    `Horizontal Height ${outOfRange.index + 1} must be greater than 0 and less than Height.`,
+                );
+            }
+
+            const duplicate = sortedHorizontalHeights.find(
+                (item, idx) =>
+                    idx > 0 && item.value === sortedHorizontalHeights[idx - 1].value,
+            );
+
+            if (duplicate) {
+                throw new BadRequestException(
+                    "Horizontal Heights cannot contain duplicate positions.",
+                );
+            }
+
+            const horizontalPoints = [
+                0,
+                ...sortedHorizontalHeights.map((item) => item.value),
+                totalHeightForHorizontals,
+            ];
+
+            const invalidGapIndex = horizontalPoints.findIndex((point, idx) => {
+                if (idx === 0) return false;
+
+                return point - horizontalPoints[idx - 1] < 18;
+            });
+
+            if (invalidGapIndex !== -1) {
+                const from = horizontalPoints[invalidGapIndex - 1];
+                const to = horizontalPoints[invalidGapIndex];
+
+                throw new BadRequestException(
+                    `The space between ${from}" and ${to}" cannot be less than 18 inches.`,
+                );
+            }
+        }
+
         const MIN_SASH_HEIGHT_IN = new Decimal(19.625);
 
         const sashHeightRaw = (pieceDto as any).sashHeight;
