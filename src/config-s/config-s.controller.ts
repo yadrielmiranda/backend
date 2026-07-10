@@ -7,30 +7,34 @@ import {
   Param,
   Delete,
   ParseIntPipe,
-} from '@nestjs/common';
-import { ConfigSService } from './config-s.service';
-import { CreateConfigDto } from './dto/create-config.dto';
-import { UpdateConfigDto } from './dto/update-config.dto';
-import { Config as ConfigModel, Prisma } from '@prisma/client';
-import { Roles } from '@/auth/roles.decorator';
+} from "@nestjs/common";
+import { ConfigSService } from "./config-s.service";
+import { CreateConfigDto } from "./dto/create-config.dto";
+import { UpdateConfigDto } from "./dto/update-config.dto";
+import { Config as ConfigModel, Prisma } from "@prisma/client";
+import { Roles } from "@/auth/roles.decorator";
 
-@Controller('configs')
+@Controller("configs")
 export class ConfigSController {
   constructor(private readonly configSService: ConfigSService) { }
 
   private toMuntinLayoutJson(
-    muntinLayout?: CreateConfigDto['muntinLayout'] | UpdateConfigDto['muntinLayout'],
+    muntinLayout?:
+      | CreateConfigDto["muntinLayout"]
+      | UpdateConfigDto["muntinLayout"],
   ): Prisma.InputJsonValue | undefined {
     if (muntinLayout === undefined) return undefined;
 
     return muntinLayout.map((item) => ({
       panelIndex: item.panelIndex,
       panelCode: item.panelCode,
-      ...(item.panelLabel !== undefined ? { panelLabel: item.panelLabel } : {}),
+      ...(item.panelLabel !== undefined
+        ? { panelLabel: item.panelLabel }
+        : {}),
     })) as Prisma.InputJsonValue;
   }
 
-  @Roles('admin')
+  @Roles("admin")
   @Post()
   async createConfig(@Body() confData: CreateConfigDto): Promise<ConfigModel> {
     return this.configSService.createConfig({
@@ -40,7 +44,8 @@ export class ConfigSController {
         conf: confData.conf.trim(),
         prod: { connect: { id: confData.idProduct } },
 
-        ...(confData.categoryId !== undefined && confData.categoryId !== null
+        ...(confData.categoryId !== undefined &&
+          confData.categoryId !== null
           ? { category: { connect: { id: confData.categoryId } } }
           : {}),
 
@@ -50,6 +55,7 @@ export class ConfigSController {
         requiresHeightRight: confData.requiresHeightRight,
         requiresLegHeight: confData.requiresLegHeight,
         requiresSashHeight: confData.requiresSashHeight,
+        requiresWindowHeight: confData.requiresWindowHeight,
 
         muntinLayout: this.toMuntinLayoutJson(confData.muntinLayout),
       },
@@ -61,22 +67,24 @@ export class ConfigSController {
     return this.configSService.configs({});
   }
 
-  @Get(':id/product')
+  @Get(":id/product")
   async getConfigWithProduct(
-    @Param('id', ParseIntPipe) id: number,
+    @Param("id", ParseIntPipe) id: number,
   ): Promise<ConfigModel> {
     return this.configSService.getConfigWithProduct({ id });
   }
 
-  @Get(':id')
-  async getConfig(@Param('id', ParseIntPipe) id: number): Promise<ConfigModel> {
+  @Get(":id")
+  async getConfig(
+    @Param("id", ParseIntPipe) id: number,
+  ): Promise<ConfigModel> {
     return this.configSService.config({ id });
   }
 
-  @Roles('admin')
-  @Patch(':id')
+  @Roles("admin")
+  @Patch(":id")
   async updateConfig(
-    @Param('id', ParseIntPipe) id: number,
+    @Param("id", ParseIntPipe) id: number,
     @Body() confData: UpdateConfigDto,
   ): Promise<ConfigModel> {
     return this.configSService.updateConfig({
@@ -84,7 +92,9 @@ export class ConfigSController {
       idProduct: confData.idProduct,
       categoryId: confData.categoryId,
       data: {
-        ...(confData.conf !== undefined ? { conf: confData.conf.trim() } : {}),
+        ...(confData.conf !== undefined
+          ? { conf: confData.conf.trim() }
+          : {}),
 
         ...(confData.isActive !== undefined
           ? { isActive: confData.isActive }
@@ -103,34 +113,47 @@ export class ConfigSController {
         ...(confData.requiresWidth !== undefined
           ? { requiresWidth: confData.requiresWidth }
           : {}),
+
         ...(confData.requiresHeight !== undefined
           ? { requiresHeight: confData.requiresHeight }
           : {}),
+
         ...(confData.requiresHeightLeft !== undefined
           ? { requiresHeightLeft: confData.requiresHeightLeft }
           : {}),
+
         ...(confData.requiresHeightRight !== undefined
           ? { requiresHeightRight: confData.requiresHeightRight }
           : {}),
+
         ...(confData.requiresLegHeight !== undefined
           ? { requiresLegHeight: confData.requiresLegHeight }
           : {}),
+
         ...(confData.requiresSashHeight !== undefined
           ? { requiresSashHeight: confData.requiresSashHeight }
           : {}),
 
+        ...(confData.requiresWindowHeight !== undefined
+          ? { requiresWindowHeight: confData.requiresWindowHeight }
+          : {}),
+
         ...(confData.muntinLayout !== undefined
           ? {
-            muntinLayout: this.toMuntinLayoutJson(confData.muntinLayout),
+            muntinLayout: this.toMuntinLayoutJson(
+              confData.muntinLayout,
+            ),
           }
           : {}),
       },
     });
   }
 
-  @Roles('admin')
-  @Delete(':id')
-  async deleteConfig(@Param('id', ParseIntPipe) id: number): Promise<ConfigModel> {
+  @Roles("admin")
+  @Delete(":id")
+  async deleteConfig(
+    @Param("id", ParseIntPipe) id: number,
+  ): Promise<ConfigModel> {
     return this.configSService.deleteConfig({ id });
   }
 }

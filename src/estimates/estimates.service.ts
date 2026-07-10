@@ -509,6 +509,7 @@ export class EstimatesService {
           heightRight: this.decimalOrNull(p.heightRight),
           legHeight: this.decimalOrNull(p.legHeight),
           sashHeight: this.decimalOrNull((p as any).sashHeight),
+          windowHeight: this.decimalOrNull((p as any).windowHeight),
 
           doorWidth: this.decimalOrNull((p as any).doorWidth),
           doorHeight: this.decimalOrNull((p as any).doorHeight),
@@ -788,6 +789,7 @@ export class EstimatesService {
           heightRight: this.decimalOrNull(p.heightRight),
           legHeight: this.decimalOrNull(p.legHeight),
           sashHeight: this.decimalOrNull((p as any).sashHeight),
+          windowHeight: this.decimalOrNull((p as any).windowHeight),
 
           doorWidth: this.decimalOrNull((p as any).doorWidth),
           doorHeight: this.decimalOrNull((p as any).doorHeight),
@@ -1131,7 +1133,10 @@ export class EstimatesService {
           (p as any).sashHeight == null
             ? null
             : (p as any).sashHeight.toString(),
-
+        windowHeight:
+          (p as any).windowHeight == null
+            ? null
+            : (p as any).windowHeight.toString(),
         doorWidth:
           (p as any).doorWidth == null
             ? null
@@ -1253,6 +1258,7 @@ export class EstimatesService {
             heightRight: this.decimalOrNull(p.heightRight),
             legHeight: this.decimalOrNull(p.legHeight),
             sashHeight: this.decimalOrNull((p as any).sashHeight),
+            windowHeight: this.decimalOrNull((p as any).windowHeight),
 
             doorWidth: this.decimalOrNull((p as any).doorWidth),
             doorHeight: this.decimalOrNull((p as any).doorHeight),

@@ -2,218 +2,259 @@ import { Branding } from '@prisma/client';
 import type { EstimateWithRelations, PdfView } from '../estimates.service';
 
 export class EstimatePdfHtmlBuilder {
-    static build(estimate: EstimateWithRelations, view: PdfView): string {
-        const b = (estimate as any).branding as Branding | null;
+  static build(estimate: EstimateWithRelations, view: PdfView): string {
+    const b = (estimate as any).branding as Branding | null;
 
-        const brandingName = b?.name ?? 'Impact Plus';
-        const addressLine =
-            b?.street || b?.city || b?.state || b?.postalCode
-                ? [b?.street, b?.city, b?.state, b?.postalCode].filter(Boolean).join(', ')
-                : '';
+    const brandingName = b?.name ?? 'Impact Plus';
+    const addressLine =
+      b?.street || b?.city || b?.state || b?.postalCode
+        ? [b?.street, b?.city, b?.state, b?.postalCode].filter(Boolean).join(', ')
+        : '';
 
-        const esc = (v: any) =>
-            String(v ?? '')
-                .replaceAll('&', '&amp;')
-                .replaceAll('<', '&lt;')
-                .replaceAll('>', '&gt;')
-                .replaceAll('"', '&quot;');
+    const esc = (v: any) =>
+      String(v ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
 
-        const money = (n: any) => {
-            const v = Number(n) || 0;
-            return v.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-        };
+    const money = (n: any) => {
+      const v = Number(n) || 0;
+      return v.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+    };
 
-        const dateLabel = (() => {
-            try {
-                const d = new Date((estimate as any).date);
-                return d.toLocaleDateString('en-US', {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                });
-            } catch {
-                return '';
-            }
-        })();
+    const dateLabel = (() => {
+      try {
+        const d = new Date((estimate as any).date);
+        return d.toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+        });
+      } catch {
+        return '';
+      }
+    })();
 
-        const expiresAtLabel = (() => {
-            try {
-                const d = new Date((estimate as any).expiresAt);
-                return d.toLocaleDateString('en-US', {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                });
-            } catch {
-                return '';
-            }
-        })();
+    const expiresAtLabel = (() => {
+      try {
+        const d = new Date((estimate as any).expiresAt);
+        return d.toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+        });
+      } catch {
+        return '';
+      }
+    })();
 
-        const logo = b?.logoUrl
-            ? `<div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+    const logo = b?.logoUrl
+      ? `<div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
            <img src="${esc(b.logoUrl)}" style="height:48px; object-fit:contain;" />
          </div>`
-            : '';
+      : '';
 
-        // comentario en espanol: rol del duenio del estimate
-        const ownerRole = String((estimate as any)?.user?.role?.name ?? '')
-            .trim()
-            .toLowerCase();
+    // comentario en espanol: rol del duenio del estimate
+    const ownerRole = String((estimate as any)?.user?.role?.name ?? '')
+      .trim()
+      .toLowerCase();
 
-        // comentario en espanol: si admin imprime, el "base view" depende del owner
-        const effectiveView: PdfView =
-            view === 'admin'
-                ? ownerRole === 'dealer'
-                    ? 'dealer_internal'
-                    : 'client'
-                : view;
+    // comentario en espanol: si admin imprime, el "base view" depende del owner
+    const effectiveView: PdfView =
+      view === 'admin'
+        ? ownerRole === 'dealer'
+          ? 'dealer_internal'
+          : 'client'
+        : view;
 
-        const isPublic = effectiveView === 'dealer_public';
-        const showDealerSummary = effectiveView === 'dealer_internal';
-        const showAdminSummary = view === 'admin';
+    const isPublic = effectiveView === 'dealer_public';
+    const showDealerSummary = effectiveView === 'dealer_internal';
+    const showAdminSummary = view === 'admin';
 
-        const formatInchesFromEighthStep = (raw: any) => {
-            const n = Number(raw);
-            if (!Number.isFinite(n)) return '?';
+    const formatInchesFromEighthStep = (raw: any) => {
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return '?';
 
-            const sign = n < 0 ? '-' : '';
-            const abs = Math.abs(n);
+      const sign = n < 0 ? '-' : '';
+      const abs = Math.abs(n);
 
-            const whole = Math.floor(abs);
-            const frac = abs - whole;
+      const whole = Math.floor(abs);
+      const frac = abs - whole;
 
-            let eighths = Math.round(frac * 8);
+      let eighths = Math.round(frac * 8);
 
-            let w = whole;
-            if (eighths >= 8) {
-                w += 1;
-                eighths = 0;
-            }
+      let w = whole;
+      if (eighths >= 8) {
+        w += 1;
+        eighths = 0;
+      }
 
-            if (eighths === 0) return `${sign}${w}`;
+      if (eighths === 0) return `${sign}${w}`;
 
-            const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
-            const g = gcd(eighths, 8);
-            const num = eighths / g;
-            const den = 8 / g;
+      const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+      const g = gcd(eighths, 8);
+      const num = eighths / g;
+      const den = 8 / g;
 
-            return w > 0 ? `${sign}${w} ${num}/${den}` : `${sign}${num}/${den}`;
-        };
+      return w > 0 ? `${sign}${w} ${num}/${den}` : `${sign}${num}/${den}`;
+    };
 
-        const formatPsf = (raw: any) => {
-            const n = Number(raw);
-            if (!Number.isFinite(n)) return '';
-            const s = n >= 0 ? '+' : '';
-            return `${s}${n.toFixed(1)}`;
-        };
+    const formatPsf = (raw: any) => {
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return '';
+      const s = n >= 0 ? '+' : '';
+      return `${s}${n.toFixed(1)}`;
+    };
 
-        const buildPieceDescriptionLines = (p: any): string[] => {
-            const header = [p.prod?.name, p.bran?.name, p.syst?.name, p.conf?.conf]
-                .filter(Boolean)
-                .join(' ');
+    const buildPieceDescriptionLines = (p: any): string[] => {
+      const header = [p.prod?.name, p.bran?.name, p.syst?.name, p.conf?.conf]
+        .filter(Boolean)
+        .join(' ');
 
-            const w = p.width != null ? formatInchesFromEighthStep(p.width) : '?';
-            const h = p.height != null ? formatInchesFromEighthStep(p.height) : '?';
+      const w = p.width != null ? formatInchesFromEighthStep(p.width) : '?';
+      const h = p.height != null ? formatInchesFromEighthStep(p.height) : '?';
 
-            const sizeParts: string[] = [`${w} x ${h}`];
+      const requiresWindowHeight =
+        p.conf?.requiresWindowHeight === true;
 
-            if (p.heightLeft != null) sizeParts.push(`HL ${formatInchesFromEighthStep(p.heightLeft)}`);
-            if (p.heightRight != null) sizeParts.push(`HR ${formatInchesFromEighthStep(p.heightRight)}`);
-            if (p.legHeight != null) sizeParts.push(`Leg ${formatInchesFromEighthStep(p.legHeight)}`);
+      const heightLabel = requiresWindowHeight ? 'Open H' : 'H';
 
-            if (p.doorWidth != null) {
-                sizeParts.push(`Door ${formatInchesFromEighthStep(p.doorWidth)}`);
-            }
+      const sizeParts: string[] = [`${w} W x ${h} ${heightLabel}`];
 
-            if (p.leftSideliteWidth != null) {
-                sizeParts.push(`Left SL ${formatInchesFromEighthStep(p.leftSideliteWidth)}`);
-            }
+      if (p.heightLeft != null) {
+        sizeParts.push(
+          `HL ${formatInchesFromEighthStep(p.heightLeft)}`,
+        );
+      }
 
-            if (p.rightSideliteWidth != null) {
-                sizeParts.push(`Right SL ${formatInchesFromEighthStep(p.rightSideliteWidth)}`);
-            }
+      if (p.heightRight != null) {
+        sizeParts.push(
+          `HR ${formatInchesFromEighthStep(p.heightRight)}`,
+        );
+      }
 
-            if (p.leftPanels != null) {
-                sizeParts.push(`Left Panels ${p.leftPanels}`);
-            }
+      if (p.legHeight != null) {
+        sizeParts.push(
+          `Leg H ${formatInchesFromEighthStep(p.legHeight)}`,
+        );
+      }
 
-            if (p.rightPanels != null) {
-                sizeParts.push(`Right Panels ${p.rightPanels}`);
-            }
+      if (p.sashHeight != null) {
+        sizeParts.push(
+          `Sash H ${formatInchesFromEighthStep(p.sashHeight)}`,
+        );
+      }
 
-            if (p.panelCount != null) {
-                sizeParts.push(`Panels ${p.panelCount}`);
-            }
+      if (p.windowHeight != null) {
+        sizeParts.push(
+          `Window H ${formatInchesFromEighthStep(p.windowHeight)}`,
+        );
+      }
 
-            if (Array.isArray(p.horizontalHeights) && p.horizontalHeights.length > 0) {
-                sizeParts.push(
-                    `Horizontals ${p.horizontalHeights
-                        .map((h: any) => formatInchesFromEighthStep(h))
-                        .join(', ')}`,
-                );
-            }
+      if (p.doorWidth != null || p.doorHeight != null) {
+        const doorWidth =
+          p.doorWidth != null
+            ? formatInchesFromEighthStep(p.doorWidth)
+            : '?';
 
-            const sizeLine = `Size: ${sizeParts.join(' / ')}`;
+        const doorHeight =
+          p.doorHeight != null
+            ? formatInchesFromEighthStep(p.doorHeight)
+            : '?';
 
-            const glassTokens: string[] = [];
-            if (p.cryst?.glass) glassTokens.push(p.cryst.glass);
-            if (p.tin?.color) glassTokens.push(p.tin.color);
-            if (p.coat?.name) glassTokens.push(p.coat.name);
+        sizeParts.push(`Door ${doorWidth} W x ${doorHeight} H`);
+      }
 
-            const glassLine = glassTokens.length
-                ? `Glass: ${glassTokens.join(' + ')}`
-                : '';
+      if (p.leftSideliteWidth != null) {
+        sizeParts.push(`Left SL ${formatInchesFromEighthStep(p.leftSideliteWidth)}`);
+      }
 
-            const optionsLine = [
-                `Screen: ${p.screen ? 'Yes' : 'No'}`,
-                `Muntin: ${p.pieceMuntin ? 'Yes' : 'No'}`,
-                `Privacy: ${p.privacy ? 'Yes' : 'No'}`,
-            ].join(' | ');
+      if (p.rightSideliteWidth != null) {
+        sizeParts.push(`Right SL ${formatInchesFromEighthStep(p.rightSideliteWidth)}`);
+      }
 
-            const pos = p.dpPosPsf;
-            const neg = p.dpNegPsf;
-            const psfLine =
-                pos != null && neg != null
-                    ? `PSF: ${formatPsf(pos)} ${formatPsf(neg)}`
-                    : '';
+      if (p.leftPanels != null) {
+        sizeParts.push(`Left Panels ${p.leftPanels}`);
+      }
 
-            return [header, sizeLine, glassLine, optionsLine, psfLine].filter(
-                (l) => l && l.trim() !== '',
-            );
-        };
+      if (p.rightPanels != null) {
+        sizeParts.push(`Right Panels ${p.rightPanels}`);
+      }
 
-        const getUnitPrice = (p: any) => {
-            if (effectiveView === 'dealer_public') return Number(p.customerPrice ?? p.price) || 0;
-            return Number(p.price) || 0;
-        };
+      if (p.panelCount != null) {
+        sizeParts.push(`Panels ${p.panelCount}`);
+      }
 
-        const getSubtotal = (p: any) => {
-            if (effectiveView === 'dealer_public') {
-                const unit = getUnitPrice(p);
-                const qty = Number(p.qty) || 0;
-                return unit * qty;
-            }
+      if (Array.isArray(p.horizontalHeights) && p.horizontalHeights.length > 0) {
+        sizeParts.push(
+          `Horizontals ${p.horizontalHeights
+            .map((h: any) => formatInchesFromEighthStep(h))
+            .join(', ')}`,
+        );
+      }
 
-            return Number(p.subtotal ?? 0) || 0;
-        };
+      const sizeLine = `Size: ${sizeParts.join(' / ')}`;
 
-        const rows = (estimate.pieces ?? [])
-            .map((p: any) => {
-                const lines = buildPieceDescriptionLines(p);
+      const glassTokens: string[] = [];
+      if (p.cryst?.glass) glassTokens.push(p.cryst.glass);
+      if (p.tin?.color) glassTokens.push(p.tin.color);
+      if (p.coat?.name) glassTokens.push(p.coat.name);
 
-                const unitPrice = getUnitPrice(p);
-                const qty = Number(p.qty) || 0;
-                const subtotal = getSubtotal(p);
+      const glassLine = glassTokens.length
+        ? `Glass: ${glassTokens.join(' + ')}`
+        : '';
 
-                const descHtml = lines
-                    .map((line, idx) =>
-                        idx === 0
-                            ? `<div class="h">${esc(line)}</div>`
-                            : `<div class="s">${esc(line)}</div>`,
-                    )
-                    .join('');
+      const optionsLine = [
+        `Screen: ${p.screen ? 'Yes' : 'No'}`,
+        `Muntin: ${p.pieceMuntin ? 'Yes' : 'No'}`,
+        `Privacy: ${p.privacy ? 'Yes' : 'No'}`,
+      ].join(' | ');
 
-                return `
+      const pos = p.dpPosPsf;
+      const neg = p.dpNegPsf;
+      const psfLine =
+        pos != null && neg != null
+          ? `PSF: ${formatPsf(pos)} ${formatPsf(neg)}`
+          : '';
+
+      return [header, sizeLine, glassLine, optionsLine, psfLine].filter(
+        (l) => l && l.trim() !== '',
+      );
+    };
+
+    const getUnitPrice = (p: any) => {
+      if (effectiveView === 'dealer_public') return Number(p.customerPrice ?? p.price) || 0;
+      return Number(p.price) || 0;
+    };
+
+    const getSubtotal = (p: any) => {
+      if (effectiveView === 'dealer_public') {
+        const unit = getUnitPrice(p);
+        const qty = Number(p.qty) || 0;
+        return unit * qty;
+      }
+
+      return Number(p.subtotal ?? 0) || 0;
+    };
+
+    const rows = (estimate.pieces ?? [])
+      .map((p: any) => {
+        const lines = buildPieceDescriptionLines(p);
+
+        const unitPrice = getUnitPrice(p);
+        const qty = Number(p.qty) || 0;
+        const subtotal = getSubtotal(p);
+
+        const descHtml = lines
+          .map((line, idx) =>
+            idx === 0
+              ? `<div class="h">${esc(line)}</div>`
+              : `<div class="s">${esc(line)}</div>`,
+          )
+          .join('');
+
+        return `
           <tr>
             <td class="td mark">${esc(p.mark)}</td>
             <td class="td desc">
@@ -224,28 +265,28 @@ export class EstimatePdfHtmlBuilder {
             <td class="td right strong">${money(subtotal)}</td>
           </tr>
         `;
-            })
-            .join('');
+      })
+      .join('');
 
-        const subtotalInternal = Number((estimate as any).priceT ?? 0) || 0;
-        const taxRate = Number((estimate as any).taxRate ?? 0) || 0;
-        const taxAmount = Number((estimate as any).taxAmount ?? 0) || 0;
-        const totalPayable = Number((estimate as any).totalPayable ?? 0) || 0;
+    const subtotalInternal = Number((estimate as any).priceT ?? 0) || 0;
+    const taxRate = Number((estimate as any).taxRate ?? 0) || 0;
+    const taxAmount = Number((estimate as any).taxAmount ?? 0) || 0;
+    const totalPayable = Number((estimate as any).totalPayable ?? 0) || 0;
 
-        const customerSubtotal = Number((estimate as any).customerPriceT ?? 0) || 0;
-        const customerTaxRate = Number((estimate as any).customerTaxRate ?? 0) || 0;
-        const customerTaxAmount = Number((estimate as any).customerTaxAmount ?? 0) || 0;
-        const customerTotal = Number((estimate as any).customerTotalPayable ?? 0) || 0;
+    const customerSubtotal = Number((estimate as any).customerPriceT ?? 0) || 0;
+    const customerTaxRate = Number((estimate as any).customerTaxRate ?? 0) || 0;
+    const customerTaxAmount = Number((estimate as any).customerTaxAmount ?? 0) || 0;
+    const customerTotal = Number((estimate as any).customerTotalPayable ?? 0) || 0;
 
-        const dealerTotalDueToImpact = totalPayable;
-        const dealerFinalPriceCustomer = customerSubtotal;
-        const dealerProfit = Number((estimate as any).netProfitD ?? 0) || 0;
+    const dealerTotalDueToImpact = totalPayable;
+    const dealerFinalPriceCustomer = customerSubtotal;
+    const dealerProfit = Number((estimate as any).netProfitD ?? 0) || 0;
 
-        const adminRateT = Number((estimate as any).rateT ?? 0) || 0;
-        const adminPriceT = subtotalInternal;
-        const adminProfit = Number((estimate as any).netProfit ?? 0) || 0;
+    const adminRateT = Number((estimate as any).rateT ?? 0) || 0;
+    const adminPriceT = subtotalInternal;
+    const adminProfit = Number((estimate as any).netProfit ?? 0) || 0;
 
-        return `
+    return `
     <!doctype html>
     <html>
     <head>
@@ -444,7 +485,7 @@ export class EstimatePdfHtmlBuilder {
     <div class="totals">
       <div class="totbox">
         ${isPublic
-                ? `
+        ? `
               <div class="line">
                 <span>Subtotal:</span>
                 <span>${money(customerSubtotal)}</span>
@@ -458,8 +499,8 @@ export class EstimatePdfHtmlBuilder {
                 <span>${money(customerTotal)}</span>
               </div>
             `
-                : effectiveView === 'dealer_internal'
-                    ? `
+        : effectiveView === 'dealer_internal'
+          ? `
                 <div class="sectionTitle">Customer View Total</div>
                 <div class="line">
                   <span>Subtotal:</span>
@@ -490,7 +531,7 @@ export class EstimatePdfHtmlBuilder {
                   <span>${money(totalPayable)}</span>
                 </div>
               `
-                    : `
+          : `
                 <div class="line">
                   <span>Subtotal:</span>
                   <span>${money(subtotalInternal)}</span>
@@ -504,12 +545,12 @@ export class EstimatePdfHtmlBuilder {
                   <span>${money(totalPayable)}</span>
                 </div>
               `
-            }
+      }
       </div>
     </div>
 
     ${showDealerSummary
-                ? `
+        ? `
           <div class="summary" style="background:#ecfdf5; border-color:#bbf7d0;">
             <h3 style="color:#065f46;">Dealer Summary</h3>
             <div class="row"><span>Total Due to Impact Plus:</span><span>${money(dealerTotalDueToImpact)}</span></div>
@@ -517,11 +558,11 @@ export class EstimatePdfHtmlBuilder {
             <div class="row"><span>Your Profit (Net Profit):</span><span class="profit">${money(dealerProfit)}</span></div>
           </div>
         `
-                : ''
-            }
+        : ''
+      }
 
     ${showAdminSummary
-                ? `
+        ? `
           <div class="summary" style="background:#fef2f2; border-color:#fecaca;">
             <h3 style="color:#991b1b;">Admin Summary</h3>
             <div class="row"><span>Total Production Cost (Rate):</span><span>${money(adminRateT)}</span></div>
@@ -529,8 +570,8 @@ export class EstimatePdfHtmlBuilder {
             <div class="row"><span>Impact Plus Profit (Net Profit):</span><span class="adminprofit">${money(adminProfit)}</span></div>
           </div>
         `
-                : ''
-            }
+        : ''
+      }
 
     <div class="footer">
       This estimate is valid until ${esc(expiresAtLabel)}. Thank you for your business.
@@ -539,5 +580,5 @@ export class EstimatePdfHtmlBuilder {
     </body>
     </html>
     `;
-    }
+  }
 }

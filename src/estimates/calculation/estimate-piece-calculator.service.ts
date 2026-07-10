@@ -40,6 +40,7 @@ type ConfigSelect = {
     requiresHeightRight: boolean;
     requiresLegHeight: boolean;
     requiresSashHeight: boolean;
+    requiresWindowHeight: boolean;
     muntinLayout: unknown;
 };
 
@@ -156,6 +157,7 @@ export class EstimatePieceCalculatorService {
                     requiresHeightRight: true,
                     requiresLegHeight: true,
                     requiresSashHeight: true,
+                    requiresWindowHeight: true,
                     muntinLayout: true,
                 },
             });
@@ -193,7 +195,6 @@ export class EstimatePieceCalculatorService {
                     requiresHeight: true,
                     requiresHeightLeft: true,
                     requiresHeightRight: true,
-                    requiresLegHeight: true,
                     requiresDoorWidth: true,
                     requiresDoorHeight: true,
                     requiresLeftSideliteWidth: true,
@@ -374,6 +375,7 @@ export class EstimatePieceCalculatorService {
                 heightRight: null,
                 legHeight: null,
                 sashHeight: null,
+                windowHeight: null,
 
                 doorWidth: null,
                 doorHeight: null,
@@ -608,13 +610,16 @@ export class EstimatePieceCalculatorService {
             if (need(config.requiresSashHeight) && isBlank((pieceDto as any).sashHeight)) {
                 missing.push('sashHeight');
             }
+            if (
+                need(config.requiresWindowHeight) && isBlank((pieceDto as any).windowHeight)) {
+                missing.push("windowHeight");
+            }
         } else {
             // comentario en espanol: modos nuevos usan SysConf, no nombres como X/OX/XO
             requireField(sysConf.requiresWidth, 'width', pieceDto.width);
             requireField(sysConf.requiresHeight, 'height', pieceDto.height);
             requireField(sysConf.requiresHeightLeft, 'heightLeft', pieceDto.heightLeft);
             requireField(sysConf.requiresHeightRight, 'heightRight', pieceDto.heightRight);
-            requireField(sysConf.requiresLegHeight, 'legHeight', pieceDto.legHeight);
 
             requireField(
                 sysConf.requiresDoorWidth,
@@ -671,6 +676,31 @@ export class EstimatePieceCalculatorService {
             throw new BadRequestException(
                 `Missing required dimensions: ${missing.join(', ')}`,
             );
+        }
+
+        // comentario en español: estas dimensiones pertenecen exclusivamente
+        // a Config en modo STANDARD. Limpiamos cualquier valor obsoleto.
+        const mutablePieceDto = pieceDto as any;
+
+        if (
+            dimensionMode !== DimensionMode.STANDARD ||
+            !need(config.requiresLegHeight)
+        ) {
+            mutablePieceDto.legHeight = null;
+        }
+
+        if (
+            dimensionMode !== DimensionMode.STANDARD ||
+            !need(config.requiresSashHeight)
+        ) {
+            mutablePieceDto.sashHeight = null;
+        }
+
+        if (
+            dimensionMode !== DimensionMode.STANDARD ||
+            !need(config.requiresWindowHeight)
+        ) {
+            mutablePieceDto.windowHeight = null;
         }
 
         if (
@@ -775,15 +805,53 @@ export class EstimatePieceCalculatorService {
                 );
             }
 
-            if (!isBlank(totalHeightRaw)) {
-                const totalHeight = new Decimal(String(totalHeightRaw));
-                const maxSashHeight = totalHeight.div(2);
+            if (isBlank(totalHeightRaw)) {
+                throw new BadRequestException(
+                    'Height is required to validate Sash Height.',
+                );
+            }
 
-                if (sashHeight.gt(maxSashHeight)) {
-                    throw new BadRequestException(
-                        `Sash Height cannot be greater than half of the total height (${maxSashHeight.toDecimalPlaces(3).toString()} inches).`,
-                    );
-                }
+            const totalHeight = new Decimal(String(totalHeightRaw));
+
+            if (totalHeight.lte(0)) {
+                throw new BadRequestException(
+                    'Height must be greater than zero to validate Sash Height.',
+                );
+            }
+
+            const maxSashHeight = totalHeight.div(2);
+
+            if (sashHeight.gt(maxSashHeight)) {
+                throw new BadRequestException(
+                    `Sash Height cannot be greater than half of the total height (${maxSashHeight.toDecimalPlaces(3).toString()} inches).`,
+                );
+            }
+        }
+
+        const windowHeightRaw = (pieceDto as any).windowHeight;
+        const openHeightRaw = pieceDto.height;
+
+        if (!isBlank(windowHeightRaw)) {
+            const windowHeight = new Decimal(String(windowHeightRaw));
+
+            if (windowHeight.lte(0)) {
+                throw new BadRequestException(
+                    "Window Height must be greater than zero.",
+                );
+            }
+
+            if (isBlank(openHeightRaw)) {
+                throw new BadRequestException(
+                    "Open Height is required to validate Window Height.",
+                );
+            }
+
+            const openHeight = new Decimal(String(openHeightRaw));
+
+            if (windowHeight.gte(openHeight)) {
+                throw new BadRequestException(
+                    "Window Height must be less than Open Height.",
+                );
             }
         }
 

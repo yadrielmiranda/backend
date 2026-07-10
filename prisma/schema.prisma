@@ -236,12 +236,13 @@ model Config {
   pricingRules       PricingRule[]
   linearPricingRules LinearPricingRule[]
 
-  requiresWidth       Boolean @default(false)
-  requiresHeight      Boolean @default(false)
-  requiresHeightLeft  Boolean @default(false)
-  requiresHeightRight Boolean @default(false)
-  requiresLegHeight   Boolean @default(false)
-  requiresSashHeight  Boolean @default(false)
+  requiresWidth        Boolean @default(false)
+  requiresHeight       Boolean @default(false)
+  requiresHeightLeft   Boolean @default(false)
+  requiresHeightRight  Boolean @default(false)
+  requiresLegHeight    Boolean @default(false)
+  requiresSashHeight   Boolean @default(false)
+  requiresWindowHeight Boolean @default(false)
 
   muntinLayout Json?
 
@@ -755,12 +756,13 @@ model Piece {
   fColor  FrameColor @relation(fields: [idFC], references: [id])
   idFC    Int
 
-  width       Decimal? @db.Decimal(10, 3)
-  height      Decimal? @db.Decimal(10, 3)
-  heightLeft  Decimal? @db.Decimal(10, 3)
-  heightRight Decimal? @db.Decimal(10, 3)
-  legHeight   Decimal? @db.Decimal(10, 3)
-  sashHeight  Decimal? @db.Decimal(10, 3)
+  width        Decimal? @db.Decimal(10, 3)
+  height       Decimal? @db.Decimal(10, 3)
+  heightLeft   Decimal? @db.Decimal(10, 3)
+  heightRight  Decimal? @db.Decimal(10, 3)
+  legHeight    Decimal? @db.Decimal(10, 3)
+  sashHeight   Decimal? @db.Decimal(10, 3)
+  windowHeight Decimal? @db.Decimal(10, 3)
 
   doorWidth          Decimal? @db.Decimal(10, 3)
   doorHeight         Decimal? @db.Decimal(10, 3)

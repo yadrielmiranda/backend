@@ -41,74 +41,79 @@ export class EstimateAuditSnapshotBuilder {
       // pieces summary
       pieces: Array.isArray(est.pieces)
         ? est.pieces.map((p: any) => ({
-            id: p.id ?? null,
-            mark: p.mark ?? null,
-            qty: p.qty ?? null,
+          id: p.id ?? null,
+          mark: p.mark ?? null,
+          qty: p.qty ?? null,
 
-            // dimensions
-            width: p.width ?? null,
-            height: p.height ?? null,
-            heightLeft: p.heightLeft ?? null,
-            heightRight: p.heightRight ?? null,
-            legHeight: p.legHeight ?? null,
-            doorWidth: p.doorWidth ?? null,
-            leftSideliteWidth: p.leftSideliteWidth ?? null,
-            rightSideliteWidth: p.rightSideliteWidth ?? null,
-            leftPanels: p.leftPanels ?? null,
-            rightPanels: p.rightPanels ?? null,
-            panelCount: p.panelCount ?? null,
-            horizontalHeights: p.horizontalHeights ?? null,
+          // dimensions
+          width: p.width ?? null,
+          height: p.height ?? null,
+          heightLeft: p.heightLeft ?? null,
+          heightRight: p.heightRight ?? null,
+          legHeight: p.legHeight ?? null,
+          sashHeight: p.sashHeight ?? null,
+          windowHeight: p.windowHeight ?? null,
 
-            // relation ids
-            idProd: p.idProd ?? null,
-            idBrand: p.idBrand ?? null,
-            idSyst: p.idSyst ?? null,
-            idConf: p.idConf ?? null,
-            idFC: p.idFC ?? null,
-            idCryst: p.idCryst ?? null,
-            idTint: p.idTint ?? null,
-            idCoat: p.idCoat ?? null,
+          doorWidth: p.doorWidth ?? null,
+          doorHeight: p.doorHeight ?? null,
+          leftSideliteWidth: p.leftSideliteWidth ?? null,
+          rightSideliteWidth: p.rightSideliteWidth ?? null,
 
-            // money
-            rate: p.rate ?? null,
-            price: p.price ?? null,
-            subtotal: p.subtotal ?? null,
-            netProfit: p.netProfit ?? null,
+          leftPanels: p.leftPanels ?? null,
+          rightPanels: p.rightPanels ?? null,
+          panelCount: p.panelCount ?? null,
+          horizontalHeights: p.horizontalHeights ?? null,
 
-            dealerMarkup: p.dealerMarkup ?? null,
-            netProfitD: p.netProfitD ?? null,
+          // relation ids
+          idProd: p.idProd ?? null,
+          idBrand: p.idBrand ?? null,
+          idSyst: p.idSyst ?? null,
+          idConf: p.idConf ?? null,
+          idFC: p.idFC ?? null,
+          idCryst: p.idCryst ?? null,
+          idTint: p.idTint ?? null,
+          idCoat: p.idCoat ?? null,
 
-            customerPrice: p.customerPrice ?? null,
-            customerSubtotal: p.customerSubtotal ?? null,
+          // money
+          rate: p.rate ?? null,
+          price: p.price ?? null,
+          subtotal: p.subtotal ?? null,
+          netProfit: p.netProfit ?? null,
 
-            dpPosPsf: p.dpPosPsf ?? null,
-            dpNegPsf: p.dpNegPsf ?? null,
+          dealerMarkup: p.dealerMarkup ?? null,
+          netProfitD: p.netProfitD ?? null,
 
-            // flags
-            privacy: p.privacy ?? null,
-            screen: p.screen ?? null,
+          customerPrice: p.customerPrice ?? null,
+          customerSubtotal: p.customerSubtotal ?? null,
 
-            muntin: p.pieceMuntin
-              ? {
-                  id: p.pieceMuntin.id ?? null,
-                  patternId: p.pieceMuntin.patternId ?? null,
-                  patternName: p.pieceMuntin.pattern?.name ?? null,
-                  typeId: p.pieceMuntin.typeId ?? null,
-                  typeName: p.pieceMuntin.type?.name ?? null,
-                  totalLites: p.pieceMuntin.totalLites ?? null,
-                  panels: Array.isArray(p.pieceMuntin.panels)
-                    ? p.pieceMuntin.panels.map((mp: any) => ({
-                        id: mp.id ?? null,
-                        panelIndex: mp.panelIndex ?? null,
-                        panelCode: mp.panelCode ?? null,
-                        panelLabel: mp.panelLabel ?? null,
-                        horizontalLites: mp.horizontalLites ?? null,
-                        verticalLites: mp.verticalLites ?? null,
-                      }))
-                    : [],
-                }
-              : null,
-          }))
+          dpPosPsf: p.dpPosPsf ?? null,
+          dpNegPsf: p.dpNegPsf ?? null,
+
+          // flags
+          privacy: p.privacy ?? null,
+          screen: p.screen ?? null,
+
+          muntin: p.pieceMuntin
+            ? {
+              id: p.pieceMuntin.id ?? null,
+              patternId: p.pieceMuntin.patternId ?? null,
+              patternName: p.pieceMuntin.pattern?.name ?? null,
+              typeId: p.pieceMuntin.typeId ?? null,
+              typeName: p.pieceMuntin.type?.name ?? null,
+              totalLites: p.pieceMuntin.totalLites ?? null,
+              panels: Array.isArray(p.pieceMuntin.panels)
+                ? p.pieceMuntin.panels.map((mp: any) => ({
+                  id: mp.id ?? null,
+                  panelIndex: mp.panelIndex ?? null,
+                  panelCode: mp.panelCode ?? null,
+                  panelLabel: mp.panelLabel ?? null,
+                  horizontalLites: mp.horizontalLites ?? null,
+                  verticalLites: mp.verticalLites ?? null,
+                }))
+                : [],
+            }
+            : null,
+        }))
         : [],
 
       piecesCount: Array.isArray(est.pieces) ? est.pieces.length : 0,
