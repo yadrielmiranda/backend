@@ -1,23 +1,27 @@
+// src/products/products.controller.ts
+
 import {
-  Controller,
-  Get,
-  Post,
   Body,
-  Patch,
-  Param,
+  Controller,
   Delete,
+  Get,
+  Param,
   ParseIntPipe,
+  Patch,
+  Post,
   Query,
 } from "@nestjs/common";
-import { ProductsService } from "./products.service";
+import { Product as ProductModel } from "@prisma/client";
+
+import { Roles } from "@/auth/roles.decorator";
+
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
-import { Product as ProductModel } from "@prisma/client";
-import { Roles } from "@/auth/roles.decorator";
+import { ProductsService } from "./products.service";
 
 @Controller("products")
 export class ProductsController {
-  constructor(private readonly productsService: ProductsService) {}
+  constructor(private readonly productsService: ProductsService) { }
 
   @Get()
   async getAllProducts(
@@ -50,7 +54,9 @@ export class ProductsController {
 
   @Roles("admin")
   @Post()
-  async createProduct(@Body() productData: CreateProductDto): Promise<ProductModel> {
+  async createProduct(
+    @Body() productData: CreateProductDto,
+  ): Promise<ProductModel> {
     return this.productsService.createProduct(productData);
   }
 

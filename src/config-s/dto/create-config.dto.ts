@@ -1,14 +1,18 @@
+// src/configs/dto/create-config.dto.ts
+
+import { Type } from "class-transformer";
 import {
   IsArray,
   IsBoolean,
   IsInt,
   IsNotEmpty,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
+  Min,
   ValidateNested,
 } from "class-validator";
-import { Type } from "class-transformer";
 
 export class CreateConfigMuntinLayoutItemDto {
   @Type(() => Number)
@@ -73,4 +77,14 @@ export class CreateConfigDto {
   @ValidateNested({ each: true })
   @Type(() => CreateConfigMuntinLayoutItemDto)
   muntinLayout?: CreateConfigMuntinLayoutItemDto[];
+
+  @IsOptional()
+  @IsObject()
+  diagramSpec?: Record<string, unknown> | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  diagramSpecVersion?: number;
 }

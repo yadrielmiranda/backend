@@ -1,0 +1,9 @@
+-- AlterTable
+ALTER TABLE `Config` ADD COLUMN `diagramSpec` JSON NULL,
+    ADD COLUMN `diagramSpecVersion` INTEGER NOT NULL DEFAULT 1;
+
+-- AlterTable
+ALTER TABLE `Product` ADD COLUMN `diagramFamily` ENUM('GENERIC', 'BIFOLD', 'CASEMENT', 'FIXED_SHAPE', 'FRENCH_DOOR', 'GARAGE_DOOR', 'HORIZONTAL_SLIDER', 'LINEAR_MATERIAL', 'PIVOT_DOOR', 'SINGLE_HUNG', 'SLIDING_DOOR', 'WINDOW_WALL') NOT NULL DEFAULT 'GENERIC';
+
+-- CreateIndex
+CREATE INDEX `Product_diagramFamily_idx` ON `Product`(`diagramFamily`);

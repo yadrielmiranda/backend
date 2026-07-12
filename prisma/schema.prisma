@@ -163,6 +163,9 @@ model Product {
   kind        ProductKind @default(GLAZED_UNIT)
   pricingMode PricingMode @default(AREA_PERIMETER)
 
+  // comentario en español: selecciona la familia visual del diagrama
+  diagramFamily DiagramFamily @default(GENERIC)
+
   configs            Config[]
   configCategories   ConfigCategory[]
   pieces             Piece[]
@@ -175,11 +178,27 @@ model Product {
 
   @@index([isActive])
   @@index([kind])
+  @@index([diagramFamily])
 }
 
 enum ProductKind {
   GLAZED_UNIT
   LINEAR_MATERIAL
+}
+
+enum DiagramFamily {
+  GENERIC
+  BIFOLD
+  CASEMENT
+  FIXED_SHAPE
+  FRENCH_DOOR
+  GARAGE_DOOR
+  HORIZONTAL_SLIDER
+  LINEAR_MATERIAL
+  PIVOT_DOOR
+  SINGLE_HUNG
+  SLIDING_DOOR
+  WINDOW_WALL
 }
 
 model BrandProduct {
@@ -245,6 +264,13 @@ model Config {
   requiresWindowHeight Boolean @default(false)
 
   muntinLayout Json?
+
+  // comentario en español: estructura visual base de la configuración
+  // Puede referenciar valores dinámicos de Piece como rightPanels.
+  diagramSpec Json?
+
+  // comentario en español: permite migrar la estructura JSON en el futuro
+  diagramSpecVersion Int @default(1)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

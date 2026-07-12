@@ -13,7 +13,11 @@ import { UpdateProductDto } from "./dto/update-product.dto";
 
 function clampInt(v: any, def: number, min: number, max: number) {
   const n = Number(v);
-  if (!Number.isFinite(n)) return def;
+
+  if (!Number.isFinite(n)) {
+    return def;
+  }
+
   return Math.min(Math.max(n, min), max);
 }
 
@@ -96,6 +100,7 @@ export class ProductsService {
         data: {
           name: data.name,
           isActive: true,
+          diagramFamily: data.diagramFamily,
           ...classification,
         },
       });
@@ -141,6 +146,7 @@ export class ProductsService {
         data: {
           name: data.name,
           isActive: data.isActive,
+          diagramFamily: data.diagramFamily,
           ...classification,
         },
       });
@@ -157,7 +163,9 @@ export class ProductsService {
     }
   }
 
-  async deleteProduct(where: Prisma.ProductWhereUniqueInput): Promise<Product> {
+  async deleteProduct(
+    where: Prisma.ProductWhereUniqueInput,
+  ): Promise<Product> {
     try {
       return await this.prisma.product.delete({
         where,
@@ -187,10 +195,14 @@ export class ProductsService {
     return this.prisma.product.findMany({
       include: {
         brandProducts: {
-          include: { brand: true },
+          include: {
+            brand: true,
+          },
         },
       },
-      orderBy: { id: "asc" },
+      orderBy: {
+        id: "asc",
+      },
       take,
       skip,
     });

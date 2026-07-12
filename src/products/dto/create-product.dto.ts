@@ -1,7 +1,16 @@
 // src/products/dto/create-product.dto.ts
 
-import { ProductKind, PricingMode } from "@prisma/client";
-import { IsEnum, IsNotEmpty, IsOptional, IsString } from "class-validator";
+import {
+    DiagramFamily,
+    PricingMode,
+    ProductKind,
+} from "@prisma/client";
+import {
+    IsEnum,
+    IsNotEmpty,
+    IsOptional,
+    IsString,
+} from "class-validator";
 
 export class CreateProductDto {
     @IsNotEmpty()
@@ -15,4 +24,8 @@ export class CreateProductDto {
     @IsOptional()
     @IsEnum(PricingMode)
     pricingMode?: PricingMode;
+
+    @IsOptional()
+    @IsEnum(DiagramFamily)
+    diagramFamily?: DiagramFamily;
 }
