@@ -16,7 +16,7 @@ export class PricingRulesService {
   constructor(
     private prisma: PrismaService,
     private logs: LogsService,
-  ) {}
+  ) { }
 
   private async findOneOrThrow(id: number) {
     const rule = await this.prisma.pricingRule.findUnique({
@@ -43,13 +43,12 @@ export class PricingRulesService {
       idConfig: rule.idConfig,
       idCrystal: rule.idCrystal,
 
-      // campos típicos de pricing rule (por si existen)
-      A: rule.A ?? null,
-      B: rule.B ?? null,
-      C: rule.C ?? null,
-      minPrice: rule.minPrice ?? null,
+      // comentario en español: convertir Decimal a string
+      // para conservar la precisión completa en los logs.
+      costoA: rule.costoA?.toString() ?? null,
+      costoB: rule.costoB?.toString() ?? null,
+      costoC: rule.costoC?.toString() ?? null,
 
-      // nombres (solo si vienen incluidos)
       brandName: rule.brand?.name ?? null,
       productName: rule.product?.name ?? null,
       systemName: rule.system?.name ?? null,
@@ -78,7 +77,16 @@ export class PricingRulesService {
     }
 
     const created = await this.prisma.pricingRule.create({
-      data: dto,
+      data: {
+        idBrand: dto.idBrand,
+        idProduct: dto.idProduct,
+        idSystem: dto.idSystem,
+        idConfig: dto.idConfig,
+        idCrystal: dto.idCrystal,
+        costoA: new Prisma.Decimal(dto.costoA),
+        costoB: new Prisma.Decimal(dto.costoB),
+        costoC: new Prisma.Decimal(dto.costoC),
+      },
     });
 
     const createdFull = await this.prisma.pricingRule.findUnique({
@@ -128,19 +136,50 @@ export class PricingRulesService {
     return rule;
   }
 
-  async update(id: number, dto: UpdatePricingRuleDto, actor: AuthUser) {
+  async update(
+    id: number,
+    dto: UpdatePricingRuleDto,
+    actor: AuthUser,
+  ) {
     const beforeFull = await this.findOneOrThrow(id);
 
     try {
+      const {
+        costoA,
+        costoB,
+        costoC,
+        ...otherFields
+      } = dto;
+
+      // comentario en español: convertir los coeficientes directamente
+      // desde string a Decimal para conservar toda la precisión.
+      const updateData: Prisma.PricingRuleUncheckedUpdateInput = {
+        ...otherFields,
+
+        ...(costoA !== undefined
+          ? { costoA: new Prisma.Decimal(costoA) }
+          : {}),
+
+        ...(costoB !== undefined
+          ? { costoB: new Prisma.Decimal(costoB) }
+          : {}),
+
+        ...(costoC !== undefined
+          ? { costoC: new Prisma.Decimal(costoC) }
+          : {}),
+      };
+
       const updated = await this.prisma.pricingRule.update({
         where: { id },
-        data: dto,
+        data: updateData,
       });
 
       const afterFull = await this.findOneOrThrow(id);
 
-      // comentario en espanol: changedFields básico (solo keys que vengan en el dto)
-      const changedFields = Object.keys(dto ?? {}).filter((k) => (dto as any)[k] !== undefined);
+      // comentario en español: registrar únicamente los campos enviados.
+      const changedFields = Object.keys(dto ?? {}).filter(
+        (key) => (dto as Record<string, unknown>)[key] !== undefined,
+      );
 
       await this.logs.log({
         action: 'UPDATE',
@@ -164,8 +203,11 @@ export class PricingRulesService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        throw new ConflictException('This update would create a duplicate pricing rule.');
+        throw new ConflictException(
+          'This update would create a duplicate pricing rule.',
+        );
       }
+
       throw error;
     }
   }

@@ -649,9 +649,9 @@ model PricingRule {
   idConfig  Int
   crystal   Crystal  @relation(fields: [idCrystal], references: [id])
   idCrystal Int
-  costoA    Decimal  @db.Decimal(18, 8) // Total 18 dígitos, 8 decimales
-  costoB    Decimal  @db.Decimal(18, 8) // Total 18 dígitos, 8 decimales
-  costoC    Decimal  @db.Decimal(18, 8) // Total 18 dígitos, 8 decimales
+  costoA    Decimal  @db.Decimal(24, 20) // Total 24 dígitos, 20 decimales
+  costoB    Decimal  @db.Decimal(24, 20) // Total 24 dígitos, 20 decimales
+  costoC    Decimal  @db.Decimal(24, 20) // Total 24 dígitos, 20 decimales
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

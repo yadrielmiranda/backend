@@ -1,39 +1,60 @@
-import { IsNotEmpty, IsNumber } from 'class-validator';
 import { Type } from 'class-transformer';
+import {
+  IsInt,
+  IsNotEmpty,
+  IsString,
+  Matches,
+} from 'class-validator';
+
+const PRICING_DECIMAL_REGEX = /^-?\d{1,4}(?:\.\d{1,20})?$/;
 
 export class CreatePricingRuleDto {
-  @IsNumber()
+  @Type(() => Number)
+  @IsInt()
   @IsNotEmpty()
   idBrand: number;
 
-  @IsNumber()
+  @Type(() => Number)
+  @IsInt()
   @IsNotEmpty()
   idProduct: number;
 
-  @IsNumber()
+  @Type(() => Number)
+  @IsInt()
   @IsNotEmpty()
   idSystem: number;
 
-  @IsNumber()
+  @Type(() => Number)
+  @IsInt()
   @IsNotEmpty()
   idConfig: number;
 
-  @IsNumber()
+  @Type(() => Number)
+  @IsInt()
   @IsNotEmpty()
   idCrystal: number;
 
-  @IsNumber()
-  @Type(() => Number) // Asegura la transformación de string a número
+  @IsString()
   @IsNotEmpty()
-  costoA: number;
+  @Matches(PRICING_DECIMAL_REGEX, {
+    message:
+      'costoA must contain at most 4 integer digits and 20 decimal digits.',
+  })
+  costoA: string;
 
-  @IsNumber()
-  @Type(() => Number)
+  @IsString()
   @IsNotEmpty()
-  costoB: number;
+  @Matches(PRICING_DECIMAL_REGEX, {
+    message:
+      'costoB must contain at most 4 integer digits and 20 decimal digits.',
+  })
+  costoB: string;
 
-  @IsNumber()
-  @Type(() => Number)
+  @IsString()
   @IsNotEmpty()
-  costoC: number;
+  @Matches(PRICING_DECIMAL_REGEX, {
+    message:
+      'costoC must contain at most 4 integer digits and 20 decimal digits.',
+  })
+  costoC: string;
 }
