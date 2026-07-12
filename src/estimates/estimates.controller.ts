@@ -10,17 +10,22 @@ import {
   ParseIntPipe,
   UseGuards,
   Req,
-  NotFoundException,
   Res,
   BadRequestException,
   Query,
 } from '@nestjs/common';
+import { Request, Response } from 'express';
+
 import { EstimatesService, type PdfView } from './estimates.service';
 import { CreateEstimateDto } from './dto/create-estimate.dto';
 import { UpdateEstimateDto } from './dto/update-estimate.dto';
-import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
-import { Request, Response } from 'express';
+import {
+  CreateEstimateHeaderDto,
+  UpdateEstimateHeaderDto,
+} from './dto/estimate-header.dto';
+
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
+import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { EstimatePublicShareService } from './public-share/estimate-public-share.service';
 
@@ -47,7 +52,7 @@ export class EstimatesController {
       heightRight?: number;
       legHeight?: number;
 
-      doorWidth?: number;
+      doorWidth?: number;      
       leftSideliteWidth?: number;
       rightSideliteWidth?: number;
       leftPanels?: number;
@@ -56,14 +61,14 @@ export class EstimatesController {
       horizontalHeights?: number[];
     },
   ) {
-    for (const [k, v] of Object.entries({
+    for (const [key, value] of Object.entries({
       idSyst: body.idSyst,
       idConf: body.idConf,
       idCryst: body.idCryst,
       height: body.height,
     })) {
-      if (!Number.isFinite(v as number)) {
-        throw new BadRequestException(`Invalid parameter: ${k}`);
+      if (!Number.isFinite(value as number)) {
+        throw new BadRequestException(`Invalid parameter: ${key}`);
       }
     }
 
@@ -73,7 +78,7 @@ export class EstimatesController {
       heightLeft: body.heightLeft,
       heightRight: body.heightRight,
       legHeight: body.legHeight,
-      doorWidth: body.doorWidth,
+      doorWidth: body.doorWidth,      
       leftSideliteWidth: body.leftSideliteWidth,
       rightSideliteWidth: body.rightSideliteWidth,
       leftPanels: body.leftPanels,
@@ -81,9 +86,13 @@ export class EstimatesController {
       panelCount: body.panelCount,
     };
 
-    for (const [k, v] of Object.entries(optionalNumbers)) {
-      if (v !== undefined && v !== null && !Number.isFinite(v as number)) {
-        throw new BadRequestException(`Invalid parameter: ${k}`);
+    for (const [key, value] of Object.entries(optionalNumbers)) {
+      if (
+        value !== undefined &&
+        value !== null &&
+        !Number.isFinite(value as number)
+      ) {
+        throw new BadRequestException(`Invalid parameter: ${key}`);
       }
     }
 
@@ -91,27 +100,140 @@ export class EstimatesController {
       body.horizontalHeights !== undefined &&
       !Array.isArray(body.horizontalHeights)
     ) {
-      throw new BadRequestException('Invalid parameter: horizontalHeights');
+      throw new BadRequestException(
+        'Invalid parameter: horizontalHeights',
+      );
     }
 
     return this.estimatesService.previewDimensionValidation(body);
   }
 
   @Post('calculate-piece')
-  calculatePieceMetrics(@Body() pieceDto: CreatePieceDto, @Req() req: Request) {
+  calculatePieceMetrics(
+    @Body() pieceDto: CreatePieceDto,
+    @Req() req: Request,
+  ) {
     const user = req.user as AuthUser;
-    return this.estimatesService.calculateAndReturnPieceMetrics(pieceDto, user.id);
+
+    return this.estimatesService.calculateAndReturnPieceMetrics(
+      pieceDto,
+      user.id,
+    );
   }
+
+  // =====================================================
+  // NUEVO FLUJO PERSISTENTE
+  // =====================================================
+
+  /**
+   * Crea inmediatamente el encabezado del Estimate en DB,
+   * todavía sin piezas y con todos los totales en cero.
+   */
+  @Post('initialize')
+  initializeEstimate(
+    @Body() dto: CreateEstimateHeaderDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthUser;
+
+    return this.estimatesService.createEmptyEstimate(dto, user.id);
+  }
+
+  /**
+   * Guarda solamente cambios del encabezado.
+   * No modifica ni elimina piezas.
+   */
+  @Patch(':id/header')
+  updateEstimateHeader(
+    @Param('id', ParseIntPipe) estimateId: number,
+    @Body() dto: UpdateEstimateHeaderDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthUser;
+
+    return this.estimatesService.updateEstimateHeader(
+      estimateId,
+      dto,
+      user.id,
+    );
+  }
+
+  /**
+   * Calcula y guarda una pieza nueva dentro del Estimate.
+   * Después actualiza los totales del Estimate.
+   */
+  @Post(':id/pieces')
+  addPiece(
+    @Param('id', ParseIntPipe) estimateId: number,
+    @Body() dto: CreatePieceDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthUser;
+
+    return this.estimatesService.addPieceToEstimate(
+      estimateId,
+      dto,
+      user.id,
+    );
+  }
+
+  /**
+   * Recalcula y actualiza una pieza existente.
+   * Después actualiza los totales del Estimate.
+   */
+  @Patch(':id/pieces/:pieceId')
+  updatePiece(
+    @Param('id', ParseIntPipe) estimateId: number,
+    @Param('pieceId', ParseIntPipe) pieceId: number,
+    @Body() dto: CreatePieceDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthUser;
+
+    return this.estimatesService.updatePieceInEstimate(
+      estimateId,
+      pieceId,
+      dto,
+      user.id,
+    );
+  }
+
+  /**
+   * Elimina una pieza y actualiza inmediatamente
+   * los totales del Estimate.
+   */
+  @Delete(':id/pieces/:pieceId')
+  deletePiece(
+    @Param('id', ParseIntPipe) estimateId: number,
+    @Param('pieceId', ParseIntPipe) pieceId: number,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthUser;
+
+    return this.estimatesService.deletePieceFromEstimate(
+      estimateId,
+      pieceId,
+      user.id,
+    );
+  }
+
+  // =====================================================
+  // FLUJO ANTERIOR
+  // Se conserva temporalmente hasta migrar el frontend.
+  // =====================================================
 
   @Post()
   create(@Body() dto: CreateEstimateDto, @Req() req: Request) {
     const user = req.user as AuthUser;
+
     return this.estimatesService.createEstimate(dto, user.id);
   }
 
   @Get()
   findAll(@Req() req: Request) {
-    return this.estimatesService.findAllForUser(req.user as AuthUser);
+    return this.estimatesService.findAllForUser(
+      req.user as AuthUser,
+    );
   }
 
   @Post(':id/public-token')
@@ -127,11 +249,6 @@ export class EstimatesController {
     );
   }
 
-  @Get(':id')
-  findOne(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
-    return this.estimatesService.findOneForUser(id, req.user as AuthUser);
-  }
-
   @Get(':id/pdf')
   async pdf(
     @Param('id', ParseIntPipe) id: number,
@@ -142,9 +259,12 @@ export class EstimatesController {
     const user = req.user as AuthUser;
 
     const roleName =
-      (user as any)?.role?.name ?? (user as any)?.roleName ?? null;
+      (user as any)?.role?.name ??
+      (user as any)?.roleName ??
+      null;
 
-    // comentario en espanol: si no mandan view, elegimos un default por rol
+    // comentario en español: si no mandan view,
+    // elegimos un valor predeterminado según el rol.
     const defaultView: PdfView =
       roleName === 'dealer'
         ? 'dealer_internal'
@@ -167,18 +287,22 @@ export class EstimatesController {
                 ? defaultView
                 : (() => {
                   throw new BadRequestException(
-                    `view inválido. Use: client | dealer_internal | dealer_public | admin`,
+                    'view inválido. Use: client | dealer_internal | dealer_public | admin',
                   );
                 })();
 
-    const pdfBuffer = await this.estimatesService.generateEstimatePdfBufferForUser(
-      id,
-      user,
-      view,
-    );
+    const pdfBuffer =
+      await this.estimatesService.generateEstimatePdfBufferForUser(
+        id,
+        user,
+        view,
+      );
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="estimate-${id}.pdf"`);
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="estimate-${id}.pdf"`,
+    );
 
     return res.end(pdfBuffer);
   }
@@ -190,7 +314,21 @@ export class EstimatesController {
   ) {
     const user = req.user as AuthUser;
 
-    return this.estimatesService.recalculateExpiredEstimate(id, user);
+    return this.estimatesService.recalculateExpiredEstimate(
+      id,
+      user,
+    );
+  }
+
+  @Get(':id')
+  findOne(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: Request,
+  ) {
+    return this.estimatesService.findOneForUser(
+      id,
+      req.user as AuthUser,
+    );
   }
 
   @Patch(':id')
@@ -201,19 +339,34 @@ export class EstimatesController {
   ) {
     const user = req.user as AuthUser;
 
-    // ✅ valida dueño fuerte
-    await this.estimatesService.assertEstimateOwnerOrThrow(id, user);
+    // comentario en español: mantiene la validación del flujo anterior.
+    await this.estimatesService.assertEstimateOwnerOrThrow(
+      id,
+      user,
+    );
 
-    return this.estimatesService.updateEstimate(id, dto, user.id);
+    return this.estimatesService.updateEstimate(
+      id,
+      dto,
+      user.id,
+    );
   }
 
   @Delete(':id')
-  async remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+  async remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: Request,
+  ) {
     const user = req.user as AuthUser;
 
-    // ✅ valida dueño fuerte
-    await this.estimatesService.assertEstimateOwnerOrThrow(id, user);
+    await this.estimatesService.assertEstimateOwnerOrThrow(
+      id,
+      user,
+    );
 
-    return this.estimatesService.deleteEstimate({ id }, user.id);
+    return this.estimatesService.deleteEstimate(
+      { id },
+      user.id,
+    );
   }
 }

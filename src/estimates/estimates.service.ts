@@ -20,6 +20,10 @@ import {
 import { PrismaService } from '@/prisma/prisma.service';
 import { CreateEstimateDto } from './dto/create-estimate.dto';
 import { UpdateEstimateDto, UpsertPieceDto } from './dto/update-estimate.dto';
+import {
+  CreateEstimateHeaderDto,
+  UpdateEstimateHeaderDto,
+} from './dto/estimate-header.dto';
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 
 // --- Importación Estándar ---
@@ -126,6 +130,275 @@ export class EstimatesService {
     return value
       .map((item) => Number(item))
       .filter((item) => Number.isFinite(item)) as Prisma.InputJsonValue;
+  }
+
+  /**
+ * Convierte una pieza ya calculada en los campos escalares
+ * que se almacenan en Piece.
+ *
+ * No incluye idEst ni PieceMuntin.
+ */
+  private buildCalculatedPiecePersistenceData(
+    piece: CalculatedPieceCombined,
+  ): Omit<Prisma.PieceUncheckedCreateInput, 'idEst'> {
+    return {
+      mark: piece.mark,
+      privacy: piece.privacy ?? false,
+      screen: piece.screen ?? false,
+      highBottom: piece.highBottom ?? false,
+      highBottomPercent: piece.highBottomPercent
+        ? new Prisma.Decimal(piece.highBottomPercent.toFixed(4))
+        : null,
+
+      qty: piece.qty,
+
+      idActiveOption: piece.idActiveOption ?? null,
+      idPreparationOption: piece.idPreparationOption ?? null,
+      idSillOption: piece.idSillOption ?? null,
+      idReinforcementOption: piece.idReinforcementOption ?? null,
+
+      rate: new Prisma.Decimal(piece.rate.toFixed(2)),
+      price: new Prisma.Decimal(piece.price.toFixed(2)),
+      markup: new Prisma.Decimal(piece.markup.toFixed(4)),
+      subtotal: new Prisma.Decimal(piece.subtotal.toFixed(2)),
+      dealerMarkup: new Prisma.Decimal(
+        piece.dealerMarkupDecimal.toFixed(4),
+      ),
+      netProfit: new Prisma.Decimal(piece.netProfit.toFixed(2)),
+      netProfitD: new Prisma.Decimal(piece.netProfitD.toFixed(2)),
+      customerPrice: new Prisma.Decimal(
+        piece.customerPrice.toFixed(2),
+      ),
+      customerSubtotal: new Prisma.Decimal(
+        piece.customerSubtotal.toFixed(2),
+      ),
+
+      width: this.decimalOrNull(piece.width),
+      height: this.decimalOrNull(piece.height),
+      heightLeft: this.decimalOrNull(piece.heightLeft),
+      heightRight: this.decimalOrNull(piece.heightRight),
+      legHeight: this.decimalOrNull(piece.legHeight),
+      sashHeight: this.decimalOrNull((piece as any).sashHeight),
+      windowHeight: this.decimalOrNull((piece as any).windowHeight),
+
+      doorWidth: this.decimalOrNull((piece as any).doorWidth),
+      doorHeight: this.decimalOrNull((piece as any).doorHeight),
+      leftSideliteWidth: this.decimalOrNull(
+        (piece as any).leftSideliteWidth,
+      ),
+      rightSideliteWidth: this.decimalOrNull(
+        (piece as any).rightSideliteWidth,
+      ),
+
+      leftPanels: this.intOrNull((piece as any).leftPanels),
+      rightPanels: this.intOrNull((piece as any).rightPanels),
+      panelCount: this.intOrNull((piece as any).panelCount),
+      horizontalHeights: this.jsonArrayOrNull(
+        (piece as any).horizontalHeights,
+      ),
+
+      idProd: piece.idProd,
+      idBrand: piece.idBrand,
+      idSyst: piece.idSyst,
+      idConf: piece.idConf,
+      idFC: piece.idFC,
+      idCryst: piece.idCryst ?? null,
+      idTint: piece.idTint ?? null,
+      idCoat: piece.idCoat ?? null,
+
+      dpPosPsf: new Prisma.Decimal(piece.dpPosPsf.toFixed(2)),
+      dpNegPsf: new Prisma.Decimal(piece.dpNegPsf.toFixed(2)),
+    };
+  }
+
+  /**
+ * Elimina el muntin anterior de una pieza y crea el nuevo,
+ * cuando la pieza calculada contiene configuración de muntin.
+ */
+  private async replacePieceMuntin(
+    tx: PrismaTransactionClient,
+    pieceId: number,
+    muntin: CalculatedPieceCombined['muntin'],
+  ): Promise<void> {
+    await tx.pieceMuntin.deleteMany({
+      where: { pieceId },
+    });
+
+    if (!muntin) return;
+
+    const muntinCreate =
+      this.muntinService.buildPieceMuntinCreateInput(muntin);
+
+    if (!muntinCreate) return;
+
+    await tx.pieceMuntin.create({
+      data: {
+        piece: {
+          connect: { id: pieceId },
+        },
+        pattern: {
+          connect: { id: muntin.idPattern },
+        },
+        ...(muntin.idType
+          ? {
+            type: {
+              connect: { id: muntin.idType },
+            },
+          }
+          : {}),
+        totalLites: muntinCreate.totalLites,
+        ...(muntin.panels.length > 0
+          ? {
+            panels: {
+              create: muntin.panels.map((panel) => ({
+                panelIndex: panel.panelIndex,
+                panelCode: panel.panelCode ?? null,
+                panelLabel: panel.panelLabel,
+                horizontalLites: panel.horizontalLites,
+                verticalLites: panel.verticalLites,
+              })),
+            },
+          }
+          : {}),
+      },
+    });
+  }
+
+  /**
+ * Obtiene el Estimate con las mismas relaciones que utiliza
+ * la pantalla de edición.
+ */
+  private async getEstimateWithRelationsInTransaction(
+    tx: PrismaTransactionClient,
+    estimateId: number,
+  ) {
+    return tx.estimate.findUnique({
+      where: { id: estimateId },
+      include: {
+        user: {
+          include: {
+            role: true,
+          },
+        },
+        status: true,
+        order: true,
+        pieces: {
+          orderBy: { id: 'asc' },
+          include: {
+            prod: true,
+            bran: true,
+            syst: true,
+            conf: {
+              include: {
+                category: true,
+              },
+            },
+            fColor: true,
+            cryst: true,
+            tin: true,
+            coat: true,
+
+            activeOption: true,
+            preparationOption: true,
+            sillOption: true,
+            reinforcementOption: true,
+
+            pieceMuntin: {
+              include: {
+                pattern: true,
+                type: true,
+                panels: {
+                  orderBy: { panelIndex: 'asc' },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  /**
+ * Confirma propiedad, estado editable y ausencia de Order.
+ */
+  private assertEstimateCanBeEdited(
+    estimate: {
+      id: number;
+      idUser: number;
+      status?: {
+        name: string;
+      } | null;
+      order?: {
+        id: number;
+      } | null;
+    } | null,
+    estimateId: number,
+    userId: number,
+  ): void {
+    if (!estimate || estimate.idUser !== userId) {
+      throw new NotFoundException(
+        `Estimate #${estimateId} not found/denied.`,
+      );
+    }
+
+    if (estimate.status?.name !== 'Active') {
+      throw new BadRequestException(
+        `Estimate #${estimateId} cannot be edited because its status is ${estimate.status?.name ?? 'UNKNOWN'
+        }.`,
+      );
+    }
+
+    if (estimate.order) {
+      throw new BadRequestException(
+        `Estimate #${estimateId} already has an order and cannot be edited.`,
+      );
+    }
+  }
+
+  /**
+ * Suma las piezas ya guardadas y actualiza los totales
+ * del encabezado del Estimate.
+ */
+  private async updateEstimateTotalsFromPersistedPieces(
+    tx: PrismaTransactionClient,
+    estimateId: number,
+    factoryTaxRate: Decimal,
+    customerTaxRate: Decimal,
+  ): Promise<void> {
+    const persistedPieces = await tx.piece.findMany({
+      where: {
+        idEst: estimateId,
+      },
+      select: {
+        qty: true,
+        rate: true,
+        price: true,
+        customerPrice: true,
+        dealerMarkup: true,
+      },
+    });
+
+    const estimateTotals =
+      this.pieceCalculator.calculateEstimateTotalsFromPersistedPieces(
+        persistedPieces,
+        factoryTaxRate,
+        customerTaxRate,
+      );
+
+    const totalUnits = persistedPieces.reduce(
+      (sum, piece) => sum + piece.qty,
+      0,
+    );
+
+    await tx.estimate.update({
+      where: {
+        id: estimateId,
+      },
+      data: {
+        ...estimateTotals,
+        units: totalUnits,
+      },
+    });
   }
 
   private async getEstimateExpirationDate(tx: PrismaTransactionClient) {
@@ -373,6 +646,630 @@ export class EstimatesService {
     }
 
     return estimate;
+  }
+
+  // =====================================================
+  // NUEVO FLUJO PERSISTENTE
+  // =====================================================
+
+  /**
+   * Crea inmediatamente un Estimate vacío en DB.
+   * Las piezas se agregarán posteriormente una por una.
+   */
+  async createEmptyEstimate(
+    dto: CreateEstimateHeaderDto,
+    userId: number,
+  ): Promise<EstimateWithRelations> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        isTaxExempt: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const taxParameter = await tx.globalParameter.findUnique({
+        where: {
+          key: GlobalParameterKey.SALES_TAX,
+        },
+      });
+
+      if (!taxParameter) {
+        throw new InternalServerErrorException(
+          'SALES_TAX config missing.',
+        );
+      }
+
+      const activeStatus = await tx.estimateStatus.findUnique({
+        where: {
+          name: 'Active',
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (!activeStatus) {
+        throw new InternalServerErrorException(
+          'EstimateStatus "Active" not seeded.',
+        );
+      }
+
+      const expiresAt = await this.getEstimateExpirationDate(
+        tx as PrismaTransactionClient,
+      );
+
+      const factoryTaxRate = user.isTaxExempt
+        ? new Decimal(0)
+        : new Decimal(taxParameter.value.toString());
+
+      const customerTaxRate = new Decimal(
+        dto.customerTaxRate ?? 0,
+      );
+
+      const estimateTotals =
+        this.pieceCalculator.calculateEstimateTotals(
+          [],
+          factoryTaxRate,
+          customerTaxRate,
+        );
+
+      const sequence = await tx.estimateSequence.create({
+        data: {},
+      });
+
+      const nextNumber = String(190909 + sequence.id);
+
+      const createdBase = await tx.estimate.create({
+        data: {
+          number: nextNumber,
+          name: dto.name,
+          expiresAt,
+
+          customerFirstName: dto.customerFirstName ?? null,
+          customerLastName: dto.customerLastName ?? null,
+          customerEmail: dto.customerEmail ?? null,
+          customerPhone: dto.customerPhone ?? null,
+          customerStreet: dto.customerStreet ?? null,
+          customerCity: dto.customerCity ?? null,
+          customerState: dto.customerState ?? null,
+          customerPostalCode: dto.customerPostalCode ?? null,
+
+          units: 0,
+
+          rateT: estimateTotals.rateT,
+          priceT: estimateTotals.priceT,
+          netProfit: estimateTotals.netProfit,
+
+          taxRate: estimateTotals.taxRate,
+          taxAmount: estimateTotals.taxAmount,
+          totalPayable: estimateTotals.totalPayable,
+
+          customerPriceT: estimateTotals.customerPriceT,
+          customerTaxRate: estimateTotals.customerTaxRate,
+          customerTaxAmount: estimateTotals.customerTaxAmount,
+          customerTotalPayable:
+            estimateTotals.customerTotalPayable,
+
+          netProfitD: estimateTotals.netProfitD,
+
+          status: {
+            connect: {
+              id: activeStatus.id,
+            },
+          },
+
+          user: {
+            connect: {
+              id: userId,
+            },
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      const createdEstimate =
+        await this.getEstimateWithRelationsInTransaction(
+          tx as PrismaTransactionClient,
+          createdBase.id,
+        );
+
+      if (!createdEstimate) {
+        throw new InternalServerErrorException(
+          'Estimate could not be loaded after creation.',
+        );
+      }
+
+      await this.logs.log({
+        action: 'CREATE',
+        entityType: 'Estimate',
+        entityId: createdEstimate.id,
+        userId,
+        message: `Estimate created (#${createdEstimate.number})`,
+        before: null,
+        after:
+          EstimateAuditSnapshotBuilder.build(createdEstimate),
+        meta: {
+          source: 'EstimatesService.createEmptyEstimate',
+        },
+      });
+
+      return createdEstimate as EstimateWithRelations;
+    });
+  }
+
+  /**
+   * Actualiza únicamente los datos del encabezado.
+   * Nunca crea, actualiza ni elimina piezas.
+   */
+  async updateEstimateHeader(
+    estimateId: number,
+    dto: UpdateEstimateHeaderDto,
+    userId: number,
+  ): Promise<EstimateWithRelations> {
+    return this.prisma.$transaction(async (tx) => {
+      const beforeEstimate =
+        await this.getEstimateWithRelationsInTransaction(
+          tx as PrismaTransactionClient,
+          estimateId,
+        );
+
+      this.assertEstimateCanBeEdited(
+        beforeEstimate,
+        estimateId,
+        userId,
+      );
+
+      const headerData: Prisma.EstimateUpdateInput = {
+        ...(dto.name !== undefined
+          ? {
+            name: dto.name,
+          }
+          : {}),
+
+        ...(dto.customerFirstName !== undefined
+          ? {
+            customerFirstName: dto.customerFirstName,
+          }
+          : {}),
+
+        ...(dto.customerLastName !== undefined
+          ? {
+            customerLastName: dto.customerLastName,
+          }
+          : {}),
+
+        ...(dto.customerEmail !== undefined
+          ? {
+            customerEmail: dto.customerEmail,
+          }
+          : {}),
+
+        ...(dto.customerPhone !== undefined
+          ? {
+            customerPhone: dto.customerPhone,
+          }
+          : {}),
+
+        ...(dto.customerStreet !== undefined
+          ? {
+            customerStreet: dto.customerStreet,
+          }
+          : {}),
+
+        ...(dto.customerCity !== undefined
+          ? {
+            customerCity: dto.customerCity,
+          }
+          : {}),
+
+        ...(dto.customerState !== undefined
+          ? {
+            customerState: dto.customerState,
+          }
+          : {}),
+
+        ...(dto.customerPostalCode !== undefined
+          ? {
+            customerPostalCode: dto.customerPostalCode,
+          }
+          : {}),
+      };
+
+      if (Object.keys(headerData).length > 0) {
+        await tx.estimate.update({
+          where: {
+            id: estimateId,
+          },
+          data: headerData,
+        });
+      }
+
+      const factoryTaxRate = new Decimal(
+        beforeEstimate!.taxRate.toString(),
+      );
+
+      const customerTaxRate =
+        dto.customerTaxRate !== undefined
+          ? new Decimal(dto.customerTaxRate)
+          : new Decimal(
+            beforeEstimate!.customerTaxRate.toString(),
+          );
+
+      await this.updateEstimateTotalsFromPersistedPieces(
+        tx as PrismaTransactionClient,
+        estimateId,
+        factoryTaxRate,
+        customerTaxRate,
+      );
+
+      const updatedEstimate =
+        await this.getEstimateWithRelationsInTransaction(
+          tx as PrismaTransactionClient,
+          estimateId,
+        );
+
+      if (!updatedEstimate) {
+        throw new NotFoundException(
+          `Estimate #${estimateId} not found after header update.`,
+        );
+      }
+
+      await this.logs.log({
+        action: 'UPDATE',
+        entityType: 'Estimate',
+        entityId: updatedEstimate.id,
+        userId,
+        message: `Estimate header updated (#${updatedEstimate.number})`,
+        before:
+          EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after:
+          EstimateAuditSnapshotBuilder.build(updatedEstimate),
+        meta: {
+          source: 'EstimatesService.updateEstimateHeader',
+        },
+      });
+
+      return updatedEstimate as EstimateWithRelations;
+    });
+  }
+
+  /**
+   * Calcula y guarda una pieza nueva.
+   * Después actualiza los totales del Estimate.
+   */
+  async addPieceToEstimate(
+    estimateId: number,
+    dto: CreatePieceDto,
+    userId: number,
+  ): Promise<EstimateWithRelations> {
+    const user = await this.prisma.user.findUnique({
+      where: {
+        id: userId,
+      },
+      include: {
+        role: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const effectiveMarkupDecimal =
+      user.markupOverride !== null
+        ? new Decimal(user.markupOverride.toString())
+        : new Decimal(user.role.markup.toString());
+
+    return this.prisma.$transaction(async (tx) => {
+      const beforeEstimate =
+        await this.getEstimateWithRelationsInTransaction(
+          tx as PrismaTransactionClient,
+          estimateId,
+        );
+
+      this.assertEstimateCanBeEdited(
+        beforeEstimate,
+        estimateId,
+        userId,
+      );
+
+      const cache =
+        this.pieceCalculator.createCalculationCache();
+
+      const calculatedPiece =
+        await this.pieceCalculator.calculatePieceMetrics(
+          dto,
+          effectiveMarkupDecimal,
+          tx as PrismaTransactionClient,
+          cache,
+        );
+
+      const pieceData =
+        this.buildCalculatedPiecePersistenceData(
+          calculatedPiece,
+        );
+
+      const createdPiece = await tx.piece.create({
+        data: {
+          ...pieceData,
+          idEst: estimateId,
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      await this.replacePieceMuntin(
+        tx as PrismaTransactionClient,
+        createdPiece.id,
+        calculatedPiece.muntin,
+      );
+
+      const factoryTaxRate = new Decimal(
+        beforeEstimate!.taxRate.toString(),
+      );
+
+      const customerTaxRate = new Decimal(
+        beforeEstimate!.customerTaxRate.toString(),
+      );
+
+      await this.updateEstimateTotalsFromPersistedPieces(
+        tx as PrismaTransactionClient,
+        estimateId,
+        factoryTaxRate,
+        customerTaxRate,
+      );
+
+      const updatedEstimate =
+        await this.getEstimateWithRelationsInTransaction(
+          tx as PrismaTransactionClient,
+          estimateId,
+        );
+
+      if (!updatedEstimate) {
+        throw new NotFoundException(
+          `Estimate #${estimateId} not found after adding piece.`,
+        );
+      }
+
+      await this.logs.log({
+        action: 'UPDATE',
+        entityType: 'Estimate',
+        entityId: updatedEstimate.id,
+        userId,
+        message: `Piece added to Estimate #${updatedEstimate.number}`,
+        before:
+          EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after:
+          EstimateAuditSnapshotBuilder.build(updatedEstimate),
+        meta: {
+          source: 'EstimatesService.addPieceToEstimate',
+          pieceId: createdPiece.id,
+        },
+      });
+
+      return updatedEstimate as EstimateWithRelations;
+    });
+  }
+
+  /**
+   * Recalcula y actualiza una pieza existente.
+   * Después actualiza los totales del Estimate.
+   */
+  async updatePieceInEstimate(
+    estimateId: number,
+    pieceId: number,
+    dto: CreatePieceDto,
+    userId: number,
+  ): Promise<EstimateWithRelations> {
+    const user = await this.prisma.user.findUnique({
+      where: {
+        id: userId,
+      },
+      include: {
+        role: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const effectiveMarkupDecimal =
+      user.markupOverride !== null
+        ? new Decimal(user.markupOverride.toString())
+        : new Decimal(user.role.markup.toString());
+
+    return this.prisma.$transaction(async (tx) => {
+      const beforeEstimate =
+        await this.getEstimateWithRelationsInTransaction(
+          tx as PrismaTransactionClient,
+          estimateId,
+        );
+
+      this.assertEstimateCanBeEdited(
+        beforeEstimate,
+        estimateId,
+        userId,
+      );
+
+      const existingPiece = beforeEstimate!.pieces.find(
+        (piece) => piece.id === pieceId,
+      );
+
+      if (!existingPiece) {
+        throw new NotFoundException(
+          `Piece #${pieceId} was not found in Estimate #${estimateId}.`,
+        );
+      }
+
+      const cache =
+        this.pieceCalculator.createCalculationCache();
+
+      const calculatedPiece =
+        await this.pieceCalculator.calculatePieceMetrics(
+          dto,
+          effectiveMarkupDecimal,
+          tx as PrismaTransactionClient,
+          cache,
+        );
+
+      const pieceData =
+        this.buildCalculatedPiecePersistenceData(
+          calculatedPiece,
+        );
+
+      await tx.piece.update({
+        where: {
+          id: pieceId,
+        },
+        data: pieceData,
+      });
+
+      await this.replacePieceMuntin(
+        tx as PrismaTransactionClient,
+        pieceId,
+        calculatedPiece.muntin,
+      );
+
+      const factoryTaxRate = new Decimal(
+        beforeEstimate!.taxRate.toString(),
+      );
+
+      const customerTaxRate = new Decimal(
+        beforeEstimate!.customerTaxRate.toString(),
+      );
+
+      await this.updateEstimateTotalsFromPersistedPieces(
+        tx as PrismaTransactionClient,
+        estimateId,
+        factoryTaxRate,
+        customerTaxRate,
+      );
+
+      const updatedEstimate =
+        await this.getEstimateWithRelationsInTransaction(
+          tx as PrismaTransactionClient,
+          estimateId,
+        );
+
+      if (!updatedEstimate) {
+        throw new NotFoundException(
+          `Estimate #${estimateId} not found after updating piece.`,
+        );
+      }
+
+      await this.logs.log({
+        action: 'UPDATE',
+        entityType: 'Estimate',
+        entityId: updatedEstimate.id,
+        userId,
+        message: `Piece updated in Estimate #${updatedEstimate.number}`,
+        before:
+          EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after:
+          EstimateAuditSnapshotBuilder.build(updatedEstimate),
+        meta: {
+          source: 'EstimatesService.updatePieceInEstimate',
+          pieceId,
+        },
+      });
+
+      return updatedEstimate as EstimateWithRelations;
+    });
+  }
+
+  /**
+   * Elimina una pieza existente.
+   * PieceMuntin se elimina automáticamente por ON DELETE CASCADE.
+   */
+  async deletePieceFromEstimate(
+    estimateId: number,
+    pieceId: number,
+    userId: number,
+  ): Promise<EstimateWithRelations> {
+    return this.prisma.$transaction(async (tx) => {
+      const beforeEstimate =
+        await this.getEstimateWithRelationsInTransaction(
+          tx as PrismaTransactionClient,
+          estimateId,
+        );
+
+      this.assertEstimateCanBeEdited(
+        beforeEstimate,
+        estimateId,
+        userId,
+      );
+
+      const existingPiece = beforeEstimate!.pieces.find(
+        (piece) => piece.id === pieceId,
+      );
+
+      if (!existingPiece) {
+        throw new NotFoundException(
+          `Piece #${pieceId} was not found in Estimate #${estimateId}.`,
+        );
+      }
+
+      await tx.piece.delete({
+        where: {
+          id: pieceId,
+        },
+      });
+
+      const factoryTaxRate = new Decimal(
+        beforeEstimate!.taxRate.toString(),
+      );
+
+      const customerTaxRate = new Decimal(
+        beforeEstimate!.customerTaxRate.toString(),
+      );
+
+      await this.updateEstimateTotalsFromPersistedPieces(
+        tx as PrismaTransactionClient,
+        estimateId,
+        factoryTaxRate,
+        customerTaxRate,
+      );
+
+      const updatedEstimate =
+        await this.getEstimateWithRelationsInTransaction(
+          tx as PrismaTransactionClient,
+          estimateId,
+        );
+
+      if (!updatedEstimate) {
+        throw new NotFoundException(
+          `Estimate #${estimateId} not found after deleting piece.`,
+        );
+      }
+
+      await this.logs.log({
+        action: 'UPDATE',
+        entityType: 'Estimate',
+        entityId: updatedEstimate.id,
+        userId,
+        message: `Piece deleted from Estimate #${updatedEstimate.number}`,
+        before:
+          EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after:
+          EstimateAuditSnapshotBuilder.build(updatedEstimate),
+        meta: {
+          source: 'EstimatesService.deletePieceFromEstimate',
+          pieceId,
+        },
+      });
+
+      return updatedEstimate as EstimateWithRelations;
+    });
   }
 
   // --- createEstimate ---

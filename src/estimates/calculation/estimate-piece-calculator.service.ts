@@ -73,6 +73,36 @@ export type CalculatedMetricsInternal = {
 export type CalculatedPieceCombined = (CreatePieceDto | UpsertPieceDto) &
     CalculatedMetricsInternal;
 
+export type PersistedPieceTotalsInput = {
+    qty: number;
+    rate: Prisma.Decimal;
+    price: Prisma.Decimal;
+    customerPrice: Prisma.Decimal;
+    dealerMarkup: Prisma.Decimal;
+};
+
+export type EstimateTotalsResult = {
+    rateT: Prisma.Decimal;
+    priceT: Prisma.Decimal;
+    netProfit: Prisma.Decimal;
+    taxRate: Prisma.Decimal;
+    taxAmount: Prisma.Decimal;
+    totalPayable: Prisma.Decimal;
+    customerPriceT: Prisma.Decimal;
+    customerTaxRate: Prisma.Decimal;
+    customerTaxAmount: Prisma.Decimal;
+    customerTotalPayable: Prisma.Decimal;
+    netProfitD: Prisma.Decimal;
+};
+
+type NormalizedEstimateTotalsPiece = {
+    qty: number;
+    rate: Decimal;
+    price: Decimal;
+    customerPrice: Decimal;
+    dealerMarkupDecimal: Decimal;
+};
+
 @Injectable()
 export class EstimatePieceCalculatorService {
     constructor(
@@ -1034,21 +1064,56 @@ export class EstimatePieceCalculatorService {
         pieces: CalculatedPieceCombined[],
         factoryTaxRate: Decimal,
         customerTaxRate: Decimal,
-    ): {
-        rateT: Prisma.Decimal;
-        priceT: Prisma.Decimal;
-        netProfit: Prisma.Decimal;
-        taxRate: Prisma.Decimal;
-        taxAmount: Prisma.Decimal;
-        totalPayable: Prisma.Decimal;
-        customerPriceT: Prisma.Decimal;
-        customerTaxRate: Prisma.Decimal;
-        customerTaxAmount: Prisma.Decimal;
-        customerTotalPayable: Prisma.Decimal;
-        netProfitD: Prisma.Decimal;
-    } {
-        const zero = new Decimal(0);
+    ): EstimateTotalsResult {
+        const normalizedPieces: NormalizedEstimateTotalsPiece[] = pieces.map(
+            (piece) => ({
+                qty: piece.qty,
+                rate: piece.rate,
+                price: piece.price,
+                customerPrice: piece.customerPrice,
+                dealerMarkupDecimal: piece.dealerMarkupDecimal,
+            }),
+        );
 
+        return this.calculateNormalizedEstimateTotals(
+            normalizedPieces,
+            factoryTaxRate,
+            customerTaxRate,
+        );
+    }
+
+    calculateEstimateTotalsFromPersistedPieces(
+        pieces: PersistedPieceTotalsInput[],
+        factoryTaxRate: Decimal,
+        customerTaxRate: Decimal,
+    ): EstimateTotalsResult {
+        const normalizedPieces: NormalizedEstimateTotalsPiece[] = pieces.map(
+            (piece) => ({
+                qty: piece.qty,
+                rate: new Decimal(piece.rate.toString()),
+                price: new Decimal(piece.price.toString()),
+                customerPrice: new Decimal(piece.customerPrice.toString()),
+
+                // comentario en español: dealerMarkup ya está guardado
+                // en DB como fracción decimal, por ejemplo 0.1500.
+                dealerMarkupDecimal: new Decimal(
+                    piece.dealerMarkup.toString(),
+                ),
+            }),
+        );
+
+        return this.calculateNormalizedEstimateTotals(
+            normalizedPieces,
+            factoryTaxRate,
+            customerTaxRate,
+        );
+    }
+
+    private calculateNormalizedEstimateTotals(
+        pieces: NormalizedEstimateTotalsPiece[],
+        factoryTaxRate: Decimal,
+        customerTaxRate: Decimal,
+    ): EstimateTotalsResult {
         const totals = pieces.reduce(
             (acc, piece) => {
                 const qty = new Decimal(piece.qty || 0);
@@ -1056,23 +1121,25 @@ export class EstimatePieceCalculatorService {
                 acc.rateT = acc.rateT.add(piece.rate.mul(qty));
                 acc.priceT = acc.priceT.add(piece.price.mul(qty));
 
-                acc.customerPriceT = acc.customerPriceT.add(piece.customerPrice.mul(qty));
+                acc.customerPriceT = acc.customerPriceT.add(
+                    piece.customerPrice.mul(qty),
+                );
 
-                const dealerProfitPiece = piece.price.mul(piece.dealerMarkupDecimal);
-                acc.netProfitD = acc.netProfitD.add(dealerProfitPiece.mul(qty));
+                const dealerProfitPiece = piece.price.mul(
+                    piece.dealerMarkupDecimal,
+                );
+
+                acc.netProfitD = acc.netProfitD.add(
+                    dealerProfitPiece.mul(qty),
+                );
 
                 return acc;
             },
             {
-                rateT: zero,
-                priceT: zero,
-                customerPriceT: zero,
-                netProfitD: zero,
-            } as {
-                rateT: Decimal;
-                priceT: Decimal;
-                customerPriceT: Decimal;
-                netProfitD: Decimal;
+                rateT: new Decimal(0),
+                priceT: new Decimal(0),
+                customerPriceT: new Decimal(0),
+                netProfitD: new Decimal(0),
             },
         );
 
@@ -1081,8 +1148,11 @@ export class EstimatePieceCalculatorService {
         const taxAmount = totals.priceT.mul(factoryTaxRate);
         const totalPayable = totals.priceT.add(taxAmount);
 
-        const customerTaxAmount = totals.customerPriceT.mul(customerTaxRate);
-        const customerTotalPayable = totals.customerPriceT.add(customerTaxAmount);
+        const customerTaxAmount =
+            totals.customerPriceT.mul(customerTaxRate);
+
+        const customerTotalPayable =
+            totals.customerPriceT.add(customerTaxAmount);
 
         return {
             rateT: new Prisma.Decimal(totals.rateT.toFixed(2)),
@@ -1093,12 +1163,22 @@ export class EstimatePieceCalculatorService {
             taxAmount: new Prisma.Decimal(taxAmount.toFixed(2)),
             totalPayable: new Prisma.Decimal(totalPayable.toFixed(2)),
 
-            customerPriceT: new Prisma.Decimal(totals.customerPriceT.toFixed(2)),
-            customerTaxRate: new Prisma.Decimal(customerTaxRate.toFixed(4)),
-            customerTaxAmount: new Prisma.Decimal(customerTaxAmount.toFixed(2)),
-            customerTotalPayable: new Prisma.Decimal(customerTotalPayable.toFixed(2)),
+            customerPriceT: new Prisma.Decimal(
+                totals.customerPriceT.toFixed(2),
+            ),
+            customerTaxRate: new Prisma.Decimal(
+                customerTaxRate.toFixed(4),
+            ),
+            customerTaxAmount: new Prisma.Decimal(
+                customerTaxAmount.toFixed(2),
+            ),
+            customerTotalPayable: new Prisma.Decimal(
+                customerTotalPayable.toFixed(2),
+            ),
 
-            netProfitD: new Prisma.Decimal(totals.netProfitD.toFixed(2)),
+            netProfitD: new Prisma.Decimal(
+                totals.netProfitD.toFixed(2),
+            ),
         };
     }
 
