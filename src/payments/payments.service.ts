@@ -10,7 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { PaymentStatus, Prisma } from '@prisma/client';
 import type { AuthUser } from '@/auth/types/auth-user.type';
-import { LogsService } from '@/logs/logs.service'; 
+import { LogsService } from '@/logs/logs.service';
 
 @Injectable()
 export class PaymentsService {
@@ -19,7 +19,7 @@ export class PaymentsService {
   constructor(
     private prisma: PrismaService,
     private config: ConfigService,
-    private logsService: LogsService, 
+    private logsService: LogsService,
   ) {
     const key = this.config.get<string>('STRIPE_SECRET_KEY');
     if (!key) throw new Error('STRIPE_SECRET_KEY is not set in .env');
@@ -27,13 +27,13 @@ export class PaymentsService {
     this.stripe = new Stripe(key);
   }
 
-  private getAppUrl(): string {
-    const appUrl =
-      this.config.get<string>('APP_URL') ||
-      this.config.get<string>('NEXT_PUBLIC_APP_URL') ||
+  private getFrontendUrl(): string {
+    const frontendUrl =
+      this.config.get<string>('PUBLIC_FRONTEND_URL') ||
+      this.config.get<string>('FRONTEND_URL') ||
       'http://localhost:3000';
 
-    return String(appUrl).replace(/\/+$/, '');
+    return String(frontendUrl).replace(/\/+$/, '');
   }
 
   async createCheckoutSessionForEstimate(params: { estimateId: number; user: AuthUser }) {
@@ -84,10 +84,13 @@ export class PaymentsService {
       }
 
       const amountCents = Math.round(amount * 100);
-      const appUrl = this.getAppUrl();
+      const frontendUrl = this.getFrontendUrl();
 
-      const successUrl = `${appUrl}/checkout/success?estimateId=${estimateId}`;
-      const cancelUrl = `${appUrl}/checkout/cancel?estimateId=${estimateId}`;
+      const successUrl =
+        `${frontendUrl}/checkout/success?estimateId=${estimateId}`;
+
+      const cancelUrl =
+        `${frontendUrl}/checkout/cancel?estimateId=${estimateId}`;
 
       const payment = await tx.payment.upsert({
         where: { idEst: estimateId },
@@ -235,32 +238,32 @@ export class PaymentsService {
 
       // 
       await this.logsService.log({
-  action: 'CREATE',
-  entityType: 'Order',
-  entityId: createdOrder.id,
+        action: 'CREATE',
+        entityType: 'Order',
+        entityId: createdOrder.id,
 
-  // responsable / owner del estimate
-  userId: estimate.idUser,
+        // responsable / owner del estimate
+        userId: estimate.idUser,
 
-  message: `Order #${createdOrder.number} created (paid via Stripe)`,
-  before: null,
-  after: {
-    id: createdOrder.id,
-    number: createdOrder.number,
-    statusId: createdOrder.statusId,
-    statusName: createdOrder.status?.name ?? 'Pending',
-    estimateId: createdOrder.idEst,
-    ownerUserId: createdOrder.userId,
-    amount: createdOrder.amount,
-  },
-  meta: {
-    actor: 'system/stripe-webhook', // quién lo ejecutó técnicamente
-    responsibleUserId: estimate.idUser, // explícito (por si en el futuro cambia la lógica)
-    stripeSessionId,
-    paymentId: updatedPayment.id,
-    source: 'PaymentsService.handleStripeWebhook',
-  },
-});
+        message: `Order #${createdOrder.number} created (paid via Stripe)`,
+        before: null,
+        after: {
+          id: createdOrder.id,
+          number: createdOrder.number,
+          statusId: createdOrder.statusId,
+          statusName: createdOrder.status?.name ?? 'Pending',
+          estimateId: createdOrder.idEst,
+          ownerUserId: createdOrder.userId,
+          amount: createdOrder.amount,
+        },
+        meta: {
+          actor: 'system/stripe-webhook', // quién lo ejecutó técnicamente
+          responsibleUserId: estimate.idUser, // explícito (por si en el futuro cambia la lógica)
+          stripeSessionId,
+          paymentId: updatedPayment.id,
+          source: 'PaymentsService.handleStripeWebhook',
+        },
+      });
 
     });
 
