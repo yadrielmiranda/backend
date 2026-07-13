@@ -17,8 +17,6 @@ import {
 import { Request, Response } from 'express';
 
 import { EstimatesService, type PdfView } from './estimates.service';
-import { CreateEstimateDto } from './dto/create-estimate.dto';
-import { UpdateEstimateDto } from './dto/update-estimate.dto';
 import {
   CreateEstimateHeaderDto,
   UpdateEstimateHeaderDto,
@@ -52,7 +50,7 @@ export class EstimatesController {
       heightRight?: number;
       legHeight?: number;
 
-      doorWidth?: number;      
+      doorWidth?: number;
       leftSideliteWidth?: number;
       rightSideliteWidth?: number;
       leftPanels?: number;
@@ -78,7 +76,7 @@ export class EstimatesController {
       heightLeft: body.heightLeft,
       heightRight: body.heightRight,
       legHeight: body.legHeight,
-      doorWidth: body.doorWidth,      
+      doorWidth: body.doorWidth,
       leftSideliteWidth: body.leftSideliteWidth,
       rightSideliteWidth: body.rightSideliteWidth,
       leftPanels: body.leftPanels,
@@ -122,7 +120,7 @@ export class EstimatesController {
   }
 
   // =====================================================
-  // NUEVO FLUJO PERSISTENTE
+  // FLUJO PERSISTENTE
   // =====================================================
 
   /**
@@ -178,6 +176,91 @@ export class EstimatesController {
   }
 
   /**
+ * Aplica un mismo Dealer Markup a todas las piezas.
+ * Toda la operación se ejecuta en una sola transacción.
+ */
+  @Patch(':id/pieces/general-markup')
+  applyGeneralDealerMarkup(
+    @Param('id', ParseIntPipe) estimateId: number,
+    @Body()
+    body: {
+      dealerMarkup: number;
+    },
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthUser;
+    const dealerMarkup = Number(body.dealerMarkup);
+
+    if (!Number.isFinite(dealerMarkup) || dealerMarkup < 0) {
+      throw new BadRequestException(
+        'dealerMarkup must be a number greater than or equal to zero.',
+      );
+    }
+
+    return this.estimatesService.applyGeneralDealerMarkupToEstimate(
+      estimateId,
+      dealerMarkup,
+      user.id,
+    );
+  }
+
+  /**
+ * Aplica Frame Color, Tint o Coating
+ * a todas las piezas del Estimate.
+ */
+  @Patch(':id/pieces/bulk-attribute')
+  applyBulkPieceAttribute(
+    @Param('id', ParseIntPipe) estimateId: number,
+    @Body()
+    body: {
+      idFC?: number;
+      idTint?: number;
+      idCoat?: number;
+    },
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthUser;
+
+    const changes = {
+      ...(body.idFC !== undefined
+        ? { idFC: Number(body.idFC) }
+        : {}),
+
+      ...(body.idTint !== undefined
+        ? { idTint: Number(body.idTint) }
+        : {}),
+
+      ...(body.idCoat !== undefined
+        ? { idCoat: Number(body.idCoat) }
+        : {}),
+    };
+
+    const providedValues = Object.values(changes);
+
+    if (providedValues.length !== 1) {
+      throw new BadRequestException(
+        'Provide exactly one of idFC, idTint or idCoat.',
+      );
+    }
+
+    if (
+      !Number.isInteger(providedValues[0]) ||
+      providedValues[0] <= 0
+    ) {
+      throw new BadRequestException(
+        'The selected value must be a positive integer.',
+      );
+    }
+
+    return this.estimatesService
+      .applyBulkPieceAttributeToEstimate(
+        estimateId,
+        changes,
+        user.id,
+      );
+  }
+
+  /**
    * Recalcula y actualiza una pieza existente.
    * Después actualiza los totales del Estimate.
    */
@@ -217,17 +300,7 @@ export class EstimatesController {
     );
   }
 
-  // =====================================================
-  // FLUJO ANTERIOR
-  // Se conserva temporalmente hasta migrar el frontend.
-  // =====================================================
 
-  @Post()
-  create(@Body() dto: CreateEstimateDto, @Req() req: Request) {
-    const user = req.user as AuthUser;
-
-    return this.estimatesService.createEstimate(dto, user.id);
-  }
 
   @Get()
   findAll(@Req() req: Request) {
@@ -328,27 +401,6 @@ export class EstimatesController {
     return this.estimatesService.findOneForUser(
       id,
       req.user as AuthUser,
-    );
-  }
-
-  @Patch(':id')
-  async update(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: UpdateEstimateDto,
-    @Req() req: Request,
-  ) {
-    const user = req.user as AuthUser;
-
-    // comentario en español: mantiene la validación del flujo anterior.
-    await this.estimatesService.assertEstimateOwnerOrThrow(
-      id,
-      user,
-    );
-
-    return this.estimatesService.updateEstimate(
-      id,
-      dto,
-      user.id,
     );
   }
 

@@ -7,8 +7,6 @@ import {
 
 import { normalizeInchesToEighthStep } from '@/common/dimensions';
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
-import { UpsertPieceDto } from '../dto/update-estimate.dto';
-
 export type PrismaTransactionClient = Omit<
   PrismaClient,
   | '$connect'
@@ -209,7 +207,7 @@ export class EstimateDimensionValidationService {
   }
 
   private async resolveDimensionPolicyReinforcement(
-    dto: CreatePieceDto | UpsertPieceDto,
+    dto: CreatePieceDto,
     tx: PrismaTransactionClient,
   ): Promise<number | null> {
     const selectedId = dto.idReinforcementOption ?? null;
@@ -258,7 +256,7 @@ export class EstimateDimensionValidationService {
   }
 
   async validateAgainstDimensionPolicy(
-    dto: CreatePieceDto | UpsertPieceDto,
+    dto: CreatePieceDto,
     tx: PrismaTransactionClient,
   ): Promise<DimensionValidationResult> {
     const idReinforcementOption =
@@ -334,7 +332,7 @@ export class EstimateDimensionValidationService {
   }
 
   private async buildDimensionValidationChecks(
-    dto: CreatePieceDto | UpsertPieceDto,
+    dto: CreatePieceDto,
     tx: PrismaTransactionClient,
   ): Promise<DimensionValidationCheck[]> {
     const [cfg, sysConf] = await Promise.all([

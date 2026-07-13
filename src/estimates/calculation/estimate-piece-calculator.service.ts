@@ -18,7 +18,8 @@ import { areaPerimeterFor } from '@/pricing/shape-geometry';
 import { computeBasePrice } from '@/pricing/price-formula';
 
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
-import { UpsertPieceDto } from '../dto/update-estimate.dto';
+import { UpsertPieceDto } from '../dto/upsert-piece.dto';
+
 import { EstimateDimensionValidationService } from '../dimensions/estimate-dimension-validation.service';
 import { EstimateMuntinService } from '../muntins/estimate-muntin.service';
 

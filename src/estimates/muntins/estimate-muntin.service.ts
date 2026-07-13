@@ -1,13 +1,12 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
-import { UpsertPieceDto } from '../dto/update-estimate.dto';
 import type { PrismaTransactionClient } from '../dimensions/estimate-dimension-validation.service';
 
 @Injectable()
 export class EstimateMuntinService {
   buildPieceMuntinCreateInput(
-    muntin?: CreatePieceDto['muntin'] | UpsertPieceDto['muntin'] | null,
+    muntin?: CreatePieceDto['muntin'] | null,
   ) {
     if (!muntin) return undefined;
 
@@ -25,16 +24,16 @@ export class EstimateMuntinService {
       totalLites,
       ...(panels.length > 0
         ? {
-            panels: {
-              create: panels.map((panel) => ({
-                panelIndex: panel.panelIndex,
-                panelCode: panel.panelCode ?? null,
-                panelLabel: panel.panelLabel,
-                horizontalLites: panel.horizontalLites,
-                verticalLites: panel.verticalLites,
-              })),
-            },
-          }
+          panels: {
+            create: panels.map((panel) => ({
+              panelIndex: panel.panelIndex,
+              panelCode: panel.panelCode ?? null,
+              panelLabel: panel.panelLabel,
+              horizontalLites: panel.horizontalLites,
+              verticalLites: panel.verticalLites,
+            })),
+          },
+        }
         : {}),
     };
   }
@@ -101,7 +100,7 @@ export class EstimateMuntinService {
   }
 
   async normalizePieceMuntinFromCatalog(
-    muntin: CreatePieceDto['muntin'] | UpsertPieceDto['muntin'] | null | undefined,
+    muntin: CreatePieceDto['muntin'] | null | undefined,
     configLayoutRaw: unknown,
     tx: PrismaTransactionClient,
   ) {
