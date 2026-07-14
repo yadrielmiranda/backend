@@ -305,6 +305,12 @@ model ConfigCategory {
   @@map("config_categories")
 }
 
+enum PricingComponentType {
+  DOOR
+  SIDELITE
+  TRANSOM
+}
+
 model SysConf {
   system        System        @relation(fields: [idSystem], references: [id])
   idSystem      Int
@@ -341,7 +347,9 @@ model SysConf {
   defaultSillOption          SillOption?          @relation("SysConfDefaultSillOption", fields: [defaultSillOptionId], references: [id], onDelete: SetNull)
   defaultReinforcementOption ReinforcementOption? @relation("SysConfDefaultReinforcementOption", fields: [defaultReinforcementOptionId], references: [id], onDelete: SetNull)
 
-  dimensionPolicies DimensionPolicy[] @relation("SysConfDimensionPolicies")
+  dimensionPolicies   DimensionPolicy[]         @relation("SysConfDimensionPolicies")
+  pricingComponents   SysConfPricingComponent[] @relation("SysConfPricingComponentParent")
+  usedAsPricingSource SysConfPricingComponent[] @relation("SysConfPricingComponentSource")
 
   activeOptions        SysConfActiveOption[]
   preparationOptions   SysConfPreparationOption[]
@@ -354,6 +362,21 @@ model SysConf {
   @@index([defaultSillOptionId])
   @@index([defaultReinforcementOptionId])
   @@map("sys_conf")
+}
+
+model SysConfPricingComponent {
+  idSystem       Int
+  idConfig       Int
+  componentType  PricingComponentType
+  sourceConfigId Int
+  quantity       Int?
+
+  parentSysConf SysConf @relation("SysConfPricingComponentParent", fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
+  sourceSysConf SysConf @relation("SysConfPricingComponentSource", fields: [idSystem, sourceConfigId], references: [idSystem, idConfig], onDelete: Restrict)
+
+  @@id([idSystem, idConfig, componentType])
+  @@index([idSystem, sourceConfigId], map: "idx_sys_conf_pricing_component_source")
+  @@map("sys_conf_pricing_components")
 }
 
 model SystemCrystal {

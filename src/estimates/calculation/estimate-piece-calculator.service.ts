@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import {
     DimensionMode,
+    PricingComponentType,
     PricingMode,
     Prisma,
     PrismaClient,
@@ -123,6 +124,49 @@ export class EstimatePieceCalculatorService {
         };
     }
 
+    private async getPricingRuleForConfig(
+        pieceDto: CreatePieceDto | UpsertPieceDto,
+        configId: number,
+        label: string,
+        tx: PrismaTransactionClient,
+        cache: CalculationCache,
+    ) {
+        const crystalId = Number(pieceDto.idCryst);
+
+        const pricingKey =
+            `${pieceDto.idBrand}-${pieceDto.idProd}-` +
+            `${pieceDto.idSyst}-${configId}-${crystalId}`;
+
+        let rule = cache.pricing.get(pricingKey);
+
+        if (!rule) {
+            const dbRule = await tx.pricingRule.findUnique({
+                where: {
+                    idBrand_idProduct_idSystem_idConfig_idCrystal: {
+                        idBrand: pieceDto.idBrand,
+                        idProduct: pieceDto.idProd,
+                        idSystem: pieceDto.idSyst,
+                        idConfig: configId,
+                        idCrystal: crystalId,
+                    },
+                },
+            });
+
+            if (dbRule) {
+                cache.pricing.set(pricingKey, dbRule);
+                rule = dbRule;
+            }
+        }
+
+        if (!rule) {
+            throw new NotFoundException(
+                `No pricing rule exists for ${label} in piece ${pieceDto.mark}.`,
+            );
+        }
+
+        return rule;
+    }
+
     async calculatePieceMetrics(
         pieceDto: CreatePieceDto | UpsertPieceDto,
         effectiveMarkup: Decimal,
@@ -234,6 +278,26 @@ export class EstimatePieceCalculatorService {
                     requiresRightPanels: true,
                     requiresPanelCount: true,
                     requiresHorizontalHeights: true,
+
+                    pricingComponents: {
+                        select: {
+                            componentType: true,
+                            sourceConfigId: true,
+                            quantity: true,
+                            sourceSysConf: {
+                                select: {
+                                    config: {
+                                        select: {
+                                            conf: true,
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                        orderBy: {
+                            componentType: 'asc',
+                        },
+                    },
 
                     activeOptions: { select: { optionId: true } },
                     preparationOptions: { select: { optionId: true } },
@@ -969,44 +1033,323 @@ export class EstimatePieceCalculatorService {
         const dpPosPsf = new Decimal(dpCheck.dpPos ?? 0).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
         const dpNegPsf = new Decimal(dpCheck.dpNeg ?? 0).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
-        const { areaFt2, perimeterFt } = areaPerimeterFor(config.conf, dimsFt);
+        const { areaFt2, perimeterFt } = areaPerimeterFor(
+            config.conf,
+            dimsFt,
+        );
 
-        const pricingKey = `${pieceDto.idBrand}-${pieceDto.idProd}-${pieceDto.idSyst}-${pieceDto.idConf}-${pieceDto.idCryst}`;
+        const pricingComponents = sysConf.pricingComponents ?? [];
 
-        let rule = cache.pricing.get(pricingKey);
+        let baseRate: Decimal;
 
-        if (!rule) {
-            const dbRule = await tx.pricingRule.findUnique({
-                where: {
-                    idBrand_idProduct_idSystem_idConfig_idCrystal: {
-                        idBrand: pieceDto.idBrand,
-                        idProduct: pieceDto.idProd,
-                        idSystem: pieceDto.idSyst,
-                        idConfig: pieceDto.idConf,
-                        idCrystal: pieceDto.idCryst,
-                    },
-                },
-            });
+        if (pricingComponents.length === 0) {
+            // La configuración utiliza su propia regla directa.
+            const rule = await this.getPricingRuleForConfig(
+                pieceDto,
+                pieceDto.idConf,
+                `configuration ${config.conf}`,
+                tx,
+                cache,
+            );
 
-            if (dbRule) {
-                cache.pricing.set(pricingKey, dbRule);
-                rule = dbRule;
+            const A = new Decimal(rule.costoA.toString());
+            const B = new Decimal(rule.costoB.toString());
+            const C = new Decimal(rule.costoC.toString());
+
+            baseRate = computeBasePrice(
+                new Decimal(areaFt2),
+                new Decimal(perimeterFt),
+                A,
+                B,
+                C,
+            );
+        } else {
+            // Cada componente se redondea a centavos antes de sumarlo.
+            const componentPrices: Decimal[] = [];
+
+            const isBlankPricingDimension = (value: unknown) =>
+                value == null || value === '';
+
+            const positiveDimension = (
+                value: unknown,
+                label: string,
+            ): Decimal => {
+                if (isBlankPricingDimension(value)) {
+                    throw new BadRequestException(
+                        `${label} is required for component pricing.`,
+                    );
+                }
+
+                const dimension = new Decimal(String(value));
+
+                if (!dimension.isFinite() || dimension.lte(0)) {
+                    throw new BadRequestException(
+                        `${label} must be greater than zero.`,
+                    );
+                }
+
+                return dimension;
+            };
+
+            const computeRoundedComponentPrice = async (
+                component: (typeof pricingComponents)[number],
+                widthIn: Decimal,
+                heightIn: Decimal,
+                label: string,
+            ): Promise<Decimal> => {
+                if (widthIn.lte(0) || heightIn.lte(0)) {
+                    throw new BadRequestException(
+                        `${label} dimensions must be greater than zero.`,
+                    );
+                }
+
+                const rule = await this.getPricingRuleForConfig(
+                    pieceDto,
+                    component.sourceConfigId,
+                    label,
+                    tx,
+                    cache,
+                );
+
+                const componentDimsFt = dimsInchesToFeet({
+                    width: widthIn.toString(),
+                    height: heightIn.toString(),
+                });
+
+                const componentGeometry = areaPerimeterFor(
+                    component.sourceSysConf.config.conf,
+                    componentDimsFt,
+                );
+
+                const componentBasePrice = computeBasePrice(
+                    new Decimal(componentGeometry.areaFt2),
+                    new Decimal(componentGeometry.perimeterFt),
+                    new Decimal(rule.costoA.toString()),
+                    new Decimal(rule.costoB.toString()),
+                    new Decimal(rule.costoC.toString()),
+                );
+
+                return componentBasePrice.toDecimalPlaces(
+                    2,
+                    Decimal.ROUND_HALF_UP,
+                );
+            };
+
+            const totalWidth = new Decimal(
+                String(governingDims.widthIn),
+            );
+
+            const totalHeight = new Decimal(
+                String(governingDims.heightIn),
+            );
+
+            const hasTransom = pricingComponents.some(
+                (component) =>
+                    component.componentType === PricingComponentType.TRANSOM,
+            );
+
+            let lowerComponentHeight = totalHeight;
+
+            if (hasTransom) {
+                const doorHeight = positiveDimension(
+                    (pieceDto as any).doorHeight,
+                    'Door Height',
+                );
+
+                if (doorHeight.gte(totalHeight)) {
+                    throw new BadRequestException(
+                        'Door Height must be less than Opening Height when transom pricing is used.',
+                    );
+                }
+
+                lowerComponentHeight = doorHeight;
             }
-        }
 
-        if (!rule) {
-            throw new NotFoundException(
-                `No pricing rule for piece: ${pieceDto.mark}.`,
+            for (const component of pricingComponents) {
+                if (component.componentType === PricingComponentType.DOOR) {
+                    const doorWidth = positiveDimension(
+                        (pieceDto as any).doorWidth,
+                        'Door Width',
+                    );
+
+                    componentPrices.push(
+                        await computeRoundedComponentPrice(
+                            component,
+                            doorWidth,
+                            lowerComponentHeight,
+                            'DOOR component',
+                        ),
+                    );
+
+                    continue;
+                }
+
+                if (
+                    component.componentType ===
+                    PricingComponentType.SIDELITE
+                ) {
+                    if (
+                        dimensionMode ===
+                        DimensionMode.ECO_WINDOWS_DOOR
+                    ) {
+                        const sideliteQuantity = Number(
+                            component.quantity ?? 0,
+                        );
+
+                        if (
+                            !Number.isInteger(sideliteQuantity) ||
+                            sideliteQuantity < 1
+                        ) {
+                            throw new BadRequestException(
+                                'Sidelite Quantity must be a whole number greater than zero for Eco Windows component pricing.',
+                            );
+                        }
+
+                        const doorWidth = positiveDimension(
+                            (pieceDto as any).doorWidth,
+                            'Door Width',
+                        );
+
+                        const remainingWidth = totalWidth.sub(doorWidth);
+
+                        if (remainingWidth.lte(0)) {
+                            throw new BadRequestException(
+                                'Opening Width must be greater than Door Width when sidelite pricing is used.',
+                            );
+                        }
+
+                        const sideliteWidth = remainingWidth.div(
+                            sideliteQuantity,
+                        );
+
+                        const panelPrice =
+                            await computeRoundedComponentPrice(
+                                component,
+                                sideliteWidth,
+                                lowerComponentHeight,
+                                'SIDELITE component',
+                            );
+
+                        // Cada panel se redondea primero y después se suma.
+                        componentPrices.push(
+                            panelPrice.mul(sideliteQuantity),
+                        );
+
+                        continue;
+                    }
+
+                    if (
+                        dimensionMode ===
+                        DimensionMode.ECO_NOVO_DOOR
+                    ) {
+                        let totalSidelitePanels = 0;
+
+                        const addSideliteSide = async (
+                            widthValue: unknown,
+                            quantityValue: unknown,
+                            sideLabel: string,
+                        ) => {
+                            const quantity = Number(quantityValue ?? 0);
+                            const hasWidth =
+                                !isBlankPricingDimension(widthValue);
+
+                            if (!hasWidth && quantity > 0) {
+                                throw new BadRequestException(
+                                    `${sideLabel} Width is required.`,
+                                );
+                            }
+
+                            if (!hasWidth) {
+                                return;
+                            }
+
+                            if (
+                                !Number.isInteger(quantity) ||
+                                quantity < 1
+                            ) {
+                                throw new BadRequestException(
+                                    `${sideLabel} Qty must be a whole number greater than zero.`,
+                                );
+                            }
+
+                            const sideliteWidth = positiveDimension(
+                                widthValue,
+                                `${sideLabel} Width`,
+                            );
+
+                            const panelPrice =
+                                await computeRoundedComponentPrice(
+                                    component,
+                                    sideliteWidth,
+                                    lowerComponentHeight,
+                                    `SIDELITE component (${sideLabel.toLowerCase()})`,
+                                );
+
+                            // El precio unitario ya está redondeado.
+                            componentPrices.push(
+                                panelPrice.mul(quantity),
+                            );
+
+                            totalSidelitePanels += quantity;
+                        };
+
+                        await addSideliteSide(
+                            (pieceDto as any).leftSideliteWidth,
+                            (pieceDto as any).leftPanels,
+                            'Left Sidelite',
+                        );
+
+                        await addSideliteSide(
+                            (pieceDto as any).rightSideliteWidth,
+                            (pieceDto as any).rightPanels,
+                            'Right Sidelite',
+                        );
+
+                        if (totalSidelitePanels === 0) {
+                            throw new BadRequestException(
+                                'At least one sidelite panel is required for SIDELITE component pricing.',
+                            );
+                        }
+
+                        continue;
+                    }
+
+                    throw new BadRequestException(
+                        'SIDELITE component pricing is not supported for this dimension mode.',
+                    );
+                }
+
+                if (
+                    component.componentType ===
+                    PricingComponentType.TRANSOM
+                ) {
+                    const transomHeight = totalHeight.sub(
+                        lowerComponentHeight,
+                    );
+
+                    componentPrices.push(
+                        await computeRoundedComponentPrice(
+                            component,
+                            totalWidth,
+                            transomHeight,
+                            'TRANSOM component',
+                        ),
+                    );
+
+                    continue;
+                }
+
+                throw new BadRequestException(
+                    `Unsupported pricing component type: ${component.componentType}.`,
+                );
+            }
+
+            baseRate = componentPrices.reduce(
+                (total, componentPrice) =>
+                    total.add(componentPrice),
+                new Decimal(0),
             );
         }
-
-        const A = new Decimal(rule.costoA.toString());
-        const B = new Decimal(rule.costoB.toString());
-        const C = new Decimal(rule.costoC.toString());
-        const areaFt2Dec = new Decimal(areaFt2);
-        const perimeterFtDec = new Decimal(perimeterFt);
-
-        const baseRate = computeBasePrice(areaFt2Dec, perimeterFtDec, A, B, C);
 
         const rate = highBottomPercent
             ? baseRate.mul(new Decimal(1).add(highBottomPercent.div(100)))

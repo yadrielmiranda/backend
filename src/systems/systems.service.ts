@@ -3,7 +3,13 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { DimensionMode, Prisma, ProductKind, System } from '@prisma/client';
+import {
+  DimensionMode,
+  PricingComponentType,
+  Prisma,
+  ProductKind,
+  System,
+} from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { CreateSystemDto } from './dto/create-system.dto';
 import { UpdateSystemDto } from './dto/update-system.dto';
@@ -11,6 +17,7 @@ import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options.dto';
 import { UpdateSystemCrystalsDto } from './dto/update-system-crystals.dto';
 import { UpdateSystemFrameColorsDto } from './dto/update-system-frame-colors.dto';
+import { UpdateSystemConfigPricingComponentsDto } from './dto/update-system-config-pricing-components.dto';
 
 @Injectable()
 export class SystemsService {
@@ -166,13 +173,19 @@ export class SystemsService {
                 sortOrder: 'asc',
               },
             },
-
             reinforcementOptions: {
               include: {
                 option: true,
               },
               orderBy: {
                 sortOrder: 'asc',
+              },
+            },
+            pricingComponents: {
+              select: {
+                componentType: true,
+                sourceConfigId: true,
+                quantity: true,
               },
             },
           },
@@ -534,6 +547,34 @@ export class SystemsService {
             },
           },
         },
+        pricingComponents: {
+          include: {
+            sourceSysConf: {
+              select: {
+                idConfig: true,
+                config: {
+                  select: {
+                    id: true,
+                    conf: true,
+                    categoryId: true,
+                    isActive: true,
+                    category: {
+                      select: {
+                        id: true,
+                        name: true,
+                        sortOrder: true,
+                        isActive: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          orderBy: {
+            componentType: 'asc',
+          },
+        },
       },
     });
 
@@ -548,6 +589,7 @@ export class SystemsService {
       preparationOptionsCatalog,
       sillOptionsCatalog,
       reinforcementOptionsCatalog,
+      pricingSourceSysConfs,
     ] = await Promise.all([
       this.prisma.activeOption.findMany({
         where: { isActive: true },
@@ -564,6 +606,52 @@ export class SystemsService {
       this.prisma.reinforcementOption.findMany({
         where: { isActive: true },
         orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      }),
+      this.prisma.sysConf.findMany({
+        where: {
+          idSystem: systemId,
+          idConfig: {
+            not: configId,
+          },
+          config: {
+            isActive: true,
+          },
+
+          // Solo configuraciones con precio directo pueden ser fuentes.
+          pricingComponents: {
+            none: {},
+          },
+        },
+        select: {
+          idConfig: true,
+          sortOrder: true,
+          config: {
+            select: {
+              id: true,
+              conf: true,
+              categoryId: true,
+              isActive: true,
+              category: {
+                select: {
+                  id: true,
+                  name: true,
+                  sortOrder: true,
+                  isActive: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: [
+          {
+            sortOrder: 'asc',
+          },
+          {
+            config: {
+              conf: 'asc',
+            },
+          },
+        ],
       }),
     ]);
 
@@ -602,6 +690,18 @@ export class SystemsService {
       selectedReinforcementOptionIds: sysConf.reinforcementOptions.map(
         (x) => x.option.id,
       ),
+
+      pricingComponents: sysConf.pricingComponents.map((component) => ({
+        componentType: component.componentType,
+        sourceConfigId: component.sourceConfigId,
+        quantity: component.quantity,
+        sourceConfig: component.sourceSysConf.config,
+      })),
+
+      pricingSourceConfigsCatalog: pricingSourceSysConfs.map((source) => ({
+        idConfig: source.idConfig,
+        config: source.config,
+      })),
 
       activeOptionsCatalog,
       preparationOptionsCatalog,
@@ -905,6 +1005,234 @@ export class SystemsService {
           ...dimensionUpdateData,
         },
       });
+    });
+
+    return this.getSystemConfigOptionsForManage(systemId, configId);
+  }
+
+  async updateSystemConfigPricingComponents(
+    systemId: number,
+    configId: number,
+    data: UpdateSystemConfigPricingComponentsDto,
+  ) {
+    const componentTypes = data.components.map(
+      (component) => component.componentType,
+    );
+
+    if (new Set(componentTypes).size !== componentTypes.length) {
+      throw new BadRequestException(
+        'Pricing component types cannot be duplicated.',
+      );
+    }
+
+    const sourceConfigIds = data.components.map(
+      (component) => component.sourceConfigId,
+    );
+
+    if (sourceConfigIds.includes(configId)) {
+      throw new BadRequestException(
+        'A configuration cannot use itself as a pricing source.',
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const parentSysConf = await tx.sysConf.findUnique({
+        where: {
+          idSystem_idConfig: {
+            idSystem: systemId,
+            idConfig: configId,
+          },
+        },
+        select: {
+          idSystem: true,
+          idConfig: true,
+          dimensionMode: true,
+          requiresHeight: true,
+          requiresDoorHeight: true,
+          system: {
+            select: {
+              brandProduct: {
+                select: {
+                  product: {
+                    select: {
+                      kind: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          usedAsPricingSource: {
+            select: {
+              idSystem: true,
+              idConfig: true,
+            },
+          },
+        },
+      });
+
+      if (!parentSysConf) {
+        throw new NotFoundException(
+          `System/Config link not found (systemId=${systemId}, configId=${configId}).`,
+        );
+      }
+
+      const isLinearMaterial =
+        parentSysConf.system.brandProduct.product.kind ===
+        ProductKind.LINEAR_MATERIAL;
+
+      if (isLinearMaterial && data.components.length > 0) {
+        throw new BadRequestException(
+          'Linear material configurations cannot use component pricing.',
+        );
+      }
+
+      if (
+        data.components.length > 0 &&
+        parentSysConf.usedAsPricingSource.length > 0
+      ) {
+        throw new BadRequestException(
+          'This configuration is already used as a pricing source and cannot use component pricing.',
+        );
+      }
+
+      const componentWithInvalidQuantity = data.components.find(
+        (component) =>
+          component.componentType !== PricingComponentType.SIDELITE &&
+          component.quantity != null,
+      );
+
+      if (componentWithInvalidQuantity) {
+        throw new BadRequestException(
+          'Quantity can only be assigned to the SIDELITE pricing component.',
+        );
+      }
+
+      const sideliteComponent = data.components.find(
+        (component) =>
+          component.componentType === PricingComponentType.SIDELITE,
+      );
+
+      if (
+        parentSysConf.dimensionMode ===
+        DimensionMode.ECO_WINDOWS_DOOR &&
+        sideliteComponent &&
+        sideliteComponent.quantity == null
+      ) {
+        throw new BadRequestException(
+          'Sidelite Quantity is required for Eco Windows component pricing.',
+        );
+      }
+
+      if (
+        parentSysConf.dimensionMode !==
+        DimensionMode.ECO_WINDOWS_DOOR &&
+        sideliteComponent?.quantity != null
+      ) {
+        throw new BadRequestException(
+          'Sidelite Quantity is only configurable for Eco Windows door systems.',
+        );
+      }
+
+      const hasTransom = data.components.some(
+        (component) =>
+          component.componentType === PricingComponentType.TRANSOM,
+      );
+
+      if (
+        hasTransom &&
+        (!parentSysConf.requiresHeight ||
+          !parentSysConf.requiresDoorHeight)
+      ) {
+        throw new BadRequestException(
+          'Transom component pricing requires Height and Door Height.',
+        );
+      }
+
+      if (data.components.length > 0) {
+        const directPricingRuleCount = await tx.pricingRule.count({
+          where: {
+            idSystem: systemId,
+            idConfig: configId,
+          },
+        });
+
+        if (directPricingRuleCount > 0) {
+          throw new BadRequestException(
+            'Remove the direct pricing rules for this configuration before enabling component pricing.',
+          );
+        }
+
+        const uniqueSourceConfigIds = [...new Set(sourceConfigIds)];
+
+        const sourceSysConfs = await tx.sysConf.findMany({
+          where: {
+            idSystem: systemId,
+            idConfig: {
+              in: uniqueSourceConfigIds,
+            },
+          },
+          select: {
+            idConfig: true,
+            config: {
+              select: {
+                conf: true,
+                isActive: true,
+              },
+            },
+            pricingComponents: {
+              select: {
+                componentType: true,
+              },
+            },
+          },
+        });
+
+        if (sourceSysConfs.length !== uniqueSourceConfigIds.length) {
+          throw new BadRequestException(
+            'One or more pricing source configurations are not associated with this system.',
+          );
+        }
+
+        const inactiveSource = sourceSysConfs.find(
+          (source) => !source.config.isActive,
+        );
+
+        if (inactiveSource) {
+          throw new BadRequestException(
+            `Pricing source configuration ${inactiveSource.config.conf} is inactive.`,
+          );
+        }
+
+        const nestedSource = sourceSysConfs.find(
+          (source) => source.pricingComponents.length > 0,
+        );
+
+        if (nestedSource) {
+          throw new BadRequestException(
+            `Pricing source configuration ${nestedSource.config.conf} already uses component pricing.`,
+          );
+        }
+      }
+
+      await tx.sysConfPricingComponent.deleteMany({
+        where: {
+          idSystem: systemId,
+          idConfig: configId,
+        },
+      });
+
+      if (data.components.length > 0) {
+        await tx.sysConfPricingComponent.createMany({
+          data: data.components.map((component) => ({
+            idSystem: systemId,
+            idConfig: configId,
+            componentType: component.componentType,
+            sourceConfigId: component.sourceConfigId,
+            quantity: component.quantity ?? null,
+          })),
+        });
+      }
     });
 
     return this.getSystemConfigOptionsForManage(systemId, configId);

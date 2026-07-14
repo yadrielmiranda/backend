@@ -643,6 +643,79 @@ export class DimensionPoliciesService {
     return { ok: true, count: dto.rows.length };
   }
 
+  async deleteRulesByType(
+    policyId: number,
+    ruleType: DimensionRuleType,
+    actor: AuthUser,
+  ) {
+    const policy = await this.prisma.dimensionPolicy.findUnique({
+      where: {
+        id: policyId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!policy) {
+      throw new NotFoundException('Policy not found');
+    }
+
+    const beforeCount =
+      await this.prisma.dimensionRule.count({
+        where: {
+          idPolicy: policyId,
+          ruleType,
+        },
+      });
+
+    if (beforeCount === 0) {
+      return {
+        ok: true,
+        ruleType,
+        deletedCount: 0,
+      };
+    }
+
+    const deleted =
+      await this.prisma.dimensionRule.deleteMany({
+        where: {
+          idPolicy: policyId,
+          ruleType,
+        },
+      });
+
+    await this.logs.log({
+      action: 'DELETE',
+      entityType: 'DimensionPolicyRules',
+      entityId: policyId,
+      userId: actor?.id ?? null,
+      message:
+        `DimensionPolicy ${ruleType} rules deleted (#${policyId})`,
+      before: {
+        ruleType,
+        rulesCount: beforeCount,
+      },
+      after: {
+        ruleType,
+        rulesCount: 0,
+      },
+      meta: {
+        source:
+          'DimensionPoliciesService.deleteRulesByType',
+        actorUserId: actor?.id ?? null,
+        ruleType,
+        deletedCount: deleted.count,
+      },
+    });
+
+    return {
+      ok: true,
+      ruleType,
+      deletedCount: deleted.count,
+    };
+  }
+
   private validateRows(rows: RuleRowDto[], defaultRuleType: DimensionRuleType) {
     if (!rows || rows.length === 0) {
       throw new BadRequestException('No rows provided');

@@ -17,6 +17,7 @@ import { Roles } from '@/auth/roles.decorator';
 import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options.dto';
 import { UpdateSystemCrystalsDto } from './dto/update-system-crystals.dto';
 import { UpdateSystemFrameColorsDto } from './dto/update-system-frame-colors.dto';
+import { UpdateSystemConfigPricingComponentsDto } from './dto/update-system-config-pricing-components.dto';
 
 @Controller('systems')
 export class SystemsController {
@@ -137,6 +138,20 @@ export class SystemsController {
     @Body() body: UpdateSystemConfigOptionsDto,
   ) {
     return this.systemsService.updateSystemConfigOptions(id, configId, body);
+  }
+
+    @Roles('admin')
+  @Patch(':id/configs/:configId/pricing-components')
+  async updateSystemConfigPricingComponents(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('configId', ParseIntPipe) configId: number,
+    @Body() body: UpdateSystemConfigPricingComponentsDto,
+  ) {
+    return this.systemsService.updateSystemConfigPricingComponents(
+      id,
+      configId,
+      body,
+    );
   }
 
   // 🔒 WRITE: solo admin

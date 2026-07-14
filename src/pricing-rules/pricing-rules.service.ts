@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { CreatePricingRuleDto } from './dto/create-pricing-rule.dto';
@@ -17,6 +18,69 @@ export class PricingRulesService {
     private prisma: PrismaService,
     private logs: LogsService,
   ) { }
+
+  private async validateDirectPricingTarget(data: {
+    idBrand: number;
+    idProduct: number;
+    idSystem: number;
+    idConfig: number;
+  }) {
+    const [system, sysConf] = await Promise.all([
+      this.prisma.system.findUnique({
+        where: {
+          id: data.idSystem,
+        },
+        select: {
+          id: true,
+          idBrand: true,
+          idProduct: true,
+        },
+      }),
+
+      this.prisma.sysConf.findUnique({
+        where: {
+          idSystem_idConfig: {
+            idSystem: data.idSystem,
+            idConfig: data.idConfig,
+          },
+        },
+        select: {
+          pricingComponents: {
+            select: {
+              componentType: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    if (!system) {
+      throw new BadRequestException(
+        'The selected system does not exist.',
+      );
+    }
+
+    if (
+      system.idBrand !== data.idBrand ||
+      system.idProduct !== data.idProduct
+    ) {
+      throw new BadRequestException(
+        'The selected system does not belong to the selected brand and product.',
+      );
+    }
+
+    if (!sysConf) {
+      throw new BadRequestException(
+        'The selected configuration is not associated with the selected system.',
+      );
+    }
+
+    if (sysConf.pricingComponents.length > 0) {
+      throw new BadRequestException(
+        'Component-priced configurations cannot have direct pricing rules.',
+      );
+    }
+  }
 
   private async findOneOrThrow(id: number) {
     const rule = await this.prisma.pricingRule.findUnique({
@@ -58,6 +122,7 @@ export class PricingRulesService {
   }
 
   async create(dto: CreatePricingRuleDto, actor: AuthUser) {
+    await this.validateDirectPricingTarget(dto);
     const existingRule = await this.prisma.pricingRule.findUnique({
       where: {
         idBrand_idProduct_idSystem_idConfig_idCrystal: {
@@ -142,6 +207,12 @@ export class PricingRulesService {
     actor: AuthUser,
   ) {
     const beforeFull = await this.findOneOrThrow(id);
+    await this.validateDirectPricingTarget({
+      idBrand: dto.idBrand ?? beforeFull.idBrand,
+      idProduct: dto.idProduct ?? beforeFull.idProduct,
+      idSystem: dto.idSystem ?? beforeFull.idSystem,
+      idConfig: dto.idConfig ?? beforeFull.idConfig,
+    });
 
     try {
       const {

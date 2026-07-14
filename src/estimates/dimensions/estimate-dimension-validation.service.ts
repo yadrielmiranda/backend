@@ -2,6 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import {
   DimensionMode,
   DimensionRuleType,
+  PricingComponentType,
   PrismaClient,
 } from '@prisma/client';
 
@@ -284,7 +285,11 @@ export class EstimateDimensionValidationService {
       };
     }
 
-    const checks = await this.buildDimensionValidationChecks(dto, tx);
+    const checks = await this.buildDimensionValidationChecks(
+      dto,
+      tx,
+      policy.rules,
+    );
 
     if (checks.length === 0) {
       return { ok: false, reason: 'NOT_RATED' };
@@ -334,6 +339,7 @@ export class EstimateDimensionValidationService {
   private async buildDimensionValidationChecks(
     dto: CreatePieceDto,
     tx: PrismaTransactionClient,
+    policyRules: Array<{ ruleType: DimensionRuleType }>,
   ): Promise<DimensionValidationCheck[]> {
     const [cfg, sysConf] = await Promise.all([
       tx.config.findUnique({
@@ -357,6 +363,12 @@ export class EstimateDimensionValidationService {
           requiresLeftSideliteWidth: true,
           requiresRightSideliteWidth: true,
           requiresPanelCount: true,
+          pricingComponents: {
+            select: {
+              componentType: true,
+              quantity: true,
+            },
+          },
         },
       }),
     ]);
@@ -420,19 +432,146 @@ export class EstimateDimensionValidationService {
       ];
     }
 
-    const checks: DimensionValidationCheck[] = [];
+    const policyRuleTypes = new Set(
+      policyRules.map((rule) => rule.ruleType),
+    );
+
+    const configuredComponentTypes = new Set(
+      sysConf.pricingComponents.map(
+        (component) => component.componentType,
+      ),
+    );
+
+    const hasConfiguredComponents =
+      configuredComponentTypes.size > 0;
+
+    const expectsDoor = hasConfiguredComponents
+      ? configuredComponentTypes.has(
+        PricingComponentType.DOOR,
+      )
+      : policyRuleTypes.has(DimensionRuleType.DOOR);
+
+    const expectsSidelite = hasConfiguredComponents
+      ? configuredComponentTypes.has(
+        PricingComponentType.SIDELITE,
+      )
+      : policyRuleTypes.has(DimensionRuleType.SIDELITE);
 
     const doorWidthRaw = (dto as any).doorWidth;
-    const leftSideliteWidthRaw = (dto as any).leftSideliteWidth;
-    const rightSideliteWidthRaw = (dto as any).rightSideliteWidth;
+    const leftSideliteWidthRaw =
+      (dto as any).leftSideliteWidth;
+    const rightSideliteWidthRaw =
+      (dto as any).rightSideliteWidth;
 
-    const hasDoorWidth = doorWidthRaw != null && doorWidthRaw !== '';
+    const hasDoorWidth =
+      doorWidthRaw != null && doorWidthRaw !== '';
+
     const hasLeftSideliteWidth =
-      leftSideliteWidthRaw != null && leftSideliteWidthRaw !== '';
-    const hasRightSideliteWidth =
-      rightSideliteWidthRaw != null && rightSideliteWidthRaw !== '';
+      leftSideliteWidthRaw != null &&
+      leftSideliteWidthRaw !== '';
 
-    if (hasDoorWidth) {
+    const hasRightSideliteWidth =
+      rightSideliteWidthRaw != null &&
+      rightSideliteWidthRaw !== '';
+
+    if (
+      dimensionMode ===
+      DimensionMode.ECO_WINDOWS_DOOR
+    ) {
+      const openWidth = num(dto.width, 'Opening Width');
+
+      if (expectsDoor && expectsSidelite) {
+        if (!hasDoorWidth) {
+          throw new BadRequestException(
+            'Door Width is required for the composite dimension policy.',
+          );
+        }
+
+        const doorWidth = num(
+          doorWidthRaw,
+          'Door Width',
+        );
+
+        if (doorWidth >= openWidth) {
+          throw new BadRequestException(
+            'Opening Width must be greater than Door Width when sidelites are used.',
+          );
+        }
+
+        const sideliteComponent =
+          sysConf.pricingComponents.find(
+            (component) =>
+              component.componentType ===
+              PricingComponentType.SIDELITE,
+          );
+
+        const sideliteQuantity = Number(
+          sideliteComponent?.quantity ?? 0,
+        );
+
+        if (
+          !Number.isInteger(sideliteQuantity) ||
+          sideliteQuantity < 1
+        ) {
+          throw new BadRequestException(
+            'Sidelite Quantity must be configured for the composite dimension policy.',
+          );
+        }
+
+        const sideliteWidth =
+          normalizeInchesToEighthStep(
+            (openWidth - doorWidth) /
+            sideliteQuantity,
+            'Sidelite Width',
+            1,
+          );
+
+        return [
+          {
+            ruleType: DimensionRuleType.DOOR,
+            widthIn: doorWidth,
+            heightIn,
+            label: 'DOOR',
+          },
+          {
+            ruleType: DimensionRuleType.SIDELITE,
+            widthIn: sideliteWidth,
+            heightIn,
+            label: 'SIDELITE',
+          },
+        ];
+      }
+
+      if (expectsDoor) {
+        return [
+          {
+            ruleType: DimensionRuleType.DOOR,
+            widthIn: hasDoorWidth
+              ? num(doorWidthRaw, 'Door Width')
+              : openWidth,
+            heightIn,
+            label: 'DOOR',
+          },
+        ];
+      }
+
+      if (expectsSidelite) {
+        return [
+          {
+            ruleType: DimensionRuleType.SIDELITE,
+            widthIn: openWidth,
+            heightIn,
+            label: 'SIDELITE',
+          },
+        ];
+      }
+
+      return [];
+    }
+
+    const checks: DimensionValidationCheck[] = [];
+
+    if (hasDoorWidth && expectsDoor) {
       checks.push({
         ruleType: DimensionRuleType.DOOR,
         widthIn: num(doorWidthRaw, 'Door Width'),
@@ -441,33 +580,84 @@ export class EstimateDimensionValidationService {
       });
     }
 
-    if (hasLeftSideliteWidth) {
+    if (
+      hasLeftSideliteWidth &&
+      expectsSidelite
+    ) {
       checks.push({
         ruleType: DimensionRuleType.SIDELITE,
-        widthIn: num(leftSideliteWidthRaw, 'Left Sidelite Width'),
+        widthIn: num(
+          leftSideliteWidthRaw,
+          'Left Sidelite Width',
+        ),
         heightIn,
         label: 'LEFT SIDELITE',
       });
     }
 
-    if (hasRightSideliteWidth) {
+    if (
+      hasRightSideliteWidth &&
+      expectsSidelite
+    ) {
       checks.push({
         ruleType: DimensionRuleType.SIDELITE,
-        widthIn: num(rightSideliteWidthRaw, 'Right Sidelite Width'),
+        widthIn: num(
+          rightSideliteWidthRaw,
+          'Right Sidelite Width',
+        ),
         heightIn,
         label: 'RIGHT SIDELITE',
       });
     }
 
-    // comentario en espanol: puertas simples X/XX pueden venir solo con width.
-    // En modos de puerta, si no hay doorWidth ni sidelites, validamos width como DOOR.
     if (checks.length === 0) {
-      checks.push({
-        ruleType: DimensionRuleType.DOOR,
-        widthIn: num(dto.width, 'Door Width'),
-        heightIn,
-        label: 'DOOR',
-      });
+      if (expectsDoor && !expectsSidelite) {
+        return [
+          {
+            ruleType: DimensionRuleType.DOOR,
+            widthIn: num(dto.width, 'Door Width'),
+            heightIn,
+            label: 'DOOR',
+          },
+        ];
+      }
+
+      if (expectsSidelite && !expectsDoor) {
+        return [
+          {
+            ruleType: DimensionRuleType.SIDELITE,
+            widthIn: num(
+              dto.width,
+              'Sidelite Width',
+            ),
+            heightIn,
+            label: 'SIDELITE',
+          },
+        ];
+      }
+    }
+
+    const hasDoorCheck = checks.some(
+      (check) =>
+        check.ruleType === DimensionRuleType.DOOR,
+    );
+
+    const hasSideliteCheck = checks.some(
+      (check) =>
+        check.ruleType ===
+        DimensionRuleType.SIDELITE,
+    );
+
+    if (expectsDoor && !hasDoorCheck) {
+      throw new BadRequestException(
+        'Door Width is required for the composite dimension policy.',
+      );
+    }
+
+    if (expectsSidelite && !hasSideliteCheck) {
+      throw new BadRequestException(
+        'At least one Sidelite Width is required for the composite dimension policy.',
+      );
     }
 
     return checks;

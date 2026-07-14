@@ -7,6 +7,7 @@ import {
   Param,
   Body,
   Query,
+  ParseEnumPipe,
   ParseIntPipe,
   Req,
 } from '@nestjs/common';
@@ -90,6 +91,25 @@ export class DimensionPoliciesController {
     @Req() req: Request,
   ) {
     return this.svc.updatePolicy(id, dto, req.user as AuthUser);
+  }
+
+  // WRITE: solo admin
+  @Delete(':id/rules/:ruleType')
+  @Roles('admin')
+  deleteRulesByType(
+    @Param('id', ParseIntPipe) id: number,
+    @Param(
+      'ruleType',
+      new ParseEnumPipe(DimensionRuleType),
+    )
+    ruleType: DimensionRuleType,
+    @Req() req: Request,
+  ) {
+    return this.svc.deleteRulesByType(
+      id,
+      ruleType,
+      req.user as AuthUser,
+    );
   }
 
   // WRITE: solo admin
