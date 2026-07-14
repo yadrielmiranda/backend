@@ -34,11 +34,16 @@ export class SystemsService {
               },
             },
           },
-          orderBy: {
-            config: {
-              conf: 'asc',
+          orderBy: [
+            {
+              sortOrder: 'asc',
             },
-          },
+            {
+              config: {
+                conf: 'asc',
+              },
+            },
+          ],
         },
         defaultCrystal: true,
         systemCrystals: {
@@ -92,11 +97,16 @@ export class SystemsService {
               },
             },
           },
-          orderBy: {
-            config: {
-              conf: 'asc',
+          orderBy: [
+            {
+              sortOrder: 'asc',
             },
-          },
+            {
+              config: {
+                conf: 'asc',
+              },
+            },
+          ],
         },
         defaultCrystal: true,
         systemCrystals: {
@@ -166,11 +176,16 @@ export class SystemsService {
               },
             },
           },
-          orderBy: {
-            config: {
-              conf: 'asc',
+          orderBy: [
+            {
+              sortOrder: 'asc',
             },
-          },
+            {
+              config: {
+                conf: 'asc',
+              },
+            },
+          ],
         },
 
         brandProduct: {
@@ -353,11 +368,16 @@ export class SystemsService {
               },
             },
           },
-          orderBy: {
-            config: {
-              conf: 'asc',
+          orderBy: [
+            {
+              sortOrder: 'asc',
             },
-          },
+            {
+              config: {
+                conf: 'asc',
+              },
+            },
+          ],
         },
         brandProduct: { include: { product: true, brand: true } },
         defaultCrystal: true,
@@ -1206,30 +1226,50 @@ export class SystemsService {
     const isLinearMaterial =
       system.brandProduct.product.kind === ProductKind.LINEAR_MATERIAL;
 
-    await this.prisma.sysConf.upsert({
-      where: { idSystem_idConfig: { idSystem: systemId, idConfig: configId } },
-      update: {},
-      create: {
-        idSystem: systemId,
-        idConfig: configId,
+    await this.prisma.$transaction(async (tx) => {
+      const currentMaxOrder = await tx.sysConf.aggregate({
+        where: {
+          idSystem: systemId,
+        },
+        _max: {
+          sortOrder: true,
+        },
+      });
 
-        allowScreen: false,
-        dimensionMode: DimensionMode.STANDARD,
+      const nextSortOrder =
+        (currentMaxOrder._max.sortOrder ?? -1) + 1;
 
-        requiresWidth: isLinearMaterial,
-        requiresHeight: false,
-        requiresHeightLeft: false,
-        requiresHeightRight: false,
-        requiresLegHeight: false,
-        requiresDoorWidth: false,
-        requiresDoorHeight: false,
-        requiresLeftSideliteWidth: false,
-        requiresRightSideliteWidth: false,
-        requiresLeftPanels: false,
-        requiresRightPanels: false,
-        requiresPanelCount: false,
-        requiresHorizontalHeights: false,
-      },
+      await tx.sysConf.upsert({
+        where: {
+          idSystem_idConfig: {
+            idSystem: systemId,
+            idConfig: configId,
+          },
+        },
+        update: {},
+        create: {
+          idSystem: systemId,
+          idConfig: configId,
+
+          sortOrder: nextSortOrder,
+          allowScreen: false,
+          dimensionMode: DimensionMode.STANDARD,
+
+          requiresWidth: isLinearMaterial,
+          requiresHeight: false,
+          requiresHeightLeft: false,
+          requiresHeightRight: false,
+          requiresLegHeight: false,
+          requiresDoorWidth: false,
+          requiresDoorHeight: false,
+          requiresLeftSideliteWidth: false,
+          requiresRightSideliteWidth: false,
+          requiresLeftPanels: false,
+          requiresRightPanels: false,
+          requiresPanelCount: false,
+          requiresHorizontalHeights: false,
+        },
+      });
     });
 
     return this.getSystemWithConfigs(systemId);
@@ -1255,6 +1295,7 @@ export class SystemsService {
         idConfig: true,
         system: {
           select: {
+            defaultConfigId: true,
             brandProduct: {
               select: {
                 product: {
@@ -1276,24 +1317,71 @@ export class SystemsService {
     }
 
     const isLinearMaterial =
-      existingLink.system.brandProduct.product.kind === ProductKind.LINEAR_MATERIAL;
+      existingLink.system.brandProduct.product.kind ===
+      ProductKind.LINEAR_MATERIAL;
 
-    if (isLinearMaterial && data.allowScreen) {
+    if (
+      isLinearMaterial &&
+      data.allowScreen === true
+    ) {
       throw new BadRequestException(
         'Linear material configs cannot allow screen.',
       );
     }
 
-    await this.prisma.sysConf.update({
-      where: {
-        idSystem_idConfig: {
-          idSystem: systemId,
-          idConfig: configId,
-        },
-      },
-      data: {
-        allowScreen: isLinearMaterial ? false : data.allowScreen,
-      },
+    const sysConfUpdateData: Prisma.SysConfUpdateInput = {
+      ...(data.allowScreen !== undefined
+        ? {
+          allowScreen: isLinearMaterial
+            ? false
+            : data.allowScreen,
+        }
+        : {}),
+
+      ...(data.sortOrder !== undefined
+        ? {
+          sortOrder: data.sortOrder,
+        }
+        : {}),
+    };
+
+    await this.prisma.$transaction(async (tx) => {
+      if (Object.keys(sysConfUpdateData).length > 0) {
+        await tx.sysConf.update({
+          where: {
+            idSystem_idConfig: {
+              idSystem: systemId,
+              idConfig: configId,
+            },
+          },
+          data: sysConfUpdateData,
+        });
+      }
+
+      if (data.isDefault === true) {
+        await tx.system.update({
+          where: {
+            id: systemId,
+          },
+          data: {
+            defaultConfigId: configId,
+          },
+        });
+      }
+
+      if (
+        data.isDefault === false &&
+        existingLink.system.defaultConfigId === configId
+      ) {
+        await tx.system.update({
+          where: {
+            id: systemId,
+          },
+          data: {
+            defaultConfigId: null,
+          },
+        });
+      }
     });
 
     return this.getSystemWithConfigs(systemId);
@@ -1304,18 +1392,51 @@ export class SystemsService {
     systemId: number,
     configId: number,
   ): Promise<System> {
-    try {
-      await this.prisma.sysConf.delete({
-        where: { idSystem_idConfig: { idSystem: systemId, idConfig: configId } },
-      });
-    } catch (e: any) {
-      if (e?.code === 'P2025') {
-        throw new NotFoundException(
-          `System/Config link not found (systemId=${systemId}, configId=${configId}).`,
-        );
-      }
-      throw e;
+    const existingLink = await this.prisma.sysConf.findUnique({
+      where: {
+        idSystem_idConfig: {
+          idSystem: systemId,
+          idConfig: configId,
+        },
+      },
+      select: {
+        idSystem: true,
+        idConfig: true,
+        system: {
+          select: {
+            defaultConfigId: true,
+          },
+        },
+      },
+    });
+
+    if (!existingLink) {
+      throw new NotFoundException(
+        `System/Config link not found (systemId=${systemId}, configId=${configId}).`,
+      );
     }
+
+    await this.prisma.$transaction(async (tx) => {
+      if (existingLink.system.defaultConfigId === configId) {
+        await tx.system.update({
+          where: {
+            id: systemId,
+          },
+          data: {
+            defaultConfigId: null,
+          },
+        });
+      }
+
+      await tx.sysConf.delete({
+        where: {
+          idSystem_idConfig: {
+            idSystem: systemId,
+            idConfig: configId,
+          },
+        },
+      });
+    });
 
     return this.getSystemWithConfigs(systemId);
   }

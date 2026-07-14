@@ -226,6 +226,9 @@ model System {
   defaultCrystalId Int?
   defaultCrystal   Crystal? @relation("SystemDefaultCrystal", fields: [defaultCrystalId], references: [id], onDelete: SetNull)
 
+  defaultConfigId Int?
+  defaultConfig   Config? @relation("SystemDefaultConfig", fields: [defaultConfigId], references: [id], onDelete: SetNull)
+
   systemCrystals    SystemCrystal[]
   systemFrameColors SystemFrameColor[]
 
@@ -237,6 +240,7 @@ model System {
   updatedAt          DateTime            @updatedAt
 
   @@index([defaultCrystalId])
+  @@index([defaultConfigId])
   @@index([isActive])
 }
 
@@ -251,6 +255,7 @@ model Config {
   category   ConfigCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
 
   sysconfs           SysConf[]
+  defaultForSystems  System[]            @relation("SystemDefaultConfig")
   pieces             Piece[]
   pricingRules       PricingRule[]
   linearPricingRules LinearPricingRule[]
@@ -306,6 +311,7 @@ model SysConf {
   config        Config        @relation(fields: [idConfig], references: [id])
   idConfig      Int
   allowScreen   Boolean       @default(false)
+  sortOrder     Int           @default(0)
   dimensionMode DimensionMode @default(STANDARD)
 
   requiresWidth       Boolean @default(false)
