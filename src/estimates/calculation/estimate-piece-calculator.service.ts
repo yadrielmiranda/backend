@@ -1143,6 +1143,11 @@ export class EstimatePieceCalculatorService {
                 String(governingDims.heightIn),
             );
 
+            const hasSidelite = pricingComponents.some(
+                (component) =>
+                    component.componentType === PricingComponentType.SIDELITE,
+            );
+
             const hasTransom = pricingComponents.some(
                 (component) =>
                     component.componentType === PricingComponentType.TRANSOM,
@@ -1167,10 +1172,21 @@ export class EstimatePieceCalculatorService {
 
             for (const component of pricingComponents) {
                 if (component.componentType === PricingComponentType.DOOR) {
-                    const doorWidth = positiveDimension(
-                        (pieceDto as any).doorWidth,
-                        'Door Width',
-                    );
+                    let doorWidth: Decimal;
+
+                    // Eco Windows utiliza el ancho completo de la abertura
+                    // cuando la configuración no tiene sidelites.
+                    if (
+                        dimensionMode === DimensionMode.ECO_WINDOWS_DOOR &&
+                        !hasSidelite
+                    ) {
+                        doorWidth = totalWidth;
+                    } else {
+                        doorWidth = positiveDimension(
+                            (pieceDto as any).doorWidth,
+                            'Door Width',
+                        );
+                    }
 
                     componentPrices.push(
                         await computeRoundedComponentPrice(

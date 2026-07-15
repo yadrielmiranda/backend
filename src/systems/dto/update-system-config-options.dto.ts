@@ -53,6 +53,10 @@ export class UpdateSystemConfigOptionsDto {
 
   @IsOptional()
   @IsBoolean()
+  isSelectableInEstimate?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   requiresWidth?: boolean;
 
   @IsOptional()

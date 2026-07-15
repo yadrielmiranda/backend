@@ -312,13 +312,14 @@ enum PricingComponentType {
 }
 
 model SysConf {
-  system        System        @relation(fields: [idSystem], references: [id])
-  idSystem      Int
-  config        Config        @relation(fields: [idConfig], references: [id])
-  idConfig      Int
-  allowScreen   Boolean       @default(false)
-  sortOrder     Int           @default(0)
-  dimensionMode DimensionMode @default(STANDARD)
+  system                 System        @relation(fields: [idSystem], references: [id])
+  idSystem               Int
+  config                 Config        @relation(fields: [idConfig], references: [id])
+  idConfig               Int
+  allowScreen            Boolean       @default(false)
+  isSelectableInEstimate Boolean       @default(true)
+  sortOrder              Int           @default(0)
+  dimensionMode          DimensionMode @default(STANDARD)
 
   requiresWidth       Boolean @default(false)
   requiresHeight      Boolean @default(false)
@@ -972,6 +973,7 @@ enum DimensionRuleType {
   MAIN
   DOOR
   SIDELITE
+  TRANSOM
 }
 
 model DimensionPolicy {

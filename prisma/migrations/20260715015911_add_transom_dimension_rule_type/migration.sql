@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE `DimensionRule` MODIFY `ruleType` ENUM('MAIN', 'DOOR', 'SIDELITE', 'TRANSOM') NOT NULL DEFAULT 'MAIN';

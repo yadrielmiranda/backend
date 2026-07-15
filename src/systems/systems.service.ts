@@ -458,6 +458,7 @@ export class SystemsService {
       idSystem: systemId,
       idConfig: configId,
       allowScreen: sysConf.allowScreen,
+      isSelectableInEstimate: sysConf.isSelectableInEstimate,
 
       dimensionMode: sysConf.dimensionMode,
       requiresWidth: sysConf.requiresWidth,
@@ -661,6 +662,7 @@ export class SystemsService {
       system: sysConf.system,
       config: sysConf.config,
       allowScreen: sysConf.allowScreen,
+      isSelectableInEstimate: sysConf.isSelectableInEstimate,
 
       dimensionMode: sysConf.dimensionMode,
       requiresWidth: sysConf.requiresWidth,
@@ -727,6 +729,7 @@ export class SystemsService {
         idConfig: true,
         system: {
           select: {
+            defaultConfigId: true,
             brandProduct: {
               select: {
                 product: {
@@ -744,6 +747,15 @@ export class SystemsService {
     if (!sysConf) {
       throw new NotFoundException(
         `System/Config link not found (systemId=${systemId}, configId=${configId}).`,
+      );
+    }
+
+    if (
+      data.isSelectableInEstimate === false &&
+      sysConf.system.defaultConfigId === configId
+    ) {
+      throw new BadRequestException(
+        'Select another default configuration before removing this configuration from estimates.',
       );
     }
 
@@ -1001,6 +1013,13 @@ export class SystemsService {
           defaultSillOptionId: data.defaultSillOptionId ?? null,
           defaultReinforcementOptionId:
             data.defaultReinforcementOptionId ?? null,
+
+          ...(data.isSelectableInEstimate !== undefined
+            ? {
+              isSelectableInEstimate:
+                data.isSelectableInEstimate,
+            }
+            : {}),
 
           ...dimensionUpdateData,
         },
@@ -1621,6 +1640,7 @@ export class SystemsService {
       select: {
         idSystem: true,
         idConfig: true,
+        isSelectableInEstimate: true,
         system: {
           select: {
             defaultConfigId: true,
@@ -1641,6 +1661,15 @@ export class SystemsService {
     if (!existingLink) {
       throw new NotFoundException(
         `System/Config link not found (systemId=${systemId}, configId=${configId}).`,
+      );
+    }
+
+    if (
+      data.isDefault === true &&
+      !existingLink.isSelectableInEstimate
+    ) {
+      throw new BadRequestException(
+        'A configuration that is not available in estimates cannot be set as default.',
       );
     }
 

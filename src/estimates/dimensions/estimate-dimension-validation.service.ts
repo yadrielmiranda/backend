@@ -446,25 +446,27 @@ export class EstimateDimensionValidationService {
       configuredComponentTypes.size > 0;
 
     const expectsDoor = hasConfiguredComponents
-      ? configuredComponentTypes.has(
-        PricingComponentType.DOOR,
-      )
+      ? configuredComponentTypes.has(PricingComponentType.DOOR)
       : policyRuleTypes.has(DimensionRuleType.DOOR);
 
     const expectsSidelite = hasConfiguredComponents
-      ? configuredComponentTypes.has(
-        PricingComponentType.SIDELITE,
-      )
+      ? configuredComponentTypes.has(PricingComponentType.SIDELITE)
       : policyRuleTypes.has(DimensionRuleType.SIDELITE);
 
+    const expectsTransom = hasConfiguredComponents
+      ? configuredComponentTypes.has(PricingComponentType.TRANSOM)
+      : policyRuleTypes.has(DimensionRuleType.TRANSOM);
+
     const doorWidthRaw = (dto as any).doorWidth;
-    const leftSideliteWidthRaw =
-      (dto as any).leftSideliteWidth;
-    const rightSideliteWidthRaw =
-      (dto as any).rightSideliteWidth;
+    const doorHeightRaw = (dto as any).doorHeight;
+    const leftSideliteWidthRaw = (dto as any).leftSideliteWidth;
+    const rightSideliteWidthRaw = (dto as any).rightSideliteWidth;
 
     const hasDoorWidth =
       doorWidthRaw != null && doorWidthRaw !== '';
+
+    const hasDoorHeight =
+      doorHeightRaw != null && doorHeightRaw !== '';
 
     const hasLeftSideliteWidth =
       leftSideliteWidthRaw != null &&
@@ -474,190 +476,237 @@ export class EstimateDimensionValidationService {
       rightSideliteWidthRaw != null &&
       rightSideliteWidthRaw !== '';
 
-    if (
-      dimensionMode ===
-      DimensionMode.ECO_WINDOWS_DOOR
-    ) {
-      const openWidth = num(dto.width, 'Opening Width');
+    // Cuando TRANSOM forma parte de una configuración compuesta,
+    // Door Height separa la sección inferior del transom.
+    const usesCompositeTransom =
+      hasConfiguredComponents &&
+      expectsTransom &&
+      (expectsDoor || expectsSidelite);
 
-      if (expectsDoor && expectsSidelite) {
-        if (!hasDoorWidth) {
-          throw new BadRequestException(
-            'Door Width is required for the composite dimension policy.',
-          );
-        }
+    let lowerComponentHeightIn = heightIn;
+    let transomHeightIn: number | null = null;
 
-        const doorWidth = num(
-          doorWidthRaw,
-          'Door Width',
+    if (usesCompositeTransom) {
+      if (!hasDoorHeight) {
+        throw new BadRequestException(
+          'Door Height is required when a transom is used.',
         );
-
-        if (doorWidth >= openWidth) {
-          throw new BadRequestException(
-            'Opening Width must be greater than Door Width when sidelites are used.',
-          );
-        }
-
-        const sideliteComponent =
-          sysConf.pricingComponents.find(
-            (component) =>
-              component.componentType ===
-              PricingComponentType.SIDELITE,
-          );
-
-        const sideliteQuantity = Number(
-          sideliteComponent?.quantity ?? 0,
-        );
-
-        if (
-          !Number.isInteger(sideliteQuantity) ||
-          sideliteQuantity < 1
-        ) {
-          throw new BadRequestException(
-            'Sidelite Quantity must be configured for the composite dimension policy.',
-          );
-        }
-
-        const sideliteWidth =
-          normalizeInchesToEighthStep(
-            (openWidth - doorWidth) /
-            sideliteQuantity,
-            'Sidelite Width',
-            1,
-          );
-
-        return [
-          {
-            ruleType: DimensionRuleType.DOOR,
-            widthIn: doorWidth,
-            heightIn,
-            label: 'DOOR',
-          },
-          {
-            ruleType: DimensionRuleType.SIDELITE,
-            widthIn: sideliteWidth,
-            heightIn,
-            label: 'SIDELITE',
-          },
-        ];
       }
 
+      const doorHeightIn = num(
+        doorHeightRaw,
+        'Door Height',
+      );
+
+      if (doorHeightIn <= 0) {
+        throw new BadRequestException(
+          'Door Height must be greater than zero.',
+        );
+      }
+
+      if (doorHeightIn >= heightIn) {
+        throw new BadRequestException(
+          'Door Height must be less than Opening Height when a transom is used.',
+        );
+      }
+
+      lowerComponentHeightIn = doorHeightIn;
+
+      transomHeightIn = normalizeInchesToEighthStep(
+        heightIn - doorHeightIn,
+        'Transom Height',
+        1,
+      );
+    }
+
+    if (dimensionMode === DimensionMode.ECO_WINDOWS_DOOR) {
+      const openWidth = num(dto.width, 'Opening Width');
+      const checks: DimensionValidationCheck[] = [];
+
+      let resolvedDoorWidth: number | null = null;
+
       if (expectsDoor) {
-        return [
-          {
-            ruleType: DimensionRuleType.DOOR,
-            widthIn: hasDoorWidth
-              ? num(doorWidthRaw, 'Door Width')
-              : openWidth,
-            heightIn,
-            label: 'DOOR',
-          },
-        ];
+        // Eco Windows solamente necesita Door Width cuando existen sidelites.
+        if (expectsSidelite && !hasDoorWidth) {
+          throw new BadRequestException(
+            'Door Width is required when sidelites are used.',
+          );
+        }
+
+        resolvedDoorWidth = hasDoorWidth
+          ? num(doorWidthRaw, 'Door Width')
+          : openWidth;
+
+        checks.push({
+          ruleType: DimensionRuleType.DOOR,
+          widthIn: resolvedDoorWidth,
+          heightIn: lowerComponentHeightIn,
+          label: 'DOOR',
+        });
       }
 
       if (expectsSidelite) {
-        return [
-          {
-            ruleType: DimensionRuleType.SIDELITE,
-            widthIn: openWidth,
-            heightIn,
-            label: 'SIDELITE',
-          },
-        ];
+        let sideliteWidth: number;
+
+        if (hasConfiguredComponents) {
+          const sideliteComponent =
+            sysConf.pricingComponents.find(
+              (component) =>
+                component.componentType ===
+                PricingComponentType.SIDELITE,
+            );
+
+          const sideliteQuantity = Number(
+            sideliteComponent?.quantity ?? 0,
+          );
+
+          if (
+            !Number.isInteger(sideliteQuantity) ||
+            sideliteQuantity < 1
+          ) {
+            throw new BadRequestException(
+              'Sidelite Quantity must be configured for this composite configuration.',
+            );
+          }
+
+          const occupiedDoorWidth =
+            resolvedDoorWidth ?? 0;
+
+          if (occupiedDoorWidth >= openWidth) {
+            throw new BadRequestException(
+              'Opening Width must be greater than Door Width when sidelites are used.',
+            );
+          }
+
+          sideliteWidth =
+            normalizeInchesToEighthStep(
+              (openWidth - occupiedDoorWidth) /
+              sideliteQuantity,
+              'Sidelite Width',
+              1,
+            );
+        } else {
+          // Configuración directa O.
+          sideliteWidth = openWidth;
+        }
+
+        checks.push({
+          ruleType: DimensionRuleType.SIDELITE,
+          widthIn: sideliteWidth,
+          heightIn: lowerComponentHeightIn,
+          label: 'SIDELITE',
+        });
       }
 
-      return [];
+      if (expectsTransom) {
+        checks.push({
+          ruleType: DimensionRuleType.TRANSOM,
+          widthIn: openWidth,
+          heightIn:
+            usesCompositeTransom && transomHeightIn != null
+              ? transomHeightIn
+              : heightIn,
+          label: 'TRANSOM',
+        });
+      }
+
+      return checks;
     }
 
+    // Los modos que llegan aquí son principalmente ECO_NOVO_DOOR.
     const checks: DimensionValidationCheck[] = [];
 
-    if (hasDoorWidth && expectsDoor) {
-      checks.push({
-        ruleType: DimensionRuleType.DOOR,
-        widthIn: num(doorWidthRaw, 'Door Width'),
-        heightIn,
-        label: 'DOOR',
-      });
+    if (expectsDoor) {
+      if (hasDoorWidth) {
+        checks.push({
+          ruleType: DimensionRuleType.DOOR,
+          widthIn: num(doorWidthRaw, 'Door Width'),
+          heightIn: lowerComponentHeightIn,
+          label: 'DOOR',
+        });
+      } else if (!hasConfiguredComponents && !expectsSidelite) {
+        // Configuración directa X o XX.
+        checks.push({
+          ruleType: DimensionRuleType.DOOR,
+          widthIn: num(dto.width, 'Door Width'),
+          heightIn: lowerComponentHeightIn,
+          label: 'DOOR',
+        });
+      } else {
+        throw new BadRequestException(
+          'Door Width is required for the composite dimension policy.',
+        );
+      }
     }
 
-    if (
-      hasLeftSideliteWidth &&
-      expectsSidelite
-    ) {
+    let hasSideliteCheck = false;
+
+    if (expectsSidelite && hasLeftSideliteWidth) {
       checks.push({
         ruleType: DimensionRuleType.SIDELITE,
         widthIn: num(
           leftSideliteWidthRaw,
           'Left Sidelite Width',
         ),
-        heightIn,
+        heightIn: lowerComponentHeightIn,
         label: 'LEFT SIDELITE',
       });
+
+      hasSideliteCheck = true;
     }
 
-    if (
-      hasRightSideliteWidth &&
-      expectsSidelite
-    ) {
+    if (expectsSidelite && hasRightSideliteWidth) {
       checks.push({
         ruleType: DimensionRuleType.SIDELITE,
         widthIn: num(
           rightSideliteWidthRaw,
           'Right Sidelite Width',
         ),
-        heightIn,
+        heightIn: lowerComponentHeightIn,
         label: 'RIGHT SIDELITE',
       });
+
+      hasSideliteCheck = true;
     }
 
-    if (checks.length === 0) {
-      if (expectsDoor && !expectsSidelite) {
-        return [
-          {
-            ruleType: DimensionRuleType.DOOR,
-            widthIn: num(dto.width, 'Door Width'),
-            heightIn,
-            label: 'DOOR',
-          },
-        ];
-      }
+    if (
+      expectsSidelite &&
+      !hasSideliteCheck &&
+      !hasConfiguredComponents &&
+      !expectsDoor
+    ) {
+      // Configuración directa O.
+      checks.push({
+        ruleType: DimensionRuleType.SIDELITE,
+        widthIn: num(dto.width, 'Sidelite Width'),
+        heightIn: lowerComponentHeightIn,
+        label: 'SIDELITE',
+      });
 
-      if (expectsSidelite && !expectsDoor) {
-        return [
-          {
-            ruleType: DimensionRuleType.SIDELITE,
-            widthIn: num(
-              dto.width,
-              'Sidelite Width',
-            ),
-            heightIn,
-            label: 'SIDELITE',
-          },
-        ];
-      }
+      hasSideliteCheck = true;
     }
 
-    const hasDoorCheck = checks.some(
-      (check) =>
-        check.ruleType === DimensionRuleType.DOOR,
-    );
-
-    const hasSideliteCheck = checks.some(
-      (check) =>
-        check.ruleType ===
-        DimensionRuleType.SIDELITE,
-    );
-
-    if (expectsDoor && !hasDoorCheck) {
-      throw new BadRequestException(
-        'Door Width is required for the composite dimension policy.',
-      );
-    }
-
-    if (expectsSidelite && !hasSideliteCheck) {
+    if (
+      expectsSidelite &&
+      !hasSideliteCheck
+    ) {
       throw new BadRequestException(
         'At least one Sidelite Width is required for the composite dimension policy.',
       );
+    }
+
+    if (expectsTransom) {
+      const overallWidth = this.resolveEcoNovoOverallWidth(dto);
+
+      checks.push({
+        ruleType: DimensionRuleType.TRANSOM,
+        widthIn: overallWidth,
+        heightIn:
+          usesCompositeTransom && transomHeightIn != null
+            ? transomHeightIn
+            : heightIn,
+        label: 'TRANSOM',
+      });
     }
 
     return checks;
