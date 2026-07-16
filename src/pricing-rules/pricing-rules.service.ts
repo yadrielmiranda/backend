@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '@/prisma/prisma.service';
 import { CreatePricingRuleDto } from './dto/create-pricing-rule.dto';
 import { UpdatePricingRuleDto } from './dto/update-pricing-rule.dto';
+import { AvailablePricingRuleCrystalsQueryDto } from './dto/available-pricing-rule-crystals-query.dto';
 import { Prisma } from '@prisma/client';
 import { LogsService } from '@/logs/logs.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
@@ -82,6 +83,183 @@ export class PricingRulesService {
     }
   }
 
+  private async validateCrystalForSystem(
+    idSystem: number,
+    idCrystal: number,
+  ) {
+    const systemCrystal = await this.prisma.systemCrystal.findUnique({
+      where: {
+        idSystem_idCrystal: {
+          idSystem,
+          idCrystal,
+        },
+      },
+      select: {
+        crystal: {
+          select: {
+            isActive: true,
+          },
+        },
+      },
+    });
+
+    if (!systemCrystal) {
+      throw new BadRequestException(
+        'The selected crystal is not associated with the selected system.',
+      );
+    }
+
+    if (!systemCrystal.crystal.isActive) {
+      throw new BadRequestException(
+        'The selected crystal is inactive.',
+      );
+    }
+  }
+
+  async findAvailableCrystals(
+    query: AvailablePricingRuleCrystalsQueryDto,
+  ) {
+    const [system, sysConf] = await Promise.all([
+      this.prisma.system.findUnique({
+        where: {
+          id: query.idSystem,
+        },
+        select: {
+          id: true,
+          idBrand: true,
+          idProduct: true,
+        },
+      }),
+
+      this.prisma.sysConf.findUnique({
+        where: {
+          idSystem_idConfig: {
+            idSystem: query.idSystem,
+            idConfig: query.idConfig,
+          },
+        },
+        select: {
+          pricingComponents: {
+            select: {
+              componentType: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    if (!system) {
+      throw new BadRequestException(
+        'The selected system does not exist.',
+      );
+    }
+
+    if (!sysConf) {
+      throw new BadRequestException(
+        'The selected configuration is not associated with the selected system.',
+      );
+    }
+
+    if (sysConf.pricingComponents.length > 0) {
+      throw new BadRequestException(
+        'Component-priced configurations cannot have direct pricing rules.',
+      );
+    }
+
+    if (query.excludeRuleId) {
+      const excludedRule = await this.prisma.pricingRule.findUnique({
+        where: {
+          id: query.excludeRuleId,
+        },
+        select: {
+          idBrand: true,
+          idProduct: true,
+          idSystem: true,
+          idConfig: true,
+        },
+      });
+
+      if (!excludedRule) {
+        throw new NotFoundException(
+          `Pricing Rule with ID #${query.excludeRuleId} not found.`,
+        );
+      }
+
+      const belongsToRequestedCombination =
+        excludedRule.idBrand === system.idBrand &&
+        excludedRule.idProduct === system.idProduct &&
+        excludedRule.idSystem === query.idSystem &&
+        excludedRule.idConfig === query.idConfig;
+
+      if (!belongsToRequestedCombination) {
+        throw new BadRequestException(
+          'The excluded pricing rule does not belong to the requested combination.',
+        );
+      }
+    }
+
+    const [systemCrystals, existingRules] = await Promise.all([
+      this.prisma.systemCrystal.findMany({
+        where: {
+          idSystem: query.idSystem,
+          crystal: {
+            is: {
+              isActive: true,
+            },
+          },
+        },
+        select: {
+          idCrystal: true,
+          sortOrder: true,
+          crystal: {
+            select: {
+              id: true,
+              glass: true,
+              isActive: true,
+            },
+          },
+        },
+      }),
+
+      this.prisma.pricingRule.findMany({
+        where: {
+          idBrand: system.idBrand,
+          idProduct: system.idProduct,
+          idSystem: query.idSystem,
+          idConfig: query.idConfig,
+
+          ...(query.excludeRuleId
+            ? {
+              id: {
+                not: query.excludeRuleId,
+              },
+            }
+            : {}),
+        },
+        select: {
+          idCrystal: true,
+        },
+      }),
+    ]);
+
+    const usedCrystalIds = new Set(
+      existingRules.map((rule) => rule.idCrystal),
+    );
+
+    return systemCrystals
+      .filter((link) => !usedCrystalIds.has(link.idCrystal))
+      .sort((a, b) => {
+        const sortDifference = a.sortOrder - b.sortOrder;
+
+        if (sortDifference !== 0) {
+          return sortDifference;
+        }
+
+        return a.crystal.glass.localeCompare(b.crystal.glass);
+      })
+      .map((link) => link.crystal);
+  }
+
   private async findOneOrThrow(id: number) {
     const rule = await this.prisma.pricingRule.findUnique({
       where: { id },
@@ -122,7 +300,11 @@ export class PricingRulesService {
   }
 
   async create(dto: CreatePricingRuleDto, actor: AuthUser) {
-    await this.validateDirectPricingTarget(dto);
+    await Promise.all([
+      this.validateDirectPricingTarget(dto),
+      this.validateCrystalForSystem(dto.idSystem, dto.idCrystal),
+    ]);
+
     const existingRule = await this.prisma.pricingRule.findUnique({
       where: {
         idBrand_idProduct_idSystem_idConfig_idCrystal: {
@@ -207,12 +389,21 @@ export class PricingRulesService {
     actor: AuthUser,
   ) {
     const beforeFull = await this.findOneOrThrow(id);
-    await this.validateDirectPricingTarget({
+    const target = {
       idBrand: dto.idBrand ?? beforeFull.idBrand,
       idProduct: dto.idProduct ?? beforeFull.idProduct,
       idSystem: dto.idSystem ?? beforeFull.idSystem,
       idConfig: dto.idConfig ?? beforeFull.idConfig,
-    });
+      idCrystal: dto.idCrystal ?? beforeFull.idCrystal,
+    };
+
+    await Promise.all([
+      this.validateDirectPricingTarget(target),
+      this.validateCrystalForSystem(
+        target.idSystem,
+        target.idCrystal,
+      ),
+    ]);
 
     try {
       const {
