@@ -263,6 +263,7 @@ export class EstimatePieceCalculatorService {
                     },
                 },
                 select: {
+                    isSelectableInEstimate: true,
                     allowScreen: true,
                     dimensionMode: true,
 
@@ -315,6 +316,12 @@ export class EstimatePieceCalculatorService {
         if (!sysConf) {
             throw new BadRequestException(
                 'The selected configuration does not belong to the selected system.',
+            );
+        }
+
+        if (!sysConf.isSelectableInEstimate) {
+            throw new BadRequestException(
+                'The selected configuration is currently unavailable in estimates.',
             );
         }
 
