@@ -73,9 +73,50 @@ export class PaymentsService {
         estimate.payment?.status === PaymentStatus.PENDING &&
         estimate.payment?.stripeSessionId
       ) {
-        throw new ConflictException(
-          `Estimate #${estimateId} already has a pending checkout session.`,
-        );
+        try {
+          const existingSession =
+            await this.stripe.checkout.sessions.retrieve(
+              estimate.payment.stripeSessionId,
+            );
+
+          if (
+            existingSession.payment_status === 'paid' ||
+            existingSession.status === 'complete'
+          ) {
+            throw new ConflictException(
+              `Estimate #${estimateId} payment was already completed and is being processed.`,
+            );
+          }
+
+          if (existingSession.status === 'open') {
+            if (!existingSession.url) {
+              throw new BadRequestException(
+                'Stripe session is open but has no checkout URL.',
+              );
+            }
+
+            return { url: existingSession.url };
+          }
+
+          if (existingSession.status !== 'expired') {
+            throw new ConflictException(
+              `Estimate #${estimateId} has a checkout session with status: ${existingSession.status ?? 'UNKNOWN'
+              }.`,
+            );
+          }
+
+          // Si expiró, continúa y crea una sesión nueva.
+        } catch (error: unknown) {
+          const stripeError =
+            typeof error === 'object' && error !== null
+              ? (error as { code?: string })
+              : null;
+
+          // Si la sesión ya no existe en Stripe, continúa y crea una nueva.
+          if (stripeError?.code !== 'resource_missing') {
+            throw error;
+          }
+        }
       }
 
       const amount = Number(estimate.totalPayable);
