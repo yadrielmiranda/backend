@@ -493,6 +493,150 @@ export class PaymentsService {
     });
   }
 
+  async cancelCheckoutSessionForEstimate(params: {
+    estimateId: number;
+    user: AuthUser;
+  }) {
+    const { estimateId, user } = params;
+
+    const estimate = await this.prisma.estimate.findUnique({
+      where: { id: estimateId },
+      include: {
+        order: true,
+        payment: true,
+      },
+    });
+
+    if (!estimate || estimate.idUser !== user.id) {
+      throw new NotFoundException(
+        `Estimate #${estimateId} not found.`,
+      );
+    }
+
+    if (estimate.order) {
+      return {
+        status: 'paid' as const,
+        orderId: estimate.order.id,
+      };
+    }
+
+    const payment = estimate.payment;
+
+    if (!payment?.stripeSessionId) {
+      if (payment?.status === PaymentStatus.PAID) {
+        throw new ConflictException(
+          `Estimate #${estimate.number} is already paid.`,
+        );
+      }
+
+      return {
+        status: 'canceled' as const,
+        orderId: null,
+      };
+    }
+
+    const stripeSessionId = payment.stripeSessionId;
+
+    const finalizePaidSession = async (
+      session: Stripe.Checkout.Session,
+    ) => {
+      const processed = await this.prisma.$transaction(
+        async (tx) => {
+          return this.processPaidCheckoutSession(tx, session);
+        },
+      );
+
+      if (!processed) {
+        throw new BadRequestException(
+          `Paid checkout for Estimate #${estimate.number} could not be processed.`,
+        );
+      }
+
+      const order = await this.prisma.order.findFirst({
+        where: { idEst: estimateId },
+        select: { id: true },
+      });
+
+      return {
+        status: 'paid' as const,
+        orderId: order?.id ?? null,
+      };
+    };
+
+    let session: Stripe.Checkout.Session;
+
+    try {
+      session =
+        await this.stripe.checkout.sessions.retrieve(
+          stripeSessionId,
+        );
+    } catch (error: unknown) {
+      const stripeError =
+        typeof error === 'object' && error !== null
+          ? (error as { code?: string })
+          : null;
+
+      if (stripeError?.code !== 'resource_missing') {
+        throw error;
+      }
+
+      await this.clearExpiredCheckoutSession(
+        payment.id,
+        stripeSessionId,
+      );
+
+      return {
+        status: 'canceled' as const,
+        orderId: null,
+      };
+    }
+
+    if (session.payment_status === 'paid') {
+      return finalizePaidSession(session);
+    }
+
+    if (session.status === 'open') {
+      try {
+        await this.stripe.checkout.sessions.expire(
+          stripeSessionId,
+        );
+      } catch (error) {
+        // El pago pudo completarse mientras intentábamos cancelarlo.
+        const latestSession =
+          await this.stripe.checkout.sessions.retrieve(
+            stripeSessionId,
+          );
+
+        if (latestSession.payment_status === 'paid') {
+          return finalizePaidSession(latestSession);
+        }
+
+        if (latestSession.status !== 'expired') {
+          throw error;
+        }
+      }
+    } else if (session.status === 'complete') {
+      throw new ConflictException(
+        `Estimate #${estimate.number} checkout completed, but payment confirmation is still pending.`,
+      );
+    } else if (session.status !== 'expired') {
+      throw new ConflictException(
+        `Estimate #${estimate.number} checkout cannot be canceled (status: ${session.status ?? 'UNKNOWN'
+        }).`,
+      );
+    }
+
+    await this.clearExpiredCheckoutSession(
+      payment.id,
+      stripeSessionId,
+    );
+
+    return {
+      status: 'canceled' as const,
+      orderId: null,
+    };
+  }
+
   async handleStripeWebhook(rawBody: Buffer, signature: string | undefined) {
     const secret = this.config.get<string>('STRIPE_WEBHOOK_SECRET');
     if (!secret) throw new Error('STRIPE_WEBHOOK_SECRET is not set in .env');

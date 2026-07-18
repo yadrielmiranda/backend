@@ -8,9 +8,9 @@ import { Public } from '@/auth/public.decorator';
 
 @Controller('payments')
 export class PaymentsController {
-  constructor(private readonly payments: PaymentsService) {}
+  constructor(private readonly payments: PaymentsService) { }
 
-  // 🔒 requiere login (guards globales ya aplican)
+  // requiere login (guards globales ya aplican)
   @Post('checkout-session')
   async createCheckoutSession(@Body() dto: CreateCheckoutSessionDto, @Req() req: Request) {
     const user = req.user as AuthUser;
@@ -21,7 +21,20 @@ export class PaymentsController {
     });
   }
 
-  // ✅ Webhook PUBLIC
+  @Post('checkout-session/cancel')
+  async cancelCheckoutSession(
+    @Body() dto: CreateCheckoutSessionDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthUser;
+
+    return this.payments.cancelCheckoutSessionForEstimate({
+      estimateId: dto.estimateId,
+      user,
+    });
+  }
+
+  // Webhook PUBLIC
   @Public()
   @Post('webhook')
   async webhook(
