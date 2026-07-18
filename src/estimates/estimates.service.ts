@@ -16,6 +16,7 @@ import {
   Order,
   BrandingType,
   Branding,
+  PaymentStatus,
 } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { UpsertPieceDto } from './dto/upsert-piece.dto';
@@ -89,16 +90,17 @@ type PieceWithRelations = Piece & {
   }> | null;
 };
 
-// ✅ incluimos order para que el front sepa si ya fue ordenado
+// incluyo order para que el front sepa si ya fue ordenado
 export type EstimateWithRelations = Estimate & {
   user: User;
   pieces: PieceWithRelations[];
   order?: Order | null;
-  status?: EstimateStatus | null; // ✅ tipado real, no any
-  branding?: Branding | null; // ✅ ya lo estabas retornando
+  status?: EstimateStatus | null;
+  payment?: Prisma.PaymentGetPayload<{}> | null;
+  branding?: Branding | null;
 };
 
-// ✅ vistas de PDF (las 4 de tu UI)
+// vistas de PDF (las 4 de tu UI)
 export type PdfView = 'client' | 'dealer_internal' | 'dealer_public' | 'admin';
 
 @Injectable()
@@ -282,6 +284,7 @@ export class EstimatesService {
         },
         status: true,
         order: true,
+        payment: true,
         pieces: {
           orderBy: { id: 'asc' },
           include: {
@@ -324,12 +327,17 @@ export class EstimatesService {
   private assertEstimateCanBeEdited(
     estimate: {
       id: number;
+      number: string;
       idUser: number;
       status?: {
         name: string;
       } | null;
       order?: {
         id: number;
+      } | null;
+      payment?: {
+        status: PaymentStatus;
+        stripeSessionId: string | null;
       } | null;
     } | null,
     estimateId: number,
@@ -343,14 +351,23 @@ export class EstimatesService {
 
     if (estimate.status?.name !== 'Active') {
       throw new BadRequestException(
-        `Estimate #${estimateId} cannot be edited because its status is ${estimate.status?.name ?? 'UNKNOWN'
+        `Estimate #${estimate.number} cannot be edited because its status is ${estimate.status?.name ?? 'UNKNOWN'
         }.`,
       );
     }
 
     if (estimate.order) {
       throw new BadRequestException(
-        `Estimate #${estimateId} already has an order and cannot be edited.`,
+        `Estimate #${estimate.number} already has an order and cannot be edited.`,
+      );
+    }
+
+    if (
+      estimate.payment?.status === PaymentStatus.PAID ||
+      estimate.payment?.stripeSessionId
+    ) {
+      throw new BadRequestException(
+        `Estimate #${estimate.number} cannot be edited because its payment process has already started.`,
       );
     }
   }
@@ -591,6 +608,21 @@ export class EstimatesService {
       where: {
         statusId: activeStatus.id,
         order: null,
+        OR: [
+          {
+            payment: null,
+          },
+          {
+            payment: {
+              is: {
+                status: {
+                  not: PaymentStatus.PAID,
+                },
+                stripeSessionId: null,
+              },
+            },
+          },
+        ],
         expiresAt: {
           lt: new Date(),
         },
@@ -632,7 +664,7 @@ export class EstimatesService {
 
     return {
       ...calculated,
-      muntin: calculated.muntin ?? null,      
+      muntin: calculated.muntin ?? null,
       highBottom: calculated.highBottom,
       highBottomPercent: calculated.highBottomPercent
         ? new Prisma.Decimal(calculated.highBottomPercent.toFixed(4))
@@ -693,6 +725,7 @@ export class EstimatesService {
         user: { include: { role: true } }, // ✅ NECESARIO para saber si es dealer
         status: true,
         order: true,
+        payment: true,
         pieces: {
           orderBy: { id: 'asc' },
           include: {
@@ -752,6 +785,7 @@ export class EstimatesService {
         },
         status: true,
         order: true,
+        payment: true,
       },
       orderBy: { date: 'desc' },
     });
@@ -1814,6 +1848,7 @@ export class EstimatesService {
           user: true,
           status: true,
           order: true,
+          payment: true,
           pieces: {
             orderBy: { id: 'asc' },
             include: {
@@ -1835,12 +1870,22 @@ export class EstimatesService {
         },
       });
 
+
       if (!beforeEstimate) {
         throw new NotFoundException(`Estimate #${estimateId} not found.`);
       }
 
       if (!isPrivileged(user) && beforeEstimate.idUser !== user.id) {
         throw new NotFoundException(`Estimate #${estimateId} not found.`);
+      }
+
+      if (
+        beforeEstimate.payment?.status === PaymentStatus.PAID ||
+        beforeEstimate.payment?.stripeSessionId
+      ) {
+        throw new BadRequestException(
+          `Estimate #${beforeEstimate.number} cannot be recalculated because its payment process has already started.`,
+        );
       }
 
       if (beforeEstimate.status?.name !== 'Expired') {
@@ -2176,6 +2221,7 @@ export class EstimatesService {
         include: {
           status: true,
           order: true,
+          payment: true,
           pieces: { orderBy: { id: 'asc' } },
         },
       });
@@ -2186,7 +2232,16 @@ export class EstimatesService {
 
       if (estimate.order) {
         throw new BadRequestException(
-          `Estimate #${where.id} already has an order and cannot be deleted.`,
+          `Estimate #${estimate.number} already has an order and cannot be deleted.`
+        );
+      }
+
+      if (
+        estimate.payment?.status === PaymentStatus.PAID ||
+        estimate.payment?.stripeSessionId
+      ) {
+        throw new BadRequestException(
+          `Estimate #${estimate.number} cannot be deleted because its payment process has already started.`,
         );
       }
 
@@ -2195,7 +2250,7 @@ export class EstimatesService {
       await tx.piece.deleteMany({ where: { idEst: where.id } });
       await tx.estimate.delete({ where: { id: where.id } });
 
-      // ✅ EventLog + TempLog (tu LogsService nuevo)
+      // EventLog + TempLog (tu LogsService nuevo)
       await this.logs.log({
         action: 'DELETE',
         entityType: 'Estimate',

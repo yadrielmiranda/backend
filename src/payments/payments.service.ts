@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
@@ -11,10 +12,13 @@ import Stripe from 'stripe';
 import { PaymentStatus, Prisma } from '@prisma/client';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { LogsService } from '@/logs/logs.service';
+import { Cron, CronExpression } from '@nestjs/schedule';
 
 @Injectable()
 export class PaymentsService {
   private stripe: Stripe;
+  private readonly logger = new Logger(PaymentsService.name);
+  private reconciliationInProgress = false;
 
   constructor(
     private prisma: PrismaService,
@@ -68,6 +72,53 @@ export class PaymentsService {
       return false;
     }
 
+    const estimate = payment.estimate;
+
+    // La orden ya fue creada anteriormente.
+    if (estimate.order) {
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: PaymentStatus.PAID,
+          stripePaymentIntentId:
+            paymentIntentId ?? payment.stripePaymentIntentId,
+        },
+      });
+
+      return true;
+    }
+
+    if (estimate.status?.name !== 'Active') {
+      return false;
+    }
+
+    const stripeAmountCents = session.amount_total;
+    const recordedAmountCents = Math.round(
+      Number(payment.amount) * 100,
+    );
+    const currentEstimateAmountCents = Math.round(
+      Number(estimate.totalPayable) * 100,
+    );
+
+    const stripeCurrency = String(
+      session.currency ?? '',
+    ).toLowerCase();
+
+    const recordedCurrency = String(
+      payment.currency,
+    ).toLowerCase();
+
+    if (
+      stripeAmountCents === null ||
+      stripeAmountCents !== recordedAmountCents ||
+      stripeAmountCents !== currentEstimateAmountCents ||
+      stripeCurrency !== recordedCurrency
+    ) {
+      throw new Error(
+        `Paid checkout amount mismatch for Estimate #${estimate.number}.`,
+      );
+    }
+
     await tx.payment.update({
       where: { id: payment.id },
       data: {
@@ -76,17 +127,6 @@ export class PaymentsService {
           paymentIntentId ?? payment.stripePaymentIntentId,
       },
     });
-
-    const estimate = payment.estimate;
-
-    // La orden ya fue creada anteriormente.
-    if (estimate.order) {
-      return true;
-    }
-
-    if (estimate.status?.name !== 'Active') {
-      return false;
-    }
 
     const pendingStatus = await tx.orderStatus.findUnique({
       where: { name: 'Pending' },
@@ -170,6 +210,124 @@ export class PaymentsService {
     });
 
     return true;
+  }
+
+  private async clearExpiredCheckoutSession(
+    paymentId: number,
+    stripeSessionId: string,
+  ): Promise<void> {
+    await this.prisma.payment.updateMany({
+      where: {
+        id: paymentId,
+        status: PaymentStatus.PENDING,
+        stripeSessionId,
+      },
+      data: {
+        stripeSessionId: null,
+      },
+    });
+  }
+
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async reconcilePendingCheckoutSessions(): Promise<void> {
+    if (this.reconciliationInProgress) {
+      return;
+    }
+
+    this.reconciliationInProgress = true;
+
+    try {
+      const pendingPayments =
+        await this.prisma.payment.findMany({
+          where: {
+            status: PaymentStatus.PENDING,
+            stripeSessionId: {
+              not: null,
+            },
+          },
+          select: {
+            id: true,
+            stripeSessionId: true,
+          },
+          orderBy: {
+            id: 'asc',
+          },
+        });
+
+      for (const payment of pendingPayments) {
+        const stripeSessionId = payment.stripeSessionId;
+
+        if (!stripeSessionId) {
+          continue;
+        }
+
+        try {
+          const session =
+            await this.stripe.checkout.sessions.retrieve(
+              stripeSessionId,
+            );
+
+          if (session.payment_status === 'paid') {
+            const processed =
+              await this.prisma.$transaction(async (tx) => {
+                return this.processPaidCheckoutSession(
+                  tx,
+                  session,
+                );
+              });
+
+            if (!processed) {
+              this.logger.warn(
+                `Paid Stripe session ${stripeSessionId} could not be converted into an order automatically.`,
+              );
+            }
+
+            continue;
+          }
+
+          if (session.status === 'expired') {
+            await this.clearExpiredCheckoutSession(
+              payment.id,
+              stripeSessionId,
+            );
+          }
+        } catch (error: unknown) {
+          const stripeError =
+            typeof error === 'object' && error !== null
+              ? (error as { code?: string })
+              : null;
+
+          if (stripeError?.code === 'resource_missing') {
+            await this.clearExpiredCheckoutSession(
+              payment.id,
+              stripeSessionId,
+            );
+
+            continue;
+          }
+
+          const message =
+            error instanceof Error
+              ? error.message
+              : String(error);
+
+          this.logger.error(
+            `Error reconciling Payment #${payment.id}: ${message}`,
+          );
+        }
+      }
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : String(error);
+
+      this.logger.error(
+        `Unable to load pending payments for reconciliation: ${message}`,
+      );
+    } finally {
+      this.reconciliationInProgress = false;
+    }
   }
 
   async createCheckoutSessionForEstimate(params: { estimateId: number; user: AuthUser }) {
