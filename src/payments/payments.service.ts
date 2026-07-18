@@ -36,6 +36,142 @@ export class PaymentsService {
     return String(frontendUrl).replace(/\/+$/, '');
   }
 
+  private async processPaidCheckoutSession(
+    tx: Prisma.TransactionClient,
+    session: Stripe.Checkout.Session,
+  ): Promise<boolean> {
+    // Nunca crea una orden si Stripe no confirma el pago.
+    if (session.payment_status !== 'paid') {
+      return false;
+    }
+
+    const stripeSessionId = session.id;
+
+    const paymentIntentId =
+      typeof session.payment_intent === 'string'
+        ? session.payment_intent
+        : null;
+
+    const payment = await tx.payment.findUnique({
+      where: { stripeSessionId },
+      include: {
+        estimate: {
+          include: {
+            order: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    if (!payment) {
+      return false;
+    }
+
+    await tx.payment.update({
+      where: { id: payment.id },
+      data: {
+        status: PaymentStatus.PAID,
+        stripePaymentIntentId:
+          paymentIntentId ?? payment.stripePaymentIntentId,
+      },
+    });
+
+    const estimate = payment.estimate;
+
+    // La orden ya fue creada anteriormente.
+    if (estimate.order) {
+      return true;
+    }
+
+    if (estimate.status?.name !== 'Active') {
+      return false;
+    }
+
+    const pendingStatus = await tx.orderStatus.findUnique({
+      where: { name: 'Pending' },
+      select: { id: true, name: true },
+    });
+
+    if (!pendingStatus) {
+      throw new Error('Order status "Pending" not seeded.');
+    }
+
+    const orderedStatus = await tx.estimateStatus.findUnique({
+      where: { name: 'Ordered' },
+      select: { id: true },
+    });
+
+    if (!orderedStatus) {
+      throw new Error('Estimate status "Ordered" not seeded.');
+    }
+
+    const lastOrder = await tx.order.findFirst({
+      orderBy: { id: 'desc' },
+    });
+
+    const newOrderNumber = `ORD-${(lastOrder?.id ?? 0) + 1001}`;
+
+    const createdOrder = await tx.order.create({
+      data: {
+        number: newOrderNumber,
+        units: estimate.units,
+
+        amount: estimate.totalPayable,
+        price: estimate.priceT,
+        rate: estimate.rateT,
+        netProfit: estimate.netProfit,
+
+        poNumber: null,
+        rateReal: null,
+        netProfitReal: null,
+
+        idEst: estimate.id,
+        statusId: pendingStatus.id,
+        userId: estimate.idUser,
+
+        paymentId: payment.id,
+      },
+      include: { status: true },
+    });
+
+    await tx.estimate.update({
+      where: { id: estimate.id },
+      data: {
+        status: {
+          connect: { id: orderedStatus.id },
+        },
+      },
+    });
+
+    await this.logsService.log({
+      action: 'CREATE',
+      entityType: 'Order',
+      entityId: createdOrder.id,
+      userId: estimate.idUser,
+      message: `Order #${createdOrder.number} created (paid via Stripe)`,
+      before: null,
+      after: {
+        id: createdOrder.id,
+        number: createdOrder.number,
+        statusId: createdOrder.statusId,
+        statusName: createdOrder.status?.name ?? 'Pending',
+        estimateId: createdOrder.idEst,
+        ownerUserId: createdOrder.userId,
+        amount: createdOrder.amount,
+      },
+      meta: {
+        actor: 'system/stripe',
+        responsibleUserId: estimate.idUser,
+        stripeSessionId,
+        paymentId: payment.id,
+        source: 'PaymentsService.processPaidCheckoutSession',
+      },
+    });
+
+    return true;
+  }
+
   async createCheckoutSessionForEstimate(params: { estimateId: number; user: AuthUser }) {
     const { estimateId, user } = params;
 
@@ -65,58 +201,76 @@ export class PaymentsService {
         );
       }
 
-      if (estimate.payment?.status === PaymentStatus.PAID) {
-        throw new ConflictException(`Estimate #${estimateId} is already paid.`);
-      }
+      const frontendUrl = this.getFrontendUrl();
 
-      if (
-        estimate.payment?.status === PaymentStatus.PENDING &&
-        estimate.payment?.stripeSessionId
-      ) {
+      const successUrl =
+        `${frontendUrl}/checkout/success?estimateId=${estimateId}`;
+
+      const cancelUrl =
+        `${frontendUrl}/checkout/cancel?estimateId=${estimateId}`;
+
+      if (estimate.payment?.stripeSessionId) {
         try {
           const existingSession =
             await this.stripe.checkout.sessions.retrieve(
               estimate.payment.stripeSessionId,
             );
 
-          if (
-            existingSession.payment_status === 'paid' ||
-            existingSession.status === 'complete'
-          ) {
-            throw new ConflictException(
-              `Estimate #${estimateId} payment was already completed and is being processed.`,
+          if (existingSession.payment_status === 'paid') {
+            const processed = await this.processPaidCheckoutSession(
+              tx,
+              existingSession,
             );
-          }
 
-          if (existingSession.status === 'open') {
-            if (!existingSession.url) {
+            if (!processed) {
               throw new BadRequestException(
-                'Stripe session is open but has no checkout URL.',
+                `Paid checkout for estimate #${estimate.number} could not be processed.`,
               );
             }
 
-            return { url: existingSession.url };
+            return { url: successUrl };
           }
 
-          if (existingSession.status !== 'expired') {
-            throw new ConflictException(
-              `Estimate #${estimateId} has a checkout session with status: ${existingSession.status ?? 'UNKNOWN'
-              }.`,
-            );
-          }
+          if (estimate.payment.status === PaymentStatus.PENDING) {
+            if (existingSession.status === 'open') {
+              if (!existingSession.url) {
+                throw new BadRequestException(
+                  'Stripe session is open but has no checkout URL.',
+                );
+              }
 
-          // Si expiró, continúa y crea una sesión nueva.
+              return { url: existingSession.url };
+            }
+
+            if (existingSession.status === 'complete') {
+              throw new ConflictException(
+                `Estimate #${estimate.number} checkout completed, but Stripe has not confirmed the payment.`,
+              );
+            }
+
+            if (existingSession.status !== 'expired') {
+              throw new ConflictException(
+                `Estimate #${estimate.number} has a checkout session with status: ${existingSession.status ?? 'UNKNOWN'
+                }.`,
+              );
+            }
+          }
         } catch (error: unknown) {
           const stripeError =
             typeof error === 'object' && error !== null
               ? (error as { code?: string })
               : null;
 
-          // Si la sesión ya no existe en Stripe, continúa y crea una nueva.
           if (stripeError?.code !== 'resource_missing') {
             throw error;
           }
         }
+      }
+
+      if (estimate.payment?.status === PaymentStatus.PAID) {
+        throw new ConflictException(
+          `Estimate #${estimate.number} is already paid.`,
+        );
       }
 
       const amount = Number(estimate.totalPayable);
@@ -125,13 +279,6 @@ export class PaymentsService {
       }
 
       const amountCents = Math.round(amount * 100);
-      const frontendUrl = this.getFrontendUrl();
-
-      const successUrl =
-        `${frontendUrl}/checkout/success?estimateId=${estimateId}`;
-
-      const cancelUrl =
-        `${frontendUrl}/checkout/cancel?estimateId=${estimateId}`;
 
       const payment = await tx.payment.upsert({
         where: { idEst: estimateId },
@@ -206,106 +353,8 @@ export class PaymentsService {
     }
 
     const session = event.data.object as Stripe.Checkout.Session;
-    const stripeSessionId = session.id;
-
-    const paymentIntentId =
-      typeof session.payment_intent === 'string' ? session.payment_intent : null;
-
     await this.prisma.$transaction(async (tx) => {
-      const payment = await tx.payment.findUnique({
-        where: { stripeSessionId },
-        include: { estimate: { include: { order: true, status: true } } },
-      });
-
-      if (!payment) return;
-      if (payment.status === PaymentStatus.PAID) return;
-
-      const updatedPayment = await tx.payment.update({
-        where: { id: payment.id },
-        data: {
-          status: PaymentStatus.PAID,
-          stripePaymentIntentId: paymentIntentId ?? payment.stripePaymentIntentId,
-        },
-      });
-
-      const estimate = payment.estimate;
-
-      if (estimate.order) return;
-      if (estimate.status?.name !== 'Active') return;
-
-      const pendingStatus = await tx.orderStatus.findUnique({
-        where: { name: 'Pending' },
-        select: { id: true, name: true },
-      });
-      if (!pendingStatus) throw new Error('Order status "Pending" not seeded.');
-
-      const ordered = await tx.estimateStatus.findUnique({
-        where: { name: 'Ordered' },
-        select: { id: true },
-      });
-      if (!ordered) throw new Error('Estimate status "Ordered" not seeded.');
-
-      const lastOrder = await tx.order.findFirst({ orderBy: { id: 'desc' } });
-      const newOrderNumber = `ORD-${(lastOrder?.id ?? 0) + 1001}`;
-
-      //  CAPTURAMOS LA ORDEN CREADA
-      const createdOrder = await tx.order.create({
-        data: {
-          number: newOrderNumber,
-          units: estimate.units,
-
-          amount: estimate.totalPayable,
-          price: estimate.priceT,
-          rate: estimate.rateT,
-          netProfit: estimate.netProfit,
-
-          poNumber: null,
-          rateReal: null,
-          netProfitReal: null,
-
-          idEst: estimate.id,
-          statusId: pendingStatus.id,
-          userId: estimate.idUser,
-
-          paymentId: updatedPayment.id,
-        },
-        include: { status: true },
-      });
-
-      await tx.estimate.update({
-        where: { id: estimate.id },
-        data: { status: { connect: { id: ordered.id } } },
-      });
-
-      // 
-      await this.logsService.log({
-        action: 'CREATE',
-        entityType: 'Order',
-        entityId: createdOrder.id,
-
-        // responsable / owner del estimate
-        userId: estimate.idUser,
-
-        message: `Order #${createdOrder.number} created (paid via Stripe)`,
-        before: null,
-        after: {
-          id: createdOrder.id,
-          number: createdOrder.number,
-          statusId: createdOrder.statusId,
-          statusName: createdOrder.status?.name ?? 'Pending',
-          estimateId: createdOrder.idEst,
-          ownerUserId: createdOrder.userId,
-          amount: createdOrder.amount,
-        },
-        meta: {
-          actor: 'system/stripe-webhook', // quién lo ejecutó técnicamente
-          responsibleUserId: estimate.idUser, // explícito (por si en el futuro cambia la lógica)
-          stripeSessionId,
-          paymentId: updatedPayment.id,
-          source: 'PaymentsService.handleStripeWebhook',
-        },
-      });
-
+      await this.processPaidCheckoutSession(tx, session);
     });
 
     return { received: true };
