@@ -212,18 +212,23 @@ export class PaymentsService {
     return true;
   }
 
-  private async clearExpiredCheckoutSession(
+  private async closeUnpaidCheckoutSession(
     paymentId: number,
     stripeSessionId: string,
+    finalStatus: PaymentStatus,
   ): Promise<void> {
     await this.prisma.payment.updateMany({
       where: {
         id: paymentId,
-        status: PaymentStatus.PENDING,
+        status: {
+          not: PaymentStatus.PAID,
+        },
         stripeSessionId,
       },
       data: {
+        status: finalStatus,
         stripeSessionId: null,
+        stripePaymentIntentId: null,
       },
     });
   }
@@ -286,9 +291,10 @@ export class PaymentsService {
           }
 
           if (session.status === 'expired') {
-            await this.clearExpiredCheckoutSession(
+            await this.closeUnpaidCheckoutSession(
               payment.id,
               stripeSessionId,
+              PaymentStatus.EXPIRED,
             );
           }
         } catch (error: unknown) {
@@ -298,9 +304,10 @@ export class PaymentsService {
               : null;
 
           if (stripeError?.code === 'resource_missing') {
-            await this.clearExpiredCheckoutSession(
+            await this.closeUnpaidCheckoutSession(
               payment.id,
               stripeSessionId,
+              PaymentStatus.EXPIRED,
             );
 
             continue;
@@ -580,9 +587,10 @@ export class PaymentsService {
         throw error;
       }
 
-      await this.clearExpiredCheckoutSession(
+      await this.closeUnpaidCheckoutSession(
         payment.id,
         stripeSessionId,
+        PaymentStatus.CANCELED,
       );
 
       return {
@@ -626,9 +634,10 @@ export class PaymentsService {
       );
     }
 
-    await this.clearExpiredCheckoutSession(
+    await this.closeUnpaidCheckoutSession(
       payment.id,
       stripeSessionId,
+      PaymentStatus.CANCELED,
     );
 
     return {
