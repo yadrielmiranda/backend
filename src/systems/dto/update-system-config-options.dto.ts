@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { ArrayUnique, IsArray, IsBoolean, IsEnum, IsInt, IsOptional } from 'class-validator';
+import { ArrayUnique, IsArray, IsBoolean, IsEnum, IsInt, IsNumber, IsOptional, Min } from 'class-validator';
 import { DimensionMode } from '@prisma/client';
 
 export class UpdateSystemConfigOptionsDto {
@@ -50,6 +50,12 @@ export class UpdateSystemConfigOptionsDto {
   @IsOptional()
   @IsEnum(DimensionMode)
   dimensionMode?: DimensionMode;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 3 })
+  @Min(0.001)
+  minimumBillableHeightIn?: number | null;
 
   @IsOptional()
   @IsBoolean()

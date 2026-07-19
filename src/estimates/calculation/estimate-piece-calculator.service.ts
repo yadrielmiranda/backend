@@ -266,6 +266,7 @@ export class EstimatePieceCalculatorService {
                     isSelectableInEstimate: true,
                     allowScreen: true,
                     dimensionMode: true,
+                    minimumBillableHeightIn: true,
 
                     requiresWidth: true,
                     requiresHeight: true,
@@ -287,6 +288,7 @@ export class EstimatePieceCalculatorService {
                             quantity: true,
                             sourceSysConf: {
                                 select: {
+                                    minimumBillableHeightIn: true,
                                     config: {
                                         select: {
                                             conf: true,
@@ -675,6 +677,30 @@ export class EstimatePieceCalculatorService {
         const dimensionMode: DimensionMode =
             sysConf.dimensionMode ?? DimensionMode.STANDARD;
 
+        const resolveBillableHeight = (
+            actualHeight: Decimal,
+            minimumHeightValue: unknown,
+        ): Decimal => {
+            if (
+                minimumHeightValue == null ||
+                minimumHeightValue === ''
+            ) {
+                return actualHeight;
+            }
+
+            const minimumHeight = new Decimal(
+                String(minimumHeightValue),
+            );
+
+            if (!minimumHeight.isFinite() || minimumHeight.lte(0)) {
+                throw new BadRequestException(
+                    'Minimum billable height must be greater than zero.',
+                );
+            }
+
+            return Decimal.max(actualHeight, minimumHeight);
+        };
+
         const isBlank = (value: unknown) => value == null || value === '';
 
         const requireField = (
@@ -986,18 +1012,31 @@ export class EstimatePieceCalculatorService {
                 tx as any,
             );
 
+        const directPricingHeight =
+            dimensionMode === DimensionMode.STANDARD
+                ? pieceDto.height == null
+                    ? pieceDto.height
+                    : resolveBillableHeight(
+                        new Decimal(String(pieceDto.height)),
+                        sysConf.minimumBillableHeightIn,
+                    ).toString()
+                : resolveBillableHeight(
+                    new Decimal(String(governingDims.heightIn)),
+                    sysConf.minimumBillableHeightIn,
+                ).toString();
+
         const dimsFt =
             dimensionMode === DimensionMode.STANDARD
                 ? dimsInchesToFeet({
                     width: pieceDto.width,
-                    height: pieceDto.height,
+                    height: directPricingHeight,
                     heightLeft: pieceDto.heightLeft,
                     heightRight: pieceDto.heightRight,
                     legHeight: pieceDto.legHeight,
                 })
                 : dimsInchesToFeet({
                     width: String(governingDims.widthIn),
-                    height: String(governingDims.heightIn),
+                    height: directPricingHeight,
                 });
 
         const dpCheck =
@@ -1118,9 +1157,14 @@ export class EstimatePieceCalculatorService {
                     cache,
                 );
 
+                const billableHeightIn = resolveBillableHeight(
+                    heightIn,
+                    component.sourceSysConf.minimumBillableHeightIn,
+                );
+
                 const componentDimsFt = dimsInchesToFeet({
                     width: widthIn.toString(),
-                    height: heightIn.toString(),
+                    height: billableHeightIn.toString(),
                 });
 
                 const componentGeometry = areaPerimeterFor(

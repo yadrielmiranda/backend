@@ -461,6 +461,7 @@ export class SystemsService {
       isSelectableInEstimate: sysConf.isSelectableInEstimate,
 
       dimensionMode: sysConf.dimensionMode,
+      minimumBillableHeightIn: sysConf.minimumBillableHeightIn,
       requiresWidth: sysConf.requiresWidth,
       requiresHeight: sysConf.requiresHeight,
       requiresHeightLeft: sysConf.requiresHeightLeft,
@@ -665,6 +666,7 @@ export class SystemsService {
       isSelectableInEstimate: sysConf.isSelectableInEstimate,
 
       dimensionMode: sysConf.dimensionMode,
+      minimumBillableHeightIn: sysConf.minimumBillableHeightIn,
       requiresWidth: sysConf.requiresWidth,
       requiresHeight: sysConf.requiresHeight,
       requiresHeightLeft: sysConf.requiresHeightLeft,
@@ -926,6 +928,17 @@ export class SystemsService {
           : {}),
       };
 
+    const minimumBillableHeightUpdateData = isLinearMaterial
+      ? {
+        minimumBillableHeightIn: null,
+      }
+      : data.minimumBillableHeightIn !== undefined
+        ? {
+          minimumBillableHeightIn:
+            data.minimumBillableHeightIn,
+        }
+        : {};
+
     await this.prisma.$transaction(async (tx) => {
       await tx.sysConfActiveOption.deleteMany({
         where: {
@@ -1022,6 +1035,7 @@ export class SystemsService {
             : {}),
 
           ...dimensionUpdateData,
+          ...minimumBillableHeightUpdateData,
         },
       });
     });

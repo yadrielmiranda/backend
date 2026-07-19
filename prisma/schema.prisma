@@ -320,6 +320,7 @@ model SysConf {
   isSelectableInEstimate Boolean       @default(true)
   sortOrder              Int           @default(0)
   dimensionMode          DimensionMode @default(STANDARD)
+  minimumBillableHeightIn Decimal? @db.Decimal(10, 3)
 
   requiresWidth       Boolean @default(false)
   requiresHeight      Boolean @default(false)
