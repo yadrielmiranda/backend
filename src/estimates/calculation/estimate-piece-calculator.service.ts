@@ -790,14 +790,6 @@ export class EstimatePieceCalculatorService {
                 'panelCount',
                 (pieceDto as any).panelCount,
             );
-
-            if (
-                sysConf.requiresHorizontalHeights &&
-                (!Array.isArray((pieceDto as any).horizontalHeights) ||
-                    (pieceDto as any).horizontalHeights.length === 0)
-            ) {
-                missing.push('horizontalHeights');
-            }
         }
 
         if (missing.length) {
@@ -833,16 +825,11 @@ export class EstimatePieceCalculatorService {
 
         if (
             dimensionMode === DimensionMode.WINDOW_WALL &&
-            sysConf.requiresHorizontalHeights
+            sysConf.requiresHorizontalHeights &&
+            Array.isArray((pieceDto as any).horizontalHeights) &&
+            (pieceDto as any).horizontalHeights.length > 0
         ) {
             const horizontalHeightsRaw = (pieceDto as any).horizontalHeights;
-
-            if (
-                !Array.isArray(horizontalHeightsRaw) ||
-                horizontalHeightsRaw.length === 0
-            ) {
-                throw new BadRequestException("Horizontal Heights are required.");
-            }
 
             const totalHeightForHorizontals = Number((pieceDto as any).height || 0);
 
