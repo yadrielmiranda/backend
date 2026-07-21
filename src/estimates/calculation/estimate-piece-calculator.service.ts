@@ -105,7 +105,7 @@ export class EstimatePieceCalculatorService {
   constructor(
     private dimensionValidationService: EstimateDimensionValidationService,
     private muntinService: EstimateMuntinService,
-  ) {}
+  ) { }
 
   createCalculationCache(): CalculationCache {
     return {
@@ -567,8 +567,8 @@ export class EstimatePieceCalculatorService {
 
       const customerPriceR = qtyDec.gt(0)
         ? customerSubtotalR
-            .div(qtyDec)
-            .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+          .div(qtyDec)
+          .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
         : new Decimal(0);
 
       const result: CalculatedPieceCombined = {
@@ -687,8 +687,8 @@ export class EstimatePieceCalculatorService {
       highBottomSettings.brandProduct?.brand?.highBottomPercent == null
         ? null
         : new Decimal(
-            highBottomSettings.brandProduct.brand.highBottomPercent.toString(),
-          );
+          highBottomSettings.brandProduct.brand.highBottomPercent.toString(),
+        );
 
     if (highBottom && !highBottomSettings.allowHighBottom) {
       throw new BadRequestException(
@@ -1117,32 +1117,53 @@ export class EstimatePieceCalculatorService {
         tx as any,
       );
 
+    const windowWallPanelCount =
+      dimensionMode === DimensionMode.WINDOW_WALL
+        ? Number((pieceDto as any).panelCount)
+        : 1;
+
+    if (
+      !Number.isInteger(windowWallPanelCount) ||
+      windowWallPanelCount < 1
+    ) {
+      throw new BadRequestException(
+        "Panel Count must be a whole number greater than zero.",
+      );
+    }
+
+    const directPricingWidthIn =
+      dimensionMode === DimensionMode.WINDOW_WALL
+        ? new Decimal(String(governingDims.widthIn)).div(
+          windowWallPanelCount,
+        )
+        : new Decimal(String(governingDims.widthIn));
+
     const directPricingHeight =
       dimensionMode === DimensionMode.STANDARD
         ? pieceDto.height == null
           ? pieceDto.height
           : resolveBillableHeight(
-              new Decimal(String(pieceDto.height)),
-              sysConf.minimumBillableHeightIn,
-            ).toString()
-        : resolveBillableHeight(
-            new Decimal(String(governingDims.heightIn)),
+            new Decimal(String(pieceDto.height)),
             sysConf.minimumBillableHeightIn,
-          ).toString();
+          ).toString()
+        : resolveBillableHeight(
+          new Decimal(String(governingDims.heightIn)),
+          sysConf.minimumBillableHeightIn,
+        ).toString();
 
     const dimsFt =
       dimensionMode === DimensionMode.STANDARD
         ? dimsInchesToFeet({
-            width: pieceDto.width,
-            height: directPricingHeight,
-            heightLeft: pieceDto.heightLeft,
-            heightRight: pieceDto.heightRight,
-            legHeight: pieceDto.legHeight,
-          })
+          width: pieceDto.width,
+          height: directPricingHeight,
+          heightLeft: pieceDto.heightLeft,
+          heightRight: pieceDto.heightRight,
+          legHeight: pieceDto.legHeight,
+        })
         : dimsInchesToFeet({
-            width: String(governingDims.widthIn),
-            height: directPricingHeight,
-          });
+          width: directPricingWidthIn.toString(),
+          height: directPricingHeight,
+        });
 
     const dpCheck =
       await this.dimensionValidationService.validateAgainstDimensionPolicy(
@@ -1153,7 +1174,7 @@ export class EstimatePieceCalculatorService {
       if (dpCheck.reason === "NOT_RATED") {
         throw new BadRequestException(
           dpCheck.note ??
-            "No dimension policy exists for this System + Config + Crystal combination.",
+          "No dimension policy exists for this System + Config + Crystal combination.",
         );
       }
 
@@ -1198,7 +1219,7 @@ export class EstimatePieceCalculatorService {
 
     if (pricingComponents.length === 0) {
       // Los rangos se evalúan con las dimensiones facturables.
-      const pricingWidthIn = new Decimal(String(governingDims.widthIn));
+      const pricingWidthIn = directPricingWidthIn;
 
       const pricingHeightIn = resolveBillableHeight(
         new Decimal(String(governingDims.heightIn)),
@@ -1219,13 +1240,20 @@ export class EstimatePieceCalculatorService {
       const B = new Decimal(rule.costoB.toString());
       const C = new Decimal(rule.costoC.toString());
 
-      baseRate = computeBasePrice(
+      const directBaseRate = computeBasePrice(
         new Decimal(areaFt2),
         new Decimal(perimeterFt),
         A,
         B,
         C,
       );
+
+      baseRate =
+        dimensionMode === DimensionMode.WINDOW_WALL
+          ? directBaseRate
+            .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+            .mul(windowWallPanelCount)
+          : directBaseRate;
     } else {
       // Cada componente se redondea a centavos antes de sumarlo.
       const componentPrices: Decimal[] = [];
