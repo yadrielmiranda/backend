@@ -18,6 +18,7 @@ import { ConfigSModule } from './config-s/config-s.module';
 import { RolesModule } from './roles/roles.module';
 import { OrdersModule } from './orders/orders.module';
 import { PricingRulesModule } from './pricing-rules/pricing-rules.module';
+import { PricingRangesModule } from './pricing-ranges/pricing-ranges.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { GlobalParametersModule } from './global-parameters/global-parameters.module';
 import { DimensionPoliciesModule } from './dimension-policies/dimension-policies.module';
@@ -38,7 +39,6 @@ import { ReinforcementOptionsModule } from './reinforcement-options/reinforcemen
 import { ConfigCategoriesModule } from './config-categories/config-categories.module';
 import { LinearPricingRulesModule } from "./linear-pricing-rules/linear-pricing-rules.module";
 import { ScheduleModule } from '@nestjs/schedule';
-
 
 @Module({
   imports: [
@@ -63,6 +63,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     RolesModule,
     OrdersModule,
     PricingRulesModule,
+    PricingRangesModule,
     NotificationsModule,
     GlobalParametersModule,
     DimensionPoliciesModule,

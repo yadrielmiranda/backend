@@ -312,15 +312,15 @@ enum PricingComponentType {
 }
 
 model SysConf {
-  system                 System        @relation(fields: [idSystem], references: [id])
-  idSystem               Int
-  config                 Config        @relation(fields: [idConfig], references: [id])
-  idConfig               Int
-  allowScreen            Boolean       @default(false)
-  isSelectableInEstimate Boolean       @default(true)
-  sortOrder              Int           @default(0)
-  dimensionMode          DimensionMode @default(STANDARD)
-  minimumBillableHeightIn Decimal? @db.Decimal(10, 3)
+  system                  System        @relation(fields: [idSystem], references: [id])
+  idSystem                Int
+  config                  Config        @relation(fields: [idConfig], references: [id])
+  idConfig                Int
+  allowScreen             Boolean       @default(false)
+  isSelectableInEstimate  Boolean       @default(true)
+  sortOrder               Int           @default(0)
+  dimensionMode           DimensionMode @default(STANDARD)
+  minimumBillableHeightIn Decimal?      @db.Decimal(10, 3)
 
   requiresWidth       Boolean @default(false)
   requiresHeight      Boolean @default(false)
@@ -352,6 +352,7 @@ model SysConf {
   dimensionPolicies   DimensionPolicy[]         @relation("SysConfDimensionPolicies")
   pricingComponents   SysConfPricingComponent[] @relation("SysConfPricingComponentParent")
   usedAsPricingSource SysConfPricingComponent[] @relation("SysConfPricingComponentSource")
+  pricingRanges       PricingRange[]            @relation("SysConfPricingRanges")
 
   activeOptions        SysConfActiveOption[]
   preparationOptions   SysConfPreparationOption[]
@@ -546,9 +547,10 @@ model Crystal {
 
   pieces            Piece[]
   pricingRules      PricingRule[]
-  dimensionPolicies DimensionPolicy[] @relation("CrystalDimensionPolicies")
+  pricingRangeRules PricingRangeRule[] @relation("CrystalPricingRangeRules")
+  dimensionPolicies DimensionPolicy[]  @relation("CrystalDimensionPolicies")
   systemCrystals    SystemCrystal[]
-  defaultForSystems System[]          @relation("SystemDefaultCrystal")
+  defaultForSystems System[]           @relation("SystemDefaultCrystal")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -688,6 +690,59 @@ model PricingRule {
 
   @@unique([idBrand, idProduct, idSystem, idConfig, idCrystal], map: "unique_pricing_rule_combination")
   @@map("pricing_rules")
+}
+
+model PricingRange {
+  id Int @id @default(autoincrement())
+
+  idSystem Int
+  idConfig Int
+
+  code String @db.VarChar(30)
+
+  minWidthIn        Decimal? @db.Decimal(10, 3)
+  minWidthInclusive Boolean  @default(true)
+  maxWidthIn        Decimal? @db.Decimal(10, 3)
+  maxWidthInclusive Boolean  @default(true)
+
+  minHeightIn        Decimal? @db.Decimal(10, 3)
+  minHeightInclusive Boolean  @default(true)
+  maxHeightIn        Decimal? @db.Decimal(10, 3)
+  maxHeightInclusive Boolean  @default(true)
+
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sysConf SysConf            @relation("SysConfPricingRanges", fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
+  rules   PricingRangeRule[]
+
+  @@unique([idSystem, idConfig, code], map: "uq_pricing_range_sysconf_code")
+  @@index([idSystem, idConfig, isActive], map: "idx_pricing_range_sysconf_active")
+  @@map("pricing_ranges")
+}
+
+model PricingRangeRule {
+  id Int @id @default(autoincrement())
+
+  rangeId   Int
+  idCrystal Int
+
+  costoA Decimal @db.Decimal(24, 20)
+  costoB Decimal @db.Decimal(24, 20)
+  costoC Decimal @db.Decimal(24, 20)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  range   PricingRange @relation(fields: [rangeId], references: [id], onDelete: Cascade)
+  crystal Crystal      @relation("CrystalPricingRangeRules", fields: [idCrystal], references: [id], onDelete: Restrict)
+
+  @@unique([rangeId, idCrystal], map: "uq_pricing_range_rule_range_crystal")
+  @@index([idCrystal], map: "idx_pricing_range_rule_crystal")
+  @@map("pricing_range_rules")
 }
 
 model LinearPricingRule {
