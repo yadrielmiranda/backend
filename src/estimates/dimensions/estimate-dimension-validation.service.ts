@@ -759,23 +759,12 @@ export class EstimateDimensionValidationService {
     const widthValues = uniqueSorted(rules.map((r: any) => Number(r.widthIn)));
     const heightValues = uniqueSorted(rules.map((r: any) => Number(r.heightIn)));
 
-    const pickNextValidRule = (widthIn: number, heightIn: number) =>
-      rules
-        .filter(
-          (candidate: any) =>
-            Number(candidate.widthIn) >= widthIn &&
-            Number(candidate.heightIn) >= heightIn,
-        )
-        .sort((a: any, b: any) => {
-          const widthDifference =
-            Number(a.widthIn) - Number(b.widthIn);
-
-          if (widthDifference !== 0) {
-            return widthDifference;
-          }
-
-          return Number(a.heightIn) - Number(b.heightIn);
-        })[0] ?? null;
+    const nextOrSame = (values: number[], v: number): number | null => {
+      for (const val of values) {
+        if (val >= v) return val;
+      }
+      return null;
+    };
 
     const nearest = (values: number[], v: number): number | null => {
       if (!values.length) return null;
@@ -799,7 +788,15 @@ export class EstimateDimensionValidationService {
 
     if (!rule) {
       if (policy.roundingRule === 'ROUND_UP_TO_NEXT') {
-        rule = pickNextValidRule(check.widthIn, check.heightIn);
+        const wNext = nextOrSame(widthValues, check.widthIn);
+        const hNext = nextOrSame(heightValues, check.heightIn);
+
+        if (wNext != null && hNext != null) {
+          rule = pickExactRule(wNext, hNext);
+          if (!rule) {
+            suggestion = { maxWidthIn: wNext, maxHeightIn: hNext };
+          }
+        }
       } else {
         const wNear = nearest(widthValues, check.widthIn);
         const hNear = nearest(heightValues, check.heightIn);
