@@ -19,17 +19,26 @@ import type { AuthUser } from "@/auth/types/auth-user.type";
 import { PricingRangesService } from "./pricing-ranges.service";
 import { CreatePricingRangeDto } from "./dto/create-pricing-range.dto";
 import { FindPricingRangesQueryDto } from "./dto/find-pricing-ranges-query.dto";
+import { AvailablePricingRangeCrystalsQueryDto } from "./dto/available-pricing-range-crystals-query.dto";
 import { UpdatePricingRangeDto } from "./dto/update-pricing-range.dto";
 import { UpsertPricingRangeRuleDto } from "./dto/upsert-pricing-range-rule.dto";
 
 @Controller("pricing-ranges")
 export class PricingRangesController {
-  constructor(private readonly pricingRangesService: PricingRangesService) {}
+  constructor(private readonly pricingRangesService: PricingRangesService) { }
 
   @Get()
   @Roles("admin", "operator")
   findAll(@Query() query: FindPricingRangesQueryDto) {
     return this.pricingRangesService.findAll(query);
+  }
+
+  @Get("available-crystals")
+  @Roles("admin", "operator")
+  findAvailableCrystals(
+    @Query() query: AvailablePricingRangeCrystalsQueryDto,
+  ) {
+    return this.pricingRangesService.findAvailableCrystals(query);
   }
 
   @Get(":id")

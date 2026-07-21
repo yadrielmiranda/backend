@@ -13,6 +13,7 @@ import { getRoleName } from "@/auth/utils/get-role-name";
 
 import { CreatePricingRangeDto } from "./dto/create-pricing-range.dto";
 import { FindPricingRangesQueryDto } from "./dto/find-pricing-ranges-query.dto";
+import { AvailablePricingRangeCrystalsQueryDto } from "./dto/available-pricing-range-crystals-query.dto";
 import { UpdatePricingRangeDto } from "./dto/update-pricing-range.dto";
 import { UpsertPricingRangeRuleDto } from "./dto/upsert-pricing-range-rule.dto";
 
@@ -35,7 +36,7 @@ export class PricingRangesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly logs: LogsService,
-  ) {}
+  ) { }
 
   private async validateTarget(
     idSystem: number,
@@ -103,6 +104,45 @@ export class PricingRangesService {
         "Component-priced configurations cannot have direct pricing ranges.",
       );
     }
+  }
+
+  async findAvailableCrystals(
+    query: AvailablePricingRangeCrystalsQueryDto,
+  ) {
+    await this.validateTarget(query.idSystem, query.idConfig);
+
+    const systemCrystals = await this.prisma.systemCrystal.findMany({
+      where: {
+        idSystem: query.idSystem,
+        crystal: {
+          is: {
+            isActive: true,
+          },
+        },
+      },
+      select: {
+        sortOrder: true,
+        crystal: {
+          select: {
+            id: true,
+            glass: true,
+            isActive: true,
+          },
+        },
+      },
+    });
+
+    return systemCrystals
+      .sort((a, b) => {
+        const orderDifference = a.sortOrder - b.sortOrder;
+
+        if (orderDifference !== 0) {
+          return orderDifference;
+        }
+
+        return a.crystal.glass.localeCompare(b.crystal.glass);
+      })
+      .map((item) => item.crystal);
   }
 
   private parseDimension(
@@ -660,8 +700,8 @@ export class PricingRangesService {
         : `PricingRangeRule created (#${saved.id})`,
       ...(existing
         ? {
-            before: this.toRuleSnapshot(existing),
-          }
+          before: this.toRuleSnapshot(existing),
+        }
         : {}),
       after: this.toRuleSnapshot(savedFull ?? saved),
       meta: {
@@ -885,11 +925,11 @@ export class PricingRangesService {
           dto.rules !== undefined
             ? this.normalizeRules(dto.rules)
             : before.rules.map((rule) => ({
-                idCrystal: rule.idCrystal,
-                costoA: rule.costoA,
-                costoB: rule.costoB,
-                costoC: rule.costoC,
-              }));
+              idCrystal: rule.idCrystal,
+              costoA: rule.costoA,
+              costoB: rule.costoB,
+              costoC: rule.costoC,
+            }));
 
         if (rules.length === 0) {
           throw new BadRequestException(
@@ -925,8 +965,8 @@ export class PricingRangesService {
           data: {
             ...(dto.code !== undefined
               ? {
-                  code: dto.code.trim().toUpperCase(),
-                }
+                code: dto.code.trim().toUpperCase(),
+              }
               : {}),
 
             ...(dto.minWidthIn !== undefined
@@ -935,8 +975,8 @@ export class PricingRangesService {
 
             ...(dto.minWidthInclusive !== undefined
               ? {
-                  minWidthInclusive: dto.minWidthInclusive,
-                }
+                minWidthInclusive: dto.minWidthInclusive,
+              }
               : {}),
 
             ...(dto.maxWidthIn !== undefined
@@ -945,32 +985,32 @@ export class PricingRangesService {
 
             ...(dto.maxWidthInclusive !== undefined
               ? {
-                  maxWidthInclusive: dto.maxWidthInclusive,
-                }
+                maxWidthInclusive: dto.maxWidthInclusive,
+              }
               : {}),
 
             ...(dto.minHeightIn !== undefined
               ? {
-                  minHeightIn: bounds.minHeightIn,
-                }
+                minHeightIn: bounds.minHeightIn,
+              }
               : {}),
 
             ...(dto.minHeightInclusive !== undefined
               ? {
-                  minHeightInclusive: dto.minHeightInclusive,
-                }
+                minHeightInclusive: dto.minHeightInclusive,
+              }
               : {}),
 
             ...(dto.maxHeightIn !== undefined
               ? {
-                  maxHeightIn: bounds.maxHeightIn,
-                }
+                maxHeightIn: bounds.maxHeightIn,
+              }
               : {}),
 
             ...(dto.maxHeightInclusive !== undefined
               ? {
-                  maxHeightInclusive: dto.maxHeightInclusive,
-                }
+                maxHeightInclusive: dto.maxHeightInclusive,
+              }
               : {}),
 
             ...(dto.sortOrder !== undefined
