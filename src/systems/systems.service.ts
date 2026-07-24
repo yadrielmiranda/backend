@@ -1074,8 +1074,6 @@ export class SystemsService {
           idSystem: true,
           idConfig: true,
           dimensionMode: true,
-          requiresHeight: true,
-          requiresDoorHeight: true,
           system: {
             select: {
               brandProduct: {
@@ -1156,19 +1154,6 @@ export class SystemsService {
       ) {
         throw new BadRequestException(
           "Sidelite Quantity is only configurable for Eco Windows door systems.",
-        );
-      }
-
-      const hasTransom = data.components.some(
-        (component) => component.componentType === PricingComponentType.TRANSOM,
-      );
-
-      if (
-        hasTransom &&
-        (!parentSysConf.requiresHeight || !parentSysConf.requiresDoorHeight)
-      ) {
-        throw new BadRequestException(
-          "Transom component pricing requires Height and Door Height.",
         );
       }
 

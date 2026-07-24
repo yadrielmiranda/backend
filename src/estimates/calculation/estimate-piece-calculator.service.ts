@@ -100,6 +100,8 @@ type NormalizedEstimateTotalsPiece = {
   dealerMarkupDecimal: Decimal;
 };
 
+const MIN_TRANSOM_HEIGHT_IN = new Decimal(10);
+
 @Injectable()
 export class EstimatePieceCalculatorService {
   constructor(
@@ -1093,7 +1095,7 @@ export class EstimatePieceCalculatorService {
     const doorHeightRaw = (pieceDto as any).doorHeight;
     const openingHeightRaw = pieceDto.height;
 
-    if (!isBlank(doorHeightRaw)) {
+    if (sysConf.requiresDoorHeight && !isBlank(doorHeightRaw)) {
       const doorHeight = new Decimal(String(doorHeightRaw));
 
       if (doorHeight.lte(0)) {
@@ -1102,10 +1104,11 @@ export class EstimatePieceCalculatorService {
 
       if (!isBlank(openingHeightRaw)) {
         const openingHeight = new Decimal(String(openingHeightRaw));
+        const transomHeight = openingHeight.minus(doorHeight);
 
-        if (doorHeight.gt(openingHeight)) {
+        if (transomHeight.lt(MIN_TRANSOM_HEIGHT_IN)) {
           throw new BadRequestException(
-            "Door Height cannot be greater than Opening Height.",
+            `Transom Height (Opening Height - Door Height) must be at least ${MIN_TRANSOM_HEIGHT_IN.toString()} inches.`,
           );
         }
       }
@@ -1218,6 +1221,7 @@ export class EstimatePieceCalculatorService {
     let baseRate: Decimal;
 
     if (pricingComponents.length === 0) {
+      // XT/XXT se cotiza aquí como una sola pieza con Width + Opening Height.
       // Los rangos se evalúan con las dimensiones facturables.
       const pricingWidthIn = directPricingWidthIn;
 
@@ -1334,27 +1338,6 @@ export class EstimatePieceCalculatorService {
           component.componentType === PricingComponentType.SIDELITE,
       );
 
-      const hasTransom = pricingComponents.some(
-        (component) => component.componentType === PricingComponentType.TRANSOM,
-      );
-
-      let lowerComponentHeight = totalHeight;
-
-      if (hasTransom) {
-        const doorHeight = positiveDimension(
-          (pieceDto as any).doorHeight,
-          "Door Height",
-        );
-
-        if (doorHeight.gte(totalHeight)) {
-          throw new BadRequestException(
-            "Door Height must be less than Opening Height when transom pricing is used.",
-          );
-        }
-
-        lowerComponentHeight = doorHeight;
-      }
-
       for (const component of pricingComponents) {
         if (component.componentType === PricingComponentType.DOOR) {
           let doorWidth: Decimal;
@@ -1377,7 +1360,7 @@ export class EstimatePieceCalculatorService {
             await computeRoundedComponentPrice(
               component,
               doorWidth,
-              lowerComponentHeight,
+              totalHeight,
               "DOOR component",
             ),
           );
@@ -1413,7 +1396,7 @@ export class EstimatePieceCalculatorService {
             const panelPrice = await computeRoundedComponentPrice(
               component,
               sideliteWidth,
-              lowerComponentHeight,
+              totalHeight,
               "SIDELITE component",
             );
 
@@ -1458,7 +1441,7 @@ export class EstimatePieceCalculatorService {
               const panelPrice = await computeRoundedComponentPrice(
                 component,
                 sideliteWidth,
-                lowerComponentHeight,
+                totalHeight,
                 `SIDELITE component (${sideLabel.toLowerCase()})`,
               );
 
@@ -1492,21 +1475,6 @@ export class EstimatePieceCalculatorService {
           throw new BadRequestException(
             "SIDELITE component pricing is not supported for this dimension mode.",
           );
-        }
-
-        if (component.componentType === PricingComponentType.TRANSOM) {
-          const transomHeight = totalHeight.sub(lowerComponentHeight);
-
-          componentPrices.push(
-            await computeRoundedComponentPrice(
-              component,
-              totalWidth,
-              transomHeight,
-              "TRANSOM component",
-            ),
-          );
-
-          continue;
         }
 
         throw new BadRequestException(

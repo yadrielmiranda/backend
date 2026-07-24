@@ -43,6 +43,8 @@ type DimensionValidationCheck = {
   label: string;
 };
 
+const MIN_TRANSOM_HEIGHT_IN = 10;
+
 @Injectable()
 export class EstimateDimensionValidationService {
   numberInchesOrZero(
@@ -324,12 +326,19 @@ export class EstimateDimensionValidationService {
       .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
 
     const first = passed[0]?.result;
+    const main = passed.find(
+      (x) => x.check.ruleType === DimensionRuleType.MAIN,
+    )?.result;
 
     return {
       ok: true,
-      dpPos: dpPosValues.length ? Math.min(...dpPosValues) : first?.dpPos,
-      dpNeg: dpNegValues.length ? Math.max(...dpNegValues) : first?.dpNeg,
-      usedRange: first?.usedRange,
+      dpPos:
+        main?.dpPos ??
+        (dpPosValues.length ? Math.min(...dpPosValues) : first?.dpPos),
+      dpNeg:
+        main?.dpNeg ??
+        (dpNegValues.length ? Math.max(...dpNegValues) : first?.dpNeg),
+      usedRange: main?.usedRange ?? first?.usedRange,
       note: passed
         .map((x) => `${x.check.label}: ${x.result.note ?? 'OK'}`)
         .join(' | '),
@@ -453,9 +462,7 @@ export class EstimateDimensionValidationService {
       ? configuredComponentTypes.has(PricingComponentType.SIDELITE)
       : policyRuleTypes.has(DimensionRuleType.SIDELITE);
 
-    const expectsTransom = hasConfiguredComponents
-      ? configuredComponentTypes.has(PricingComponentType.TRANSOM)
-      : policyRuleTypes.has(DimensionRuleType.TRANSOM);
+    const expectsMain = policyRuleTypes.has(DimensionRuleType.MAIN);
 
     const doorWidthRaw = (dto as any).doorWidth;
     const doorHeightRaw = (dto as any).doorHeight;
@@ -476,20 +483,16 @@ export class EstimateDimensionValidationService {
       rightSideliteWidthRaw != null &&
       rightSideliteWidthRaw !== '';
 
-    // Cuando TRANSOM forma parte de una configuración compuesta,
-    // Door Height separa la sección inferior del transom.
-    const usesCompositeTransom =
-      hasConfiguredComponents &&
-      expectsTransom &&
-      (expectsDoor || expectsSidelite);
+    // XT/XXT se valida como una sola pieza: DOOR controla la altura
+    // de la puerta y MAIN controla la altura total del frame.
+    const validatesDoorAndOpening = expectsDoor && expectsMain;
 
     let lowerComponentHeightIn = heightIn;
-    let transomHeightIn: number | null = null;
 
-    if (usesCompositeTransom) {
+    if (validatesDoorAndOpening) {
       if (!hasDoorHeight) {
         throw new BadRequestException(
-          'Door Height is required when a transom is used.',
+          'Door Height is required for this configuration.',
         );
       }
 
@@ -504,19 +507,15 @@ export class EstimateDimensionValidationService {
         );
       }
 
-      if (doorHeightIn >= heightIn) {
+      const transomHeightIn = heightIn - doorHeightIn;
+
+      if (transomHeightIn < MIN_TRANSOM_HEIGHT_IN) {
         throw new BadRequestException(
-          'Door Height must be less than Opening Height when a transom is used.',
+          `Transom Height (Opening Height - Door Height) must be at least ${MIN_TRANSOM_HEIGHT_IN} inches.`,
         );
       }
 
       lowerComponentHeightIn = doorHeightIn;
-
-      transomHeightIn = normalizeInchesToEighthStep(
-        heightIn - doorHeightIn,
-        'Transom Height',
-        1,
-      );
     }
 
     if (dimensionMode === DimensionMode.ECO_WINDOWS_DOOR) {
@@ -598,15 +597,12 @@ export class EstimateDimensionValidationService {
         });
       }
 
-      if (expectsTransom) {
+      if (validatesDoorAndOpening) {
         checks.push({
-          ruleType: DimensionRuleType.TRANSOM,
+          ruleType: DimensionRuleType.MAIN,
           widthIn: openWidth,
-          heightIn:
-            usesCompositeTransom && transomHeightIn != null
-              ? transomHeightIn
-              : heightIn,
-          label: 'TRANSOM',
+          heightIn,
+          label: 'MAIN',
         });
       }
 
@@ -625,7 +621,7 @@ export class EstimateDimensionValidationService {
           label: 'DOOR',
         });
       } else if (!hasConfiguredComponents && !expectsSidelite) {
-        // Configuración directa X o XX.
+        // Configuración directa X/XX o frame completo XT/XXT.
         checks.push({
           ruleType: DimensionRuleType.DOOR,
           widthIn: num(dto.width, 'Door Width'),
@@ -695,17 +691,14 @@ export class EstimateDimensionValidationService {
       );
     }
 
-    if (expectsTransom) {
+    if (validatesDoorAndOpening) {
       const overallWidth = this.resolveEcoNovoOverallWidth(dto);
 
       checks.push({
-        ruleType: DimensionRuleType.TRANSOM,
+        ruleType: DimensionRuleType.MAIN,
         widthIn: overallWidth,
-        heightIn:
-          usesCompositeTransom && transomHeightIn != null
-            ? transomHeightIn
-            : heightIn,
-        label: 'TRANSOM',
+        heightIn,
+        label: 'MAIN',
       });
     }
 
