@@ -2276,6 +2276,7 @@ export class EstimatesService {
     heightLeft?: number;
     heightRight?: number;
     legHeight?: number;
+    windowHeight?: number;
 
     doorWidth?: number;
     doorHeight?: number;
@@ -2300,6 +2301,8 @@ export class EstimatesService {
           input.heightRight != null ? String(input.heightRight) : undefined,
         legHeight:
           input.legHeight != null ? String(input.legHeight) : undefined,
+        windowHeight:
+          input.windowHeight != null ? String(input.windowHeight) : undefined,
 
         doorWidth:
           input.doorWidth != null ? String(input.doorWidth) : undefined,

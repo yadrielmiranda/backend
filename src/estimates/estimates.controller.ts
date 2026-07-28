@@ -49,6 +49,7 @@ export class EstimatesController {
       heightLeft?: number;
       heightRight?: number;
       legHeight?: number;
+      windowHeight?: number;
 
       doorWidth?: number;
       leftSideliteWidth?: number;
@@ -76,6 +77,7 @@ export class EstimatesController {
       heightLeft: body.heightLeft,
       heightRight: body.heightRight,
       legHeight: body.legHeight,
+      windowHeight: body.windowHeight,
       doorWidth: body.doorWidth,
       leftSideliteWidth: body.leftSideliteWidth,
       rightSideliteWidth: body.rightSideliteWidth,
