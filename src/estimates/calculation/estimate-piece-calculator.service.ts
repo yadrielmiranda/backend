@@ -101,6 +101,8 @@ type NormalizedEstimateTotalsPiece = {
 };
 
 const MIN_TRANSOM_HEIGHT_IN = new Decimal(10);
+const MIN_WINDOW_HEIGHT_IN = new Decimal(24.125);
+const MIN_FIX_HEIGHT_IN = new Decimal(12);
 
 @Injectable()
 export class EstimatePieceCalculatorService {
@@ -1068,12 +1070,15 @@ export class EstimatePieceCalculatorService {
     const windowHeightRaw = (pieceDto as any).windowHeight;
     const openHeightRaw = pieceDto.height;
 
-    if (!isBlank(windowHeightRaw)) {
+    if (
+      need(config.requiresWindowHeight) &&
+      !isBlank(windowHeightRaw)
+    ) {
       const windowHeight = new Decimal(String(windowHeightRaw));
 
-      if (windowHeight.lte(0)) {
+      if (windowHeight.lt(MIN_WINDOW_HEIGHT_IN)) {
         throw new BadRequestException(
-          "Window Height must be greater than zero.",
+          `Window Height must be at least ${MIN_WINDOW_HEIGHT_IN.toString()} inches.`,
         );
       }
 
@@ -1084,10 +1089,11 @@ export class EstimatePieceCalculatorService {
       }
 
       const openHeight = new Decimal(String(openHeightRaw));
+      const fixHeight = openHeight.minus(windowHeight);
 
-      if (windowHeight.gte(openHeight)) {
+      if (fixHeight.lt(MIN_FIX_HEIGHT_IN)) {
         throw new BadRequestException(
-          "Window Height must be less than Open Height.",
+          `FIX Height (Open Height - Window Height) must be at least ${MIN_FIX_HEIGHT_IN.toString()} inches.`,
         );
       }
     }

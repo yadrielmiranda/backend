@@ -44,6 +44,8 @@ type DimensionValidationCheck = {
 };
 
 const MIN_TRANSOM_HEIGHT_IN = 10;
+const MIN_WINDOW_HEIGHT_IN = 24.125;
+const MIN_FIX_HEIGHT_IN = 12;
 
 @Injectable()
 export class EstimateDimensionValidationService {
@@ -357,6 +359,7 @@ export class EstimateDimensionValidationService {
           requiresHeightLeft: true,
           requiresHeightRight: true,
           requiresLegHeight: true,
+          requiresWindowHeight: true,
         },
       }),
       tx.sysConf.findUnique({
@@ -408,6 +411,30 @@ export class EstimateDimensionValidationService {
       const legHeight = cfg?.requiresLegHeight
         ? num(dto.legHeight, 'Leg Height')
         : 0;
+
+      if (cfg?.requiresWindowHeight) {
+        const windowHeightRaw = (dto as any).windowHeight;
+
+        if (windowHeightRaw == null || windowHeightRaw === '') {
+          throw new BadRequestException('Window Height is required.');
+        }
+
+        const windowHeightIn = num(windowHeightRaw, 'Window Height');
+
+        if (windowHeightIn < MIN_WINDOW_HEIGHT_IN) {
+          throw new BadRequestException(
+            `Window Height must be at least ${MIN_WINDOW_HEIGHT_IN} inches.`,
+          );
+        }
+
+        const fixHeightIn = heightIn - windowHeightIn;
+
+        if (fixHeightIn < MIN_FIX_HEIGHT_IN) {
+          throw new BadRequestException(
+            `FIX Height (Open Height - Window Height) must be at least ${MIN_FIX_HEIGHT_IN} inches.`,
+          );
+        }
+      }
 
       return [
         {
