@@ -5,6 +5,7 @@ import {
   PricingComponentType,
   PrismaClient,
 } from '@prisma/client';
+import { shapeKeyFromConf } from '@/pricing/shape-geometry';
 
 import { normalizeInchesToEighthStep } from '@/common/dimensions';
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
@@ -46,6 +47,24 @@ type DimensionValidationCheck = {
 const MIN_TRANSOM_HEIGHT_IN = 10;
 const MIN_WINDOW_HEIGHT_IN = 24.125;
 const MIN_FIX_HEIGHT_IN = 12;
+
+function resolveShapeHeightIn(
+  confName: string | null | undefined,
+  widthIn: number,
+  regularHeightIn: number,
+): number {
+  switch (shapeKeyFromConf(confName ?? '')) {
+    case 'CIRCLE':
+    case 'QUARTER_CIRCLE':
+      return widthIn;
+
+    case 'HALF_CIRCLE':
+      return widthIn / 2;
+
+    default:
+      return regularHeightIn;
+  }
+}
 
 @Injectable()
 export class EstimateDimensionValidationService {
@@ -142,6 +161,7 @@ export class EstimateDimensionValidationService {
           requiresHeightLeft: true,
           requiresHeightRight: true,
           requiresLegHeight: true,
+          conf: true,
         },
       }),
       tx.sysConf.findUnique({
@@ -206,9 +226,15 @@ export class EstimateDimensionValidationService {
       ? num(pieceDto.legHeight, 'Leg Height')
       : 0;
 
-    const heightIn = Math.max(h, hl, hr, lh);
+    const regularHeightIn = Math.max(h, hl, hr, lh);
 
-    return { widthIn, heightIn: heightIn || h };
+    const heightIn = resolveShapeHeightIn(
+      cfg?.conf,
+      widthIn,
+      regularHeightIn,
+    );
+
+    return { widthIn, heightIn };
   }
 
   private async resolveDimensionPolicyReinforcement(
@@ -360,6 +386,7 @@ export class EstimateDimensionValidationService {
           requiresHeightRight: true,
           requiresLegHeight: true,
           requiresWindowHeight: true,
+          conf: true,
         },
       }),
       tx.sysConf.findUnique({
@@ -436,11 +463,24 @@ export class EstimateDimensionValidationService {
         }
       }
 
+      const regularHeightIn = Math.max(
+        heightIn,
+        heightLeft,
+        heightRight,
+        legHeight,
+      );
+
+      const governingHeightIn = resolveShapeHeightIn(
+        cfg?.conf,
+        widthIn,
+        regularHeightIn,
+      );
+
       return [
         {
           ruleType: DimensionRuleType.MAIN,
           widthIn,
-          heightIn: Math.max(heightIn, heightLeft, heightRight, legHeight),
+          heightIn: governingHeightIn,
           label: 'MAIN',
         },
       ];
