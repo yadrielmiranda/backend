@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE `FrameColor` ADD COLUMN `hexCode` VARCHAR(7) NOT NULL DEFAULT '#FFFFFF';

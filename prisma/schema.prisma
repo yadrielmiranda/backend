@@ -514,6 +514,7 @@ model SysConfReinforcementOption {
 model FrameColor {
   id       Int     @id @default(autoincrement())
   color    String
+  hexCode  String  @default("#FFFFFF") @db.VarChar(7)
   isActive Boolean @default(true)
   isGlobal Boolean @default(false)
 
