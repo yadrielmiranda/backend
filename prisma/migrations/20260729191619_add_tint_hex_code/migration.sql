@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE `Tint` ADD COLUMN `hexCode` VARCHAR(7) NOT NULL DEFAULT '#F7FBFF';

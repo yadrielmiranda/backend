@@ -561,6 +561,7 @@ model Crystal {
 model Tint {
   id        Int      @id @default(autoincrement())
   color     String
+  hexCode   String   @default("#F7FBFF") @db.VarChar(7)
   isActive  Boolean  @default(true)
   pieces    Piece[]
   createdAt DateTime @default(now())
