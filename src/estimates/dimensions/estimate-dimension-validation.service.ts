@@ -66,6 +66,18 @@ function resolveShapeHeightIn(
   }
 }
 
+function hasDerivedShapeHeight(
+  confName: string | null | undefined,
+): boolean {
+  const shape = shapeKeyFromConf(confName ?? '');
+
+  return (
+    shape === 'CIRCLE' ||
+    shape === 'HALF_CIRCLE' ||
+    shape === 'QUARTER_CIRCLE'
+  );
+}
+
 @Injectable()
 export class EstimateDimensionValidationService {
   numberInchesOrZero(
@@ -188,7 +200,11 @@ export class EstimateDimensionValidationService {
     const num = (v: any, label: string) =>
       v == null || v === '' ? 0 : normalizeInchesToEighthStep(v, label, 1);
 
-    const h = num(pieceDto.height, 'Height');
+    const h =
+      dimensionMode === DimensionMode.STANDARD &&
+        hasDerivedShapeHeight(cfg?.conf)
+        ? 0
+        : num(pieceDto.height, 'Height');
 
     if (dimensionMode === DimensionMode.ECO_WINDOWS_DOOR) {
       return {
@@ -425,7 +441,11 @@ export class EstimateDimensionValidationService {
         ? 0
         : normalizeInchesToEighthStep(value as any, label, 1);
 
-    const heightIn = num(dto.height, 'Height');
+    const heightIn =
+      dimensionMode === DimensionMode.STANDARD &&
+        hasDerivedShapeHeight(cfg?.conf)
+        ? 0
+        : num(dto.height, 'Height');
 
     if (dimensionMode === DimensionMode.STANDARD) {
       const widthIn = num(dto.width, 'Width');
