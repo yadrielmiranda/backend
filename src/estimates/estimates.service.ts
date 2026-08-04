@@ -16,7 +16,9 @@ import {
   Order,
   BrandingType,
   Branding,
+  InstallationJobStatus,
   PaymentStatus,
+  PaymentType,
 } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { UpsertPieceDto } from './dto/upsert-piece.dto';
@@ -38,6 +40,7 @@ import {
   type CalculatedPieceCombined,
 } from './calculation/estimate-piece-calculator.service';
 import { EstimateAuditSnapshotBuilder } from './audit/estimate-audit-snapshot.builder';
+import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
 
 // Logs (EventLog + TempLog)
 import { LogsService } from '@/logs/logs.service';
@@ -96,7 +99,8 @@ export type EstimateWithRelations = Estimate & {
   pieces: PieceWithRelations[];
   order?: Order | null;
   status?: EstimateStatus | null;
-  payment?: Prisma.PaymentGetPayload<{}> | null;
+  payments?: Prisma.PaymentGetPayload<{}>[];
+  installationJob?: Pick<Prisma.InstallationJobGetPayload<{}>, 'id' | 'status'> | null;
   branding?: Branding | null;
 };
 
@@ -112,6 +116,7 @@ export class EstimatesService {
     private dimensionValidationService: EstimateDimensionValidationService,
     private pieceCalculator: EstimatePieceCalculatorService,
     private muntinService: EstimateMuntinService,
+    private installationWorkflow: InstallationWorkflowService,
   ) { }
 
   private decimalOrNull(value: string | number | null | undefined) {
@@ -284,7 +289,8 @@ export class EstimatesService {
         },
         status: true,
         order: true,
-        payment: true,
+        payments: true,
+        installationJob: { select: { id: true, status: true } },
         pieces: {
           orderBy: { id: 'asc' },
           include: {
@@ -324,7 +330,7 @@ export class EstimatesService {
   /**
  * Confirma propiedad, estado editable y ausencia de Order.
  */
-  private assertEstimateCanBeEdited(
+  private async assertEstimateCanBeEdited(
     estimate: {
       id: number;
       number: string;
@@ -335,15 +341,28 @@ export class EstimatesService {
       order?: {
         id: number;
       } | null;
-      payment?: {
+      payments?: Array<{
+        type: PaymentType;
         status: PaymentStatus;
         stripeSessionId: string | null;
-      } | null;
+      }>;
     } | null,
     estimateId: number,
     userId: number,
-  ): void {
-    if (!estimate || estimate.idUser !== userId) {
+    tx: PrismaTransactionClient,
+  ): Promise<void> {
+    const actor = await tx.user.findUnique({
+      where: { id: userId },
+      include: { role: true },
+    });
+    if (!actor) throw new NotFoundException('User not found.');
+
+    const actorUser = {
+      id: actor.id,
+      role: { name: actor.role.name as AuthUser['role']['name'] },
+    } satisfies AuthUser;
+
+    if (!estimate || (!isPrivileged(actorUser) && estimate.idUser !== userId)) {
       throw new NotFoundException(
         `Estimate #${estimateId} not found/denied.`,
       );
@@ -363,13 +382,36 @@ export class EstimatesService {
     }
 
     if (
-      estimate.payment?.status === PaymentStatus.PAID ||
-      estimate.payment?.stripeSessionId
+      estimate.payments?.some(
+        (payment) =>
+          payment.type === PaymentType.MATERIAL &&
+          (payment.status === PaymentStatus.PAID ||
+            Boolean(payment.stripeSessionId)),
+      )
     ) {
       throw new BadRequestException(
         `Estimate #${estimate.number} cannot be edited because its payment process has already started.`,
       );
     }
+
+    await this.installationWorkflow.assertEstimateEditAllowed(
+      estimateId,
+      actorUser,
+    );
+  }
+
+  private async resolveEstimateOwnerMarkup(
+    tx: PrismaTransactionClient,
+    ownerUserId: number,
+  ): Promise<Decimal> {
+    const owner = await tx.user.findUnique({
+      where: { id: ownerUserId },
+      include: { role: true },
+    });
+    if (!owner) throw new NotFoundException('Estimate owner not found.');
+    return owner.markupOverride !== null
+      ? new Decimal(owner.markupOverride.toString())
+      : new Decimal(owner.role.markup.toString());
   }
 
   /**
@@ -608,21 +650,14 @@ export class EstimatesService {
       where: {
         statusId: activeStatus.id,
         order: null,
-        OR: [
-          {
-            payment: null,
+        payments: {
+          none: {
+            OR: [
+              { status: PaymentStatus.PAID },
+              { stripeSessionId: { not: null } },
+            ],
           },
-          {
-            payment: {
-              is: {
-                status: {
-                  not: PaymentStatus.PAID,
-                },
-                stripeSessionId: null,
-              },
-            },
-          },
-        ],
+        },
         expiresAt: {
           lt: new Date(),
         },
@@ -725,7 +760,8 @@ export class EstimatesService {
         user: { include: { role: true } }, // ✅ NECESARIO para saber si es dealer
         status: true,
         order: true,
-        payment: true,
+        payments: true,
+        installationJob: { select: { id: true, status: true } },
         pieces: {
           orderBy: { id: 'asc' },
           include: {
@@ -785,7 +821,8 @@ export class EstimatesService {
         },
         status: true,
         order: true,
-        payment: true,
+        payments: true,
+        installationJob: { select: { id: true, status: true } },
       },
       orderBy: { date: 'desc' },
     });
@@ -1008,10 +1045,11 @@ export class EstimatesService {
           estimateId,
         );
 
-      this.assertEstimateCanBeEdited(
+      await this.assertEstimateCanBeEdited(
         beforeEstimate,
         estimateId,
         userId,
+        tx as PrismaTransactionClient,
       );
 
       const headerData: Prisma.EstimateUpdateInput = {
@@ -1162,11 +1200,18 @@ export class EstimatesService {
           estimateId,
         );
 
-      this.assertEstimateCanBeEdited(
+      await this.assertEstimateCanBeEdited(
         beforeEstimate,
         estimateId,
         userId,
+        tx as PrismaTransactionClient,
       );
+
+      const effectiveMarkupDecimal =
+        await this.resolveEstimateOwnerMarkup(
+          tx as PrismaTransactionClient,
+          beforeEstimate!.idUser,
+        );
 
       const cache =
         this.pieceCalculator.createCalculationCache();
@@ -1282,11 +1327,18 @@ export class EstimatesService {
           estimateId,
         );
 
-      this.assertEstimateCanBeEdited(
+      await this.assertEstimateCanBeEdited(
         beforeEstimate,
         estimateId,
         userId,
+        tx as PrismaTransactionClient,
       );
+
+      const effectiveMarkupDecimal =
+        await this.resolveEstimateOwnerMarkup(
+          tx as PrismaTransactionClient,
+          beforeEstimate!.idUser,
+        );
 
       const existingPiece = beforeEstimate!.pieces.find(
         (piece) => piece.id === pieceId,
@@ -1417,11 +1469,18 @@ export class EstimatesService {
           estimateId,
         );
 
-      this.assertEstimateCanBeEdited(
+      await this.assertEstimateCanBeEdited(
         beforeEstimate,
         estimateId,
         userId,
+        tx as PrismaTransactionClient,
       );
+
+      const effectiveMarkupDecimal =
+        await this.resolveEstimateOwnerMarkup(
+          tx as PrismaTransactionClient,
+          beforeEstimate!.idUser,
+        );
 
       if (!beforeEstimate!.pieces.length) {
         throw new BadRequestException(
@@ -1598,11 +1657,18 @@ export class EstimatesService {
           estimateId,
         );
 
-      this.assertEstimateCanBeEdited(
+      await this.assertEstimateCanBeEdited(
         beforeEstimate,
         estimateId,
         userId,
+        tx as PrismaTransactionClient,
       );
+
+      const effectiveMarkupDecimal =
+        await this.resolveEstimateOwnerMarkup(
+          tx as PrismaTransactionClient,
+          beforeEstimate!.idUser,
+        );
 
       if (!beforeEstimate!.pieces.length) {
         throw new BadRequestException(
@@ -1755,10 +1821,11 @@ export class EstimatesService {
           estimateId,
         );
 
-      this.assertEstimateCanBeEdited(
+      await this.assertEstimateCanBeEdited(
         beforeEstimate,
         estimateId,
         userId,
+        tx as PrismaTransactionClient,
       );
 
       const existingPiece = beforeEstimate!.pieces.find(
@@ -1848,7 +1915,7 @@ export class EstimatesService {
           user: true,
           status: true,
           order: true,
-          payment: true,
+          payments: true,
           pieces: {
             orderBy: { id: 'asc' },
             include: {
@@ -1880,8 +1947,11 @@ export class EstimatesService {
       }
 
       if (
-        beforeEstimate.payment?.status === PaymentStatus.PAID ||
-        beforeEstimate.payment?.stripeSessionId
+        beforeEstimate.payments.some(
+          (payment) =>
+            payment.status === PaymentStatus.PAID ||
+            Boolean(payment.stripeSessionId),
+        )
       ) {
         throw new BadRequestException(
           `Estimate #${beforeEstimate.number} cannot be recalculated because its payment process has already started.`,
@@ -2221,7 +2291,8 @@ export class EstimatesService {
         include: {
           status: true,
           order: true,
-          payment: true,
+          payments: true,
+          installationJob: { select: { status: true } },
           pieces: { orderBy: { id: 'asc' } },
         },
       });
@@ -2237,8 +2308,20 @@ export class EstimatesService {
       }
 
       if (
-        estimate.payment?.status === PaymentStatus.PAID ||
-        estimate.payment?.stripeSessionId
+        estimate.installationJob &&
+        estimate.installationJob.status !== InstallationJobStatus.CANCELED
+      ) {
+        throw new BadRequestException(
+          `Estimate #${estimate.number} cannot be deleted while its installation workflow is active.`,
+        );
+      }
+
+      if (
+        estimate.payments.some(
+          (payment) =>
+            payment.status === PaymentStatus.PAID ||
+            Boolean(payment.stripeSessionId),
+        )
       ) {
         throw new BadRequestException(
           `Estimate #${estimate.number} cannot be deleted because its payment process has already started.`,
@@ -2349,9 +2432,31 @@ export class EstimatesService {
     view: PdfView,
   ): Promise<Buffer> {
     const estimate = await this.findOneForUser(estimateId, user);
+    const installationJobDetails = await this.prisma.installationJob.findUnique({
+      where: { estimateId },
+      include: {
+        permit: true,
+        payments: {
+          where: {
+            type: PaymentType.INSTALLATION_DEPOSIT,
+            status: PaymentStatus.PAID,
+          },
+        },
+        quotes: {
+          orderBy: { version: 'desc' },
+          take: 1,
+          include: {
+            lines: { orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }] },
+          },
+        },
+      },
+    });
 
     return this.estimatePdfService.generateEstimatePdfBuffer({
-      estimate,
+      estimate: {
+        ...estimate,
+        installationJobDetails,
+      } as EstimateWithRelations,
       user,
       view,
     });

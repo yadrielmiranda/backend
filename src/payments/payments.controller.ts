@@ -17,6 +17,10 @@ export class PaymentsController {
 
     return this.payments.createCheckoutSessionForEstimate({
       estimateId: dto.estimateId,
+      type: dto.type,
+      sequence: dto.sequence,
+      installationDepositTermsAccepted:
+        dto.installationDepositTermsAccepted,
       user,
     });
   }
@@ -30,6 +34,8 @@ export class PaymentsController {
 
     return this.payments.cancelCheckoutSessionForEstimate({
       estimateId: dto.estimateId,
+      type: dto.type,
+      sequence: dto.sequence,
       user,
     });
   }

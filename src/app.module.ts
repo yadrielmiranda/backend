@@ -39,6 +39,7 @@ import { ReinforcementOptionsModule } from './reinforcement-options/reinforcemen
 import { ConfigCategoriesModule } from './config-categories/config-categories.module';
 import { LinearPricingRulesModule } from "./linear-pricing-rules/linear-pricing-rules.module";
 import { ScheduleModule } from '@nestjs/schedule';
+import { InstallationModule } from './installation/installation.module';
 
 @Module({
   imports: [
@@ -79,6 +80,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     ReinforcementOptionsModule,
     ConfigCategoriesModule,
     LinearPricingRulesModule,
+    InstallationModule,
   ],
   controllers: [AppController],
   providers: [

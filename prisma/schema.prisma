@@ -15,12 +15,18 @@ datasource db {
 // =======================================
 
 model Role {
-  id        Int      @id @default(autoincrement())
-  name      String   @unique
-  markup    Decimal  @default(0) @db.Decimal(10, 4) // Total 10 dígitos, 4 decimales
-  users     User[]
+  id     Int     @id @default(autoincrement())
+  name   String  @unique
+  markup Decimal @default(0) @db.Decimal(10, 4) // Total 10 dígitos, 4 decimales
+  users  User[]
+
+  installationPriceProfileId Int?
+  installationPriceProfile   InstallationPriceProfile? @relation("RoleInstallationPriceProfile", fields: [installationPriceProfileId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([installationPriceProfileId])
 }
 
 model User {
@@ -47,20 +53,33 @@ model User {
   role   Role @relation(fields: [idRole], references: [id])
   idRole Int
 
-  estimates           Estimate[]
-  payments            Payment[]
-  orders              Order[]
-  notifications       Notification[]
-  sessions            Session[]
-  passwordResetTokens PasswordResetToken[]
-  branding            Branding?
-  eventLogs           EventLog[]
+  installationPriceProfileId Int?
+  installationPriceProfile   InstallationPriceProfile? @relation("UserInstallationPriceProfile", fields: [installationPriceProfileId], references: [id], onDelete: SetNull)
+
+  estimates                         Estimate[]
+  payments                          Payment[]
+  orders                            Order[]
+  notifications                     Notification[]
+  sessions                          Session[]
+  passwordResetTokens               PasswordResetToken[]
+  branding                          Branding?
+  eventLogs                         EventLog[]
+  installationRequests              InstallationJob[]           @relation("InstallationRequestedBy")
+  installationMeasurements          InstallationMeasurement[]   @relation("InstallationMeasuredBy")
+  installationQuotesCreated         InstallationQuote[]         @relation("InstallationQuoteCreatedBy")
+  installationQuoteApprovals        InstallationQuoteApproval[]
+  estimateRevisionsCreated          EstimateRevision[]          @relation("EstimateRevisionCreatedBy")
+  installationAppointmentsProposed  InstallationAppointment[]   @relation("InstallationAppointmentProposedBy")
+  installationAppointmentsResponded InstallationAppointment[]   @relation("InstallationAppointmentRespondedBy")
+  orderExtraChargesCreated          OrderExtraCharge[]          @relation("OrderExtraChargeCreatedBy")
+  orderExtraChargesResponded        OrderExtraCharge[]          @relation("OrderExtraChargeRespondedBy")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([isActive])
   @@index([deletedAt])
+  @@index([installationPriceProfileId])
 }
 
 model Session {
@@ -348,10 +367,11 @@ model SysConf {
   defaultSillOption          SillOption?          @relation("SysConfDefaultSillOption", fields: [defaultSillOptionId], references: [id], onDelete: SetNull)
   defaultReinforcementOption ReinforcementOption? @relation("SysConfDefaultReinforcementOption", fields: [defaultReinforcementOptionId], references: [id], onDelete: SetNull)
 
-  dimensionPolicies   DimensionPolicy[]         @relation("SysConfDimensionPolicies")
-  pricingComponents   SysConfPricingComponent[] @relation("SysConfPricingComponentParent")
-  usedAsPricingSource SysConfPricingComponent[] @relation("SysConfPricingComponentSource")
-  pricingRanges       PricingRange[]            @relation("SysConfPricingRanges")
+  dimensionPolicies    DimensionPolicy[]            @relation("SysConfDimensionPolicies")
+  pricingComponents    SysConfPricingComponent[]    @relation("SysConfPricingComponentParent")
+  usedAsPricingSource  SysConfPricingComponent[]    @relation("SysConfPricingComponentSource")
+  pricingRanges        PricingRange[]               @relation("SysConfPricingRanges")
+  installationServices SysConfInstallationService[]
 
   activeOptions        SysConfActiveOption[]
   preparationOptions   SysConfPreparationOption[]
@@ -660,6 +680,9 @@ model PieceMuntinPanel {
 enum GlobalParameterKey {
   SALES_TAX
   ESTIMATE_VALID_DAYS
+  INSTALLATION_DEPOSIT
+  INSTALLATION_PERMIT_FEE
+  CARD_SURCHARGE_PERCENT
 }
 
 model GlobalParameter {
@@ -836,9 +859,11 @@ model Estimate {
   status   EstimateStatus @relation(fields: [statusId], references: [id])
   statusId Int
 
-  pieces  Piece[]
-  order   Order?
-  payment Payment?
+  pieces          Piece[]
+  order           Order?
+  payments        Payment[]
+  installationJob InstallationJob?
+  revisions       EstimateRevision[]
 
   // --- CUSTOMER (dealer fills; not a relation) ---
   customerFirstName  String?  @db.VarChar(100)
@@ -931,7 +956,8 @@ model Piece {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  pieceMuntin PieceMuntin?
+  pieceMuntin              PieceMuntin?
+  installationMeasurements InstallationMeasurement[]
 
   @@index([idEst])
   @@index([idProd])
@@ -984,6 +1010,8 @@ model Order {
   // Pago asociado (Order solo debe existir si hubo pago)
   payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   paymentId Int     @unique
+
+  extraCharges OrderExtraCharge[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1095,8 +1123,592 @@ model DimensionRule {
 }
 
 // =======================================
+//   Instalación
+// =======================================
+
+enum InstallationBillingUnit {
+  UNIT
+  PANEL
+  SQFT
+  SQFT_RECTANGULAR
+  LINEAR_FOOT
+}
+
+enum InstallationRuleMetric {
+  NONE
+  WIDTH
+  HEIGHT
+  AREA
+  PANEL_COUNT
+  LENGTH
+}
+
+enum InstallationLineOrigin {
+  AUTO
+  USER_SELECTED
+  FIELD_ADDED
+}
+
+enum InstallationJobStatus {
+  REQUESTED
+  DEPOSIT_PAYMENT_PENDING
+  MEASUREMENT_SCHEDULING
+  MEASUREMENT_SCHEDULED
+  MEASUREMENT_PENDING
+  QUOTE_DRAFT
+  ADMIN_APPROVAL_PENDING
+  CUSTOMER_APPROVAL_PENDING
+  APPROVED
+  PERMIT_PAYMENT_PENDING
+  PERMIT_PROCESSING
+  MATERIAL_PAYMENT_PENDING
+  MATERIAL_PAID
+  INSTALLATION_PAYMENT_PENDING
+  INSTALLATION_PAID
+  SCHEDULING
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELED
+}
+
+enum InstallationMeasurementStatus {
+  PENDING
+  COMPLETED
+}
+
+enum EstimateRevisionStatus {
+  DRAFT
+  PENDING_ADMIN_APPROVAL
+  PENDING_CUSTOMER_APPROVAL
+  APPROVED
+  REJECTED
+  SUPERSEDED
+}
+
+enum EstimateRevisionItemAction {
+  UNCHANGED
+  UPDATE
+  REPLACE
+  REMOVE
+}
+
+enum EstimateRevisionChangeReason {
+  REMEASUREMENT
+  EGRESS
+  DIMENSION_LIMITS
+  STRUCTURAL_CONDITION
+  CUSTOMER_REQUEST
+  OTHER
+}
+
+enum InstallationQuoteStatus {
+  DRAFT
+  PENDING_ADMIN_APPROVAL
+  PENDING_CUSTOMER_APPROVAL
+  APPROVED
+  REJECTED
+  SUPERSEDED
+}
+
+enum InstallationQuoteReason {
+  REMEASUREMENT
+  PERMIT_REVISION
+  FIELD_CHANGE
+}
+
+enum InstallationApprovalStage {
+  ADMIN
+  CUSTOMER
+}
+
+enum InstallationApprovalDecision {
+  APPROVED
+  REJECTED
+}
+
+enum InstallationPermitStatus {
+  PAYMENT_PENDING
+  PAID
+  SUBMITTED
+  CHANGES_REQUIRED
+  APPROVED
+  REJECTED
+}
+
+enum InstallationAppointmentStatus {
+  PROPOSED
+  ACCEPTED
+  RESCHEDULE_REQUESTED
+  SUPERSEDED
+  CANCELED
+  COMPLETED
+}
+
+enum InstallationAppointmentType {
+  REMEASUREMENT
+  INSTALLATION
+}
+
+model InstallationService {
+  id          Int     @id @default(autoincrement())
+  name        String  @unique @db.VarChar(150)
+  description String? @db.VarChar(500)
+
+  billingUnit   InstallationBillingUnit
+  ruleMetric    InstallationRuleMetric  @default(NONE)
+  baseRate      Decimal                 @default(0) @db.Decimal(12, 4)
+  minimumCharge Decimal                 @default(0) @db.Decimal(12, 2)
+
+  availableForRequest Boolean @default(false)
+  availableForField   Boolean @default(true)
+  isActive            Boolean @default(true)
+  sortOrder           Int     @default(0)
+
+  rules    InstallationServiceRule[]
+  sysConfs SysConfInstallationService[]
+  lines    InstallationQuoteLine[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@map("installation_services")
+}
+
+model InstallationServiceRule {
+  id        Int @id @default(autoincrement())
+  serviceId Int
+
+  minValue     Decimal? @db.Decimal(12, 4)
+  minInclusive Boolean  @default(true)
+  maxValue     Decimal? @db.Decimal(12, 4)
+  maxInclusive Boolean  @default(false)
+  rate         Decimal  @db.Decimal(12, 4)
+  sortOrder    Int      @default(0)
+  isActive     Boolean  @default(true)
+
+  service InstallationService     @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  lines   InstallationQuoteLine[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([serviceId, isActive, sortOrder])
+  @@map("installation_service_rules")
+}
+
+model SysConfInstallationService {
+  idSystem  Int
+  idConfig  Int
+  serviceId Int
+  sortOrder Int @default(0)
+
+  sysConf SysConf             @relation(fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade)
+  service InstallationService @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  @@id([idSystem, idConfig, serviceId])
+  @@index([serviceId])
+  @@map("sysconf_installation_services")
+}
+
+model InstallationPriceProfile {
+  id                Int     @id @default(autoincrement())
+  name              String  @unique @db.VarChar(150)
+  adjustmentPercent Decimal @default(0) @db.Decimal(10, 4)
+  minimumCharge     Decimal @default(0) @db.Decimal(12, 2)
+  isDefault         Boolean @default(false)
+  isActive          Boolean @default(true)
+  sortOrder         Int     @default(0)
+
+  roles  Role[]              @relation("RoleInstallationPriceProfile")
+  users  User[]              @relation("UserInstallationPriceProfile")
+  quotes InstallationQuote[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@index([isDefault])
+  @@map("installation_price_profiles")
+}
+
+model InstallationJob {
+  id         Int                   @id @default(autoincrement())
+  estimateId Int                   @unique
+  status     InstallationJobStatus @default(REQUESTED)
+
+  depositAmountSnapshot  Decimal   @default(0) @db.Decimal(12, 2)
+  depositTermsSnapshot   String?   @db.VarChar(1000)
+  depositTermsAcceptedAt DateTime?
+  cancellationReason     String?   @db.VarChar(1000)
+
+  estimate      Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  requestedBy   User     @relation("InstallationRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  requestedById Int
+
+  measurements InstallationMeasurement[]
+  quotes       InstallationQuote[]
+  permit       InstallationPermit?
+  payments     Payment[]
+  appointments InstallationAppointment[]
+  revisions    EstimateRevision[]
+
+  requestedAt DateTime  @default(now())
+  canceledAt  DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([requestedById])
+  @@index([status])
+  @@map("installation_jobs")
+}
+
+model InstallationMeasurement {
+  id      Int  @id @default(autoincrement())
+  jobId   Int
+  pieceId Int?
+
+  unitIndex Int                           @default(1)
+  label     String                        @db.VarChar(150)
+  isManual  Boolean                       @default(false)
+  status    InstallationMeasurementStatus @default(PENDING)
+
+  sourceSnapshot Json?
+
+  widthIn              Decimal? @db.Decimal(10, 3)
+  heightIn             Decimal? @db.Decimal(10, 3)
+  heightLeftIn         Decimal? @db.Decimal(10, 3)
+  heightRightIn        Decimal? @db.Decimal(10, 3)
+  legHeightIn          Decimal? @db.Decimal(10, 3)
+  sashHeightIn         Decimal? @db.Decimal(10, 3)
+  windowHeightIn       Decimal? @db.Decimal(10, 3)
+  doorWidthIn          Decimal? @db.Decimal(10, 3)
+  doorHeightIn         Decimal? @db.Decimal(10, 3)
+  leftSideliteWidthIn  Decimal? @db.Decimal(10, 3)
+  rightSideliteWidthIn Decimal? @db.Decimal(10, 3)
+  leftPanels           Int?
+  rightPanels          Int?
+  panelCount           Int?
+  horizontalHeights    Json?
+  lengthIn             Decimal? @db.Decimal(10, 3)
+
+  notes String? @db.VarChar(1000)
+
+  measuredBy   User?     @relation("InstallationMeasuredBy", fields: [measuredById], references: [id], onDelete: SetNull)
+  measuredById Int?
+  measuredAt   DateTime?
+
+  job           InstallationJob         @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  piece         Piece?                  @relation(fields: [pieceId], references: [id], onDelete: SetNull)
+  lines         InstallationQuoteLine[]
+  revisionItems EstimateRevisionItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([jobId, pieceId, unitIndex], map: "uq_installation_measurement_piece_unit")
+  @@index([jobId, unitIndex])
+  @@index([pieceId])
+  @@index([measuredById])
+  @@map("installation_measurements")
+}
+
+model InstallationQuote {
+  id             Int                     @id @default(autoincrement())
+  jobId          Int
+  version        Int
+  status         InstallationQuoteStatus @default(DRAFT)
+  approvalReason InstallationQuoteReason @default(REMEASUREMENT)
+
+  profileId                Int?
+  profileNameSnapshot      String  @db.VarChar(150)
+  profileAdjustmentPercent Decimal @default(0) @db.Decimal(10, 4)
+  profileMinimumSnapshot   Decimal @default(0) @db.Decimal(12, 2)
+
+  baseSubtotal             Decimal @default(0) @db.Decimal(12, 2)
+  adjustedSubtotal         Decimal @default(0) @db.Decimal(12, 2)
+  serviceMinimumAdjustment Decimal @default(0) @db.Decimal(12, 2)
+  serviceMinimumsSnapshot  Json?
+  minimumAdjustment        Decimal @default(0) @db.Decimal(12, 2)
+  total                    Decimal @default(0) @db.Decimal(12, 2)
+  needsRecalculation       Boolean @default(false)
+
+  notes       String?   @db.VarChar(2000)
+  submittedAt DateTime?
+  approvedAt  DateTime?
+
+  job         InstallationJob           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  profile     InstallationPriceProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  createdBy   User                      @relation("InstallationQuoteCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdById Int
+
+  lines     InstallationQuoteLine[]
+  approvals InstallationQuoteApproval[]
+  revision  EstimateRevision?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([jobId, version], map: "uq_installation_quote_job_version")
+  @@index([jobId, status])
+  @@index([profileId])
+  @@index([createdById])
+  @@map("installation_quotes")
+}
+
+model EstimateRevision {
+  id                Int                     @id @default(autoincrement())
+  estimateId        Int
+  installationJobId Int
+  quoteId           Int                     @unique
+  version           Int
+  status            EstimateRevisionStatus  @default(DRAFT)
+  reason            InstallationQuoteReason @default(REMEASUREMENT)
+
+  originalTotals Json
+  revisedTotals  Json
+
+  estimate        Estimate               @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  installationJob InstallationJob        @relation(fields: [installationJobId], references: [id], onDelete: Cascade)
+  quote           InstallationQuote      @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  createdBy       User                   @relation("EstimateRevisionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdById     Int
+  items           EstimateRevisionItem[]
+
+  submittedAt DateTime?
+  approvedAt  DateTime?
+  rejectedAt  DateTime?
+  appliedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([installationJobId, version], map: "uq_estimate_revision_job_version")
+  @@index([estimateId, status])
+  @@index([createdById])
+  @@map("estimate_revisions")
+}
+
+model EstimateRevisionItem {
+  id              Int                          @id @default(autoincrement())
+  revisionId      Int
+  measurementId   Int
+  originalPieceId Int?
+  sourceUnitIndex Int
+  action          EstimateRevisionItemAction
+  reason          EstimateRevisionChangeReason @default(REMEASUREMENT)
+  reasonNote      String?                      @db.VarChar(1000)
+
+  originalSnapshot   Json
+  proposedPieceInput Json?
+  calculatedSnapshot Json?
+
+  revision    EstimateRevision        @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+  measurement InstallationMeasurement @relation(fields: [measurementId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([revisionId, measurementId], map: "uq_estimate_revision_measurement")
+  @@index([measurementId])
+  @@index([originalPieceId, sourceUnitIndex])
+  @@map("estimate_revision_items")
+}
+
+model InstallationQuoteLine {
+  id            Int  @id @default(autoincrement())
+  quoteId       Int
+  serviceId     Int
+  ruleId        Int?
+  measurementId Int?
+
+  origin InstallationLineOrigin
+
+  sourceSystemId Int?
+  sourceConfigId Int?
+  componentIndex Int?
+  componentLabel String? @db.VarChar(150)
+
+  serviceNameSnapshot String                  @db.VarChar(150)
+  billingUnitSnapshot InstallationBillingUnit
+  ruleMetricSnapshot  InstallationRuleMetric
+  ruleSnapshot        Json?
+
+  widthIn     Decimal? @db.Decimal(10, 3)
+  heightIn    Decimal? @db.Decimal(10, 3)
+  areaSqFt    Decimal? @db.Decimal(12, 4)
+  panelCount  Int?
+  lengthIn    Decimal? @db.Decimal(10, 3)
+  metricValue Decimal? @db.Decimal(12, 4)
+
+  rate              Decimal @db.Decimal(12, 4)
+  billableQuantity  Decimal @default(1) @db.Decimal(12, 4)
+  occurrences       Int     @default(1)
+  baseAmount        Decimal @db.Decimal(12, 2)
+  adjustmentPercent Decimal @default(0) @db.Decimal(10, 4)
+  adjustedAmount    Decimal @db.Decimal(12, 2)
+
+  description String? @db.VarChar(500)
+  sortOrder   Int     @default(0)
+
+  quote       InstallationQuote        @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  service     InstallationService      @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  rule        InstallationServiceRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  measurement InstallationMeasurement? @relation(fields: [measurementId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([quoteId, sortOrder])
+  @@index([serviceId])
+  @@index([ruleId])
+  @@index([measurementId])
+  @@index([origin])
+  @@map("installation_quote_lines")
+}
+
+model InstallationQuoteApproval {
+  id       Int                          @id @default(autoincrement())
+  quoteId  Int
+  stage    InstallationApprovalStage
+  decision InstallationApprovalDecision
+  comment  String?                      @db.VarChar(1000)
+
+  quote     InstallationQuote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  actor     User              @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  actorId   Int
+  createdAt DateTime          @default(now())
+
+  @@index([quoteId, stage, createdAt])
+  @@index([actorId])
+  @@map("installation_quote_approvals")
+}
+
+model InstallationPermit {
+  id     Int                      @id @default(autoincrement())
+  jobId  Int                      @unique
+  status InstallationPermitStatus @default(PAYMENT_PENDING)
+
+  permitFeeSnapshot Decimal  @db.Decimal(12, 2)
+  cityFee           Decimal? @db.Decimal(12, 2)
+  notes             String?  @db.VarChar(1000)
+
+  paidAt      DateTime?
+  submittedAt DateTime?
+  approvedAt  DateTime?
+
+  job InstallationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@map("installation_permits")
+}
+
+model InstallationAppointment {
+  id           Int                           @id @default(autoincrement())
+  jobId        Int
+  type         InstallationAppointmentType   @default(INSTALLATION)
+  status       InstallationAppointmentStatus @default(PROPOSED)
+  startsAt     DateTime
+  endsAt       DateTime?
+  note         String?                       @db.VarChar(1000)
+  responseNote String?                       @db.VarChar(1000)
+
+  job           InstallationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  proposedBy    User            @relation("InstallationAppointmentProposedBy", fields: [proposedById], references: [id], onDelete: Restrict)
+  proposedById  Int
+  respondedBy   User?           @relation("InstallationAppointmentRespondedBy", fields: [respondedById], references: [id], onDelete: SetNull)
+  respondedById Int?
+  respondedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([jobId, type, status, startsAt])
+  @@index([proposedById])
+  @@index([respondedById])
+  @@map("installation_appointments")
+}
+
+// =======================================
 //   Pagos (Stripe)
 // =======================================
+
+enum PaymentType {
+  MATERIAL
+  INSTALLATION_DEPOSIT
+  PERMIT
+  INSTALLATION
+  EXTRA
+}
+
+enum OrderExtraChargeStatus {
+  DRAFT
+  PENDING_CUSTOMER_APPROVAL
+  PAYMENT_DUE
+  PAID
+  REJECTED
+  CANCELED
+}
+
+model OrderExtraCharge {
+  id       Int                    @id @default(autoincrement())
+  orderId  Int
+  sequence Int
+  status   OrderExtraChargeStatus @default(DRAFT)
+
+  subtotal        Decimal @default(0) @db.Decimal(12, 2)
+  taxRateSnapshot Decimal @default(0) @db.Decimal(10, 4)
+  taxAmount       Decimal @default(0) @db.Decimal(12, 2)
+  total           Decimal @default(0) @db.Decimal(12, 2)
+  notes           String? @db.VarChar(1000)
+  decisionComment String? @db.VarChar(1000)
+
+  order         Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  createdBy     User  @relation("OrderExtraChargeCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdById   Int
+  respondedBy   User? @relation("OrderExtraChargeRespondedBy", fields: [respondedById], references: [id], onDelete: SetNull)
+  respondedById Int?
+
+  lines   OrderExtraChargeLine[]
+  payment Payment?
+
+  submittedAt DateTime?
+  respondedAt DateTime?
+  paidAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([orderId, sequence], map: "uq_order_extra_charge_sequence")
+  @@index([orderId, status])
+  @@index([createdById])
+  @@index([respondedById])
+  @@map("order_extra_charges")
+}
+
+model OrderExtraChargeLine {
+  id            Int     @id @default(autoincrement())
+  extraChargeId Int
+  description   String  @db.VarChar(500)
+  quantity      Decimal @default(1) @db.Decimal(12, 4)
+  unitPrice     Decimal @db.Decimal(12, 2)
+  taxable       Boolean @default(false)
+  subtotal      Decimal @db.Decimal(12, 2)
+  taxAmount     Decimal @default(0) @db.Decimal(12, 2)
+  total         Decimal @db.Decimal(12, 2)
+  sortOrder     Int     @default(0)
+
+  extraCharge OrderExtraCharge @relation(fields: [extraChargeId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([extraChargeId, sortOrder])
+  @@map("order_extra_charge_lines")
+}
 
 enum PaymentStatus {
   PENDING // creado checkout, esperando pago
@@ -1108,20 +1720,33 @@ enum PaymentStatus {
 }
 
 model Payment {
-  id     Int           @id @default(autoincrement())
-  status PaymentStatus @default(PENDING)
+  id       Int           @id @default(autoincrement())
+  status   PaymentStatus @default(PENDING)
+  type     PaymentType   @default(MATERIAL)
+  // Deposit, Permit and material use sequence 1. Installation uses the
+  // approved quote version so later approved field additions can create a new charge.
+  sequence Int           @default(1)
 
   // A qué Estimate corresponde este pago
   estimate Estimate @relation(fields: [idEst], references: [id], onDelete: Cascade)
-  idEst    Int      @unique
+  idEst    Int
+
+  installationJob   InstallationJob? @relation(fields: [installationJobId], references: [id], onDelete: SetNull)
+  installationJobId Int?
+
+  extraCharge   OrderExtraCharge? @relation(fields: [extraChargeId], references: [id], onDelete: SetNull)
+  extraChargeId Int?              @unique
 
   // Quién pagó (dealer o client; ambos son usuarios en tu sistema)
   user   User @relation(fields: [userId], references: [id], onDelete: Restrict)
   userId Int
 
   // Monto cobrado (normalmente estimate.totalPayable)
-  amount   Decimal @db.Decimal(12, 2)
-  currency String  @default("usd") @db.VarChar(10)
+  baseAmount       Decimal @default(0) @db.Decimal(12, 2)
+  surchargePercent Decimal @default(0) @db.Decimal(10, 4)
+  surchargeAmount  Decimal @default(0) @db.Decimal(12, 2)
+  amount           Decimal @db.Decimal(12, 2)
+  currency         String  @default("usd") @db.VarChar(10)
 
   // Stripe IDs (para reconciliar con webhooks)
   stripeSessionId       String? @unique @db.VarChar(255)
@@ -1134,8 +1759,10 @@ model Payment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([idEst, type, sequence], map: "uq_payment_estimate_type_sequence")
   @@index([userId])
   @@index([status])
+  @@index([installationJobId])
   @@map("payments")
 }
 

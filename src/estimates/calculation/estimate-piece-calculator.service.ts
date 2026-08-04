@@ -5,7 +5,6 @@ import {
 } from "@nestjs/common";
 import {
   DimensionMode,
-  PricingComponentType,
   PricingMode,
   Prisma,
   PrismaClient,
@@ -17,6 +16,7 @@ import Decimal from "decimal.js";
 import { dimsInchesToFeet } from "@/pricing/units";
 import { areaPerimeterFor } from "@/pricing/shape-geometry";
 import { computeBasePrice } from "@/pricing/price-formula";
+import { resolvePieceComponents } from "@/pricing/piece-component-resolver";
 
 import { CreatePieceDto } from "@/pieces/dto/create-piece.dto";
 import { UpsertPieceDto } from "../dto/upsert-piece.dto";
@@ -1268,25 +1268,6 @@ export class EstimatePieceCalculatorService {
       // Cada componente se redondea a centavos antes de sumarlo.
       const componentPrices: Decimal[] = [];
 
-      const isBlankPricingDimension = (value: unknown) =>
-        value == null || value === "";
-
-      const positiveDimension = (value: unknown, label: string): Decimal => {
-        if (isBlankPricingDimension(value)) {
-          throw new BadRequestException(
-            `${label} is required for component pricing.`,
-          );
-        }
-
-        const dimension = new Decimal(String(value));
-
-        if (!dimension.isFinite() || dimension.lte(0)) {
-          throw new BadRequestException(`${label} must be greater than zero.`);
-        }
-
-        return dimension;
-      };
-
       const computeRoundedComponentPrice = async (
         component: (typeof pricingComponents)[number],
         widthIn: Decimal,
@@ -1335,156 +1316,51 @@ export class EstimatePieceCalculatorService {
         return componentBasePrice.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       };
 
-      const totalWidth = new Decimal(String(governingDims.widthIn));
+      let resolvedComponents;
 
-      const totalHeight = new Decimal(String(governingDims.heightIn));
-
-      const hasSidelite = pricingComponents.some(
-        (component) =>
-          component.componentType === PricingComponentType.SIDELITE,
-      );
-
-      for (const component of pricingComponents) {
-        if (component.componentType === PricingComponentType.DOOR) {
-          let doorWidth: Decimal;
-
-          // Eco Windows utiliza el ancho completo de la abertura
-          // cuando la configuración no tiene sidelites.
-          if (
-            dimensionMode === DimensionMode.ECO_WINDOWS_DOOR &&
-            !hasSidelite
-          ) {
-            doorWidth = totalWidth;
-          } else {
-            doorWidth = positiveDimension(
-              (pieceDto as any).doorWidth,
-              "Door Width",
-            );
-          }
-
-          componentPrices.push(
-            await computeRoundedComponentPrice(
-              component,
-              doorWidth,
-              totalHeight,
-              "DOOR component",
-            ),
-          );
-
-          continue;
-        }
-
-        if (component.componentType === PricingComponentType.SIDELITE) {
-          if (dimensionMode === DimensionMode.ECO_WINDOWS_DOOR) {
-            const sideliteQuantity = Number(component.quantity ?? 0);
-
-            if (!Number.isInteger(sideliteQuantity) || sideliteQuantity < 1) {
-              throw new BadRequestException(
-                "Sidelite Quantity must be a whole number greater than zero for Eco Windows component pricing.",
-              );
-            }
-
-            const doorWidth = positiveDimension(
-              (pieceDto as any).doorWidth,
-              "Door Width",
-            );
-
-            const remainingWidth = totalWidth.sub(doorWidth);
-
-            if (remainingWidth.lte(0)) {
-              throw new BadRequestException(
-                "Opening Width must be greater than Door Width when sidelite pricing is used.",
-              );
-            }
-
-            const sideliteWidth = remainingWidth.div(sideliteQuantity);
-
-            const panelPrice = await computeRoundedComponentPrice(
-              component,
-              sideliteWidth,
-              totalHeight,
-              "SIDELITE component",
-            );
-
-            // Cada panel se redondea primero y después se suma.
-            componentPrices.push(panelPrice.mul(sideliteQuantity));
-
-            continue;
-          }
-
-          if (dimensionMode === DimensionMode.ECO_NOVO_DOOR) {
-            let totalSidelitePanels = 0;
-
-            const addSideliteSide = async (
-              widthValue: unknown,
-              quantityValue: unknown,
-              sideLabel: string,
-            ) => {
-              const quantity = Number(quantityValue ?? 0);
-              const hasWidth = !isBlankPricingDimension(widthValue);
-
-              if (!hasWidth && quantity > 0) {
-                throw new BadRequestException(
-                  `${sideLabel} Width is required.`,
-                );
-              }
-
-              if (!hasWidth) {
-                return;
-              }
-
-              if (!Number.isInteger(quantity) || quantity < 1) {
-                throw new BadRequestException(
-                  `${sideLabel} Qty must be a whole number greater than zero.`,
-                );
-              }
-
-              const sideliteWidth = positiveDimension(
-                widthValue,
-                `${sideLabel} Width`,
-              );
-
-              const panelPrice = await computeRoundedComponentPrice(
-                component,
-                sideliteWidth,
-                totalHeight,
-                `SIDELITE component (${sideLabel.toLowerCase()})`,
-              );
-
-              // El precio unitario ya está redondeado.
-              componentPrices.push(panelPrice.mul(quantity));
-
-              totalSidelitePanels += quantity;
-            };
-
-            await addSideliteSide(
-              (pieceDto as any).leftSideliteWidth,
-              (pieceDto as any).leftPanels,
-              "Left Sidelite",
-            );
-
-            await addSideliteSide(
-              (pieceDto as any).rightSideliteWidth,
-              (pieceDto as any).rightPanels,
-              "Right Sidelite",
-            );
-
-            if (totalSidelitePanels === 0) {
-              throw new BadRequestException(
-                "At least one sidelite panel is required for SIDELITE component pricing.",
-              );
-            }
-
-            continue;
-          }
-
-          throw new BadRequestException(
-            "SIDELITE component pricing is not supported for this dimension mode.",
-          );
-        }
-
+      try {
+        resolvedComponents = resolvePieceComponents({
+          idSystem: pieceDto.idSyst,
+          idConfig: pieceDto.idConf,
+          configName: config.conf,
+          dimensionMode,
+          pricingComponents,
+          width: governingDims.widthIn,
+          height: governingDims.heightIn,
+          doorWidth: (pieceDto as any).doorWidth,
+          doorHeight: (pieceDto as any).doorHeight,
+          leftSideliteWidth: (pieceDto as any).leftSideliteWidth,
+          rightSideliteWidth: (pieceDto as any).rightSideliteWidth,
+          leftPanels: (pieceDto as any).leftPanels,
+          rightPanels: (pieceDto as any).rightPanels,
+          panelCount: (pieceDto as any).panelCount,
+        });
+      } catch (error) {
         throw new BadRequestException(
-          `Unsupported pricing component type: ${component.componentType}.`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+
+      for (const resolved of resolvedComponents) {
+        const component = pricingComponents.find(
+          (candidate) =>
+            candidate.sourceConfigId === resolved.idConfig &&
+            candidate.componentType === resolved.componentType,
+        );
+
+        if (!component || resolved.widthIn == null || resolved.heightIn == null) {
+          throw new BadRequestException(
+            `Unable to resolve pricing metadata for ${resolved.componentLabel}.`,
+          );
+        }
+
+        componentPrices.push(
+          await computeRoundedComponentPrice(
+            component,
+            new Decimal(resolved.widthIn),
+            new Decimal(resolved.heightIn),
+            resolved.componentLabel,
+          ),
         );
       }
 

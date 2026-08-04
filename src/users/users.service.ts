@@ -9,7 +9,10 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 import { getRoleName } from '@/auth/utils/get-role-name';
 
 export type UserSafe = Omit<User, 'password'> & {
-  role: { id: number; name: string; markup: Prisma.Decimal };
+  role: Prisma.RoleGetPayload<{
+    include: { installationPriceProfile: true };
+  }>;
+  installationPriceProfile: Prisma.InstallationPriceProfileGetPayload<{}> | null;
 };
 
 type UserWithRoleAndPassword = Prisma.UserGetPayload<{
@@ -39,10 +42,12 @@ export class UsersService {
     isActive: true,
     deletedAt: true,
     idRole: true,
+    installationPriceProfileId: true,
+    installationPriceProfile: true,
     passwordUpdatedAt: true,
     createdAt: true,
     updatedAt: true,
-    role: true,
+    role: { include: { installationPriceProfile: true } },
   } satisfies Prisma.UserSelect;
 
   private userSnapshot(u: UserSafe) {
@@ -59,6 +64,8 @@ export class UsersService {
       postalCode: u.postalCode,
       idRole: u.idRole,
       roleName: u.role?.name ?? null,
+      installationPriceProfileId: u.installationPriceProfileId ?? null,
+      installationPriceProfileName: u.installationPriceProfile?.name ?? null,
       markupOverride: u.markupOverride ?? null,
       isTaxExempt: u.isTaxExempt ?? null,
       isActive: u.isActive ?? null,
@@ -81,6 +88,12 @@ export class UsersService {
     if ('state' in dto && cmp(before.state, after.state)) changed.push('state');
     if ('postalCode' in dto && cmp(before.postalCode, after.postalCode)) changed.push('postalCode');
     if ('idRole' in dto && cmp(before.idRole, after.idRole)) changed.push('idRole');
+    if (
+      'installationPriceProfileId' in dto &&
+      cmp(before.installationPriceProfileId, after.installationPriceProfileId)
+    ) {
+      changed.push('installationPriceProfileId');
+    }
 
     if ('markupOverride' in dto && cmp(before.markupOverride, after.markupOverride)) {
       changed.push('markupOverride');
@@ -142,14 +155,31 @@ export class UsersService {
   }
 
   async createUser(userData: CreateUserDto): Promise<UserSafe> {
-    const { idRole, ...rest } = userData;
+    const { idRole, installationPriceProfileId, ...rest } = userData;
     const hashedPassword = await bcrypt.hash(rest.password, 10);
+
+    if (installationPriceProfileId != null) {
+      const profile = await this.prisma.installationPriceProfile.findFirst({
+        where: { id: installationPriceProfileId, isActive: true },
+        select: { id: true },
+      });
+      if (!profile) {
+        throw new BadRequestException('The selected installation price profile is unavailable.');
+      }
+    }
 
     const created = await this.prisma.user.create({
       data: {
         ...rest,
         password: hashedPassword,
         role: { connect: { id: idRole } },
+        ...(installationPriceProfileId
+          ? {
+              installationPriceProfile: {
+                connect: { id: installationPriceProfileId },
+              },
+            }
+          : {}),
       },
       select: this.safeSelect,
     });
@@ -162,7 +192,7 @@ export class UsersService {
     data: UpdateUserDto;
   }): Promise<UserSafe> {
     const { where, data: userData } = params;
-    const { idRole, ...rest } = userData;
+    const { idRole, installationPriceProfileId, ...rest } = userData;
 
     const existing = await this.prisma.user.findFirst({
       where: {
@@ -187,6 +217,23 @@ export class UsersService {
 
     if (idRole) {
       dataForPrisma.role = { connect: { id: idRole } };
+    }
+
+    if (installationPriceProfileId != null) {
+      const profile = await this.prisma.installationPriceProfile.findFirst({
+        where: { id: installationPriceProfileId, isActive: true },
+        select: { id: true },
+      });
+      if (!profile) {
+        throw new BadRequestException('The selected installation price profile is unavailable.');
+      }
+    }
+
+    if (installationPriceProfileId !== undefined) {
+      dataForPrisma.installationPriceProfile =
+        installationPriceProfileId === null
+          ? { disconnect: true }
+          : { connect: { id: installationPriceProfileId } };
     }
 
     if ('markupOverride' in userData) {

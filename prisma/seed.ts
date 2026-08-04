@@ -32,6 +32,8 @@ async function main() {
     'In production',
     'Ready to pick up',
     'Delivered',
+    'Installation in progress',
+    'Installed',
   ];
 
   console.log('Upserting order statuses...');
@@ -165,6 +167,40 @@ async function main() {
       value: 30,
       description: 'Number of days an estimate remains valid.',
       unit: 'days',
+    },
+  });
+
+  await prisma.globalParameter.upsert({
+    where: { key: GlobalParameterKey.INSTALLATION_DEPOSIT },
+    update: {},
+    create: {
+      key: GlobalParameterKey.INSTALLATION_DEPOSIT,
+      value: 0,
+      description:
+        'Non-refundable deposit credited in full toward the installation balance.',
+      unit: 'USD',
+    },
+  });
+
+  await prisma.globalParameter.upsert({
+    where: { key: GlobalParameterKey.INSTALLATION_PERMIT_FEE },
+    update: {},
+    create: {
+      key: GlobalParameterKey.INSTALLATION_PERMIT_FEE,
+      value: 0,
+      description: 'Permit fee charged when an installation permit is requested.',
+      unit: 'USD',
+    },
+  });
+
+  await prisma.globalParameter.upsert({
+    where: { key: GlobalParameterKey.CARD_SURCHARGE_PERCENT },
+    update: {},
+    create: {
+      key: GlobalParameterKey.CARD_SURCHARGE_PERCENT,
+      value: 0,
+      description: 'Card surcharge applied to checkout payments.',
+      unit: '%',
     },
   });
 

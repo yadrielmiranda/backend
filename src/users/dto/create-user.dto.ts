@@ -4,8 +4,10 @@ import {
   IsIn,
   IsNotEmpty,
   IsNumber,
+  IsInt,
   IsOptional,
   IsPositive,
+  Min,
   IsString,
   Matches,
   MaxLength,
@@ -96,4 +98,10 @@ export class CreateUserDto {
   @IsOptional()
   @IsBoolean()
   isTaxExempt?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  installationPriceProfileId?: number | null;
 }

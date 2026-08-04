@@ -286,6 +286,68 @@ export class EstimatePdfHtmlBuilder {
     const adminPriceT = subtotalInternal;
     const adminProfit = Number((estimate as any).netProfit ?? 0) || 0;
 
+    const installationJob = (estimate as any).installationJobDetails;
+    const installationQuote = installationJob?.quotes?.[0] ?? null;
+    const installationDepositPaid = (installationJob?.payments ?? []).reduce(
+      (total: number, payment: any) =>
+        total + Number(payment.baseAmount ?? 0),
+      0,
+    );
+    const installationBalance = Math.max(
+      0,
+      Number(installationQuote?.total ?? 0) - installationDepositPaid,
+    );
+    const installationRows = (installationQuote?.lines ?? [])
+      .map(
+        (line: any) => `
+          <tr>
+            <td class="td desc">
+              <div class="h">${esc(line.serviceNameSnapshot)}</div>
+              ${line.componentLabel ? `<div class="s">${esc(line.componentLabel)}</div>` : ''}
+              ${line.description ? `<div class="s">${esc(line.description)}</div>` : ''}
+            </td>
+            <td class="td center">${esc(String(line.origin ?? '').replaceAll('_', ' '))}</td>
+            <td class="td right">${money(line.rate)}</td>
+            <td class="td right">${esc(Number(line.billableQuantity ?? 0).toFixed(2))} × ${esc(line.occurrences ?? 1)}</td>
+            <td class="td right strong">${money(line.adjustedAmount)}</td>
+          </tr>
+        `,
+      )
+      .join('');
+
+    const installationSection = installationQuote
+      ? `
+        <div style="margin-top:22px; font-weight:700; color:#111827;">
+          Installation Quote · Version ${esc(installationQuote.version)} · ${esc(String(installationQuote.status).replaceAll('_', ' '))}
+        </div>
+        <table>
+          <thead><tr><th>Service</th><th style="width:100px; text-align:center;">Origin</th><th style="width:100px; text-align:right;">Rate</th><th style="width:110px; text-align:right;">Quantity</th><th style="width:110px; text-align:right;">Amount</th></tr></thead>
+          <tbody>${installationRows}</tbody>
+        </table>
+        <div class="totals"><div class="totbox">
+          <div class="line"><span>Installation subtotal:</span><span>${money(installationQuote.adjustedSubtotal)}</span></div>
+          <div class="line"><span>Minimum adjustment:</span><span>${money(installationQuote.minimumAdjustment)}</span></div>
+          <div class="line total"><span>Installation total:</span><span>${money(installationQuote.total)}</span></div>
+          ${installationJob.status === 'CANCELED' && installationDepositPaid > 0 ? `
+            <div class="line"><span>Installation canceled · non-refundable deposit retained:</span><span>${money(installationDepositPaid)}</span></div>
+          ` : installationDepositPaid > 0 ? `
+            <div class="line"><span>Non-refundable deposit paid:</span><span>-${money(installationDepositPaid)}</span></div>
+            <div class="line total"><span>Installation balance:</span><span>${money(installationBalance)}</span></div>
+          ` : `
+            <div class="line"><span>Non-refundable deposit due:</span><span>${money(installationJob.depositAmountSnapshot)}</span></div>
+          `}
+        </div></div>
+        <div class="s">${installationJob.status === 'CANCELED' ? 'Installation was canceled; the paid deposit remains non-refundable.' : 'The installation deposit is non-refundable and is credited in full toward the installation balance.'}</div>
+        ${installationJob.permit ? `
+          <div class="summary">
+            <h3>Permit</h3>
+            <div class="row"><span>Permit Fee:</span><span>${money(installationJob.permit.permitFeeSnapshot)}</span></div>
+            <div class="row"><span>Permit status:</span><span>${esc(String(installationJob.permit.status).replaceAll('_', ' '))}</span></div>
+            <div class="row"><span>City Fee:</span><span>${installationJob.permit.cityFee == null ? 'Pending' : money(installationJob.permit.cityFee)}</span></div>
+          </div>` : ''}
+      `
+      : '';
+
     return `
     <!doctype html>
     <html>
@@ -548,6 +610,8 @@ export class EstimatePdfHtmlBuilder {
       }
       </div>
     </div>
+
+    ${installationSection}
 
     ${showDealerSummary
         ? `

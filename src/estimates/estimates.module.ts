@@ -12,6 +12,7 @@ import { EstimateMuntinService } from './muntins/estimate-muntin.service';
 import { EstimatePublicShareService } from './public-share/estimate-public-share.service';
 import { PublicEstimatesController } from './public-share/public-estimates.controller';
 import { NotificationsModule } from '@/notifications/notifications.module';
+import { InstallationModule } from '@/installation/installation.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { NotificationsModule } from '@/notifications/notifications.module';
   LogsModule,
   FrameColorModule,
   NotificationsModule,
+  InstallationModule,
 ],
   controllers: [EstimatesController, PublicEstimatesController],
   providers: [

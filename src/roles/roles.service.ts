@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { Role } from '@prisma/client';
 import { UpdateRoleDto } from './dto/update-role.dto';
@@ -13,8 +13,9 @@ export class RolesService {
     private logs: LogsService,
   ) {}
 
-  async findAll(): Promise<Role[]> {
+  async findAll() {
     return this.prisma.role.findMany({
+      include: { installationPriceProfile: true },
       orderBy: { id: 'asc' },
     });
   }
@@ -27,11 +28,30 @@ export class RolesService {
       throw new NotFoundException(`Role with ID #${id} not found.`);
     }
 
+    if (dto.installationPriceProfileId != null) {
+      const profile = await this.prisma.installationPriceProfile.findFirst({
+        where: { id: dto.installationPriceProfileId, isActive: true },
+        select: { id: true },
+      });
+      if (!profile) {
+        throw new BadRequestException('The selected installation price profile is unavailable.');
+      }
+    }
+
     const updated = await this.prisma.role.update({
       where: { id },
       data: {
         markup: dto.markup,
+        ...(dto.installationPriceProfileId !== undefined
+          ? {
+              installationPriceProfile:
+                dto.installationPriceProfileId === null
+                  ? { disconnect: true }
+                  : { connect: { id: dto.installationPriceProfileId } },
+            }
+          : {}),
       },
+      include: { installationPriceProfile: true },
     });
 
     // comentario en espanol: auditoria simple (por ahora solo markup)
@@ -41,6 +61,12 @@ export class RolesService {
       before.markup?.toString() !== updated.markup?.toString()
     ) {
       changedFields.push('markup');
+    }
+    if (
+      dto.installationPriceProfileId !== undefined &&
+      before.installationPriceProfileId !== updated.installationPriceProfileId
+    ) {
+      changedFields.push('installationPriceProfileId');
     }
 
     await this.logs.log({
@@ -53,11 +79,13 @@ export class RolesService {
         id: before.id,
         name: before.name,
         markup: before.markup,
+        installationPriceProfileId: before.installationPriceProfileId,
       },
       after: {
         id: updated.id,
         name: updated.name,
         markup: updated.markup,
+        installationPriceProfileId: updated.installationPriceProfileId,
       },
       meta: {
         source: 'RolesService.update',

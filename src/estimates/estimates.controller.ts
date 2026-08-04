@@ -26,6 +26,7 @@ import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { EstimatePublicShareService } from './public-share/estimate-public-share.service';
+import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('estimates')
@@ -33,6 +34,7 @@ export class EstimatesController {
   constructor(
     private readonly estimatesService: EstimatesService,
     private readonly estimatePublicShareService: EstimatePublicShareService,
+    private readonly installationWorkflowService: InstallationWorkflowService,
   ) { }
 
   @Post('preview-dimension')
@@ -144,18 +146,19 @@ export class EstimatesController {
    * No modifica ni elimina piezas.
    */
   @Patch(':id/header')
-  updateEstimateHeader(
+  async updateEstimateHeader(
     @Param('id', ParseIntPipe) estimateId: number,
     @Body() dto: UpdateEstimateHeaderDto,
     @Req() req: Request,
   ) {
     const user = req.user as AuthUser;
 
-    return this.estimatesService.updateEstimateHeader(
+    const result = await this.estimatesService.updateEstimateHeader(
       estimateId,
       dto,
       user.id,
     );
+    return result;
   }
 
   /**
@@ -163,18 +166,23 @@ export class EstimatesController {
    * Después actualiza los totales del Estimate.
    */
   @Post(':id/pieces')
-  addPiece(
+  async addPiece(
     @Param('id', ParseIntPipe) estimateId: number,
     @Body() dto: CreatePieceDto,
     @Req() req: Request,
   ) {
     const user = req.user as AuthUser;
 
-    return this.estimatesService.addPieceToEstimate(
+    const result = await this.estimatesService.addPieceToEstimate(
       estimateId,
       dto,
       user.id,
     );
+    await this.installationWorkflowService.refreshAfterEstimateChange(
+      estimateId,
+      user,
+    );
+    return result;
   }
 
   /**
@@ -182,7 +190,7 @@ export class EstimatesController {
  * Toda la operación se ejecuta en una sola transacción.
  */
   @Patch(':id/pieces/general-markup')
-  applyGeneralDealerMarkup(
+  async applyGeneralDealerMarkup(
     @Param('id', ParseIntPipe) estimateId: number,
     @Body()
     body: {
@@ -199,11 +207,16 @@ export class EstimatesController {
       );
     }
 
-    return this.estimatesService.applyGeneralDealerMarkupToEstimate(
+    const result = await this.estimatesService.applyGeneralDealerMarkupToEstimate(
       estimateId,
       dealerMarkup,
       user.id,
     );
+    await this.installationWorkflowService.refreshAfterEstimateChange(
+      estimateId,
+      user,
+    );
+    return result;
   }
 
   /**
@@ -211,7 +224,7 @@ export class EstimatesController {
  * a todas las piezas del Estimate.
  */
   @Patch(':id/pieces/bulk-attribute')
-  applyBulkPieceAttribute(
+  async applyBulkPieceAttribute(
     @Param('id', ParseIntPipe) estimateId: number,
     @Body()
     body: {
@@ -254,12 +267,17 @@ export class EstimatesController {
       );
     }
 
-    return this.estimatesService
+    const result = await this.estimatesService
       .applyBulkPieceAttributeToEstimate(
         estimateId,
         changes,
         user.id,
       );
+    await this.installationWorkflowService.refreshAfterEstimateChange(
+      estimateId,
+      user,
+    );
+    return result;
   }
 
   /**
@@ -267,7 +285,7 @@ export class EstimatesController {
    * Después actualiza los totales del Estimate.
    */
   @Patch(':id/pieces/:pieceId')
-  updatePiece(
+  async updatePiece(
     @Param('id', ParseIntPipe) estimateId: number,
     @Param('pieceId', ParseIntPipe) pieceId: number,
     @Body() dto: CreatePieceDto,
@@ -275,12 +293,17 @@ export class EstimatesController {
   ) {
     const user = req.user as AuthUser;
 
-    return this.estimatesService.updatePieceInEstimate(
+    const result = await this.estimatesService.updatePieceInEstimate(
       estimateId,
       pieceId,
       dto,
       user.id,
     );
+    await this.installationWorkflowService.refreshAfterEstimateChange(
+      estimateId,
+      user,
+    );
+    return result;
   }
 
   /**
@@ -288,18 +311,23 @@ export class EstimatesController {
    * los totales del Estimate.
    */
   @Delete(':id/pieces/:pieceId')
-  deletePiece(
+  async deletePiece(
     @Param('id', ParseIntPipe) estimateId: number,
     @Param('pieceId', ParseIntPipe) pieceId: number,
     @Req() req: Request,
   ) {
     const user = req.user as AuthUser;
 
-    return this.estimatesService.deletePieceFromEstimate(
+    const result = await this.estimatesService.deletePieceFromEstimate(
       estimateId,
       pieceId,
       user.id,
     );
+    await this.installationWorkflowService.refreshAfterEstimateChange(
+      estimateId,
+      user,
+    );
+    return result;
   }
 
 
