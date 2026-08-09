@@ -21,7 +21,7 @@ import { UpdateSystemConfigPricingComponentsDto } from "./dto/update-system-conf
 
 @Injectable()
 export class SystemsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   async system(where: Prisma.SystemWhereUniqueInput): Promise<System> {
     const system = await this.prisma.system.findUnique({
@@ -459,6 +459,7 @@ export class SystemsService {
       isSelectableInEstimate: sysConf.isSelectableInEstimate,
 
       dimensionMode: sysConf.dimensionMode,
+      minimumBillableWidthIn: sysConf.minimumBillableWidthIn,
       minimumBillableHeightIn: sysConf.minimumBillableHeightIn,
       requiresWidth: sysConf.requiresWidth,
       requiresHeight: sysConf.requiresHeight,
@@ -664,6 +665,7 @@ export class SystemsService {
       isSelectableInEstimate: sysConf.isSelectableInEstimate,
 
       dimensionMode: sysConf.dimensionMode,
+      minimumBillableWidthIn: sysConf.minimumBillableWidthIn,
       minimumBillableHeightIn: sysConf.minimumBillableHeightIn,
       requiresWidth: sysConf.requiresWidth,
       requiresHeight: sysConf.requiresHeight,
@@ -863,76 +865,84 @@ export class SystemsService {
 
     const dimensionUpdateData = isLinearMaterial
       ? {
-          dimensionMode: DimensionMode.STANDARD,
-          requiresWidth: true,
-          requiresHeight: false,
-          requiresHeightLeft: false,
-          requiresHeightRight: false,
-          requiresLegHeight: false,
-          requiresDoorWidth: false,
-          requiresDoorHeight: false,
-          requiresLeftSideliteWidth: false,
-          requiresRightSideliteWidth: false,
-          requiresLeftPanels: false,
-          requiresRightPanels: false,
-          requiresPanelCount: false,
-          requiresHorizontalHeights: false,
-        }
+        dimensionMode: DimensionMode.STANDARD,
+        requiresWidth: true,
+        requiresHeight: false,
+        requiresHeightLeft: false,
+        requiresHeightRight: false,
+        requiresLegHeight: false,
+        requiresDoorWidth: false,
+        requiresDoorHeight: false,
+        requiresLeftSideliteWidth: false,
+        requiresRightSideliteWidth: false,
+        requiresLeftPanels: false,
+        requiresRightPanels: false,
+        requiresPanelCount: false,
+        requiresHorizontalHeights: false,
+      }
       : {
-          ...(data.dimensionMode !== undefined
-            ? { dimensionMode: data.dimensionMode }
-            : {}),
+        ...(data.dimensionMode !== undefined
+          ? { dimensionMode: data.dimensionMode }
+          : {}),
 
-          ...(data.requiresWidth !== undefined
-            ? { requiresWidth: data.requiresWidth }
-            : {}),
-          ...(data.requiresHeight !== undefined
-            ? { requiresHeight: data.requiresHeight }
-            : {}),
-          ...(data.requiresHeightLeft !== undefined
-            ? { requiresHeightLeft: data.requiresHeightLeft }
-            : {}),
-          ...(data.requiresHeightRight !== undefined
-            ? { requiresHeightRight: data.requiresHeightRight }
-            : {}),
-          ...(data.requiresLegHeight !== undefined
-            ? { requiresLegHeight: data.requiresLegHeight }
-            : {}),
-          ...(data.requiresDoorWidth !== undefined
-            ? { requiresDoorWidth: data.requiresDoorWidth }
-            : {}),
-          ...(data.requiresDoorHeight !== undefined
-            ? { requiresDoorHeight: data.requiresDoorHeight }
-            : {}),
-          ...(data.requiresLeftSideliteWidth !== undefined
-            ? { requiresLeftSideliteWidth: data.requiresLeftSideliteWidth }
-            : {}),
-          ...(data.requiresRightSideliteWidth !== undefined
-            ? { requiresRightSideliteWidth: data.requiresRightSideliteWidth }
-            : {}),
-          ...(data.requiresLeftPanels !== undefined
-            ? { requiresLeftPanels: data.requiresLeftPanels }
-            : {}),
-          ...(data.requiresRightPanels !== undefined
-            ? { requiresRightPanels: data.requiresRightPanels }
-            : {}),
-          ...(data.requiresPanelCount !== undefined
-            ? { requiresPanelCount: data.requiresPanelCount }
-            : {}),
-          ...(data.requiresHorizontalHeights !== undefined
-            ? { requiresHorizontalHeights: data.requiresHorizontalHeights }
-            : {}),
-        };
+        ...(data.requiresWidth !== undefined
+          ? { requiresWidth: data.requiresWidth }
+          : {}),
+        ...(data.requiresHeight !== undefined
+          ? { requiresHeight: data.requiresHeight }
+          : {}),
+        ...(data.requiresHeightLeft !== undefined
+          ? { requiresHeightLeft: data.requiresHeightLeft }
+          : {}),
+        ...(data.requiresHeightRight !== undefined
+          ? { requiresHeightRight: data.requiresHeightRight }
+          : {}),
+        ...(data.requiresLegHeight !== undefined
+          ? { requiresLegHeight: data.requiresLegHeight }
+          : {}),
+        ...(data.requiresDoorWidth !== undefined
+          ? { requiresDoorWidth: data.requiresDoorWidth }
+          : {}),
+        ...(data.requiresDoorHeight !== undefined
+          ? { requiresDoorHeight: data.requiresDoorHeight }
+          : {}),
+        ...(data.requiresLeftSideliteWidth !== undefined
+          ? { requiresLeftSideliteWidth: data.requiresLeftSideliteWidth }
+          : {}),
+        ...(data.requiresRightSideliteWidth !== undefined
+          ? { requiresRightSideliteWidth: data.requiresRightSideliteWidth }
+          : {}),
+        ...(data.requiresLeftPanels !== undefined
+          ? { requiresLeftPanels: data.requiresLeftPanels }
+          : {}),
+        ...(data.requiresRightPanels !== undefined
+          ? { requiresRightPanels: data.requiresRightPanels }
+          : {}),
+        ...(data.requiresPanelCount !== undefined
+          ? { requiresPanelCount: data.requiresPanelCount }
+          : {}),
+        ...(data.requiresHorizontalHeights !== undefined
+          ? { requiresHorizontalHeights: data.requiresHorizontalHeights }
+          : {}),
+      };
 
-    const minimumBillableHeightUpdateData = isLinearMaterial
+    const minimumBillableDimensionsUpdateData = isLinearMaterial
       ? {
-          minimumBillableHeightIn: null,
-        }
-      : data.minimumBillableHeightIn !== undefined
-        ? {
+        minimumBillableWidthIn: null,
+        minimumBillableHeightIn: null,
+      }
+      : {
+        ...(data.minimumBillableWidthIn !== undefined
+          ? {
+            minimumBillableWidthIn: data.minimumBillableWidthIn,
+          }
+          : {}),
+        ...(data.minimumBillableHeightIn !== undefined
+          ? {
             minimumBillableHeightIn: data.minimumBillableHeightIn,
           }
-        : {};
+          : {}),
+      };
 
     await this.prisma.$transaction(async (tx) => {
       await tx.sysConfActiveOption.deleteMany({
@@ -1024,12 +1034,12 @@ export class SystemsService {
 
           ...(data.isSelectableInEstimate !== undefined
             ? {
-                isSelectableInEstimate: data.isSelectableInEstimate,
-              }
+              isSelectableInEstimate: data.isSelectableInEstimate,
+            }
             : {}),
 
           ...dimensionUpdateData,
-          ...minimumBillableHeightUpdateData,
+          ...minimumBillableDimensionsUpdateData,
         },
       });
     });
@@ -1675,14 +1685,14 @@ export class SystemsService {
     const sysConfUpdateData: Prisma.SysConfUpdateInput = {
       ...(data.allowScreen !== undefined
         ? {
-            allowScreen: isLinearMaterial ? false : data.allowScreen,
-          }
+          allowScreen: isLinearMaterial ? false : data.allowScreen,
+        }
         : {}),
 
       ...(data.sortOrder !== undefined
         ? {
-            sortOrder: data.sortOrder,
-          }
+          sortOrder: data.sortOrder,
+        }
         : {}),
     };
 

@@ -55,6 +55,12 @@ export class UpdateSystemConfigOptionsDto {
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 3 })
   @Min(0.001)
+  minimumBillableWidthIn?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 3 })
+  @Min(0.001)
   minimumBillableHeightIn?: number | null;
 
   @IsOptional()
