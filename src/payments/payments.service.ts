@@ -8,6 +8,9 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
+  InstallationJobStatus,
+  InstallationPermitStatus,
+  OrderExtraChargeStatus,
   PaymentStatus,
   PaymentType,
   Prisma,
@@ -17,6 +20,14 @@ import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
 import { INSTALLATION_DEPOSIT_TERMS } from '@/installation/installation-workflow.service';
+
+type PaymentWithEstimate = Prisma.PaymentGetPayload<{
+  include: {
+    estimate: {
+      include: { order: true; status: true };
+    };
+  };
+}>;
 
 @Injectable()
 export class PaymentsService {
@@ -42,21 +53,41 @@ export class PaymentsService {
     return String(frontendUrl).replace(/\/+$/, '');
   }
 
-  private async createOrderForMaterialPayment(
+  private async ensureOrderForMaterialPayment(
     tx: Prisma.TransactionClient,
-    payment: Prisma.PaymentGetPayload<{
-      include: {
-        estimate: {
-          include: { order: true; status: true };
-        };
-      };
-    }>,
-  ) {
+    payment: PaymentWithEstimate,
+  ): Promise<boolean> {
     const estimate = payment.estimate;
-    if (estimate.order) return estimate.order;
-    if (estimate.status.name !== 'Active') {
+
+    if (estimate.order) {
+      if (estimate.order.paymentId !== payment.id) {
+        throw new Error(
+          `Order #${estimate.order.number} is linked to another payment.`,
+        );
+      }
+      if (estimate.status.name === 'Ordered') return false;
+      if (estimate.status.name !== 'Active') {
+        throw new Error(
+          `Estimate #${estimate.number} has an order but cannot be reconciled from status ${estimate.status.name}.`,
+        );
+      }
+
+      const orderedStatus = await tx.estimateStatus.findUnique({
+        where: { name: 'Ordered' },
+      });
+      if (!orderedStatus) {
+        throw new Error('Estimate status "Ordered" not seeded.');
+      }
+      await tx.estimate.update({
+        where: { id: estimate.id },
+        data: { statusId: orderedStatus.id },
+      });
+      return true;
+    }
+
+    if (!['Active', 'Ordered'].includes(estimate.status.name)) {
       throw new Error(
-        `Estimate #${estimate.number} is not active for material-order creation.`,
+        `Estimate #${estimate.number} cannot create its paid material order from status ${estimate.status.name}.`,
       );
     }
 
@@ -101,7 +132,24 @@ export class PaymentsService {
         message: `Order #${order.number} created from paid material checkout.`,
       },
     });
-    return order;
+    return true;
+  }
+
+  private async ensurePaidPaymentEffects(
+    tx: Prisma.TransactionClient,
+    payment: PaymentWithEstimate,
+  ): Promise<boolean> {
+    let changed = false;
+
+    if (payment.type === PaymentType.MATERIAL) {
+      changed =
+        (await this.ensureOrderForMaterialPayment(tx, payment)) || changed;
+    }
+
+    changed =
+      (await this.installationWorkflow.markPaymentPaid(tx, payment)) || changed;
+
+    return changed;
   }
 
   private async processPaidCheckoutSession(
@@ -121,9 +169,7 @@ export class PaymentsService {
     if (!payment) return false;
 
     if (payment.status === PaymentStatus.PAID) {
-      if (payment.type === PaymentType.MATERIAL) {
-        await this.createOrderForMaterialPayment(tx, payment);
-      }
+      await this.ensurePaidPaymentEffects(tx, payment);
       return true;
     }
 
@@ -150,11 +196,118 @@ export class PaymentsService {
       },
     });
 
-    if (payment.type === PaymentType.MATERIAL) {
-      await this.createOrderForMaterialPayment(tx, payment);
-    }
-    await this.installationWorkflow.markPaymentPaid(tx, payment);
+    await this.ensurePaidPaymentEffects(tx, payment);
     return true;
+  }
+
+  private async reconcilePaidPaymentEffects(): Promise<void> {
+    const candidates = await this.prisma.payment.findMany({
+      where: {
+        status: PaymentStatus.PAID,
+        OR: [
+          {
+            type: PaymentType.MATERIAL,
+            order: { is: null },
+          },
+          {
+            type: PaymentType.MATERIAL,
+            estimate: {
+              is: {
+                status: { is: { name: { not: 'Ordered' } } },
+              },
+            },
+          },
+          {
+            type: PaymentType.INSTALLATION_DEPOSIT,
+            installationJob: {
+              is: {
+                status: InstallationJobStatus.DEPOSIT_PAYMENT_PENDING,
+              },
+            },
+          },
+          {
+            type: PaymentType.PERMIT,
+            installationJob: {
+              is: {
+                OR: [
+                  { status: InstallationJobStatus.PERMIT_PAYMENT_PENDING },
+                  {
+                    permit: {
+                      is: { status: InstallationPermitStatus.PAYMENT_PENDING },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          {
+            type: PaymentType.MATERIAL,
+            installationJob: {
+              is: {
+                status: InstallationJobStatus.MATERIAL_PAYMENT_PENDING,
+              },
+            },
+          },
+          {
+            type: PaymentType.INSTALLATION,
+            installationJob: {
+              is: {
+                status: InstallationJobStatus.INSTALLATION_PAYMENT_PENDING,
+              },
+            },
+          },
+          {
+            type: PaymentType.EXTRA,
+            extraCharge: {
+              is: { status: OrderExtraChargeStatus.PAYMENT_DUE },
+            },
+          },
+        ],
+      },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+      take: 100,
+    });
+
+    for (const candidate of candidates) {
+      try {
+        const repaired = await this.prisma.$transaction(async (tx) => {
+          const payment = await tx.payment.findUnique({
+            where: { id: candidate.id },
+            include: {
+              estimate: { include: { order: true, status: true } },
+            },
+          });
+          if (!payment || payment.status !== PaymentStatus.PAID) return false;
+
+          const changed = await this.ensurePaidPaymentEffects(tx, payment);
+          if (changed) {
+            await tx.eventLog.create({
+              data: {
+                action: 'UPDATE',
+                entityType: 'Payment',
+                entityId: payment.id,
+                userId: null,
+                message: `Missing effects for paid ${payment.type} payment were reconciled automatically.`,
+              },
+            });
+          }
+          return changed;
+        });
+
+        if (repaired) {
+          this.logger.warn(
+            `Reconciled missing effects for paid Payment #${candidate.id}.`,
+          );
+        }
+      } catch (error: unknown) {
+        this.logger.error(
+          `Error reconciling paid Payment #${candidate.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 
   private async closeUnpaidCheckoutSession(
@@ -235,6 +388,8 @@ export class PaymentsService {
           );
         }
       }
+
+      await this.reconcilePaidPaymentEffects();
     } finally {
       this.reconciliationInProgress = false;
     }

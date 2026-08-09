@@ -3339,28 +3339,91 @@ export class InstallationWorkflowService {
       installationJobId: number | null;
       extraChargeId: number | null;
     },
-  ) {
+  ): Promise<boolean> {
     if (payment.type === PaymentType.INSTALLATION_DEPOSIT) {
-      if (!payment.installationJobId) return;
-      await this.beginRemeasurementAfterDeposit(tx, payment.installationJobId);
-    } else if (payment.type === PaymentType.PERMIT) {
-      if (!payment.installationJobId) return;
-      await tx.installationPermit.update({
-        where: { jobId: payment.installationJobId },
-        data: { status: InstallationPermitStatus.PAID, paidAt: new Date() },
-      });
-      await tx.installationJob.update({
+      if (!payment.installationJobId) {
+        throw new Error('Paid installation deposit has no installation job.');
+      }
+      const job = await tx.installationJob.findUnique({
         where: { id: payment.installationJobId },
-        data: { status: InstallationJobStatus.PERMIT_PROCESSING },
+        select: { status: true },
       });
+      if (!job) {
+        throw new Error(
+          `Installation Job #${payment.installationJobId} not found.`,
+        );
+      }
+      if (job.status !== InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) {
+        return false;
+      }
+      await this.beginRemeasurementAfterDeposit(tx, payment.installationJobId);
+      return true;
+    } else if (payment.type === PaymentType.PERMIT) {
+      if (!payment.installationJobId) {
+        throw new Error('Paid permit has no installation job.');
+      }
+      const job = await tx.installationJob.findUnique({
+        where: { id: payment.installationJobId },
+        include: { permit: true },
+      });
+      if (!job) {
+        throw new Error(
+          `Installation Job #${payment.installationJobId} not found.`,
+        );
+      }
+      if (!job.permit) {
+        throw new Error(
+          `Installation Job #${payment.installationJobId} has no permit.`,
+        );
+      }
+
+      let changed = false;
+      let permit = job.permit;
+      if (permit.status === InstallationPermitStatus.PAYMENT_PENDING) {
+        permit = await tx.installationPermit.update({
+          where: { jobId: payment.installationJobId },
+          data: { status: InstallationPermitStatus.PAID, paidAt: new Date() },
+        });
+        changed = true;
+      } else if (!permit.paidAt) {
+        permit = await tx.installationPermit.update({
+          where: { jobId: payment.installationJobId },
+          data: { paidAt: new Date() },
+        });
+        changed = true;
+      }
+
+      if (job.status === InstallationJobStatus.PERMIT_PAYMENT_PENDING) {
+        await tx.installationJob.update({
+          where: { id: payment.installationJobId },
+          data: { status: resolveApprovedPreOrderStage(permit) },
+        });
+        changed = true;
+      }
+      return changed;
     } else if (payment.type === PaymentType.MATERIAL) {
-      if (!payment.installationJobId) return;
+      if (!payment.installationJobId) return false;
+      const job = await tx.installationJob.findUnique({
+        where: { id: payment.installationJobId },
+        select: { status: true },
+      });
+      if (!job) {
+        throw new Error(
+          `Installation Job #${payment.installationJobId} not found.`,
+        );
+      }
+      if (job.status !== InstallationJobStatus.MATERIAL_PAYMENT_PENDING) {
+        return false;
+      }
       await tx.installationJob.update({
         where: { id: payment.installationJobId },
         data: { status: InstallationJobStatus.MATERIAL_PAID },
       });
+      return true;
     } else if (payment.type === PaymentType.INSTALLATION) {
-      if (!payment.installationJobId) return;
+      if (!payment.installationJobId) {
+        throw new Error('Paid installation balance has no installation job.');
+      }
       const progress = await tx.installationJob.findUnique({
         where: { id: payment.installationJobId },
         select: {
@@ -3379,19 +3442,54 @@ export class InstallationWorkflowService {
           },
         },
       });
+      if (!progress) {
+        throw new Error(
+          `Installation Job #${payment.installationJobId} not found.`,
+        );
+      }
+      if (
+        progress.status !==
+        InstallationJobStatus.INSTALLATION_PAYMENT_PENDING
+      ) {
+        return false;
+      }
       const restoredStatus =
-        progress?.status === InstallationJobStatus.IN_PROGRESS
-          ? InstallationJobStatus.IN_PROGRESS
-          : progress?.completedAt || progress?.appointments[0]?.status === InstallationAppointmentStatus.COMPLETED
-            ? InstallationJobStatus.COMPLETED
-            : progress?.appointments[0]?.status === InstallationAppointmentStatus.ACCEPTED
-              ? InstallationJobStatus.SCHEDULED
-              : InstallationJobStatus.INSTALLATION_PAID;
+        progress.completedAt ||
+        progress.appointments[0]?.status ===
+          InstallationAppointmentStatus.COMPLETED
+          ? InstallationJobStatus.COMPLETED
+          : progress.appointments[0]?.status ===
+              InstallationAppointmentStatus.ACCEPTED
+            ? InstallationJobStatus.SCHEDULED
+            : InstallationJobStatus.INSTALLATION_PAID;
       await tx.installationJob.update({
         where: { id: payment.installationJobId },
         data: { status: restoredStatus },
       });
-    } else if (payment.type === PaymentType.EXTRA && payment.extraChargeId) {
+      return true;
+    } else if (payment.type === PaymentType.EXTRA) {
+      if (!payment.extraChargeId) {
+        throw new Error('Paid extra charge has no extra charge record.');
+      }
+      const extraCharge = await tx.orderExtraCharge.findUnique({
+        where: { id: payment.extraChargeId },
+      });
+      if (!extraCharge) {
+        throw new Error(`Extra Charge #${payment.extraChargeId} not found.`);
+      }
+      if (extraCharge.status !== OrderExtraChargeStatus.PAYMENT_DUE) {
+        if (
+          extraCharge.status === OrderExtraChargeStatus.PAID &&
+          !extraCharge.paidAt
+        ) {
+          await tx.orderExtraCharge.update({
+            where: { id: payment.extraChargeId },
+            data: { paidAt: new Date() },
+          });
+          return true;
+        }
+        return false;
+      }
       await tx.orderExtraCharge.update({
         where: { id: payment.extraChargeId },
         data: {
@@ -3399,7 +3497,10 @@ export class InstallationWorkflowService {
           paidAt: new Date(),
         },
       });
+      return true;
     }
+
+    return false;
   }
 
   async markOrderReady(tx: PrismaTransactionClient, estimateId: number) {
