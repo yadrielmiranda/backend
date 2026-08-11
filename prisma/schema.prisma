@@ -329,6 +329,12 @@ enum PricingComponentType {
   SIDELITE
 }
 
+enum BillableHeightMode {
+  ACTUAL_HEIGHT
+  WIDTH_PERCENTAGE
+  FIXED
+}
+
 model SysConf {
   system                  System        @relation(fields: [idSystem], references: [id])
   idSystem                Int
@@ -340,6 +346,9 @@ model SysConf {
   dimensionMode           DimensionMode @default(STANDARD)
   minimumBillableWidthIn  Decimal?      @db.Decimal(10, 3)
   minimumBillableHeightIn Decimal?      @db.Decimal(10, 3)
+  billableHeightMode      BillableHeightMode @default(ACTUAL_HEIGHT)
+  billableHeightPercentOfWidth Decimal?      @db.Decimal(10, 3)
+  billableHeightFixedIn   Decimal?           @db.Decimal(10, 3)
 
   requiresWidth       Boolean @default(false)
   requiresHeight      Boolean @default(false)

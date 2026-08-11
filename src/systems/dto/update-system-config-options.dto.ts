@@ -1,6 +1,15 @@
 import { Type } from 'class-transformer';
-import { ArrayUnique, IsArray, IsBoolean, IsEnum, IsInt, IsNumber, IsOptional, Min } from 'class-validator';
-import { DimensionMode } from '@prisma/client';
+import {
+  ArrayUnique,
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  Min,
+} from 'class-validator';
+import { BillableHeightMode, DimensionMode } from '@prisma/client';
 
 export class UpdateSystemConfigOptionsDto {
   @IsArray()
@@ -62,6 +71,22 @@ export class UpdateSystemConfigOptionsDto {
   @IsNumber({ maxDecimalPlaces: 3 })
   @Min(0.001)
   minimumBillableHeightIn?: number | null;
+
+  @IsOptional()
+  @IsEnum(BillableHeightMode)
+  billableHeightMode?: BillableHeightMode;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 3 })
+  @Min(0.001)
+  billableHeightPercentOfWidth?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 3 })
+  @Min(0)
+  billableHeightFixedIn?: number | null;
 
   @IsOptional()
   @IsBoolean()

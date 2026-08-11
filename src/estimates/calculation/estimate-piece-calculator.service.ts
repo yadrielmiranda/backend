@@ -13,6 +13,7 @@ import {
 
 import Decimal from "decimal.js";
 
+import { resolveBillablePricingDimensions } from "@/pricing/billable-dimensions";
 import { computeBasePrice } from "@/pricing/price-formula";
 import { resolvePieceComponents } from "@/pricing/piece-component-resolver";
 
@@ -366,6 +367,9 @@ export class EstimatePieceCalculatorService {
           dimensionMode: true,
           minimumBillableWidthIn: true,
           minimumBillableHeightIn: true,
+          billableHeightMode: true,
+          billableHeightPercentOfWidth: true,
+          billableHeightFixedIn: true,
 
           requiresWidth: true,
           requiresHeight: true,
@@ -389,6 +393,9 @@ export class EstimatePieceCalculatorService {
                 select: {
                   minimumBillableWidthIn: true,
                   minimumBillableHeightIn: true,
+                  billableHeightMode: true,
+                  billableHeightPercentOfWidth: true,
+                  billableHeightFixedIn: true,
                   config: {
                     select: {
                       conf: true,
@@ -793,26 +800,6 @@ export class EstimatePieceCalculatorService {
     const dimensionMode: DimensionMode =
       sysConf.dimensionMode ?? DimensionMode.STANDARD;
 
-    const resolveBillableDimension = (
-      actualValue: Decimal,
-      minimumValue: unknown,
-      dimensionLabel: "width" | "height",
-    ): Decimal => {
-      if (minimumValue == null || minimumValue === "") {
-        return actualValue;
-      }
-
-      const minimum = new Decimal(String(minimumValue));
-
-      if (!minimum.isFinite() || minimum.lte(0)) {
-        throw new BadRequestException(
-          `Minimum billable ${dimensionLabel} must be greater than zero.`,
-        );
-      }
-
-      return Decimal.max(actualValue, minimum);
-    };
-
     const isBlank = (value: unknown) => value == null || value === "";
 
     const requireField = (
@@ -1199,26 +1186,23 @@ export class EstimatePieceCalculatorService {
     if (pricingComponents.length === 0) {
       // XT/XXT se cotiza aquí como una sola pieza con Width + Opening Height.
       // Los rangos se evalúan con las dimensiones facturables.
-      const pricingWidthIn = resolveBillableDimension(
-        directPricingWidthIn,
-        sysConf.minimumBillableWidthIn,
-        "width",
-      );
-
-      const pricingHeightIn = resolveBillableDimension(
-        new Decimal(String(governingDims.heightIn)),
-        sysConf.minimumBillableHeightIn,
-        "height",
-      );
+      const { widthIn: pricingWidthIn, heightIn: pricingHeightIn } =
+        resolveBillablePricingDimensions({
+          actualWidthIn: directPricingWidthIn,
+          actualHeightIn: new Decimal(String(governingDims.heightIn)),
+          minimumBillableWidthIn: sysConf.minimumBillableWidthIn,
+          minimumBillableHeightIn: sysConf.minimumBillableHeightIn,
+          billableHeightMode: sysConf.billableHeightMode,
+          billableHeightPercentOfWidth:
+            sysConf.billableHeightPercentOfWidth,
+          billableHeightFixedIn: sysConf.billableHeightFixedIn,
+        });
 
       const pricingWidthFt = pricingWidthIn.div(12);
       const pricingHeightFt = pricingHeightIn.div(12);
 
       const areaFt2 = pricingWidthFt.mul(pricingHeightFt);
-
-      const perimeterFt = pricingWidthFt
-        .add(pricingHeightFt)
-        .mul(2);
+      const perimeterFt = pricingWidthFt.add(pricingHeightFt).mul(2);
 
       const rule = await this.getPricingRuleForConfig(
         pieceDto,
@@ -1264,17 +1248,20 @@ export class EstimatePieceCalculatorService {
           );
         }
 
-        const billableWidthIn = resolveBillableDimension(
-          widthIn,
-          component.sourceSysConf.minimumBillableWidthIn,
-          "width",
-        );
-
-        const billableHeightIn = resolveBillableDimension(
-          heightIn,
-          component.sourceSysConf.minimumBillableHeightIn,
-          "height",
-        );
+        const { widthIn: billableWidthIn, heightIn: billableHeightIn } =
+          resolveBillablePricingDimensions({
+            actualWidthIn: widthIn,
+            actualHeightIn: heightIn,
+            minimumBillableWidthIn:
+              component.sourceSysConf.minimumBillableWidthIn,
+            minimumBillableHeightIn:
+              component.sourceSysConf.minimumBillableHeightIn,
+            billableHeightMode: component.sourceSysConf.billableHeightMode,
+            billableHeightPercentOfWidth:
+              component.sourceSysConf.billableHeightPercentOfWidth,
+            billableHeightFixedIn:
+              component.sourceSysConf.billableHeightFixedIn,
+          });
 
         const rule = await this.getPricingRuleForConfig(
           pieceDto,
@@ -1290,7 +1277,6 @@ export class EstimatePieceCalculatorService {
         const componentHeightFt = billableHeightIn.div(12);
 
         const componentAreaFt2 = componentWidthFt.mul(componentHeightFt);
-
         const componentPerimeterFt = componentWidthFt
           .add(componentHeightFt)
           .mul(2);
@@ -1302,6 +1288,7 @@ export class EstimatePieceCalculatorService {
           new Decimal(rule.costoB.toString()),
           new Decimal(rule.costoC.toString()),
         );
+
         return componentBasePrice.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       };
 

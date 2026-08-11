@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import {
+  BillableHeightMode,
   DimensionMode,
   PricingComponentType,
   Prisma,
@@ -21,7 +22,7 @@ import { UpdateSystemConfigPricingComponentsDto } from "./dto/update-system-conf
 
 @Injectable()
 export class SystemsService {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
   async system(where: Prisma.SystemWhereUniqueInput): Promise<System> {
     const system = await this.prisma.system.findUnique({
@@ -461,6 +462,9 @@ export class SystemsService {
       dimensionMode: sysConf.dimensionMode,
       minimumBillableWidthIn: sysConf.minimumBillableWidthIn,
       minimumBillableHeightIn: sysConf.minimumBillableHeightIn,
+      billableHeightMode: sysConf.billableHeightMode,
+      billableHeightPercentOfWidth: sysConf.billableHeightPercentOfWidth,
+      billableHeightFixedIn: sysConf.billableHeightFixedIn,
       requiresWidth: sysConf.requiresWidth,
       requiresHeight: sysConf.requiresHeight,
       requiresHeightLeft: sysConf.requiresHeightLeft,
@@ -667,6 +671,9 @@ export class SystemsService {
       dimensionMode: sysConf.dimensionMode,
       minimumBillableWidthIn: sysConf.minimumBillableWidthIn,
       minimumBillableHeightIn: sysConf.minimumBillableHeightIn,
+      billableHeightMode: sysConf.billableHeightMode,
+      billableHeightPercentOfWidth: sysConf.billableHeightPercentOfWidth,
+      billableHeightFixedIn: sysConf.billableHeightFixedIn,
       requiresWidth: sysConf.requiresWidth,
       requiresHeight: sysConf.requiresHeight,
       requiresHeightLeft: sysConf.requiresHeightLeft,
@@ -729,6 +736,9 @@ export class SystemsService {
       select: {
         idSystem: true,
         idConfig: true,
+        billableHeightMode: true,
+        billableHeightPercentOfWidth: true,
+        billableHeightFixedIn: true,
         system: {
           select: {
             defaultConfigId: true,
@@ -865,84 +875,157 @@ export class SystemsService {
 
     const dimensionUpdateData = isLinearMaterial
       ? {
-        dimensionMode: DimensionMode.STANDARD,
-        requiresWidth: true,
-        requiresHeight: false,
-        requiresHeightLeft: false,
-        requiresHeightRight: false,
-        requiresLegHeight: false,
-        requiresDoorWidth: false,
-        requiresDoorHeight: false,
-        requiresLeftSideliteWidth: false,
-        requiresRightSideliteWidth: false,
-        requiresLeftPanels: false,
-        requiresRightPanels: false,
-        requiresPanelCount: false,
-        requiresHorizontalHeights: false,
-      }
+          dimensionMode: DimensionMode.STANDARD,
+          requiresWidth: true,
+          requiresHeight: false,
+          requiresHeightLeft: false,
+          requiresHeightRight: false,
+          requiresLegHeight: false,
+          requiresDoorWidth: false,
+          requiresDoorHeight: false,
+          requiresLeftSideliteWidth: false,
+          requiresRightSideliteWidth: false,
+          requiresLeftPanels: false,
+          requiresRightPanels: false,
+          requiresPanelCount: false,
+          requiresHorizontalHeights: false,
+        }
       : {
-        ...(data.dimensionMode !== undefined
-          ? { dimensionMode: data.dimensionMode }
-          : {}),
+          ...(data.dimensionMode !== undefined
+            ? { dimensionMode: data.dimensionMode }
+            : {}),
 
-        ...(data.requiresWidth !== undefined
-          ? { requiresWidth: data.requiresWidth }
-          : {}),
-        ...(data.requiresHeight !== undefined
-          ? { requiresHeight: data.requiresHeight }
-          : {}),
-        ...(data.requiresHeightLeft !== undefined
-          ? { requiresHeightLeft: data.requiresHeightLeft }
-          : {}),
-        ...(data.requiresHeightRight !== undefined
-          ? { requiresHeightRight: data.requiresHeightRight }
-          : {}),
-        ...(data.requiresLegHeight !== undefined
-          ? { requiresLegHeight: data.requiresLegHeight }
-          : {}),
-        ...(data.requiresDoorWidth !== undefined
-          ? { requiresDoorWidth: data.requiresDoorWidth }
-          : {}),
-        ...(data.requiresDoorHeight !== undefined
-          ? { requiresDoorHeight: data.requiresDoorHeight }
-          : {}),
-        ...(data.requiresLeftSideliteWidth !== undefined
-          ? { requiresLeftSideliteWidth: data.requiresLeftSideliteWidth }
-          : {}),
-        ...(data.requiresRightSideliteWidth !== undefined
-          ? { requiresRightSideliteWidth: data.requiresRightSideliteWidth }
-          : {}),
-        ...(data.requiresLeftPanels !== undefined
-          ? { requiresLeftPanels: data.requiresLeftPanels }
-          : {}),
-        ...(data.requiresRightPanels !== undefined
-          ? { requiresRightPanels: data.requiresRightPanels }
-          : {}),
-        ...(data.requiresPanelCount !== undefined
-          ? { requiresPanelCount: data.requiresPanelCount }
-          : {}),
-        ...(data.requiresHorizontalHeights !== undefined
-          ? { requiresHorizontalHeights: data.requiresHorizontalHeights }
-          : {}),
-      };
+          ...(data.requiresWidth !== undefined
+            ? { requiresWidth: data.requiresWidth }
+            : {}),
+          ...(data.requiresHeight !== undefined
+            ? { requiresHeight: data.requiresHeight }
+            : {}),
+          ...(data.requiresHeightLeft !== undefined
+            ? { requiresHeightLeft: data.requiresHeightLeft }
+            : {}),
+          ...(data.requiresHeightRight !== undefined
+            ? { requiresHeightRight: data.requiresHeightRight }
+            : {}),
+          ...(data.requiresLegHeight !== undefined
+            ? { requiresLegHeight: data.requiresLegHeight }
+            : {}),
+          ...(data.requiresDoorWidth !== undefined
+            ? { requiresDoorWidth: data.requiresDoorWidth }
+            : {}),
+          ...(data.requiresDoorHeight !== undefined
+            ? { requiresDoorHeight: data.requiresDoorHeight }
+            : {}),
+          ...(data.requiresLeftSideliteWidth !== undefined
+            ? { requiresLeftSideliteWidth: data.requiresLeftSideliteWidth }
+            : {}),
+          ...(data.requiresRightSideliteWidth !== undefined
+            ? { requiresRightSideliteWidth: data.requiresRightSideliteWidth }
+            : {}),
+          ...(data.requiresLeftPanels !== undefined
+            ? { requiresLeftPanels: data.requiresLeftPanels }
+            : {}),
+          ...(data.requiresRightPanels !== undefined
+            ? { requiresRightPanels: data.requiresRightPanels }
+            : {}),
+          ...(data.requiresPanelCount !== undefined
+            ? { requiresPanelCount: data.requiresPanelCount }
+            : {}),
+          ...(data.requiresHorizontalHeights !== undefined
+            ? { requiresHorizontalHeights: data.requiresHorizontalHeights }
+            : {}),
+        };
 
     const minimumBillableDimensionsUpdateData = isLinearMaterial
       ? {
-        minimumBillableWidthIn: null,
-        minimumBillableHeightIn: null,
-      }
+          minimumBillableWidthIn: null,
+          minimumBillableHeightIn: null,
+        }
       : {
-        ...(data.minimumBillableWidthIn !== undefined
-          ? {
-            minimumBillableWidthIn: data.minimumBillableWidthIn,
+          ...(data.minimumBillableWidthIn !== undefined
+            ? {
+                minimumBillableWidthIn: data.minimumBillableWidthIn,
+              }
+            : {}),
+          ...(data.minimumBillableHeightIn !== undefined
+            ? {
+                minimumBillableHeightIn: data.minimumBillableHeightIn,
+              }
+            : {}),
+        };
+
+    const nextBillableHeightMode = isLinearMaterial
+      ? BillableHeightMode.ACTUAL_HEIGHT
+      : (data.billableHeightMode ?? sysConf.billableHeightMode);
+
+    const nextBillableHeightFixedIn = isLinearMaterial
+      ? null
+      : data.billableHeightFixedIn !== undefined
+        ? data.billableHeightFixedIn
+        : sysConf.billableHeightFixedIn;
+
+    const nextBillableHeightPercentOfWidth = isLinearMaterial
+      ? null
+      : data.billableHeightPercentOfWidth !== undefined
+        ? data.billableHeightPercentOfWidth
+        : sysConf.billableHeightPercentOfWidth;
+
+    if (
+      nextBillableHeightMode === BillableHeightMode.WIDTH_PERCENTAGE
+    ) {
+      if (nextBillableHeightPercentOfWidth == null) {
+        throw new BadRequestException(
+          "Billable Height Percentage of Width is required.",
+        );
+      }
+
+      const percentage = Number(nextBillableHeightPercentOfWidth);
+
+      if (!Number.isFinite(percentage) || percentage <= 0) {
+        throw new BadRequestException(
+          "Billable Height Percentage of Width must be greater than zero.",
+        );
+      }
+    }
+
+    if (nextBillableHeightMode === BillableHeightMode.FIXED) {
+      if (nextBillableHeightFixedIn == null) {
+        throw new BadRequestException(
+          "Billable Height Fixed Value is required when Billable Height is Fixed Value.",
+        );
+      }
+
+      const fixedValue = Number(nextBillableHeightFixedIn);
+
+      if (!Number.isFinite(fixedValue) || fixedValue < 0) {
+        throw new BadRequestException(
+          "Billable Height Fixed Value must be zero or greater.",
+        );
+      }
+    }
+
+    const billableHeightUpdateData = isLinearMaterial
+      ? {
+          billableHeightMode: BillableHeightMode.ACTUAL_HEIGHT,
+          billableHeightPercentOfWidth: null,
+          billableHeightFixedIn: null,
+        }
+      : data.billableHeightMode !== undefined ||
+          data.billableHeightPercentOfWidth !== undefined ||
+          data.billableHeightFixedIn !== undefined
+        ? {
+            billableHeightMode: nextBillableHeightMode,
+            billableHeightPercentOfWidth:
+              nextBillableHeightMode ===
+              BillableHeightMode.WIDTH_PERCENTAGE
+                ? nextBillableHeightPercentOfWidth
+                : null,
+            billableHeightFixedIn:
+              nextBillableHeightMode === BillableHeightMode.FIXED
+                ? nextBillableHeightFixedIn
+                : null,
           }
-          : {}),
-        ...(data.minimumBillableHeightIn !== undefined
-          ? {
-            minimumBillableHeightIn: data.minimumBillableHeightIn,
-          }
-          : {}),
-      };
+        : {};
 
     await this.prisma.$transaction(async (tx) => {
       await tx.sysConfActiveOption.deleteMany({
@@ -1034,12 +1117,13 @@ export class SystemsService {
 
           ...(data.isSelectableInEstimate !== undefined
             ? {
-              isSelectableInEstimate: data.isSelectableInEstimate,
-            }
+                isSelectableInEstimate: data.isSelectableInEstimate,
+              }
             : {}),
 
           ...dimensionUpdateData,
           ...minimumBillableDimensionsUpdateData,
+          ...billableHeightUpdateData,
         },
       });
     });
@@ -1685,14 +1769,14 @@ export class SystemsService {
     const sysConfUpdateData: Prisma.SysConfUpdateInput = {
       ...(data.allowScreen !== undefined
         ? {
-          allowScreen: isLinearMaterial ? false : data.allowScreen,
-        }
+            allowScreen: isLinearMaterial ? false : data.allowScreen,
+          }
         : {}),
 
       ...(data.sortOrder !== undefined
         ? {
-          sortOrder: data.sortOrder,
-        }
+            sortOrder: data.sortOrder,
+          }
         : {}),
     };
 
