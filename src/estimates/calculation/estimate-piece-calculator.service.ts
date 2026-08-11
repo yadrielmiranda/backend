@@ -13,8 +13,6 @@ import {
 
 import Decimal from "decimal.js";
 
-import { dimsInchesToFeet } from "@/pricing/units";
-import { areaPerimeterFor } from "@/pricing/shape-geometry";
 import { computeBasePrice } from "@/pricing/price-formula";
 import { resolvePieceComponents } from "@/pricing/piece-component-resolver";
 
@@ -1148,50 +1146,6 @@ export class EstimatePieceCalculatorService {
         ? new Decimal(String(governingDims.widthIn)).div(windowWallPanelCount)
         : new Decimal(String(governingDims.widthIn));
 
-    const directPricingWidth =
-      dimensionMode === DimensionMode.STANDARD
-        ? pieceDto.width == null
-          ? pieceDto.width
-          : resolveBillableDimension(
-            new Decimal(String(pieceDto.width)),
-            sysConf.minimumBillableWidthIn,
-            "width",
-          ).toString()
-        : resolveBillableDimension(
-          directPricingWidthIn,
-          sysConf.minimumBillableWidthIn,
-          "width",
-        ).toString();
-
-    const directPricingHeight =
-      dimensionMode === DimensionMode.STANDARD
-        ? pieceDto.height == null
-          ? pieceDto.height
-          : resolveBillableDimension(
-            new Decimal(String(pieceDto.height)),
-            sysConf.minimumBillableHeightIn,
-            "height",
-          ).toString()
-        : resolveBillableDimension(
-          new Decimal(String(governingDims.heightIn)),
-          sysConf.minimumBillableHeightIn,
-          "height",
-        ).toString();
-
-    const dimsFt =
-      dimensionMode === DimensionMode.STANDARD
-        ? dimsInchesToFeet({
-          width: directPricingWidth,
-          height: directPricingHeight,
-          heightLeft: pieceDto.heightLeft,
-          heightRight: pieceDto.heightRight,
-          legHeight: pieceDto.legHeight,
-        })
-        : dimsInchesToFeet({
-          width: directPricingWidth,
-          height: directPricingHeight,
-        });
-
     const dpCheck =
       await this.dimensionValidationService.validateAgainstDimensionPolicy(
         pieceDto,
@@ -1238,8 +1192,6 @@ export class EstimatePieceCalculatorService {
       Decimal.ROUND_HALF_UP,
     );
 
-    const { areaFt2, perimeterFt } = areaPerimeterFor(config.conf, dimsFt);
-
     const pricingComponents = sysConf.pricingComponents ?? [];
 
     let baseRate: Decimal;
@@ -1259,6 +1211,15 @@ export class EstimatePieceCalculatorService {
         "height",
       );
 
+      const pricingWidthFt = pricingWidthIn.div(12);
+      const pricingHeightFt = pricingHeightIn.div(12);
+
+      const areaFt2 = pricingWidthFt.mul(pricingHeightFt);
+
+      const perimeterFt = pricingWidthFt
+        .add(pricingHeightFt)
+        .mul(2);
+
       const rule = await this.getPricingRuleForConfig(
         pieceDto,
         pieceDto.idConf,
@@ -1274,8 +1235,8 @@ export class EstimatePieceCalculatorService {
       const C = new Decimal(rule.costoC.toString());
 
       const directBaseRate = computeBasePrice(
-        new Decimal(areaFt2),
-        new Decimal(perimeterFt),
+        areaFt2,
+        perimeterFt,
         A,
         B,
         C,
@@ -1325,24 +1286,22 @@ export class EstimatePieceCalculatorService {
           cache,
         );
 
-        const componentDimsFt = dimsInchesToFeet({
-          width: billableWidthIn.toString(),
-          height: billableHeightIn.toString(),
-        });
+        const componentWidthFt = billableWidthIn.div(12);
+        const componentHeightFt = billableHeightIn.div(12);
 
-        const componentGeometry = areaPerimeterFor(
-          component.sourceSysConf.config.conf,
-          componentDimsFt,
-        );
+        const componentAreaFt2 = componentWidthFt.mul(componentHeightFt);
+
+        const componentPerimeterFt = componentWidthFt
+          .add(componentHeightFt)
+          .mul(2);
 
         const componentBasePrice = computeBasePrice(
-          new Decimal(componentGeometry.areaFt2),
-          new Decimal(componentGeometry.perimeterFt),
+          componentAreaFt2,
+          componentPerimeterFt,
           new Decimal(rule.costoA.toString()),
           new Decimal(rule.costoB.toString()),
           new Decimal(rule.costoC.toString()),
         );
-
         return componentBasePrice.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       };
 
