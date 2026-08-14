@@ -166,6 +166,8 @@ model Brand {
   highBottomPercent  Decimal?            @db.Decimal(10, 4)
   pieces             Piece[]
   brandProducts      BrandProduct[]
+  brandTints         BrandTint[]
+  brandCoatings      BrandCoating[]
   pricingRules       PricingRule[]
   linearPricingRules LinearPricingRule[]
   createdAt          DateTime            @default(now())
@@ -175,9 +177,10 @@ model Brand {
 }
 
 model Product {
-  id       Int     @id @default(autoincrement())
-  name     String
-  isActive Boolean @default(true)
+  id        Int     @id @default(autoincrement())
+  name      String
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
 
   kind        ProductKind @default(GLAZED_UNIT)
   pricingMode PricingMode @default(AREA_PERIMETER)
@@ -196,6 +199,7 @@ model Product {
   updatedAt DateTime @updatedAt
 
   @@index([isActive])
+  @@index([isActive, sortOrder])
   @@index([kind])
   @@index([diagramFamily])
 }
@@ -238,7 +242,8 @@ model System {
   idBrand      Int
   idProduct    Int
 
-  isActive Boolean @default(true)
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
 
   allowHighBottom Boolean @default(false)
 
@@ -261,6 +266,7 @@ model System {
   @@index([defaultCrystalId])
   @@index([defaultConfigId])
   @@index([isActive])
+  @@index([idBrand, idProduct, sortOrder])
 }
 
 model Config {
@@ -336,19 +342,19 @@ enum BillableHeightMode {
 }
 
 model SysConf {
-  system                  System        @relation(fields: [idSystem], references: [id])
-  idSystem                Int
-  config                  Config        @relation(fields: [idConfig], references: [id])
-  idConfig                Int
-  allowScreen             Boolean       @default(false)
-  isSelectableInEstimate  Boolean       @default(true)
-  sortOrder               Int           @default(0)
-  dimensionMode           DimensionMode @default(STANDARD)
-  minimumBillableWidthIn  Decimal?      @db.Decimal(10, 3)
-  minimumBillableHeightIn Decimal?      @db.Decimal(10, 3)
-  billableHeightMode      BillableHeightMode @default(ACTUAL_HEIGHT)
-  billableHeightPercentOfWidth Decimal?      @db.Decimal(10, 3)
-  billableHeightFixedIn   Decimal?           @db.Decimal(10, 3)
+  system                       System             @relation(fields: [idSystem], references: [id])
+  idSystem                     Int
+  config                       Config             @relation(fields: [idConfig], references: [id])
+  idConfig                     Int
+  allowScreen                  Boolean            @default(false)
+  isSelectableInEstimate       Boolean            @default(true)
+  sortOrder                    Int                @default(0)
+  dimensionMode                DimensionMode      @default(STANDARD)
+  minimumBillableWidthIn       Decimal?           @db.Decimal(10, 3)
+  minimumBillableHeightIn      Decimal?           @db.Decimal(10, 3)
+  billableHeightMode           BillableHeightMode @default(ACTUAL_HEIGHT)
+  billableHeightPercentOfWidth Decimal?           @db.Decimal(10, 3)
+  billableHeightFixedIn        Decimal?           @db.Decimal(10, 3)
 
   requiresWidth       Boolean @default(false)
   requiresHeight      Boolean @default(false)
@@ -542,11 +548,12 @@ model SysConfReinforcementOption {
 }
 
 model FrameColor {
-  id       Int     @id @default(autoincrement())
-  color    String
-  hexCode  String  @default("#FFFFFF") @db.VarChar(7)
-  isActive Boolean @default(true)
-  isGlobal Boolean @default(false)
+  id              Int     @id @default(autoincrement())
+  color           String
+  hexCode         String  @default("#FFFFFF") @db.VarChar(7)
+  isActive        Boolean @default(true)
+  isGlobal        Boolean @default(false)
+  globalSortOrder Int     @default(0)
 
   pieces            Piece[]
   systemFrameColors SystemFrameColor[]
@@ -555,6 +562,7 @@ model FrameColor {
   updatedAt DateTime @updatedAt
 
   @@index([isActive])
+  @@index([isGlobal, isActive, globalSortOrder])
 }
 
 model SystemFrameColor {
@@ -589,26 +597,76 @@ model Crystal {
 }
 
 model Tint {
-  id        Int      @id @default(autoincrement())
-  color     String
-  hexCode   String   @default("#F7FBFF") @db.VarChar(7)
-  isActive  Boolean  @default(true)
-  pieces    Piece[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              Int         @id @default(autoincrement())
+  color           String
+  hexCode         String      @default("#F7FBFF") @db.VarChar(7)
+  isActive        Boolean     @default(true)
+  isGlobal        Boolean     @default(false)
+  globalSortOrder Int         @default(0)
+  pieces          Piece[]
+  brandTints      BrandTint[]
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 
   @@index([isActive])
+  @@index([isGlobal, isActive, globalSortOrder])
 }
 
 model Coating {
-  id        Int      @id @default(autoincrement())
-  name      String
-  isActive  Boolean  @default(true)
-  pieces    Piece[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              Int            @id @default(autoincrement())
+  name            String
+  isActive        Boolean        @default(true)
+  isGlobal        Boolean        @default(false)
+  globalSortOrder Int            @default(0)
+  pieces          Piece[]
+  brandCoatings   BrandCoating[]
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 
   @@index([isActive])
+  @@index([isGlobal, isActive, globalSortOrder])
+}
+
+model BrandTint {
+  idBrand          Int
+  idTint           Int
+  sortOrder        Int      @default(0)
+  surchargeEnabled Boolean  @default(false)
+  isDefault        Boolean  @default(false)
+  costoA           Decimal? @db.Decimal(24, 20)
+  costoB           Decimal? @db.Decimal(24, 20)
+  costoC           Decimal? @db.Decimal(24, 20)
+  brand            Brand    @relation(fields: [idBrand], references: [id], onDelete: Cascade)
+  tint             Tint     @relation(fields: [idTint], references: [id], onDelete: Restrict)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@id([idBrand, idTint])
+  @@index([idTint])
+  @@index([idBrand, isDefault])
+  @@index([idBrand, sortOrder])
+  @@map("brand_tints")
+}
+
+model BrandCoating {
+  idBrand          Int
+  idCoating        Int
+  sortOrder        Int      @default(0)
+  surchargeEnabled Boolean  @default(false)
+  isDefault        Boolean  @default(false)
+  costoA           Decimal? @db.Decimal(24, 20)
+  costoB           Decimal? @db.Decimal(24, 20)
+  costoC           Decimal? @db.Decimal(24, 20)
+  brand            Brand    @relation(fields: [idBrand], references: [id], onDelete: Cascade)
+  coating          Coating  @relation(fields: [idCoating], references: [id], onDelete: Restrict)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@id([idBrand, idCoating])
+  @@index([idCoating])
+  @@index([idBrand, isDefault])
+  @@index([idBrand, sortOrder])
+  @@map("brand_coatings")
 }
 
 model MuntinPattern {

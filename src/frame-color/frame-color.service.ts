@@ -2,13 +2,14 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
-} from '@nestjs/common';
-import { PrismaService } from '@/prisma/prisma.service';
-import { FrameColor, Prisma } from '@prisma/client';
+} from "@nestjs/common";
+import { PrismaService } from "@/prisma/prisma.service";
+import { FrameColor, Prisma } from "@prisma/client";
+import { CreateFrameColorDto } from "./dto/create-frame-color.dto";
 
 @Injectable()
 export class FrameColorService {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
   async color(where: Prisma.FrameColorWhereUniqueInput): Promise<FrameColor> {
     const color = await this.prisma.frameColor.findUnique({ where });
@@ -29,10 +30,13 @@ export class FrameColorService {
   }): Promise<FrameColor[]> {
     return this.prisma.frameColor.findMany({
       ...params,
-      orderBy: params.orderBy ?? { color: 'asc' },
+      orderBy: params.orderBy ?? [
+        { globalSortOrder: "asc" },
+        { color: "asc" },
+        { id: "asc" },
+      ],
     });
   }
-
 
   async getGlobalDefaults() {
     return this.prisma.frameColor.findMany({
@@ -40,13 +44,24 @@ export class FrameColorService {
         isActive: true,
         isGlobal: true,
       },
-      orderBy: { color: 'asc' },
+      orderBy: [{ globalSortOrder: "asc" }, { color: "asc" }, { id: "asc" }],
     });
   }
 
-  async createColor(data: Prisma.FrameColorCreateInput): Promise<FrameColor> {
+  async createColor(data: CreateFrameColorDto): Promise<FrameColor> {
+    const currentMaxOrder = await this.prisma.frameColor.aggregate({
+      _max: { globalSortOrder: true },
+    });
+    const globalSortOrder =
+      data.globalSortOrder ?? (currentMaxOrder._max.globalSortOrder ?? -1) + 1;
+
     return this.prisma.frameColor.create({
-      data,
+      data: {
+        color: data.color,
+        hexCode: data.hexCode,
+        isGlobal: data.isGlobal,
+        globalSortOrder,
+      },
     });
   }
 
@@ -62,25 +77,31 @@ export class FrameColorService {
         data,
       });
     } catch (e: any) {
-      if (e?.code === 'P2025') {
-        throw new NotFoundException(`FrameColor with ID #${where.id} not found.`);
+      if (e?.code === "P2025") {
+        throw new NotFoundException(
+          `FrameColor with ID #${where.id} not found.`,
+        );
       }
 
       throw e;
     }
   }
 
-  async deleteColor(where: Prisma.FrameColorWhereUniqueInput): Promise<FrameColor> {
+  async deleteColor(
+    where: Prisma.FrameColorWhereUniqueInput,
+  ): Promise<FrameColor> {
     try {
       return await this.prisma.frameColor.delete({ where });
     } catch (e: any) {
-      if (e?.code === 'P2025') {
-        throw new NotFoundException(`FrameColor with ID #${where.id} not found.`);
+      if (e?.code === "P2025") {
+        throw new NotFoundException(
+          `FrameColor with ID #${where.id} not found.`,
+        );
       }
 
-      if (e?.code === 'P2003') {
+      if (e?.code === "P2003") {
         throw new ConflictException(
-          'This frame color is being used and cannot be deleted. Deactivate it instead.',
+          "This frame color is being used and cannot be deleted. Deactivate it instead.",
         );
       }
 

@@ -12,6 +12,8 @@ import {
 import { BrandsService } from "./brands.service";
 import { CreateBrandDto } from "./dto/create-brand.dto";
 import { UpdateBrandDto } from "./dto/update-brand.dto";
+import { UpdateBrandCoatingsDto } from "./dto/update-brand-coatings.dto";
+import { UpdateBrandTintsDto } from "./dto/update-brand-tints.dto";
 import { Brand as BrandModel } from "@prisma/client";
 import { Roles } from "@/auth/roles.decorator";
 
@@ -45,6 +47,36 @@ export class BrandsController {
   @Get(":id/available-products")
   async getAvailableProductsForBrand(@Param("id", ParseIntPipe) id: number) {
     return this.brandsService.getAvailableProductsForBrand(id);
+  }
+
+  @Roles("admin", "operator")
+  @Get(":id/tints/manage")
+  async getBrandTintsForManage(@Param("id", ParseIntPipe) id: number) {
+    return this.brandsService.getBrandTintsForManage(id);
+  }
+
+  @Roles("admin")
+  @Patch(":id/tints/manage")
+  async updateBrandTints(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() data: UpdateBrandTintsDto,
+  ) {
+    return this.brandsService.updateBrandTints(id, data);
+  }
+
+  @Roles("admin", "operator")
+  @Get(":id/coatings/manage")
+  async getBrandCoatingsForManage(@Param("id", ParseIntPipe) id: number) {
+    return this.brandsService.getBrandCoatingsForManage(id);
+  }
+
+  @Roles("admin")
+  @Patch(":id/coatings/manage")
+  async updateBrandCoatings(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() data: UpdateBrandCoatingsDto,
+  ) {
+    return this.brandsService.updateBrandCoatings(id, data);
   }
 
   @Get(":id")

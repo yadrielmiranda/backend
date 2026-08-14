@@ -1,6 +1,11 @@
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { Prisma, Tint } from "@prisma/client";
 import { PrismaService } from "@/prisma/prisma.service";
+import { CreateTintDto } from "./dto/create-tint.dto";
 
 @Injectable()
 export class TintService {
@@ -30,12 +35,39 @@ export class TintService {
       take,
       cursor,
       where,
-      orderBy: orderBy ?? { color: "asc" },
+      orderBy: orderBy ?? [
+        { globalSortOrder: "asc" },
+        { color: "asc" },
+        { id: "asc" },
+      ],
+      include: {
+        brandTints: {
+          select: {
+            idBrand: true,
+            sortOrder: true,
+            surchargeEnabled: true,
+            isDefault: true,
+          },
+        },
+      },
     });
   }
 
-  async createTint(data: Prisma.TintCreateInput): Promise<Tint> {
-    return this.prisma.tint.create({ data });
+  async createTint(data: CreateTintDto): Promise<Tint> {
+    const currentMaxOrder = await this.prisma.tint.aggregate({
+      _max: { globalSortOrder: true },
+    });
+    const globalSortOrder =
+      data.globalSortOrder ?? (currentMaxOrder._max.globalSortOrder ?? -1) + 1;
+
+    return this.prisma.tint.create({
+      data: {
+        color: data.color,
+        hexCode: data.hexCode,
+        isGlobal: data.isGlobal,
+        globalSortOrder,
+      },
+    });
   }
 
   async updateTint(params: {
@@ -45,6 +77,22 @@ export class TintService {
     const { where, data } = params;
 
     try {
+      if (data.isActive === false) {
+        const defaultAssociation = await this.prisma.brandTint.findFirst({
+          where: {
+            idTint: where.id,
+            isDefault: true,
+          },
+          select: { idBrand: true },
+        });
+
+        if (defaultAssociation) {
+          throw new ConflictException(
+            "This Tint is a Brand default. Select another default before deactivating it.",
+          );
+        }
+      }
+
       return await this.prisma.tint.update({
         where,
         data,

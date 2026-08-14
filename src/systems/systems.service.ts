@@ -66,9 +66,11 @@ export class SystemsService {
           include: {
             frameColor: true,
           },
-          orderBy: {
-            sortOrder: "asc",
-          },
+          orderBy: [
+            { sortOrder: "asc" },
+            { frameColor: { color: "asc" } },
+            { idFrameColor: "asc" },
+          ],
         },
       },
     });
@@ -92,7 +94,11 @@ export class SystemsService {
       take,
       cursor,
       where,
-      orderBy,
+      orderBy: orderBy ?? [
+        { sortOrder: "asc" },
+        { name: "asc" },
+        { id: "asc" },
+      ],
       include: {
         brandProduct: {
           include: { brand: true, product: true },
@@ -129,9 +135,11 @@ export class SystemsService {
           include: {
             frameColor: true,
           },
-          orderBy: {
-            sortOrder: "asc",
-          },
+          orderBy: [
+            { sortOrder: "asc" },
+            { frameColor: { color: "asc" } },
+            { idFrameColor: "asc" },
+          ],
         },
       },
     });
@@ -222,14 +230,14 @@ export class SystemsService {
           include: {
             frameColor: true,
           },
-          orderBy: {
-            sortOrder: "asc",
-          },
+          orderBy: [
+            { sortOrder: "asc" },
+            { frameColor: { color: "asc" } },
+            { idFrameColor: "asc" },
+          ],
         },
       },
-      orderBy: {
-        id: "asc",
-      },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
     });
   }
 
@@ -267,11 +275,19 @@ export class SystemsService {
       );
     }
 
+    const currentMaxOrder = await this.prisma.system.aggregate({
+      where: { idBrand, idProduct },
+      _max: { sortOrder: true },
+    });
+    const sortOrder =
+      systemData.sortOrder ?? (currentMaxOrder._max.sortOrder ?? -1) + 1;
+
     return this.prisma.system.create({
       data: {
         name,
         idBrand,
         idProduct,
+        sortOrder,
         isActive: true,
         allowHighBottom: isLinearMaterial ? false : (allowHighBottom ?? false),
       },
@@ -405,9 +421,11 @@ export class SystemsService {
           include: {
             frameColor: true,
           },
-          orderBy: {
-            sortOrder: "asc",
-          },
+          orderBy: [
+            { sortOrder: "asc" },
+            { frameColor: { color: "asc" } },
+            { idFrameColor: "asc" },
+          ],
         },
       },
     });
@@ -970,9 +988,7 @@ export class SystemsService {
         ? data.billableHeightPercentOfWidth
         : sysConf.billableHeightPercentOfWidth;
 
-    if (
-      nextBillableHeightMode === BillableHeightMode.WIDTH_PERCENTAGE
-    ) {
+    if (nextBillableHeightMode === BillableHeightMode.WIDTH_PERCENTAGE) {
       if (nextBillableHeightPercentOfWidth == null) {
         throw new BadRequestException(
           "Billable Height Percentage of Width is required.",
@@ -1016,8 +1032,7 @@ export class SystemsService {
         ? {
             billableHeightMode: nextBillableHeightMode,
             billableHeightPercentOfWidth:
-              nextBillableHeightMode ===
-              BillableHeightMode.WIDTH_PERCENTAGE
+              nextBillableHeightMode === BillableHeightMode.WIDTH_PERCENTAGE
                 ? nextBillableHeightPercentOfWidth
                 : null,
             billableHeightFixedIn:
@@ -1484,9 +1499,11 @@ export class SystemsService {
           include: {
             frameColor: true,
           },
-          orderBy: {
-            sortOrder: "asc",
-          },
+          orderBy: [
+            { sortOrder: "asc" },
+            { frameColor: { color: "asc" } },
+            { idFrameColor: "asc" },
+          ],
         },
       },
     });
@@ -1496,9 +1513,7 @@ export class SystemsService {
     }
 
     const frameColorsCatalog = await this.prisma.frameColor.findMany({
-      orderBy: {
-        color: "asc",
-      },
+      orderBy: [{ globalSortOrder: "asc" }, { color: "asc" }, { id: "asc" }],
     });
 
     return {
@@ -1513,6 +1528,10 @@ export class SystemsService {
       selectedFrameColorIds: system.systemFrameColors.map(
         (x) => x.idFrameColor,
       ),
+      selectedFrameColors: system.systemFrameColors.map((association) => ({
+        idFrameColor: association.idFrameColor,
+        sortOrder: association.sortOrder,
+      })),
       frameColorsCatalog,
     };
   }
@@ -1530,14 +1549,22 @@ export class SystemsService {
       throw new NotFoundException(`System with ID #${systemId} not found.`);
     }
 
+    const requestedFrameColors =
+      data.frameColors ??
+      (data.frameColorIds ?? []).map((frameColorId, index) => ({
+        frameColorId,
+        sortOrder: index,
+      }));
+    const frameColorIds = requestedFrameColors.map((item) => item.frameColorId);
+
     const validFrameColors = await this.prisma.frameColor.findMany({
       where: {
-        id: { in: data.frameColorIds },
+        id: { in: frameColorIds },
       },
       select: { id: true },
     });
 
-    if (validFrameColors.length !== data.frameColorIds.length) {
+    if (validFrameColors.length !== frameColorIds.length) {
       throw new BadRequestException("One or more frame colors are invalid.");
     }
 
@@ -1548,12 +1575,12 @@ export class SystemsService {
         },
       });
 
-      if (data.frameColorIds.length > 0) {
+      if (requestedFrameColors.length > 0) {
         await tx.systemFrameColor.createMany({
-          data: data.frameColorIds.map((frameColorId, index) => ({
+          data: requestedFrameColors.map((item) => ({
             idSystem: systemId,
-            idFrameColor: frameColorId,
-            sortOrder: index,
+            idFrameColor: item.frameColorId,
+            sortOrder: item.sortOrder,
           })),
         });
       }

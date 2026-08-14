@@ -1,10 +1,12 @@
-import { Transform } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
   IsBoolean,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
   Matches,
+  Min,
 } from "class-validator";
 
 export class CreateFrameColorDto {
@@ -24,4 +26,10 @@ export class CreateFrameColorDto {
   @IsOptional()
   @IsBoolean()
   isGlobal?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  globalSortOrder?: number;
 }

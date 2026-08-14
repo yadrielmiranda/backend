@@ -14,6 +14,7 @@ import {
 import Decimal from "decimal.js";
 
 import { resolveBillablePricingDimensions } from "@/pricing/billable-dimensions";
+import { computeGlassOptionSurcharge } from "@/pricing/glass-option-surcharge";
 import { computeBasePrice } from "@/pricing/price-formula";
 import { resolvePieceComponents } from "@/pricing/piece-component-resolver";
 
@@ -47,6 +48,8 @@ export type CalculationCache = {
   pricing: Map<string, any>;
   linearPricing: Map<string, any>;
   systemFrameColor: Map<string, any>;
+  brandTint: Map<string, any>;
+  brandCoating: Map<string, any>;
   highBottomSettings: Map<string, any>;
 };
 
@@ -118,6 +121,8 @@ export class EstimatePieceCalculatorService {
       pricing: new Map(),
       linearPricing: new Map(),
       systemFrameColor: new Map(),
+      brandTint: new Map(),
+      brandCoating: new Map(),
       highBottomSettings: new Map(),
     };
   }
@@ -643,6 +648,96 @@ export class EstimatePieceCalculatorService {
       throw new BadRequestException("Coating is required.");
     }
 
+    const brandTintKey = `${pieceDto.idBrand}-${pieceDto.idTint}`;
+    let brandTint = cache.brandTint.get(brandTintKey);
+
+    if (!brandTint) {
+      const dbBrandTint = await tx.brandTint.findUnique({
+        where: {
+          idBrand_idTint: {
+            idBrand: pieceDto.idBrand,
+            idTint: pieceDto.idTint,
+          },
+        },
+        select: {
+          surchargeEnabled: true,
+          costoA: true,
+          costoB: true,
+          costoC: true,
+          tint: {
+            select: {
+              id: true,
+              isActive: true,
+            },
+          },
+        },
+      });
+
+      if (dbBrandTint) {
+        cache.brandTint.set(brandTintKey, dbBrandTint);
+        brandTint = dbBrandTint;
+      }
+    }
+
+    if (!brandTint || !brandTint.tint.isActive) {
+      throw new BadRequestException(
+        "The selected Tint is not available for the selected Brand.",
+      );
+    }
+
+    const brandCoatingKey = `${pieceDto.idBrand}-${pieceDto.idCoat}`;
+    let brandCoating = cache.brandCoating.get(brandCoatingKey);
+
+    if (!brandCoating) {
+      const dbBrandCoating = await tx.brandCoating.findUnique({
+        where: {
+          idBrand_idCoating: {
+            idBrand: pieceDto.idBrand,
+            idCoating: pieceDto.idCoat,
+          },
+        },
+        select: {
+          surchargeEnabled: true,
+          costoA: true,
+          costoB: true,
+          costoC: true,
+          coating: {
+            select: {
+              id: true,
+              isActive: true,
+            },
+          },
+        },
+      });
+
+      if (dbBrandCoating) {
+        cache.brandCoating.set(brandCoatingKey, dbBrandCoating);
+        brandCoating = dbBrandCoating;
+      }
+    }
+
+    if (!brandCoating || !brandCoating.coating.isActive) {
+      throw new BadRequestException(
+        "The selected Coating is not available for the selected Brand.",
+      );
+    }
+
+    for (const [label, option] of [
+      ["Tint", brandTint],
+      ["Coating", brandCoating],
+    ] as const) {
+      if (
+        option.surchargeEnabled &&
+        (option.costoA == null ||
+          option.costoB == null ||
+          option.costoC == null)
+      ) {
+        throw new BadRequestException(
+          `${label} surcharge is enabled but its Area Cost, Perimeter Cost or Fixed Cost is incomplete.`,
+        );
+      }
+    }
+
     // screen solo se permite si SysConf.allowScreen = true
     if (pieceDto.screen && !sysConf.allowScreen) {
       throw new BadRequestException(
@@ -1133,6 +1228,28 @@ export class EstimatePieceCalculatorService {
         ? new Decimal(String(governingDims.widthIn)).div(windowWallPanelCount)
         : new Decimal(String(governingDims.widthIn));
 
+    const enabledGlassOptions = [brandTint, brandCoating].filter(
+      (option) => option.surchargeEnabled,
+    );
+
+    const computeConfiguredGlassOptionSurcharge = (
+      widthIn: Decimal,
+      heightIn: Decimal,
+    ) =>
+      enabledGlassOptions.reduce(
+        (total, option) =>
+          total.add(
+            computeGlassOptionSurcharge(
+              widthIn,
+              heightIn,
+              new Decimal(option.costoA.toString()),
+              new Decimal(option.costoB.toString()),
+              new Decimal(option.costoC.toString()),
+            ),
+          ),
+        new Decimal(0),
+      );
+
     const dpCheck =
       await this.dimensionValidationService.validateAgainstDimensionPolicy(
         pieceDto,
@@ -1182,6 +1299,7 @@ export class EstimatePieceCalculatorService {
     const pricingComponents = sysConf.pricingComponents ?? [];
 
     let baseRate: Decimal;
+    let glassOptionSurchargeRate = new Decimal(0);
 
     if (pricingComponents.length === 0) {
       // XT/XXT se cotiza aquí como una sola pieza con Width + Opening Height.
@@ -1232,9 +1350,23 @@ export class EstimatePieceCalculatorService {
             .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
             .mul(windowWallPanelCount)
           : directBaseRate;
+
+      const directGlassOptionSurcharge =
+        computeConfiguredGlassOptionSurcharge(
+          directPricingWidthIn,
+          new Decimal(String(governingDims.heightIn)),
+        );
+
+      glassOptionSurchargeRate =
+        dimensionMode === DimensionMode.WINDOW_WALL
+          ? directGlassOptionSurcharge
+            .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+            .mul(windowWallPanelCount)
+          : directGlassOptionSurcharge;
     } else {
       // Cada componente se redondea a centavos antes de sumarlo.
       const componentPrices: Decimal[] = [];
+      const componentGlassOptionSurcharges: Decimal[] = [];
 
       const computeRoundedComponentPrice = async (
         component: (typeof pricingComponents)[number],
@@ -1330,13 +1462,23 @@ export class EstimatePieceCalculatorService {
           );
         }
 
+        const componentWidthIn = new Decimal(resolved.widthIn);
+        const componentHeightIn = new Decimal(resolved.heightIn);
+
         componentPrices.push(
           await computeRoundedComponentPrice(
             component,
-            new Decimal(resolved.widthIn),
-            new Decimal(resolved.heightIn),
+            componentWidthIn,
+            componentHeightIn,
             resolved.componentLabel,
           ),
+        );
+
+        componentGlassOptionSurcharges.push(
+          computeConfiguredGlassOptionSurcharge(
+            componentWidthIn,
+            componentHeightIn,
+          ).toDecimalPlaces(2, Decimal.ROUND_HALF_UP),
         );
       }
 
@@ -1344,11 +1486,18 @@ export class EstimatePieceCalculatorService {
         (total, componentPrice) => total.add(componentPrice),
         new Decimal(0),
       );
+
+      glassOptionSurchargeRate = componentGlassOptionSurcharges.reduce(
+        (total, componentSurcharge) => total.add(componentSurcharge),
+        new Decimal(0),
+      );
     }
 
-    const rate = highBottomPercent
+    const baseRateWithHighBottom = highBottomPercent
       ? baseRate.mul(new Decimal(1).add(highBottomPercent.div(100)))
       : baseRate;
+
+    const rate = baseRateWithHighBottom.add(glassOptionSurchargeRate);
 
     const markupAmount = rate.mul(effectiveMarkup);
     const price = rate.add(markupAmount);

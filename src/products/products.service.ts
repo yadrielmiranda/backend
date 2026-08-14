@@ -56,7 +56,7 @@ function normalizeProductClassification(data: {
 
 @Injectable()
 export class ProductsService {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
   async product(where: Prisma.ProductWhereUniqueInput): Promise<Product> {
     const product = await this.prisma.product.findUnique({
@@ -85,7 +85,11 @@ export class ProductsService {
       take,
       cursor: params.cursor,
       where: params.where,
-      orderBy: params.orderBy ?? { name: "asc" },
+      orderBy: params.orderBy ?? [
+        { sortOrder: "asc" },
+        { name: "asc" },
+        { id: "asc" },
+      ],
     });
   }
 
@@ -95,10 +99,17 @@ export class ProductsService {
       pricingMode: data.pricingMode,
     });
 
+    const currentMaxOrder = await this.prisma.product.aggregate({
+      _max: { sortOrder: true },
+    });
+    const sortOrder =
+      data.sortOrder ?? (currentMaxOrder._max.sortOrder ?? -1) + 1;
+
     try {
       return await this.prisma.product.create({
         data: {
           name: data.name,
+          sortOrder,
           isActive: true,
           diagramFamily: data.diagramFamily,
           ...classification,
@@ -145,6 +156,7 @@ export class ProductsService {
         where,
         data: {
           name: data.name,
+          sortOrder: data.sortOrder,
           isActive: data.isActive,
           diagramFamily: data.diagramFamily,
           ...classification,
@@ -163,9 +175,7 @@ export class ProductsService {
     }
   }
 
-  async deleteProduct(
-    where: Prisma.ProductWhereUniqueInput,
-  ): Promise<Product> {
+  async deleteProduct(where: Prisma.ProductWhereUniqueInput): Promise<Product> {
     try {
       return await this.prisma.product.delete({
         where,
@@ -200,9 +210,7 @@ export class ProductsService {
           },
         },
       },
-      orderBy: {
-        id: "asc",
-      },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
       take,
       skip,
     });

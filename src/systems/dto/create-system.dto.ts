@@ -1,5 +1,13 @@
-import { Type } from 'class-transformer';
-import { IsBoolean, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
+import { Type } from "class-transformer";
+import {
+  IsBoolean,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Min,
+} from "class-validator";
 
 export class CreateSystemDto {
   @IsNotEmpty()
@@ -19,4 +27,10 @@ export class CreateSystemDto {
   @IsOptional()
   @IsBoolean()
   allowHighBottom?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
 }

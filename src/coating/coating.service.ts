@@ -1,6 +1,11 @@
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { Prisma, Coating } from "@prisma/client";
 import { PrismaService } from "@/prisma/prisma.service";
+import { CreateCoatingDto } from "./dto/create-coating.dto";
 
 @Injectable()
 export class CoatingService {
@@ -30,12 +35,38 @@ export class CoatingService {
       take,
       cursor,
       where,
-      orderBy: orderBy ?? { name: "asc" },
+      orderBy: orderBy ?? [
+        { globalSortOrder: "asc" },
+        { name: "asc" },
+        { id: "asc" },
+      ],
+      include: {
+        brandCoatings: {
+          select: {
+            idBrand: true,
+            sortOrder: true,
+            surchargeEnabled: true,
+            isDefault: true,
+          },
+        },
+      },
     });
   }
 
-  async createCoating(data: Prisma.CoatingCreateInput): Promise<Coating> {
-    return this.prisma.coating.create({ data });
+  async createCoating(data: CreateCoatingDto): Promise<Coating> {
+    const currentMaxOrder = await this.prisma.coating.aggregate({
+      _max: { globalSortOrder: true },
+    });
+    const globalSortOrder =
+      data.globalSortOrder ?? (currentMaxOrder._max.globalSortOrder ?? -1) + 1;
+
+    return this.prisma.coating.create({
+      data: {
+        name: data.name,
+        isGlobal: data.isGlobal,
+        globalSortOrder,
+      },
+    });
   }
 
   async updateCoating(params: {
@@ -45,6 +76,22 @@ export class CoatingService {
     const { where, data } = params;
 
     try {
+      if (data.isActive === false) {
+        const defaultAssociation = await this.prisma.brandCoating.findFirst({
+          where: {
+            idCoating: where.id,
+            isDefault: true,
+          },
+          select: { idBrand: true },
+        });
+
+        if (defaultAssociation) {
+          throw new ConflictException(
+            "This Coating is a Brand default. Select another default before deactivating it.",
+          );
+        }
+      }
+
       return await this.prisma.coating.update({ where, data });
     } catch (e: any) {
       if (e?.code === "P2025") {
