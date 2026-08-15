@@ -208,7 +208,7 @@ export class EstimatePdfHtmlBuilder {
       const optionsLine = [
         `Screen: ${p.screen ? 'Yes' : 'No'}`,
         `Muntin: ${p.pieceMuntin ? 'Yes' : 'No'}`,
-        `Privacy: ${p.privacy ? 'Yes' : 'No'}`,
+        `Privacy: ${p.privacyOption?.name ?? '—'}`,
       ].join(' | ');
 
       const pos = p.dpPosPsf;

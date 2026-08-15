@@ -168,6 +168,7 @@ model Brand {
   brandProducts      BrandProduct[]
   brandTints         BrandTint[]
   brandCoatings      BrandCoating[]
+  brandPrivacies     BrandPrivacy[]
   pricingRules       PricingRule[]
   linearPricingRules LinearPricingRule[]
   createdAt          DateTime            @default(now())
@@ -627,6 +628,18 @@ model Coating {
   @@index([isGlobal, isActive, globalSortOrder])
 }
 
+model Privacy {
+  id             Int            @id @default(autoincrement())
+  name           String
+  isActive       Boolean        @default(true)
+  pieces         Piece[]
+  brandPrivacies BrandPrivacy[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([isActive])
+}
+
 model BrandTint {
   idBrand          Int
   idTint           Int
@@ -667,6 +680,27 @@ model BrandCoating {
   @@index([idBrand, isDefault])
   @@index([idBrand, sortOrder])
   @@map("brand_coatings")
+}
+
+model BrandPrivacy {
+  idBrand          Int
+  idPrivacy        Int
+  sortOrder        Int      @default(0)
+  surchargeEnabled Boolean  @default(false)
+  isDefault        Boolean  @default(false)
+  costoA           Decimal? @db.Decimal(24, 20)
+  costoB           Decimal? @db.Decimal(24, 20)
+  costoC           Decimal? @db.Decimal(24, 20)
+  brand            Brand    @relation(fields: [idBrand], references: [id], onDelete: Cascade)
+  privacy          Privacy  @relation(fields: [idPrivacy], references: [id], onDelete: Restrict)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@id([idBrand, idPrivacy])
+  @@index([idPrivacy])
+  @@index([idBrand, isDefault])
+  @@index([idBrand, sortOrder])
+  @@map("brand_privacies")
 }
 
 model MuntinPattern {
@@ -987,7 +1021,8 @@ model Piece {
   tin    Tint? @relation(fields: [idTint], references: [id])
   idTint Int?
 
-  privacy Boolean @default(false)
+  privacyOption Privacy? @relation(fields: [idPrivacy], references: [id], onDelete: Restrict)
+  idPrivacy     Int?
 
   coat   Coating? @relation(fields: [idCoat], references: [id])
   idCoat Int?
@@ -1032,6 +1067,7 @@ model Piece {
   @@index([idBrand])
   @@index([idSyst])
   @@index([idConf])
+  @@index([idPrivacy])
   @@index([idActiveOption])
   @@index([idPreparationOption])
   @@index([idSillOption])

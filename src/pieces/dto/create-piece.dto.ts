@@ -190,8 +190,9 @@ export class CreatePieceDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsBoolean()
-  privacy?: boolean;
+  @Type(() => Number)
+  @IsInt()
+  idPrivacy?: number | null;
 
   @ApiPropertyOptional()
   @IsOptional()

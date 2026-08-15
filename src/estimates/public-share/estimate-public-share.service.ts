@@ -153,6 +153,7 @@ export class EstimatePublicShareService {
             cryst: true,
             tin: true,
             coat: true,
+            privacyOption: true,
 
             activeOption: true,
             preparationOption: true,
@@ -233,8 +234,8 @@ export class EstimatePublicShareService {
         idCryst: p.idCryst,
         idTint: p.idTint,
         idCoat: p.idCoat,
+        idPrivacy: p.idPrivacy,
 
-        privacy: p.privacy,
         screen: p.screen,
 
         dpPosPsf: p.dpPosPsf,
@@ -251,6 +252,7 @@ export class EstimatePublicShareService {
         cryst: p.cryst,
         tin: p.tin,
         coat: p.coat,
+        privacyOption: p.privacyOption,
 
         activeOption: p.activeOption,
         preparationOption: p.preparationOption,

@@ -13,6 +13,7 @@ import { BrandsService } from "./brands.service";
 import { CreateBrandDto } from "./dto/create-brand.dto";
 import { UpdateBrandDto } from "./dto/update-brand.dto";
 import { UpdateBrandCoatingsDto } from "./dto/update-brand-coatings.dto";
+import { UpdateBrandPrivaciesDto } from "./dto/update-brand-privacies.dto";
 import { UpdateBrandTintsDto } from "./dto/update-brand-tints.dto";
 import { Brand as BrandModel } from "@prisma/client";
 import { Roles } from "@/auth/roles.decorator";
@@ -77,6 +78,21 @@ export class BrandsController {
     @Body() data: UpdateBrandCoatingsDto,
   ) {
     return this.brandsService.updateBrandCoatings(id, data);
+  }
+
+  @Roles("admin", "operator")
+  @Get(":id/privacies/manage")
+  async getBrandPrivaciesForManage(@Param("id", ParseIntPipe) id: number) {
+    return this.brandsService.getBrandPrivaciesForManage(id);
+  }
+
+  @Roles("admin")
+  @Patch(":id/privacies/manage")
+  async updateBrandPrivacies(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() data: UpdateBrandPrivaciesDto,
+  ) {
+    return this.brandsService.updateBrandPrivacies(id, data);
   }
 
   @Get(":id")

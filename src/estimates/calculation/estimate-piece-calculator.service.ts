@@ -50,6 +50,7 @@ export type CalculationCache = {
   systemFrameColor: Map<string, any>;
   brandTint: Map<string, any>;
   brandCoating: Map<string, any>;
+  brandPrivacy: Map<string, any>;
   highBottomSettings: Map<string, any>;
 };
 
@@ -123,6 +124,7 @@ export class EstimatePieceCalculatorService {
       systemFrameColor: new Map(),
       brandTint: new Map(),
       brandCoating: new Map(),
+      brandPrivacy: new Map(),
       highBottomSettings: new Map(),
     };
   }
@@ -496,9 +498,14 @@ export class EstimatePieceCalculatorService {
         );
       }
 
-      if (pieceDto.idCryst || pieceDto.idTint || pieceDto.idCoat) {
+      if (
+        pieceDto.idCryst ||
+        pieceDto.idTint ||
+        pieceDto.idCoat ||
+        pieceDto.idPrivacy
+      ) {
         throw new BadRequestException(
-          "Glass, tint and coating are not allowed for linear material.",
+          "Glass, tint, coating and Privacy are not allowed for linear material.",
         );
       }
 
@@ -593,7 +600,7 @@ export class EstimatePieceCalculatorService {
         idCryst: null,
         idTint: null,
         idCoat: null,
-        privacy: false,
+        idPrivacy: null,
         screen: false,
         highBottom: false,
         highBottomPercent: null,
@@ -646,6 +653,10 @@ export class EstimatePieceCalculatorService {
 
     if (!pieceDto.idCoat) {
       throw new BadRequestException("Coating is required.");
+    }
+
+    if (!pieceDto.idPrivacy) {
+      throw new BadRequestException("Privacy is required.");
     }
 
     const brandTintKey = `${pieceDto.idBrand}-${pieceDto.idTint}`;
@@ -722,9 +733,47 @@ export class EstimatePieceCalculatorService {
       );
     }
 
+    const brandPrivacyKey = `${pieceDto.idBrand}-${pieceDto.idPrivacy}`;
+    let brandPrivacy = cache.brandPrivacy.get(brandPrivacyKey);
+
+    if (!brandPrivacy) {
+      const dbBrandPrivacy = await tx.brandPrivacy.findUnique({
+        where: {
+          idBrand_idPrivacy: {
+            idBrand: pieceDto.idBrand,
+            idPrivacy: pieceDto.idPrivacy,
+          },
+        },
+        select: {
+          surchargeEnabled: true,
+          costoA: true,
+          costoB: true,
+          costoC: true,
+          privacy: {
+            select: {
+              id: true,
+              isActive: true,
+            },
+          },
+        },
+      });
+
+      if (dbBrandPrivacy) {
+        cache.brandPrivacy.set(brandPrivacyKey, dbBrandPrivacy);
+        brandPrivacy = dbBrandPrivacy;
+      }
+    }
+
+    if (!brandPrivacy || !brandPrivacy.privacy.isActive) {
+      throw new BadRequestException(
+        "The selected Privacy option is not available for the selected Brand.",
+      );
+    }
+
     for (const [label, option] of [
       ["Tint", brandTint],
       ["Coating", brandCoating],
+      ["Privacy", brandPrivacy],
     ] as const) {
       if (
         option.surchargeEnabled &&
@@ -1228,7 +1277,7 @@ export class EstimatePieceCalculatorService {
         ? new Decimal(String(governingDims.widthIn)).div(windowWallPanelCount)
         : new Decimal(String(governingDims.widthIn));
 
-    const enabledGlassOptions = [brandTint, brandCoating].filter(
+    const enabledGlassOptions = [brandTint, brandCoating, brandPrivacy].filter(
       (option) => option.surchargeEnabled,
     );
 

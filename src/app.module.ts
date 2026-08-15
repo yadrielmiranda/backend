@@ -40,6 +40,7 @@ import { ConfigCategoriesModule } from './config-categories/config-categories.mo
 import { LinearPricingRulesModule } from "./linear-pricing-rules/linear-pricing-rules.module";
 import { ScheduleModule } from '@nestjs/schedule';
 import { InstallationModule } from './installation/installation.module';
+import { PrivacyModule } from './privacy/privacy.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { InstallationModule } from './installation/installation.module';
     FrameColorModule,
     ConfigSModule,
     CoatingModule,
+    PrivacyModule,
     CrystalsModule,
     TintsModule,
     AuthModule,

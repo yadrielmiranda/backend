@@ -6,6 +6,7 @@ import {
 import { PrismaService } from "@/prisma/prisma.service";
 import { Brand, Prisma } from "@prisma/client";
 import { UpdateBrandCoatingsDto } from "./dto/update-brand-coatings.dto";
+import { UpdateBrandPrivaciesDto } from "./dto/update-brand-privacies.dto";
 import { UpdateBrandTintsDto } from "./dto/update-brand-tints.dto";
 
 function clampInt(v: any, def: number, min: number, max: number) {
@@ -342,6 +343,165 @@ export class BrandsService {
     });
 
     return this.getBrandCoatingsForManage(brandId);
+  }
+
+  async getBrandPrivaciesForManage(brandId: number) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
+      select: { id: true, name: true },
+    });
+
+    if (!brand) {
+      throw new NotFoundException(`Brand with ID #${brandId} not found.`);
+    }
+
+    const [catalog, associations] = await Promise.all([
+      this.prisma.privacy.findMany({
+        orderBy: [
+          { isActive: "desc" },
+          { name: "asc" },
+          { id: "asc" },
+        ],
+      }),
+      this.prisma.brandPrivacy.findMany({ where: { idBrand: brandId } }),
+    ]);
+
+    const associationById = new Map(
+      associations.map((association) => [association.idPrivacy, association]),
+    );
+
+    const privacies = catalog.map((privacy) => {
+      const association = associationById.get(privacy.id);
+
+      return {
+        ...privacy,
+        isAssociated: Boolean(association),
+        sortOrder: association?.sortOrder ?? null,
+        surchargeEnabled: association?.surchargeEnabled ?? false,
+        isDefault: association?.isDefault ?? false,
+        costoA: association?.costoA ?? null,
+        costoB: association?.costoB ?? null,
+        costoC: association?.costoC ?? null,
+      };
+    });
+
+    privacies.sort((left, right) => {
+      if (left.isAssociated !== right.isAssociated) {
+        return left.isAssociated ? -1 : 1;
+      }
+
+      if (left.isAssociated && right.isAssociated) {
+        const orderDifference = (left.sortOrder ?? 0) - (right.sortOrder ?? 0);
+        if (orderDifference !== 0) return orderDifference;
+      }
+
+      if (left.isActive !== right.isActive) {
+        return left.isActive ? -1 : 1;
+      }
+
+      return left.name.localeCompare(right.name) || left.id - right.id;
+    });
+
+    return {
+      brand,
+      privacies,
+    };
+  }
+
+  async updateBrandPrivacies(brandId: number, data: UpdateBrandPrivaciesDto) {
+    await this.assertBrandExists(brandId);
+
+    if (data.privacies.length === 0) {
+      throw new ConflictException(
+        "A Brand must have at least one available Privacy option.",
+      );
+    }
+
+    const privacyIds = data.privacies.map((item) => item.privacyId);
+    const existingPrivacies = await this.prisma.privacy.findMany({
+      where: { id: { in: privacyIds } },
+      select: { id: true, isActive: true },
+    });
+
+    if (existingPrivacies.length !== privacyIds.length) {
+      const existingIds = new Set(
+        existingPrivacies.map((privacy) => privacy.id),
+      );
+      const missingId = privacyIds.find((id) => !existingIds.has(id));
+      throw new NotFoundException(
+        `Privacy option with ID #${missingId} not found.`,
+      );
+    }
+
+    const defaults = data.privacies.filter((item) => item.isDefault);
+
+    if (defaults.length !== 1) {
+      throw new ConflictException(
+        "Select exactly one default Privacy option for this Brand.",
+      );
+    }
+
+    const activePrivacyIds = new Set(
+      existingPrivacies
+        .filter((privacy) => privacy.isActive)
+        .map((privacy) => privacy.id),
+    );
+
+    if (!activePrivacyIds.has(defaults[0].privacyId)) {
+      throw new ConflictException(
+        "The default Privacy option must be active.",
+      );
+    }
+
+    const normalized = data.privacies.map((item, index) => {
+      const sortOrder = item.sortOrder ?? index;
+
+      if (!item.surchargeEnabled) {
+        return {
+          idBrand: brandId,
+          idPrivacy: item.privacyId,
+          sortOrder,
+          surchargeEnabled: false,
+          isDefault: item.isDefault,
+          costoA: null,
+          costoB: null,
+          costoC: null,
+        };
+      }
+
+      const coefficients = [item.costoA, item.costoB, item.costoC];
+
+      if (
+        coefficients.some(
+          (value) =>
+            value == null ||
+            !Number.isFinite(Number(value)) ||
+            Number(value) < 0,
+        )
+      ) {
+        throw new ConflictException(
+          "Privacy surcharge Area Cost, Perimeter Cost and Fixed Cost are required and must be zero or greater.",
+        );
+      }
+
+      return {
+        idBrand: brandId,
+        idPrivacy: item.privacyId,
+        sortOrder,
+        surchargeEnabled: true,
+        isDefault: item.isDefault,
+        costoA: new Prisma.Decimal(String(item.costoA)),
+        costoB: new Prisma.Decimal(String(item.costoB)),
+        costoC: new Prisma.Decimal(String(item.costoC)),
+      };
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.brandPrivacy.deleteMany({ where: { idBrand: brandId } });
+      await tx.brandPrivacy.createMany({ data: normalized });
+    });
+
+    return this.getBrandPrivaciesForManage(brandId);
   }
 
   async brand(where: Prisma.BrandWhereUniqueInput): Promise<Brand> {

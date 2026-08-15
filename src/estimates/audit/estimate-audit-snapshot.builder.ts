@@ -73,6 +73,8 @@ export class EstimateAuditSnapshotBuilder {
           idCryst: p.idCryst ?? null,
           idTint: p.idTint ?? null,
           idCoat: p.idCoat ?? null,
+          idPrivacy: p.idPrivacy ?? null,
+          privacyName: p.privacyOption?.name ?? null,
 
           // money
           rate: p.rate ?? null,
@@ -90,7 +92,6 @@ export class EstimateAuditSnapshotBuilder {
           dpNegPsf: p.dpNegPsf ?? null,
 
           // flags
-          privacy: p.privacy ?? null,
           screen: p.screen ?? null,
 
           muntin: p.pieceMuntin

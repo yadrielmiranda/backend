@@ -149,7 +149,7 @@ describe("installation flow policy", () => {
       idFC: 5,
       width: "42.000",
       height: "62.0",
-      privacy: undefined,
+      idPrivacy: undefined,
       screen: false,
       horizontalHeights: ["18.00", 24],
     });
@@ -163,7 +163,7 @@ describe("installation flow policy", () => {
       idFC: 5,
       width: "42",
       height: "62",
-      privacy: false,
+      idPrivacy: null,
       horizontalHeights: [18, "24.000"],
     });
 
