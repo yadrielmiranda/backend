@@ -231,6 +231,16 @@ const summaryRow = (
 `;
 
 export class EstimatePdfHtmlBuilder {
+  static buildFooterText(
+    estimate: Pick<EstimateWithRelations, 'expiresAt'>,
+  ): string {
+    const expirationText = estimate.expiresAt
+      ? `This estimate is valid through ${formatDate(estimate.expiresAt)}.`
+      : 'This estimate is valid for 30 days.';
+
+    return `${expirationText} Thank you for your business.`;
+  }
+
   static build(estimate: EstimateWithRelations, view: PdfView): string {
     const reportKind = reportKindFor(view);
     const ownerIsDealer =
@@ -556,10 +566,6 @@ export class EstimatePdfHtmlBuilder {
     const internalBadge = internalReport
       ? `<span class="internal-badge">Internal - ${escapeHtml(reportLabelFor(reportKind))}</span>`
       : '';
-    const expirationText = estimate.expiresAt
-      ? `This estimate is valid through ${formatDate(estimate.expiresAt)}.`
-      : 'This estimate is valid for 30 days.';
-
     return `<!doctype html>
 <html lang="en"><head>
   <meta charset="utf-8" />
@@ -642,7 +648,6 @@ export class EstimatePdfHtmlBuilder {
     .notice.warning { color: #92400e; font-weight: 600; }
     .profitability { margin-top: 14px; }
     .profit-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 30px; padding: 3px 13px; }
-    .document-footer { margin-top: 26px; padding-top: 12px; border-top: 1px solid #dbe3ee; color: #64748b; font-size: 8px; text-align: center; break-inside: avoid; page-break-inside: avoid; }
   </style>
 </head><body><main class="report">
   <header class="document-header">
@@ -655,7 +660,6 @@ export class EstimatePdfHtmlBuilder {
   </section>
   <section class="products-section"><h2 class="section-heading">Products</h2><table class="products-table${projectTotalOnly ? ' prices-hidden' : ''}"><thead><tr><th>Mark</th><th>Description</th><th class="center">Qty</th>${projectTotalOnly ? '' : '<th class="right">Unit price</th><th class="right">Subtotal</th>'}</tr></thead>${productRows}</table></section>
   <section class="summary-section">${projectSummaryHtml}</section>
-  <footer class="document-footer">${escapeHtml(expirationText)} Thank you for your business.</footer>
 </main></body></html>`;
   }
 }

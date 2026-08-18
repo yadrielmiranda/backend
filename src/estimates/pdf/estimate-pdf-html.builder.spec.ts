@@ -153,4 +153,15 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).toContain('page-break-inside: avoid !important;');
     expect(html).toContain('Internal profitability');
   });
+
+  it('keeps the expiration message in the real PDF footer instead of the document flow', () => {
+    const estimate = estimateFixture();
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+
+    expect(EstimatePdfHtmlBuilder.buildFooterText(estimate)).toBe(
+      'This estimate is valid through September 17, 2026. Thank you for your business.',
+    );
+    expect(html).not.toContain('document-footer');
+    expect(html).not.toContain('Thank you for your business.');
+  });
 });

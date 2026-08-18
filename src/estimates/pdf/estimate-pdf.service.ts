@@ -4,6 +4,14 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 import type { EstimateWithRelations, PdfView } from '../estimates.service';
 import { EstimatePdfHtmlBuilder } from './estimate-pdf-html.builder';
 
+const escapeHtml = (value: unknown) =>
+  String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+
 @Injectable()
 export class EstimatePdfService {
   assertPdfViewAllowed(view: PdfView, roleName: string | null) {
@@ -75,12 +83,10 @@ export class EstimatePdfService {
         );
       });
 
-      const estimateNumber = String(estimate.number ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#039;');
+      const estimateNumber = escapeHtml(estimate.number);
+      const footerText = escapeHtml(
+        EstimatePdfHtmlBuilder.buildFooterText(estimate),
+      );
 
       const pdf = await page.pdf({
         format: 'Letter',
@@ -90,7 +96,8 @@ export class EstimatePdfService {
         headerTemplate: '<span></span>',
         footerTemplate: `
           <div style="box-sizing:border-box;width:100%;padding:0 14mm;color:#64748b;font-family:Arial,Helvetica,sans-serif;font-size:8px;text-align:center;">
-            Estimate #${estimateNumber} - Page <span class="pageNumber"></span> of <span class="totalPages"></span>
+            <div style="border-top:1px solid #dbe3ee;padding-top:6px;">${footerText}</div>
+            <div style="margin-top:3px;">Estimate #${estimateNumber} - Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>
           </div>`,
       });
 
