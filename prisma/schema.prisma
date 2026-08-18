@@ -928,6 +928,7 @@ model Estimate {
   expiresAt DateTime?
 
   publicToken          String?   @unique @db.VarChar(64)
+  publicTotalToken     String?   @unique @db.VarChar(64)
   publicTokenEnabled   Boolean   @default(true)
   publicTokenCreatedAt DateTime?
 

@@ -21,6 +21,7 @@ import {
   CreateEstimateHeaderDto,
   UpdateEstimateHeaderDto,
 } from './dto/estimate-header.dto';
+import { CreateEstimatePublicTokenDto } from './dto/create-estimate-public-token.dto';
 
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
@@ -343,12 +344,14 @@ export class EstimatesController {
   getOrCreatePublicToken(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: Request,
+    @Body() dto: CreateEstimatePublicTokenDto,
   ) {
     const user = req.user as AuthUser;
 
     return this.estimatePublicShareService.getOrCreatePublicLinkToken(
       id,
       user,
+      dto?.pricingMode ?? 'detailed',
     );
   }
 
@@ -384,15 +387,17 @@ export class EstimatesController {
           ? 'dealer_internal'
           : normalized === 'dealer_public'
             ? 'dealer_public'
-            : normalized === 'admin'
-              ? 'admin'
-              : normalized === ''
-                ? defaultView
-                : (() => {
-                  throw new BadRequestException(
-                    'view inválido. Use: client | dealer_internal | dealer_public | admin',
-                  );
-                })();
+            : normalized === 'dealer_public_total'
+              ? 'dealer_public_total'
+              : normalized === 'admin'
+                ? 'admin'
+                : normalized === ''
+                  ? defaultView
+                  : (() => {
+                      throw new BadRequestException(
+                        'view inválido. Use: client | dealer_internal | dealer_public | dealer_public_total | admin',
+                      );
+                    })();
 
     const pdfBuffer =
       await this.estimatesService.generateEstimatePdfBufferForUser(

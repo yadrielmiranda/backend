@@ -9,6 +9,20 @@ import { randomUUID } from 'crypto';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { NotificationsService } from '@/notifications/notifications.service';
+import {
+  buildEstimateInstallationSummary,
+  estimateInstallationSummarySelect,
+} from '../reporting/estimate-installation-summary';
+import type { CustomerReportPricingMode } from '../dto/create-estimate-public-token.dto';
+
+function numberValue(value: unknown) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function roundMoney(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
 
 @Injectable()
 export class EstimatePublicShareService {
@@ -17,8 +31,10 @@ export class EstimatePublicShareService {
     private readonly notificationsService: NotificationsService,
   ) { }
 
-  private createPublicToken() {
-    return randomUUID();
+  private createPublicToken(pricingMode: CustomerReportPricingMode) {
+    return pricingMode === 'total'
+      ? `total_${randomUUID()}`
+      : randomUUID();
   }
 
   private getAuthUserRoleName(user: AuthUser) {
@@ -48,7 +64,11 @@ export class EstimatePublicShareService {
     });
   }
 
-  async getOrCreatePublicLinkToken(id: number, user: AuthUser) {
+  async getOrCreatePublicLinkToken(
+    id: number,
+    user: AuthUser,
+    pricingMode: CustomerReportPricingMode = 'detailed',
+  ) {
     const roleName = this.getAuthUserRoleName(user);
 
     if (roleName !== 'dealer') {
@@ -63,6 +83,7 @@ export class EstimatePublicShareService {
         id: true,
         idUser: true,
         publicToken: true,
+        publicTotalToken: true,
         publicTokenEnabled: true,
         status: {
           select: {
@@ -97,29 +118,47 @@ export class EstimatePublicShareService {
       );
     }
 
-    if (estimate.publicToken) {
+    const existingToken =
+      pricingMode === 'total'
+        ? estimate.publicTotalToken
+        : estimate.publicToken;
+
+    if (existingToken) {
       return {
-        token: estimate.publicToken,
+        token: existingToken,
         enabled: estimate.publicTokenEnabled,
+        pricingMode,
       };
     }
 
     const updated = await this.prisma.estimate.update({
       where: { id },
-      data: {
-        publicToken: this.createPublicToken(),
-        publicTokenEnabled: true,
-        publicTokenCreatedAt: new Date(),
-      },
+      data:
+        pricingMode === 'total'
+          ? {
+              publicTotalToken: this.createPublicToken('total'),
+              publicTokenEnabled: true,
+              publicTokenCreatedAt: new Date(),
+            }
+          : {
+              publicToken: this.createPublicToken('detailed'),
+              publicTokenEnabled: true,
+              publicTokenCreatedAt: new Date(),
+            },
       select: {
         publicToken: true,
+        publicTotalToken: true,
         publicTokenEnabled: true,
       },
     });
 
     return {
-      token: updated.publicToken,
+      token:
+        pricingMode === 'total'
+          ? updated.publicTotalToken
+          : updated.publicToken,
       enabled: updated.publicTokenEnabled,
+      pricingMode,
     };
   }
 
@@ -132,8 +171,11 @@ export class EstimatePublicShareService {
 
     const estimate = await this.prisma.estimate.findFirst({
       where: {
-        publicToken: normalizedToken,
         publicTokenEnabled: true,
+        OR: [
+          { publicToken: normalizedToken },
+          { publicTotalToken: normalizedToken },
+        ],
       },
       include: {
         user: {
@@ -142,6 +184,9 @@ export class EstimatePublicShareService {
           },
         },
         status: true,
+        installationJob: {
+          select: estimateInstallationSummarySelect,
+        },
         pieces: {
           orderBy: { id: 'asc' },
           include: {
@@ -178,11 +223,55 @@ export class EstimatePublicShareService {
       throw new NotFoundException('Estimate not found.');
     }
 
+    const pricingMode: CustomerReportPricingMode =
+      estimate.publicTotalToken === normalizedToken ? 'total' : 'detailed';
+
     await this.notifyDealerPublicEstimateViewed(estimate);
 
     const branding = await this.resolveBrandingForDealerEstimate(
       estimate.idUser,
     );
+
+    const fullInstallationSummary = buildEstimateInstallationSummary(
+      estimate.installationJob,
+    );
+    const publicProjectTotalIncomplete = Boolean(
+      fullInstallationSummary &&
+        (fullInstallationSummary.installationTotal == null ||
+          (fullInstallationSummary.permitIncluded &&
+            fullInstallationSummary.cityFee == null)),
+    );
+    const publicProjectTotal = roundMoney(
+      numberValue(estimate.customerTotalPayable) +
+        numberValue(fullInstallationSummary?.installationTotal) +
+        (fullInstallationSummary?.permitIncluded
+          ? numberValue(fullInstallationSummary.permitFee)
+          : 0) +
+        numberValue(fullInstallationSummary?.cityFee),
+    );
+    const installationSummary =
+      pricingMode === 'total' && fullInstallationSummary
+        ? {
+            ...fullInstallationSummary,
+            installationAmount:
+              fullInstallationSummary.installationAmount == null
+                ? null
+                : '0.00',
+            installationTotal:
+              fullInstallationSummary.installationTotal == null
+                ? null
+                : '0.00',
+            additionalServices:
+              fullInstallationSummary.additionalServices.map((service) => ({
+                ...service,
+                amount: '0.00',
+              })),
+            permitFee:
+              fullInstallationSummary.permitFee == null ? null : '0.00',
+            cityFee:
+              fullInstallationSummary.cityFee == null ? null : '0.00',
+          }
+        : fullInstallationSummary;
 
     return {
       id: estimate.id,
@@ -190,6 +279,7 @@ export class EstimatePublicShareService {
       name: estimate.name,
       date: estimate.date,
       expiresAt: estimate.expiresAt,
+      status: estimate.status,
 
       customerFirstName: estimate.customerFirstName,
       customerLastName: estimate.customerLastName,
@@ -200,10 +290,23 @@ export class EstimatePublicShareService {
       customerState: estimate.customerState,
       customerPostalCode: estimate.customerPostalCode,
 
-      customerPriceT: estimate.customerPriceT,
-      customerTaxRate: estimate.customerTaxRate,
-      customerTaxAmount: estimate.customerTaxAmount,
-      customerTotalPayable: estimate.customerTotalPayable,
+      customerPriceT:
+        pricingMode === 'total' ? 0 : estimate.customerPriceT,
+      customerTaxRate:
+        pricingMode === 'total' ? 0 : estimate.customerTaxRate,
+      customerTaxAmount:
+        pricingMode === 'total' ? 0 : estimate.customerTaxAmount,
+      customerTotalPayable:
+        pricingMode === 'total' ? 0 : estimate.customerTotalPayable,
+
+      installationSummary,
+      publicPricingMode: pricingMode,
+      publicProjectTotal:
+        pricingMode === 'total' ? publicProjectTotal : undefined,
+      publicProjectTotalIncomplete:
+        pricingMode === 'total'
+          ? publicProjectTotalIncomplete
+          : undefined,
 
       branding,
 
@@ -241,8 +344,9 @@ export class EstimatePublicShareService {
         dpPosPsf: p.dpPosPsf,
         dpNegPsf: p.dpNegPsf,
 
-        customerPrice: p.customerPrice,
-        customerSubtotal: p.customerSubtotal,
+        customerPrice: pricingMode === 'total' ? 0 : p.customerPrice,
+        customerSubtotal:
+          pricingMode === 'total' ? 0 : p.customerSubtotal,
 
         prod: p.prod,
         bran: p.bran,

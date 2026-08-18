@@ -16,7 +16,11 @@ export class EstimatePdfService {
     }
 
     if (roleName === 'dealer') {
-      if (view !== 'dealer_internal' && view !== 'dealer_public') {
+      if (
+        view !== 'dealer_internal' &&
+        view !== 'dealer_public' &&
+        view !== 'dealer_public_total'
+      ) {
         throw new BadRequestException('View not allowed.');
       }
       return;
@@ -37,11 +41,7 @@ export class EstimatePdfService {
   }): Promise<Buffer> {
     const { estimate, user, view } = params;
 
-    const viewerRole =
-      (user as any)?.role?.name ??
-      (user as any)?.roleName ??
-      (estimate as any)?.user?.role?.name ??
-      null;
+    const viewerRole = user.role?.name ?? null;
 
     this.assertPdfViewAllowed(view, viewerRole);
 
@@ -55,20 +55,43 @@ export class EstimatePdfService {
     try {
       const page = await browser.newPage();
 
-      // comentario en espanol: si el logoUrl es externo, esto ayuda a que cargue completo
       await page.setContent(html, { waitUntil: 'networkidle0' });
+      await page.emulateMediaType('print');
+      await page.evaluate(async () => {
+        await document.fonts?.ready;
+        await Promise.all(
+          Array.from(document.images).map(
+            (image) =>
+              new Promise<void>((resolve) => {
+                if (image.complete) {
+                  resolve();
+                  return;
+                }
+
+                image.addEventListener('load', () => resolve(), { once: true });
+                image.addEventListener('error', () => resolve(), { once: true });
+              }),
+          ),
+        );
+      });
+
+      const estimateNumber = String(estimate.number ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
 
       const pdf = await page.pdf({
         format: 'Letter',
         printBackground: true,
-        displayHeaderFooter: false,
+        displayHeaderFooter: true,
         preferCSSPageSize: true,
-        margin: {
-          top: '24mm',
-          right: '16mm',
-          bottom: '12mm',
-          left: '16mm',
-        },
+        headerTemplate: '<span></span>',
+        footerTemplate: `
+          <div style="box-sizing:border-box;width:100%;padding:0 14mm;color:#64748b;font-family:Arial,Helvetica,sans-serif;font-size:8px;text-align:center;">
+            Estimate #${estimateNumber} - Page <span class="pageNumber"></span> of <span class="totalPages"></span>
+          </div>`,
       });
 
       return Buffer.from(pdf);

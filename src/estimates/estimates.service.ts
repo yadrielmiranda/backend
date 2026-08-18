@@ -11,7 +11,6 @@ import {
   Prisma,
   PrismaClient,
   GlobalParameterKey,
-  User,
   Piece,
   Order,
   BrandingType,
@@ -41,6 +40,11 @@ import {
 } from './calculation/estimate-piece-calculator.service';
 import { EstimateAuditSnapshotBuilder } from './audit/estimate-audit-snapshot.builder';
 import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
+import {
+  buildEstimateInstallationSummary,
+  estimateInstallationSummarySelect,
+  type EstimateInstallationReportSummary,
+} from './reporting/estimate-installation-summary';
 
 // Logs (EventLog + TempLog)
 import { LogsService } from '@/logs/logs.service';
@@ -96,17 +100,25 @@ type PieceWithRelations = Piece & {
 
 // incluyo order para que el front sepa si ya fue ordenado
 export type EstimateWithRelations = Estimate & {
-  user: User;
+  user: Prisma.UserGetPayload<{
+    include: { role: true };
+  }>;
   pieces: PieceWithRelations[];
   order?: Order | null;
   status?: EstimateStatus | null;
   payments?: Prisma.PaymentGetPayload<{}>[];
   installationJob?: Pick<Prisma.InstallationJobGetPayload<{}>, 'id' | 'status'> | null;
+  installationSummary?: EstimateInstallationReportSummary | null;
   branding?: Branding | null;
 };
 
-// vistas de PDF (las 4 de tu UI)
-export type PdfView = 'client' | 'dealer_internal' | 'dealer_public' | 'admin';
+// vistas de PDF disponibles en la UI
+export type PdfView =
+  | 'client'
+  | 'dealer_internal'
+  | 'dealer_public'
+  | 'dealer_public_total'
+  | 'admin';
 
 @Injectable()
 export class EstimatesService {
@@ -763,7 +775,7 @@ export class EstimatesService {
         status: true,
         order: true,
         payments: true,
-        installationJob: { select: { id: true, status: true } },
+        installationJob: { select: estimateInstallationSummarySelect },
         pieces: {
           orderBy: { id: 'asc' },
           include: {
@@ -807,7 +819,22 @@ export class EstimatesService {
       this.prisma as PrismaTransactionClient,
     );
 
-    return { ...(estimate as any), branding } as EstimateWithRelations;
+    const installationSummary = buildEstimateInstallationSummary(
+      estimate.installationJob,
+    );
+    const installationJob = estimate.installationJob
+      ? {
+          id: estimate.installationJob.id,
+          status: estimate.installationJob.status,
+        }
+      : null;
+
+    return {
+      ...(estimate as any),
+      installationJob,
+      installationSummary,
+      branding,
+    } as EstimateWithRelations;
   }
 
   // --- estimates (Get List) ---
@@ -2436,31 +2463,30 @@ export class EstimatesService {
     view: PdfView,
   ): Promise<Buffer> {
     const estimate = await this.findOneForUser(estimateId, user);
-    const installationJobDetails = await this.prisma.installationJob.findUnique({
-      where: { estimateId },
-      include: {
-        permit: true,
-        payments: {
-          where: {
-            type: PaymentType.INSTALLATION_DEPOSIT,
-            status: PaymentStatus.PAID,
-          },
-        },
-        quotes: {
-          orderBy: { version: 'desc' },
-          take: 1,
-          include: {
-            lines: { orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }] },
-          },
-        },
-      },
-    });
+    const ownerIsDealer =
+      String(estimate.user?.role?.name ?? '').trim().toLowerCase() === 'dealer';
+    const dealerView =
+      view === 'dealer_internal' ||
+      view === 'dealer_public' ||
+      view === 'dealer_public_total';
+
+    // Keep report semantics explicit. A non-dealer estimate never has dealer
+    // pricing, and a dealer-owned estimate must use its dedicated public view
+    // when generating the customer-facing report.
+    if (ownerIsDealer && view === 'client') {
+      throw new BadRequestException(
+        'Use a dealer_public view for a dealer customer report.',
+      );
+    }
+
+    if (!ownerIsDealer && dealerView) {
+      throw new BadRequestException(
+        'Dealer reports are only available for dealer estimates.',
+      );
+    }
 
     return this.estimatePdfService.generateEstimatePdfBuffer({
-      estimate: {
-        ...estimate,
-        installationJobDetails,
-      } as EstimateWithRelations,
+      estimate,
       user,
       view,
     });
