@@ -9,6 +9,7 @@ import { shapeKeyFromConf } from '@/pricing/shape-geometry';
 
 import { normalizeInchesToEighthStep } from '@/common/dimensions';
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
+import { resolvePiecePanelCount } from '@/pieces/panel-count-resolver';
 export type PrismaTransactionClient = Omit<
   PrismaClient,
   | '$connect'
@@ -402,6 +403,7 @@ export class EstimateDimensionValidationService {
           requiresHeightRight: true,
           requiresLegHeight: true,
           requiresWindowHeight: true,
+          fixedPanelCount: true,
           conf: true,
         },
       }),
@@ -508,17 +510,18 @@ export class EstimateDimensionValidationService {
 
     if (dimensionMode === DimensionMode.WINDOW_WALL) {
       const openWidth = num(dto.width, 'Open Width');
-      const panelCount = Number((dto as any).panelCount ?? 0);
-
-      if (!Number.isFinite(panelCount) || panelCount < 1) {
-        throw new BadRequestException('Panel Count is required.');
-      }
+      const panelCount = resolvePiecePanelCount({
+        fixedPanelCount: cfg?.fixedPanelCount,
+        // WINDOW_WALL has always required a panel count for per-panel checks.
+        requiresPanelCount: true,
+        requestedPanelCount: (dto as any).panelCount,
+      });
 
       return [
         {
           ruleType: DimensionRuleType.MAIN,
           widthIn: normalizeInchesToEighthStep(
-            openWidth / Math.trunc(panelCount),
+            openWidth / panelCount,
             'Panel Width',
             1,
           ),

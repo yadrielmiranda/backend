@@ -390,7 +390,32 @@ export class InstallationWorkflowService {
     };
   }
 
+  private positivePanelCount(...values: unknown[]): number | null {
+    for (const value of values) {
+      if (value == null || value === '') continue;
+
+      const numericValue = Number(value);
+
+      if (Number.isInteger(numericValue) && numericValue >= 1) {
+        return numericValue;
+      }
+    }
+
+    return null;
+  }
+
+  private panelCountFromPiece(piece: any): number | null {
+    // Piece is the historical snapshot. Config is only a fallback for legacy
+    // pieces created before fixed panel counts existed.
+    return this.positivePanelCount(
+      piece.panelCount,
+      piece.conf?.fixedPanelCount,
+    );
+  }
+
   private sourceSnapshot(piece: any): Prisma.InputJsonValue {
+    const panelCount = this.panelCountFromPiece(piece);
+
     return {
       pieceId: piece.id,
       mark: piece.mark,
@@ -425,7 +450,7 @@ export class InstallationWorkflowService {
       rightSideliteWidth: piece.rightSideliteWidth?.toString() ?? null,
       leftPanels: piece.leftPanels ?? null,
       rightPanels: piece.rightPanels ?? null,
-      panelCount: piece.panelCount ?? null,
+      panelCount,
       horizontalHeights: Array.isArray(piece.horizontalHeights)
         ? piece.horizontalHeights.map((value: unknown) => Number(value))
         : null,
@@ -437,6 +462,8 @@ export class InstallationWorkflowService {
   }
 
   private measurementCreateFromPiece(piece: any, unitIndex: number) {
+    const panelCount = this.panelCountFromPiece(piece);
+
     return {
       pieceId: piece.id,
       unitIndex,
@@ -457,7 +484,7 @@ export class InstallationWorkflowService {
       rightSideliteWidthIn: piece.rightSideliteWidth,
       leftPanels: piece.leftPanels,
       rightPanels: piece.rightPanels,
-      panelCount: piece.panelCount,
+      panelCount,
       horizontalHeights: Array.isArray(piece.horizontalHeights)
         ? piece.horizontalHeights
         : Prisma.JsonNull,
@@ -1202,6 +1229,7 @@ export class InstallationWorkflowService {
             idSyst?: number;
             idConf?: number;
             mark?: string;
+            panelCount?: number | null;
           })
         | null;
       const sourceSystemId = Number(proposedPiece?.idSyst ?? piece.idSyst);
@@ -1246,6 +1274,16 @@ export class InstallationWorkflowService {
         throw new BadRequestException(`System configuration is missing for piece "${sourceMark}".`);
       }
 
+      const resolvedPanelCount = proposedPiece
+        ? this.positivePanelCount(
+            proposedPiece.panelCount,
+            sysConf.config.fixedPanelCount,
+          )
+        : this.positivePanelCount(
+            measurement.panelCount,
+            sysConf.config.fixedPanelCount,
+          );
+
       let components;
       try {
         components = resolvePieceComponents({
@@ -1272,7 +1310,7 @@ export class InstallationWorkflowService {
           rightSideliteWidth: measurement.rightSideliteWidthIn,
           leftPanels: measurement.leftPanels,
           rightPanels: measurement.rightPanels,
-          panelCount: measurement.panelCount,
+          panelCount: resolvedPanelCount,
           lengthIn: measurement.lengthIn,
         });
       } catch (error) {
@@ -1739,8 +1777,27 @@ export class InstallationWorkflowService {
       await this.assertRemeasurementCanBeRecorded(jobId, tx);
       const existing = await tx.installationMeasurement.findFirst({
         where: { id: measurementId, jobId },
+        include: {
+          piece: {
+            include: {
+              conf: true,
+            },
+          },
+        },
       });
       if (!existing) throw new NotFoundException('Installation measurement not found.');
+
+      const usesFixedPanelCount =
+        !existing.isManual && existing.piece?.conf.fixedPanelCount != null;
+      const fixedPanelCount = usesFixedPanelCount
+        ? this.panelCountFromPiece(existing.piece)
+        : null;
+
+      if (usesFixedPanelCount && fixedPanelCount === null) {
+        throw new BadRequestException(
+          'The fixed Panel Count for this configuration is invalid.',
+        );
+      }
 
       const quote = await this.ensureDraftQuote(jobId, user.id, tx);
       await tx.installationMeasurement.update({
@@ -1761,7 +1818,11 @@ export class InstallationWorkflowService {
           ...(dto.rightSideliteWidthIn !== undefined ? { rightSideliteWidthIn: dto.rightSideliteWidthIn } : {}),
           ...(dto.leftPanels !== undefined ? { leftPanels: dto.leftPanels } : {}),
           ...(dto.rightPanels !== undefined ? { rightPanels: dto.rightPanels } : {}),
-          ...(dto.panelCount !== undefined ? { panelCount: dto.panelCount } : {}),
+          ...(fixedPanelCount !== null
+            ? { panelCount: fixedPanelCount }
+            : dto.panelCount !== undefined
+              ? { panelCount: dto.panelCount }
+              : {}),
           ...(dto.horizontalHeights !== undefined
             ? { horizontalHeights: this.jsonValue(dto.horizontalHeights) }
             : {}),
@@ -3061,7 +3122,7 @@ export class InstallationWorkflowService {
                 rightSideliteWidthIn: piece.rightSideliteWidth,
                 leftPanels: piece.leftPanels,
                 rightPanels: piece.rightPanels,
-                panelCount: piece.panelCount,
+                panelCount: this.panelCountFromPiece(piece),
                 horizontalHeights: Array.isArray(piece.horizontalHeights)
                   ? this.jsonValue(piece.horizontalHeights)
                   : Prisma.JsonNull,

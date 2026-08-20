@@ -17,6 +17,7 @@ import { resolveBillablePricingDimensions } from "@/pricing/billable-dimensions"
 import { computeGlassOptionSurcharge } from "@/pricing/glass-option-surcharge";
 import { computeBasePrice } from "@/pricing/price-formula";
 import { resolvePieceComponents } from "@/pricing/piece-component-resolver";
+import { resolvePiecePanelCount } from "@/pieces/panel-count-resolver";
 
 import { CreatePieceDto } from "@/pieces/dto/create-piece.dto";
 import { UpsertPieceDto } from "../dto/upsert-piece.dto";
@@ -38,6 +39,7 @@ type ConfigSelect = {
   requiresLegHeight: boolean;
   requiresSashHeight: boolean;
   requiresWindowHeight: boolean;
+  fixedPanelCount: number | null;
   muntinLayout: unknown;
 };
 
@@ -339,6 +341,7 @@ export class EstimatePieceCalculatorService {
           requiresLegHeight: true,
           requiresSashHeight: true,
           requiresWindowHeight: true,
+          fixedPanelCount: true,
           muntinLayout: true,
         },
       });
@@ -1041,6 +1044,11 @@ export class EstimatePieceCalculatorService {
         (pieceDto as any).rightPanels,
       );
 
+    }
+
+    // A fixed value belongs to Config and applies in every dimension mode.
+    // The SysConf flag remains as the manual fallback for variable layouts.
+    if (config.fixedPanelCount == null) {
       requireField(
         sysConf.requiresPanelCount,
         "panelCount",
@@ -1057,6 +1065,12 @@ export class EstimatePieceCalculatorService {
     // comentario en español: estas dimensiones pertenecen exclusivamente
     // a Config en modo STANDARD. Limpiamos cualquier valor obsoleto.
     const mutablePieceDto = pieceDto as any;
+
+    mutablePieceDto.panelCount = resolvePiecePanelCount({
+      fixedPanelCount: config.fixedPanelCount,
+      requiresPanelCount: Boolean(sysConf.requiresPanelCount),
+      requestedPanelCount: mutablePieceDto.panelCount,
+    });
 
     if (
       dimensionMode !== DimensionMode.STANDARD ||

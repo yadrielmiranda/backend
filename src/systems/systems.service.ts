@@ -19,6 +19,10 @@ import { UpdateSystemConfigOptionsDto } from "./dto/update-system-config-options
 import { UpdateSystemCrystalsDto } from "./dto/update-system-crystals.dto";
 import { UpdateSystemFrameColorsDto } from "./dto/update-system-frame-colors.dto";
 import { UpdateSystemConfigPricingComponentsDto } from "./dto/update-system-config-pricing-components.dto";
+import {
+  hasPanelCountSource,
+  installationServiceRequiresPanelCount,
+} from "@/installation/panel-count-capability";
 
 @Injectable()
 export class SystemsService {
@@ -560,6 +564,7 @@ export class SystemsService {
           select: {
             id: true,
             conf: true,
+            fixedPanelCount: true,
             category: {
               select: {
                 id: true,
@@ -757,6 +762,24 @@ export class SystemsService {
         billableHeightMode: true,
         billableHeightPercentOfWidth: true,
         billableHeightFixedIn: true,
+        requiresPanelCount: true,
+        config: {
+          select: {
+            conf: true,
+            fixedPanelCount: true,
+          },
+        },
+        installationServices: {
+          select: {
+            service: {
+              select: {
+                name: true,
+                billingUnit: true,
+                ruleMetric: true,
+              },
+            },
+          },
+        },
         system: {
           select: {
             defaultConfigId: true,
@@ -791,6 +814,26 @@ export class SystemsService {
 
     const isLinearMaterial =
       sysConf.system.brandProduct.product.kind === ProductKind.LINEAR_MATERIAL;
+
+    const nextRequiresPanelCount = isLinearMaterial
+      ? false
+      : (data.requiresPanelCount ?? sysConf.requiresPanelCount);
+
+    const panelService = sysConf.installationServices.find(({ service }) =>
+      installationServiceRequiresPanelCount(service),
+    )?.service;
+
+    if (
+      panelService &&
+      !hasPanelCountSource({
+        fixedPanelCount: sysConf.config.fixedPanelCount,
+        requiresPanelCount: nextRequiresPanelCount,
+      })
+    ) {
+      throw new BadRequestException(
+        `Panel Count cannot be disabled for ${sysConf.config.conf} while panel-based installation service "${panelService.name}" is assigned. Set Fixed Panel Count on the configuration or keep manual Panel Count enabled.`,
+      );
+    }
 
     const [
       validActiveOptions,

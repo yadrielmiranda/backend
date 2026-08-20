@@ -4,7 +4,7 @@ export class DimensionParseError extends Error {}
 export function normalizeInchesToEighthStep(
   raw: string | number | null | undefined,
   fieldLabel: string = "dimension",
-  minInches: number = 1 // 👈 puedes pasar 1 para forzar mínimo 1"
+  minInches: number = 1 // puedes pasar 1 para forzar mínimo 1"
 ): number {
   if (raw === null || raw === undefined || raw === "") {
     return 0; // o lanza error si quieres forzar siempre valor

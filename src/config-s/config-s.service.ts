@@ -5,6 +5,10 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { Config, Prisma } from '@prisma/client';
+import {
+  hasPanelCountSource,
+  installationServiceRequiresPanelCount,
+} from '@/installation/panel-count-capability';
 
 @Injectable()
 export class ConfigSService {
@@ -102,8 +106,9 @@ export class ConfigSService {
     data: Prisma.ConfigUpdateInput;
     idProduct?: number;
     categoryId?: number | null;
+    fixedPanelCount?: number | null;
   }): Promise<Config> {
-    const { where, data, idProduct, categoryId } = params;
+    const { where, data, idProduct, categoryId, fixedPanelCount } = params;
 
     const currentConfig = await this.prisma.config.findUnique({
       where,
@@ -120,6 +125,48 @@ export class ConfigSService {
     const finalProductId = idProduct ?? currentConfig.idProduct;
 
     await this.validateConfigCategory(finalProductId, categoryId);
+
+    if (fixedPanelCount === null && where.id !== undefined) {
+      const sysConfs = await this.prisma.sysConf.findMany({
+        where: { idConfig: where.id },
+        select: {
+          requiresPanelCount: true,
+          system: { select: { name: true } },
+          installationServices: {
+            select: {
+              service: {
+                select: {
+                  name: true,
+                  billingUnit: true,
+                  ruleMetric: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const invalidSysConf = sysConfs.find(
+        (sysConf) =>
+          !hasPanelCountSource({
+            fixedPanelCount: null,
+            requiresPanelCount: sysConf.requiresPanelCount,
+          }) &&
+          sysConf.installationServices.some(({ service }) =>
+            installationServiceRequiresPanelCount(service),
+          ),
+      );
+
+      if (invalidSysConf) {
+        const panelService = invalidSysConf.installationServices.find(
+          ({ service }) => installationServiceRequiresPanelCount(service),
+        )?.service;
+
+        throw new BadRequestException(
+          `Fixed Panel Count cannot be cleared while ${invalidSysConf.system.name} uses panel-based installation service "${panelService?.name ?? 'Installation'}". Enable manual Panel Count first or remove that service mapping.`,
+        );
+      }
+    }
 
     try {
       return await this.prisma.config.update({

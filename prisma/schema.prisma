@@ -294,6 +294,10 @@ model Config {
   requiresSashHeight   Boolean @default(false)
   requiresWindowHeight Boolean @default(false)
 
+  // Number of physical panels that this configuration always contains.
+  // It is copied to Piece.panelCount so installation pricing keeps a snapshot.
+  fixedPanelCount Int?
+
   muntinLayout Json?
 
   // comentario en español: estructura visual base de la configuración

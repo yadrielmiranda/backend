@@ -73,6 +73,12 @@ export class CreateConfigDto {
   requiresWindowHeight?: boolean;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  fixedPanelCount?: number | null;
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => CreateConfigMuntinLayoutItemDto)

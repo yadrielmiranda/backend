@@ -23,6 +23,10 @@ import {
   CreateInstallationPriceProfileDto,
   UpdateInstallationPriceProfileDto,
 } from './dto/installation-profile.dto';
+import {
+  hasPanelCountSource,
+  installationServiceRequiresPanelCount,
+} from './panel-count-capability';
 
 const serviceInclude = {
   rules: {
@@ -237,6 +241,49 @@ export class InstallationCatalogService {
 
     this.validateRules(metric, rules);
 
+    const nextBillingUnit = dto.billingUnit ?? before.billingUnit;
+
+    if (
+      installationServiceRequiresPanelCount({
+        billingUnit: nextBillingUnit,
+        ruleMetric: metric,
+      })
+    ) {
+      const mappedSysConfs = await this.prisma.sysConf.findMany({
+        where: {
+          installationServices: {
+            some: { serviceId: id },
+          },
+        },
+        select: {
+          idSystem: true,
+          idConfig: true,
+          requiresPanelCount: true,
+          system: { select: { name: true } },
+          config: {
+            select: {
+              conf: true,
+              fixedPanelCount: true,
+            },
+          },
+        },
+      });
+
+      const invalidMapping = mappedSysConfs.find(
+        (sysConf) =>
+          !hasPanelCountSource({
+            fixedPanelCount: sysConf.config.fixedPanelCount,
+            requiresPanelCount: sysConf.requiresPanelCount,
+          }),
+      );
+
+      if (invalidMapping) {
+        throw new BadRequestException(
+          `Set Fixed Panel Count on configuration "${invalidMapping.config.conf}" or enable manual Panel Count for ${invalidMapping.system.name} before making this service panel-based.`,
+        );
+      }
+    }
+
     try {
       const updated = await this.prisma.$transaction(async (tx) => {
         if (dto.rules !== undefined) {
@@ -419,7 +466,15 @@ export class InstallationCatalogService {
   ) {
     const sysConf = await this.prisma.sysConf.findUnique({
       where: { idSystem_idConfig: { idSystem, idConfig } },
-      include: { pricingComponents: { select: { componentType: true } } },
+      include: {
+        config: {
+          select: {
+            conf: true,
+            fixedPanelCount: true,
+          },
+        },
+        pricingComponents: { select: { componentType: true } },
+      },
     });
     if (!sysConf) throw new NotFoundException('System configuration not found.');
     if (sysConf.pricingComponents.length > 0) {
@@ -431,10 +486,29 @@ export class InstallationCatalogService {
     const serviceIds = dto.serviceIds ?? [];
     const existing = await this.prisma.installationService.findMany({
       where: { id: { in: serviceIds } },
-      select: { id: true },
+      select: {
+        id: true,
+        name: true,
+        billingUnit: true,
+        ruleMetric: true,
+      },
     });
     if (existing.length !== serviceIds.length) {
       throw new BadRequestException('One or more installation services do not exist.');
+    }
+
+    const panelService = existing.find(installationServiceRequiresPanelCount);
+
+    if (
+      panelService &&
+      !hasPanelCountSource({
+        fixedPanelCount: sysConf.config.fixedPanelCount,
+        requiresPanelCount: sysConf.requiresPanelCount,
+      })
+    ) {
+      throw new BadRequestException(
+        `Set Fixed Panel Count on configuration "${sysConf.config.conf}" or enable manual Panel Count before assigning panel-based installation service "${panelService.name}".`,
+      );
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -480,7 +554,7 @@ export class InstallationCatalogService {
 
   private async validateDirectBulkTargets(
     targets: Array<{ idSystem: number; idConfig: number }>,
-  ): Promise<void> {
+  ) {
     const sysConfs = await this.prisma.sysConf.findMany({
       where: {
         OR: targets.map((target) => ({
@@ -491,8 +565,14 @@ export class InstallationCatalogService {
       select: {
         idSystem: true,
         idConfig: true,
+        requiresPanelCount: true,
         system: { select: { name: true } },
-        config: { select: { conf: true } },
+        config: {
+          select: {
+            conf: true,
+            fixedPanelCount: true,
+          },
+        },
         pricingComponents: { select: { componentType: true } },
       },
     });
@@ -527,6 +607,8 @@ export class InstallationCatalogService {
         `Bulk mapping only supports direct configurations. Remove: ${sample}. No mappings were changed.`,
       );
     }
+
+    return sysConfs;
   }
 
   async addBulkSysConfServiceMappings(
@@ -543,6 +625,8 @@ export class InstallationCatalogService {
       select: {
         id: true,
         name: true,
+        billingUnit: true,
+        ruleMetric: true,
       },
     });
     if (!service) {
@@ -551,7 +635,30 @@ export class InstallationCatalogService {
       );
     }
 
-    await this.validateDirectBulkTargets(targets);
+    const sysConfs = await this.validateDirectBulkTargets(targets);
+
+    if (installationServiceRequiresPanelCount(service)) {
+      const invalidTargets = sysConfs.filter(
+        (sysConf) =>
+          !hasPanelCountSource({
+            fixedPanelCount: sysConf.config.fixedPanelCount,
+            requiresPanelCount: sysConf.requiresPanelCount,
+          }),
+      );
+
+      if (invalidTargets.length > 0) {
+        const sample = invalidTargets
+          .slice(0, 5)
+          .map(
+            (sysConf) => `${sysConf.system.name} / ${sysConf.config.conf}`,
+          )
+          .join(', ');
+
+        throw new BadRequestException(
+          `Panel-based service "${service.name}" requires Fixed Panel Count or manual Panel Count on every target. Update: ${sample}. No mappings were changed.`,
+        );
+      }
+    }
 
     const result = await this.prisma.sysConfInstallationService.createMany({
       data: targets.map((target) => ({

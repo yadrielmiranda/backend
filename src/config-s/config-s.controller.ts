@@ -94,6 +94,7 @@ export class ConfigSController {
         requiresLegHeight: confData.requiresLegHeight,
         requiresSashHeight: confData.requiresSashHeight,
         requiresWindowHeight: confData.requiresWindowHeight,
+        fixedPanelCount: confData.fixedPanelCount,
 
         muntinLayout: this.toMuntinLayoutJson(
           confData.muntinLayout,
@@ -139,6 +140,7 @@ export class ConfigSController {
       },
       idProduct: confData.idProduct,
       categoryId: confData.categoryId,
+      fixedPanelCount: confData.fixedPanelCount,
       data: {
         ...(confData.conf !== undefined
           ? {
@@ -222,6 +224,12 @@ export class ConfigSController {
           ? {
             requiresWindowHeight:
               confData.requiresWindowHeight,
+          }
+          : {}),
+
+        ...(confData.fixedPanelCount !== undefined
+          ? {
+            fixedPanelCount: confData.fixedPanelCount,
           }
           : {}),
 
