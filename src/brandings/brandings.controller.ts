@@ -11,7 +11,8 @@ import {
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { diskStorage } from "multer";
-import { join } from "path";
+import { extname, join } from "path";
+import { randomUUID } from "crypto";
 import * as fs from "fs";
 
 import { BrandingsService } from "./brandings.service";
@@ -33,16 +34,110 @@ function extFromMime(mime: string): string | null {
   return null;
 }
 
-function deleteSameBaseFiles(baseName: string) {
-  ensureUploadDir();
-  const files = fs.readdirSync(UPLOAD_DIR);
-  for (const f of files) {
-    if (f.startsWith(baseName + ".")) {
-      try {
-        fs.unlinkSync(join(UPLOAD_DIR, f));
-      } catch {
-        // no-op
-      }
+function dealerLogoBaseName(req: any): string {
+  const id = Number(req?.user?.id);
+
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new BadRequestException("Missing req.user.id");
+  }
+
+  return `dealer-${id}`;
+}
+
+function logoFileNameFromUrl(
+  logoUrl?: string | null,
+): string | null {
+  if (!logoUrl) return null;
+
+  try {
+    const pathname = new URL(
+      logoUrl,
+      "http://localhost",
+    ).pathname;
+
+    const uploadsPrefix = "/uploads/logos/";
+    const prefixIndex = pathname.lastIndexOf(uploadsPrefix);
+
+    if (prefixIndex < 0) return null;
+
+    const fileName = decodeURIComponent(
+      pathname.slice(prefixIndex + uploadsPrefix.length),
+    );
+
+    if (
+      !fileName ||
+      fileName.includes("/") ||
+      fileName.includes("\\")
+    ) {
+      return null;
+    }
+
+    return fileName;
+  } catch {
+    return null;
+  }
+}
+
+function isLogoFileForBase(
+  fileName: string,
+  baseName: string,
+): boolean {
+  const extension = extname(fileName).toLowerCase();
+
+  if (
+    ![".png", ".jpg", ".jpeg", ".webp"].includes(extension)
+  ) {
+    return false;
+  }
+
+  const fileNameWithoutExtension = fileName.slice(
+    0,
+    -extension.length,
+  );
+
+  return (
+    fileNameWithoutExtension === baseName ||
+    fileNameWithoutExtension.startsWith(`${baseName}-`)
+  );
+}
+
+function deleteReplacedLogoFile(
+  baseName: string,
+  previousLogoUrl?: string | null,
+  currentLogoUrl?: string | null,
+): void {
+  const previousFileName =
+    logoFileNameFromUrl(previousLogoUrl);
+
+  const currentFileName =
+    logoFileNameFromUrl(currentLogoUrl);
+
+  if (
+    !previousFileName ||
+    previousFileName === currentFileName
+  ) {
+    return;
+  }
+
+  if (!isLogoFileForBase(previousFileName, baseName)) {
+    return;
+  }
+
+  const previousFilePath = join(
+    UPLOAD_DIR,
+    previousFileName,
+  );
+
+  try {
+    fs.unlinkSync(previousFilePath);
+  } catch (error) {
+    const fileError = error as NodeJS.ErrnoException;
+
+    if (fileError.code !== "ENOENT") {
+      console.warn(
+        `Could not delete replaced logo: ${previousFilePath}`,
+        error,
+      );
     }
   }
 }
@@ -72,10 +167,10 @@ function logoInterceptor(getBaseName: (req: any) => string) {
 
           const baseName = getBaseName(req);
 
-          // ✅ Evita acumulación: company.* o dealer-<id>.*
-          deleteSameBaseFiles(baseName);
+          const uniqueFileName =
+            `${baseName}-${Date.now()}-${randomUUID()}${ext}`;
 
-          cb(null, `${baseName}${ext}`);
+          cb(null, uniqueFileName);
         } catch (err) {
           cb(
             (err instanceof BadRequestException
@@ -98,7 +193,7 @@ function logoInterceptor(getBaseName: (req: any) => string) {
 
 @Controller("brandings")
 export class BrandingsController {
-  constructor(private readonly service: BrandingsService) {}
+  constructor(private readonly service: BrandingsService) { }
 
   // =====================================================
   // COMPANY (ADMIN/OPERATOR read, ADMIN write)
@@ -118,11 +213,23 @@ export class BrandingsController {
 
   @Patch("company")
   @Roles("admin")
-  updateCompany(@Body() dto: UpdateBrandingDto) {
-    return this.service.updateCompanyBranding(dto);
+  async updateCompany(@Body() dto: UpdateBrandingDto) {
+    const previous =
+      await this.service.getCompanyBranding();
+
+    const saved =
+      await this.service.updateCompanyBranding(dto);
+
+    deleteReplacedLogoFile(
+      "company",
+      previous?.logoUrl,
+      saved.logoUrl,
+    );
+
+    return saved;
   }
 
-  // ✅ Upload logo COMPANY (archivo fijo: company.xxx)
+  // Upload logo COMPANY using a unique file name
   @Post("company/logo")
   @Roles("admin")
   @UseInterceptors(logoInterceptor(() => "company"))
@@ -133,7 +240,7 @@ export class BrandingsController {
     const protocol = req.protocol;
     const baseUrl = `${protocol}://${host}/uploads/logos/${file.filename}`;
 
-    // ✅ cache-busting solo para el browser (NO lo guardes en DB)
+    // cache-busting solo para el browser (NO lo guardes en DB)
     return { logoUrl: `${baseUrl}?v=${Date.now()}` };
   }
 
@@ -155,21 +262,36 @@ export class BrandingsController {
 
   @Patch("me")
   @Roles("dealer")
-  updateDealer(@Req() req: any, @Body() dto: UpdateBrandingDto) {
-    return this.service.updateDealerBranding(req.user.id, dto);
+  async updateDealer(
+    @Req() req: any,
+    @Body() dto: UpdateBrandingDto,
+  ) {
+    const userId = Number(req.user.id);
+    const baseName = dealerLogoBaseName(req);
+
+    const previous =
+      await this.service.getDealerBranding(userId);
+
+    const saved =
+      await this.service.updateDealerBranding(
+        userId,
+        dto,
+      );
+
+    deleteReplacedLogoFile(
+      baseName,
+      previous?.logoUrl,
+      saved.logoUrl,
+    );
+
+    return saved;
   }
 
-  // ✅ Upload logo DEALER (archivo fijo por dealer: dealer-<id>.xxx)
+  // Upload logo DEALER using a unique file name per upload
   @Post("me/logo")
   @Roles("dealer")
   @UseInterceptors(
-    logoInterceptor((req) => {
-      const id = Number(req?.user?.id);
-      if (!Number.isFinite(id) || id <= 0) {
-        throw new BadRequestException("Missing req.user.id");
-      }
-      return `dealer-${id}`;
-    }),
+    logoInterceptor(dealerLogoBaseName),
   )
   uploadDealerLogo(@Req() req: any, @UploadedFile() file: Express.Multer.File) {
     if (!file) throw new BadRequestException("Invalid image file.");
