@@ -575,7 +575,7 @@ export class EstimatePieceCalculatorService {
       const rateR = rate.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       const priceR = price.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       const netProfitR = netProfit.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-      const markupR = effectiveMarkup.toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+      const markupR = effectiveMarkup.toDecimalPlaces(18, Decimal.ROUND_HALF_UP);
       const dealerMarkupDecimalR = dealerMarkupDecimal.toDecimalPlaces(
         4,
         Decimal.ROUND_HALF_UP,
@@ -1576,7 +1576,7 @@ export class EstimatePieceCalculatorService {
     const rateR = rate.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
     const priceR = price.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
     const netProfitR = netProfit.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-    const markupR = effectiveMarkup.toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+    const markupR = effectiveMarkup.toDecimalPlaces(18, Decimal.ROUND_HALF_UP);
     const dealerMarkupDecimalR = dealerMarkupDecimal.toDecimalPlaces(
       4,
       Decimal.ROUND_HALF_UP,

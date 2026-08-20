@@ -17,7 +17,7 @@ datasource db {
 model Role {
   id     Int     @id @default(autoincrement())
   name   String  @unique
-  markup Decimal @default(0) @db.Decimal(10, 4) // Total 10 dígitos, 4 decimales
+  markup Decimal @default(0) @db.Decimal(10, 4)
   users  User[]
 
   installationPriceProfileId Int?
@@ -44,7 +44,7 @@ model User {
   state      String @db.VarChar(50)
   postalCode String @db.VarChar(20)
 
-  markupOverride Decimal? @db.Decimal(10, 4)
+  markupOverride Decimal? @db.Decimal(24, 18)
   isTaxExempt    Boolean  @default(false)
 
   isActive  Boolean   @default(true)
@@ -1053,7 +1053,7 @@ model Piece {
 
   qty              Int
   rate             Decimal  @db.Decimal(12, 2)
-  markup           Decimal  @default(0) @db.Decimal(10, 4)
+  markup           Decimal @default(0) @db.Decimal(24, 18)
   price            Decimal  @db.Decimal(12, 2)
   subtotal         Decimal  @db.Decimal(12, 2)
   netProfit        Decimal  @db.Decimal(12, 2)

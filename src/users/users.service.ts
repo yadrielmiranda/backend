@@ -26,6 +26,22 @@ export class UsersService {
     private logs: LogsService,
   ) { }
 
+  private normalizeMarkupOverride(
+    value: string | null,
+  ): Prisma.Decimal | null {
+    if (value === null) return null;
+
+    const markup = new Prisma.Decimal(value);
+
+    if (markup.lte(-1)) {
+      throw new BadRequestException(
+        'Custom markup must be greater than -100%.',
+      );
+    }
+
+    return markup;
+  }
+
   private readonly safeSelect = {
     id: true,
     username: true,
@@ -95,7 +111,10 @@ export class UsersService {
       changed.push('installationPriceProfileId');
     }
 
-    if ('markupOverride' in dto && cmp(before.markupOverride, after.markupOverride)) {
+    if (
+      'markupOverride' in dto &&
+      (before.markupOverride?.toString() ?? null) !== (after.markupOverride?.toString() ?? null)
+    ) {
       changed.push('markupOverride');
     }
 
@@ -175,10 +194,10 @@ export class UsersService {
         role: { connect: { id: idRole } },
         ...(installationPriceProfileId
           ? {
-              installationPriceProfile: {
-                connect: { id: installationPriceProfileId },
-              },
-            }
+            installationPriceProfile: {
+              connect: { id: installationPriceProfileId },
+            },
+          }
           : {}),
       },
       select: this.safeSelect,
@@ -192,7 +211,12 @@ export class UsersService {
     data: UpdateUserDto;
   }): Promise<UserSafe> {
     const { where, data: userData } = params;
-    const { idRole, installationPriceProfileId, ...rest } = userData;
+    const {
+      idRole,
+      installationPriceProfileId,
+      markupOverride,
+      ...rest
+    } = userData;
 
     const existing = await this.prisma.user.findFirst({
       where: {
@@ -236,8 +260,9 @@ export class UsersService {
           : { connect: { id: installationPriceProfileId } };
     }
 
-    if ('markupOverride' in userData) {
-      dataForPrisma.markupOverride = userData.markupOverride;
+    if (markupOverride !== undefined) {
+      dataForPrisma.markupOverride =
+        this.normalizeMarkupOverride(markupOverride);
     }
 
     const updated = await this.prisma.user.update({

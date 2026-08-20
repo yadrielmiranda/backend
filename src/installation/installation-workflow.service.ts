@@ -658,7 +658,7 @@ export class InstallationWorkflowService {
       rate: calculated.rate.toFixed(2),
       price: calculated.price.toFixed(2),
       netProfit: calculated.netProfit.toFixed(2),
-      markup: calculated.markup.toFixed(4),
+      markup: calculated.markup.toFixed(18),
       dealerMarkupDecimal: calculated.dealerMarkupDecimal.toFixed(4),
       netProfitD: calculated.netProfitD.toFixed(2),
       subtotal: calculated.subtotal.toFixed(2),

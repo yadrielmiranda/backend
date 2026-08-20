@@ -178,7 +178,7 @@ export class EstimatesService {
 
       rate: new Prisma.Decimal(piece.rate.toFixed(2)),
       price: new Prisma.Decimal(piece.price.toFixed(2)),
-      markup: new Prisma.Decimal(piece.markup.toFixed(4)),
+      markup: new Prisma.Decimal(piece.markup.toFixed(18)),
       subtotal: new Prisma.Decimal(piece.subtotal.toFixed(2)),
       dealerMarkup: new Prisma.Decimal(
         piece.dealerMarkupDecimal.toFixed(4),
@@ -721,7 +721,7 @@ export class EstimatesService {
       rate: new Prisma.Decimal(calculated.rate.toFixed(2)),
       price: new Prisma.Decimal(calculated.price.toFixed(2)),
       netProfit: new Prisma.Decimal(calculated.netProfit.toFixed(2)),
-      markup: new Prisma.Decimal(calculated.markup.toFixed(4)),
+      markup: new Prisma.Decimal(calculated.markup.toFixed(18)),
       subtotal: new Prisma.Decimal(calculated.subtotal.toFixed(2)),
       dealerMarkup: new Prisma.Decimal(calculated.dealerMarkupDecimal.toFixed(4)),
       netProfitD: new Prisma.Decimal(calculated.netProfitD.toFixed(2)),
@@ -2156,7 +2156,7 @@ export class EstimatesService {
 
             rate: new Prisma.Decimal(p.rate.toFixed(2)),
             price: new Prisma.Decimal(p.price.toFixed(2)),
-            markup: new Prisma.Decimal(p.markup.toFixed(4)),
+            markup: new Prisma.Decimal(p.markup.toFixed(18)),
             subtotal: new Prisma.Decimal(p.subtotal.toFixed(2)),
             dealerMarkup: new Prisma.Decimal(
               p.dealerMarkupDecimal.toFixed(4),
