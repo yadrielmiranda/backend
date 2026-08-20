@@ -509,22 +509,37 @@ export class EstimateDimensionValidationService {
     }
 
     if (dimensionMode === DimensionMode.WINDOW_WALL) {
+      // Open Width is entered by the user, so it must remain validated
+      // in increments of 1/8".
       const openWidth = num(dto.width, 'Open Width');
+
       const panelCount = resolvePiecePanelCount({
         fixedPanelCount: cfg?.fixedPanelCount,
-        // WINDOW_WALL has always required a panel count for per-panel checks.
+        // Window Wall uses panelCount for per-panel dimension validation.
         requiresPanelCount: true,
         requestedPanelCount: (dto as any).panelCount,
       });
 
+      if (panelCount == null) {
+        throw new BadRequestException(
+          'Panel Count must be a whole number greater than zero.',
+        );
+      }
+
+      // This is an internally calculated dimension. It must not be forced
+      // into increments of 1/8".
+      const panelWidth = openWidth / panelCount;
+
+      if (!Number.isFinite(panelWidth) || panelWidth <= 0) {
+        throw new BadRequestException(
+          'Calculated Panel Width must be greater than zero.',
+        );
+      }
+
       return [
         {
           ruleType: DimensionRuleType.MAIN,
-          widthIn: normalizeInchesToEighthStep(
-            openWidth / panelCount,
-            'Panel Width',
-            1,
-          ),
+          widthIn: panelWidth,
           heightIn,
           label: 'MAIN panel',
         },
