@@ -1,6 +1,7 @@
 import {
   IsBoolean,
   IsEmail,
+  IsEnum,
   IsIn,
   IsNotEmpty,
   IsNumber,
@@ -11,16 +12,17 @@ import {
   IsString,
   Matches,
   MaxLength,
-} from "class-validator";
-import { Transform, Type } from "class-transformer";
-import { US_STATE_CODES } from "@/common/us-states";
+} from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { DealerAffiliation, DealerMode } from '@prisma/client';
+import { US_STATE_CODES } from '@/common/us-states';
 import {
   trimOnly,
   normalizeEmailOrNull,
   normalizeUSPhoneE164OrNull,
   normalizeZip5OrNull,
   normalizeStateCodeOrNull,
-} from "@/common/transforms";
+} from '@/common/transforms';
 
 export class CreateUserDto {
   @IsNotEmpty()
@@ -53,7 +55,7 @@ export class CreateUserDto {
   @MaxLength(20)
   @Transform(normalizeUSPhoneE164OrNull)
   @Matches(/^\+1\d{10}$/, {
-    message: "phone must be a valid US E.164 number (e.g. +13055551234).",
+    message: 'phone must be a valid US E.164 number (e.g. +13055551234).',
   })
   phone: string;
 
@@ -79,14 +81,16 @@ export class CreateUserDto {
   @IsString()
   @MaxLength(2)
   @Transform(normalizeStateCodeOrNull)
-  @IsIn(US_STATE_CODES, { message: "state must be a valid US state code (e.g. FL)." })
+  @IsIn(US_STATE_CODES, {
+    message: 'state must be a valid US state code (e.g. FL).',
+  })
   state: string;
 
   @IsNotEmpty()
   @IsString()
   @MaxLength(10)
   @Transform(normalizeZip5OrNull)
-  @Matches(/^\d{5}$/, { message: "postalCode must be a valid ZIP (5 digits)." })
+  @Matches(/^\d{5}$/, { message: 'postalCode must be a valid ZIP (5 digits).' })
   postalCode: string;
 
   @IsNotEmpty()
@@ -104,4 +108,12 @@ export class CreateUserDto {
   @Min(1)
   @Type(() => Number)
   installationPriceProfileId?: number | null;
+
+  @IsOptional()
+  @IsEnum(DealerMode)
+  dealerMode?: DealerMode;
+
+  @IsOptional()
+  @IsEnum(DealerAffiliation)
+  dealerAffiliation?: DealerAffiliation;
 }

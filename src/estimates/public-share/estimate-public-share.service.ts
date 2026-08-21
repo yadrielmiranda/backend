@@ -29,20 +29,14 @@ export class EstimatePublicShareService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
-  ) { }
+  ) {}
 
   private createPublicToken(pricingMode: CustomerReportPricingMode) {
-    return pricingMode === 'total'
-      ? `total_${randomUUID()}`
-      : randomUUID();
+    return pricingMode === 'total' ? `total_${randomUUID()}` : randomUUID();
   }
 
   private getAuthUserRoleName(user: AuthUser) {
-    return (
-      (user as any)?.role?.name ??
-      (user as any)?.roleName ??
-      null
-    );
+    return (user as any)?.role?.name ?? (user as any)?.roleName ?? null;
   }
 
   private async resolveBrandingForDealerEstimate(dealerId: number) {
@@ -112,9 +106,9 @@ export class EstimatePublicShareService {
       );
     }
 
-    if (estimate.status?.name !== 'Active') {
+    if (!['Active', 'Ordered'].includes(estimate.status?.name ?? '')) {
       throw new BadRequestException(
-        'Only active estimates can be shared with customers.',
+        'Only active or ordered estimates can be shared with customers.',
       );
     }
 
@@ -258,18 +252,16 @@ export class EstimatePublicShareService {
                 ? null
                 : '0.00',
             installationTotal:
-              fullInstallationSummary.installationTotal == null
-                ? null
-                : '0.00',
-            additionalServices:
-              fullInstallationSummary.additionalServices.map((service) => ({
+              fullInstallationSummary.installationTotal == null ? null : '0.00',
+            additionalServices: fullInstallationSummary.additionalServices.map(
+              (service) => ({
                 ...service,
                 amount: '0.00',
-              })),
+              }),
+            ),
             permitFee:
               fullInstallationSummary.permitFee == null ? null : '0.00',
-            cityFee:
-              fullInstallationSummary.cityFee == null ? null : '0.00',
+            cityFee: fullInstallationSummary.cityFee == null ? null : '0.00',
           }
         : fullInstallationSummary;
 
@@ -290,10 +282,8 @@ export class EstimatePublicShareService {
       customerState: estimate.customerState,
       customerPostalCode: estimate.customerPostalCode,
 
-      customerPriceT:
-        pricingMode === 'total' ? 0 : estimate.customerPriceT,
-      customerTaxRate:
-        pricingMode === 'total' ? 0 : estimate.customerTaxRate,
+      customerPriceT: pricingMode === 'total' ? 0 : estimate.customerPriceT,
+      customerTaxRate: pricingMode === 'total' ? 0 : estimate.customerTaxRate,
       customerTaxAmount:
         pricingMode === 'total' ? 0 : estimate.customerTaxAmount,
       customerTotalPayable:
@@ -304,9 +294,7 @@ export class EstimatePublicShareService {
       publicProjectTotal:
         pricingMode === 'total' ? publicProjectTotal : undefined,
       publicProjectTotalIncomplete:
-        pricingMode === 'total'
-          ? publicProjectTotalIncomplete
-          : undefined,
+        pricingMode === 'total' ? publicProjectTotalIncomplete : undefined,
 
       branding,
 
@@ -345,8 +333,7 @@ export class EstimatePublicShareService {
         dpNegPsf: p.dpNegPsf,
 
         customerPrice: pricingMode === 'total' ? 0 : p.customerPrice,
-        customerSubtotal:
-          pricingMode === 'total' ? 0 : p.customerSubtotal,
+        customerSubtotal: pricingMode === 'total' ? 0 : p.customerSubtotal,
 
         prod: p.prod,
         bran: p.bran,
@@ -373,10 +360,7 @@ export class EstimatePublicShareService {
     customerFirstName?: string | null;
     customerLastName?: string | null;
   }) {
-    const fullName = [
-      estimate.customerFirstName,
-      estimate.customerLastName,
-    ]
+    const fullName = [estimate.customerFirstName, estimate.customerLastName]
       .filter(Boolean)
       .join(' ')
       .trim();
@@ -417,6 +401,8 @@ export class EstimatePublicShareService {
     await this.notificationsService.createAndSend({
       recipientId: estimate.idUser,
       message,
+      actionUrl: `/estimates/${estimate.id}?view=public`,
+      actionLabel: 'Open customer view',
     });
   }
 }

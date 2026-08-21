@@ -1,6 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
-import { Prisma, User } from '@prisma/client';
+import { DealerAffiliation, DealerMode, Prisma, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -24,11 +28,9 @@ export class UsersService {
   constructor(
     private prisma: PrismaService,
     private logs: LogsService,
-  ) { }
+  ) {}
 
-  private normalizeMarkupOverride(
-    value: string | null,
-  ): Prisma.Decimal | null {
+  private normalizeMarkupOverride(value: string | null): Prisma.Decimal | null {
     if (value === null) return null;
 
     const markup = new Prisma.Decimal(value);
@@ -40,6 +42,30 @@ export class UsersService {
     }
 
     return markup;
+  }
+
+  private resolveDealerClassification(params: {
+    roleName: string;
+    dealerMode?: DealerMode | null;
+    dealerAffiliation?: DealerAffiliation | null;
+    fallbackMode?: DealerMode | null;
+    fallbackAffiliation?: DealerAffiliation | null;
+  }) {
+    if (params.roleName !== 'dealer') {
+      return {
+        dealerMode: null,
+        dealerAffiliation: null,
+      };
+    }
+
+    return {
+      dealerMode:
+        params.dealerMode ?? params.fallbackMode ?? DealerMode.EXTERNAL,
+      dealerAffiliation:
+        params.dealerAffiliation ??
+        params.fallbackAffiliation ??
+        DealerAffiliation.AUTHENTIC,
+    };
   }
 
   private readonly safeSelect = {
@@ -55,6 +81,8 @@ export class UsersService {
     postalCode: true,
     markupOverride: true,
     isTaxExempt: true,
+    dealerMode: true,
+    dealerAffiliation: true,
     isActive: true,
     deletedAt: true,
     idRole: true,
@@ -84,26 +112,38 @@ export class UsersService {
       installationPriceProfileName: u.installationPriceProfile?.name ?? null,
       markupOverride: u.markupOverride ?? null,
       isTaxExempt: u.isTaxExempt ?? null,
+      dealerMode: u.dealerMode ?? null,
+      dealerAffiliation: u.dealerAffiliation ?? null,
       isActive: u.isActive ?? null,
       deletedAt: u.deletedAt ?? null,
       passwordUpdatedAt: u.passwordUpdatedAt ?? null,
     };
   }
 
-  private diffChangedFields(before: UserSafe, after: UserSafe, dto: UpdateUserDto) {
+  private diffChangedFields(
+    before: UserSafe,
+    after: UserSafe,
+    dto: UpdateUserDto,
+  ) {
     const changed: string[] = [];
     const cmp = (a: any, b: any) => (a ?? null) !== (b ?? null);
 
-    if ('username' in dto && cmp(before.username, after.username)) changed.push('username');
+    if ('username' in dto && cmp(before.username, after.username))
+      changed.push('username');
     if ('email' in dto && cmp(before.email, after.email)) changed.push('email');
-    if ('firstName' in dto && cmp(before.firstName, after.firstName)) changed.push('firstName');
-    if ('lastName' in dto && cmp(before.lastName, after.lastName)) changed.push('lastName');
+    if ('firstName' in dto && cmp(before.firstName, after.firstName))
+      changed.push('firstName');
+    if ('lastName' in dto && cmp(before.lastName, after.lastName))
+      changed.push('lastName');
     if ('phone' in dto && cmp(before.phone, after.phone)) changed.push('phone');
-    if ('street' in dto && cmp(before.street, after.street)) changed.push('street');
+    if ('street' in dto && cmp(before.street, after.street))
+      changed.push('street');
     if ('city' in dto && cmp(before.city, after.city)) changed.push('city');
     if ('state' in dto && cmp(before.state, after.state)) changed.push('state');
-    if ('postalCode' in dto && cmp(before.postalCode, after.postalCode)) changed.push('postalCode');
-    if ('idRole' in dto && cmp(before.idRole, after.idRole)) changed.push('idRole');
+    if ('postalCode' in dto && cmp(before.postalCode, after.postalCode))
+      changed.push('postalCode');
+    if ('idRole' in dto && cmp(before.idRole, after.idRole))
+      changed.push('idRole');
     if (
       'installationPriceProfileId' in dto &&
       cmp(before.installationPriceProfileId, after.installationPriceProfileId)
@@ -113,13 +153,25 @@ export class UsersService {
 
     if (
       'markupOverride' in dto &&
-      (before.markupOverride?.toString() ?? null) !== (after.markupOverride?.toString() ?? null)
+      (before.markupOverride?.toString() ?? null) !==
+        (after.markupOverride?.toString() ?? null)
     ) {
       changed.push('markupOverride');
     }
 
     if ('isTaxExempt' in dto && cmp(before.isTaxExempt, after.isTaxExempt)) {
       changed.push('isTaxExempt');
+    }
+
+    if ('dealerMode' in dto && cmp(before.dealerMode, after.dealerMode)) {
+      changed.push('dealerMode');
+    }
+
+    if (
+      'dealerAffiliation' in dto &&
+      cmp(before.dealerAffiliation, after.dealerAffiliation)
+    ) {
+      changed.push('dealerAffiliation');
     }
 
     if ('isActive' in dto && cmp(before.isActive, after.isActive)) {
@@ -132,7 +184,9 @@ export class UsersService {
     return { changedFields: changed, passwordChanged };
   }
 
-  async userSafe(userWhereUniqueInput: Prisma.UserWhereUniqueInput): Promise<UserSafe> {
+  async userSafe(
+    userWhereUniqueInput: Prisma.UserWhereUniqueInput,
+  ): Promise<UserSafe> {
     const user = await this.prisma.user.findFirst({
       where: {
         ...userWhereUniqueInput,
@@ -142,7 +196,9 @@ export class UsersService {
     });
 
     if (!user) {
-      throw new NotFoundException(`User with ID #${userWhereUniqueInput.id} not found.`);
+      throw new NotFoundException(
+        `User with ID #${userWhereUniqueInput.id} not found.`,
+      );
     }
 
     return user as UserSafe;
@@ -174,8 +230,28 @@ export class UsersService {
   }
 
   async createUser(userData: CreateUserDto): Promise<UserSafe> {
-    const { idRole, installationPriceProfileId, ...rest } = userData;
+    const {
+      idRole,
+      installationPriceProfileId,
+      dealerMode,
+      dealerAffiliation,
+      ...rest
+    } = userData;
     const hashedPassword = await bcrypt.hash(rest.password, 10);
+
+    const role = await this.prisma.role.findUnique({
+      where: { id: idRole },
+      select: { id: true, name: true },
+    });
+    if (!role) {
+      throw new BadRequestException('The selected role does not exist.');
+    }
+
+    const classification = this.resolveDealerClassification({
+      roleName: role.name,
+      dealerMode,
+      dealerAffiliation,
+    });
 
     if (installationPriceProfileId != null) {
       const profile = await this.prisma.installationPriceProfile.findFirst({
@@ -183,7 +259,9 @@ export class UsersService {
         select: { id: true },
       });
       if (!profile) {
-        throw new BadRequestException('The selected installation price profile is unavailable.');
+        throw new BadRequestException(
+          'The selected installation price profile is unavailable.',
+        );
       }
     }
 
@@ -191,13 +269,14 @@ export class UsersService {
       data: {
         ...rest,
         password: hashedPassword,
+        ...classification,
         role: { connect: { id: idRole } },
         ...(installationPriceProfileId
           ? {
-            installationPriceProfile: {
-              connect: { id: installationPriceProfileId },
-            },
-          }
+              installationPriceProfile: {
+                connect: { id: installationPriceProfileId },
+              },
+            }
           : {}),
       },
       select: this.safeSelect,
@@ -215,6 +294,8 @@ export class UsersService {
       idRole,
       installationPriceProfileId,
       markupOverride,
+      dealerMode,
+      dealerAffiliation,
       ...rest
     } = userData;
 
@@ -223,7 +304,13 @@ export class UsersService {
         ...where,
         deletedAt: null,
       },
-      select: { id: true },
+      select: {
+        id: true,
+        idRole: true,
+        dealerMode: true,
+        dealerAffiliation: true,
+        role: { select: { name: true } },
+      },
     });
 
     if (!existing) {
@@ -234,14 +321,34 @@ export class UsersService {
       ...rest,
     };
 
+    let nextRoleName = existing.role.name;
+
     if (rest.password) {
       dataForPrisma.password = await bcrypt.hash(rest.password, 10);
       dataForPrisma.passwordUpdatedAt = new Date();
     }
 
     if (idRole) {
+      const selectedRole = await this.prisma.role.findUnique({
+        where: { id: idRole },
+        select: { name: true },
+      });
+      if (!selectedRole) {
+        throw new BadRequestException('The selected role does not exist.');
+      }
+      nextRoleName = selectedRole.name;
       dataForPrisma.role = { connect: { id: idRole } };
     }
+
+    const classification = this.resolveDealerClassification({
+      roleName: nextRoleName,
+      dealerMode,
+      dealerAffiliation,
+      fallbackMode: existing.dealerMode,
+      fallbackAffiliation: existing.dealerAffiliation,
+    });
+    dataForPrisma.dealerMode = classification.dealerMode;
+    dataForPrisma.dealerAffiliation = classification.dealerAffiliation;
 
     if (installationPriceProfileId != null) {
       const profile = await this.prisma.installationPriceProfile.findFirst({
@@ -249,7 +356,9 @@ export class UsersService {
         select: { id: true },
       });
       if (!profile) {
-        throw new BadRequestException('The selected installation price profile is unavailable.');
+        throw new BadRequestException(
+          'The selected installation price profile is unavailable.',
+        );
       }
     }
 
@@ -325,7 +434,10 @@ export class UsersService {
     });
   }
 
-  async createUserAsAdmin(userData: CreateUserDto, actor: AuthUser): Promise<UserSafe> {
+  async createUserAsAdmin(
+    userData: CreateUserDto,
+    actor: AuthUser,
+  ): Promise<UserSafe> {
     const created = await this.createUser(userData);
 
     await this.logs.log({
@@ -361,7 +473,11 @@ export class UsersService {
       data: userData,
     });
 
-    const { changedFields, passwordChanged } = this.diffChangedFields(before, updated, userData);
+    const { changedFields, passwordChanged } = this.diffChangedFields(
+      before,
+      updated,
+      userData,
+    );
 
     await this.logs.log({
       action: 'UPDATE',
@@ -587,7 +703,9 @@ export class UsersService {
     return deleted;
   }
 
-  async userWithPassword(where: Prisma.UserWhereUniqueInput): Promise<UserWithRoleAndPassword> {
+  async userWithPassword(
+    where: Prisma.UserWhereUniqueInput,
+  ): Promise<UserWithRoleAndPassword> {
     const user = await this.prisma.user.findFirst({
       where: {
         ...where,
@@ -604,7 +722,9 @@ export class UsersService {
     return user;
   }
 
-  async findOneByIdentifier(identifier: string): Promise<UserWithRoleAndPassword | null> {
+  async findOneByIdentifier(
+    identifier: string,
+  ): Promise<UserWithRoleAndPassword | null> {
     return this.prisma.user.findFirst({
       where: {
         deletedAt: null,

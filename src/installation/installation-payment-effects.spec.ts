@@ -15,6 +15,7 @@ describe('Installation payment effects', () => {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
   );
 
   it('applies the deposit effect once without creating repeated quote versions', async () => {

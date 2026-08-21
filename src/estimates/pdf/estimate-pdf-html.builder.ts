@@ -40,6 +40,37 @@ const formatMoney = (value: unknown) =>
     maximumFractionDigits: 2,
   });
 
+const estimatedMaterialProfitability = (
+  estimate: EstimateWithRelations,
+  ownerIsDealer: boolean,
+) => {
+  const internalDealer =
+    ownerIsDealer && estimate.dealerModeSnapshot === 'INTERNAL';
+  const belongsToImpact =
+    ownerIsDealer && estimate.dealerAffiliationSnapshot === 'IMPACT';
+  const expectedCompanyProfit = roundMoney(
+    internalDealer
+      ? numberValue(estimate.customerPriceT) - numberValue(estimate.priceT)
+      : numberValue(estimate.priceT) - numberValue(estimate.rateT),
+  );
+
+  return {
+    saleChannel: ownerIsDealer
+      ? `${estimate.dealerModeSnapshot ?? 'EXTERNAL'} · ${
+          estimate.dealerAffiliationSnapshot ?? 'AUTHENTIC'
+        }`
+      : 'DIRECT CLIENT · AUTHENTIC',
+    estimatedImpactProfit: belongsToImpact ? expectedCompanyProfit : 0,
+    estimatedAuthenticProfit: belongsToImpact ? 0 : expectedCompanyProfit,
+    expectedCompanyProfit,
+    calculationNote: internalDealer
+      ? "Expected profit uses customer material subtotal minus internal material subtotal. The dealer's intermediate pricing markup is excluded."
+      : ownerIsDealer
+        ? "Expected profit uses dealer material subtotal minus estimated factory rate. The dealer's customer resale markup is excluded."
+        : 'Expected profit uses material sale subtotal minus estimated factory rate.',
+  };
+};
+
 const formatDate = (value: unknown) => {
   if (!value) return '';
   const date = new Date(String(value));
@@ -168,8 +199,7 @@ const buildPieceDescriptionLines = (piece: any) => {
     optionName(piece.preparation);
   const sill = optionName(piece.sillOption) ?? optionName(piece.sill);
   const reinforcement =
-    optionName(piece.reinforcementOption) ??
-    optionName(piece.reinforcement);
+    optionName(piece.reinforcementOption) ?? optionName(piece.reinforcement);
 
   if (active) details.push(`Active: ${active}`);
   if (preparation) details.push(`Preparation: ${preparation}`);
@@ -244,10 +274,11 @@ export class EstimatePdfHtmlBuilder {
   static build(estimate: EstimateWithRelations, view: PdfView): string {
     const reportKind = reportKindFor(view);
     const ownerIsDealer =
-      String(estimate.user?.role?.name ?? '').trim().toLowerCase() === 'dealer';
+      String(estimate.user?.role?.name ?? '')
+        .trim()
+        .toLowerCase() === 'dealer';
     const projectTotalOnly = reportKind === 'dealer-customer-total';
-    const customerFacing =
-      reportKind === 'dealer-customer' || projectTotalOnly;
+    const customerFacing = reportKind === 'dealer-customer' || projectTotalOnly;
     const comparisonView =
       reportKind === 'dealer' || (reportKind === 'admin' && ownerIsDealer);
     const internalReport = reportKind === 'dealer' || reportKind === 'admin';
@@ -265,10 +296,7 @@ export class EstimatePdfHtmlBuilder {
       ? `<img class="brand-logo" src="${escapeHtml(branding.logoUrl)}" alt="Logo" />`
       : '';
 
-    const customerName = [
-      estimate.customerFirstName,
-      estimate.customerLastName,
-    ]
+    const customerName = [estimate.customerFirstName, estimate.customerLastName]
       .filter(Boolean)
       .join(' ')
       .trim();
@@ -311,7 +339,9 @@ export class EstimatePdfHtmlBuilder {
       taxAmount: numberValue(estimate.customerTaxAmount),
       total: numberValue(estimate.customerTotalPayable),
     };
-    const selectedMaterial = customerFacing ? customerMaterial : internalMaterial;
+    const selectedMaterial = customerFacing
+      ? customerMaterial
+      : internalMaterial;
     const installationSummary = estimate.installationSummary ?? null;
     const installationTotal = numberValue(
       installationSummary?.installationTotal,
@@ -435,7 +465,10 @@ export class EstimatePdfHtmlBuilder {
 
         if (installationSummary.permitIncluded) {
           rows.push(
-            summaryRow('Permit Fee', formatMoney(installationSummary.permitFee)),
+            summaryRow(
+              'Permit Fee',
+              formatMoney(installationSummary.permitFee),
+            ),
             summaryRow(
               'City Fee',
               installationSummary.cityFee == null
@@ -531,7 +564,11 @@ export class EstimatePdfHtmlBuilder {
             reportKind === 'dealer'
               ? summaryRow(
                   'Dealer Profit - materials only, pre-tax',
-                  formatMoney(roundMoney(customerMaterial.subtotal - internalMaterial.subtotal)),
+                  formatMoney(
+                    roundMoney(
+                      customerMaterial.subtotal - internalMaterial.subtotal,
+                    ),
+                  ),
                   { extraClass: 'profit-row' },
                 )
               : ''
@@ -544,16 +581,23 @@ export class EstimatePdfHtmlBuilder {
           ${notices}
         </div>`;
 
+    const profitability = estimatedMaterialProfitability(
+      estimate,
+      ownerIsDealer,
+    );
     const adminProfitability =
       reportKind === 'admin'
         ? `
           <div class="card profitability keep-together">
-            <div class="card-title"><strong>Internal profitability</strong><small>Materials only - before taxes</small></div>
+            <div class="card-title"><strong>Estimated material profitability</strong><small>Admin only - materials only - before taxes - installation excluded</small></div>
             <div class="profit-grid">
-              ${summaryRow('Production cost', formatMoney(estimate.rateT))}
-              ${summaryRow('Impact Plus profit', formatMoney(estimate.netProfit), { strong: true })}
-              ${ownerIsDealer ? summaryRow('Dealer profit', formatMoney(estimate.netProfitD), { strong: true }) : ''}
+              ${summaryRow('Sale channel', escapeHtml(profitability.saleChannel))}
+              ${summaryRow('Estimated factory rate', formatMoney(estimate.rateT))}
+              ${summaryRow('Estimated Impact profit', formatMoney(profitability.estimatedImpactProfit), { strong: true })}
+              ${summaryRow('Estimated Authentic profit', formatMoney(profitability.estimatedAuthenticProfit), { strong: true })}
+              ${summaryRow('Estimated total company profit', formatMoney(profitability.expectedCompanyProfit), { strong: true })}
             </div>
+            <p class="profit-note">${escapeHtml(profitability.calculationNote)}</p>
           </div>`
         : '';
     const projectSummaryHtml = projectTotalOnly
@@ -648,6 +692,7 @@ export class EstimatePdfHtmlBuilder {
     .notice.warning { color: #92400e; font-weight: 600; }
     .profitability { margin-top: 14px; }
     .profit-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 30px; padding: 3px 13px; }
+    .profit-note { margin: 0; padding: 9px 13px; border-top: 1px solid #dbe3ee; color: #64748b; font-size: 8px; }
   </style>
 </head><body><main class="report">
   <header class="document-header">

@@ -27,6 +27,8 @@ const estimateFixture = (installationIncluded = true) =>
     rateT: '198.07',
     netProfit: '29.71',
     netProfitD: '34.17',
+    dealerModeSnapshot: 'EXTERNAL',
+    dealerAffiliationSnapshot: 'AUTHENTIC',
     status: { name: 'Active' },
     user: {
       firstName: 'Dealer',
@@ -81,8 +83,79 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).toContain('$261.95');
     expect(html).not.toContain('$227.78');
     expect(html).not.toContain('$243.72');
-    expect(html).not.toContain('Internal profitability');
+    expect(html).not.toContain('Estimated material profitability');
+    expect(html).not.toContain('Estimated factory rate');
     expect(html).not.toContain('Production cost');
+  });
+
+  it('assigns an internal Impact dealer customer margin to Impact in the admin PDF', () => {
+    const estimate = estimateFixture();
+    Object.assign(estimate, {
+      dealerModeSnapshot: 'INTERNAL',
+      dealerAffiliationSnapshot: 'IMPACT',
+    });
+
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+
+    expect(html).toContain('INTERNAL · IMPACT');
+    expect(html).toMatch(
+      /<span>Estimated Impact profit<\/span>\s*<span>\$34\.17<\/span>/,
+    );
+    expect(html).toMatch(
+      /<span>Estimated Authentic profit<\/span>\s*<span>\$0\.00<\/span>/,
+    );
+    expect(html).toMatch(
+      /<span>Estimated total company profit<\/span>\s*<span>\$34\.17<\/span>/,
+    );
+    expect(html).not.toContain('Dealer profit');
+  });
+
+  it('assigns an internal Authentic dealer customer margin to Authentic in the admin PDF', () => {
+    const estimate = estimateFixture();
+    Object.assign(estimate, {
+      dealerModeSnapshot: 'INTERNAL',
+      dealerAffiliationSnapshot: 'AUTHENTIC',
+    });
+
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+
+    expect(html).toContain('INTERNAL · AUTHENTIC');
+    expect(html).toMatch(
+      /<span>Estimated Impact profit<\/span>\s*<span>\$0\.00<\/span>/,
+    );
+    expect(html).toMatch(
+      /<span>Estimated Authentic profit<\/span>\s*<span>\$34\.17<\/span>/,
+    );
+  });
+
+  it('assigns an external Impact dealer estimate margin to Impact in the admin PDF', () => {
+    const estimate = estimateFixture();
+    Object.assign(estimate, {
+      dealerModeSnapshot: 'EXTERNAL',
+      dealerAffiliationSnapshot: 'IMPACT',
+    });
+
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+
+    expect(html).toContain('EXTERNAL · IMPACT');
+    expect(html).toMatch(
+      /<span>Estimated Impact profit<\/span>\s*<span>\$29\.71<\/span>/,
+    );
+    expect(html).toMatch(
+      /<span>Estimated Authentic profit<\/span>\s*<span>\$0\.00<\/span>/,
+    );
+  });
+
+  it('assigns an external Authentic dealer estimate margin to Authentic in the admin PDF', () => {
+    const html = EstimatePdfHtmlBuilder.build(estimateFixture(), 'admin');
+
+    expect(html).toContain('EXTERNAL · AUTHENTIC');
+    expect(html).toMatch(
+      /<span>Estimated Impact profit<\/span>\s*<span>\$0\.00<\/span>/,
+    );
+    expect(html).toMatch(
+      /<span>Estimated Authentic profit<\/span>\s*<span>\$29\.71<\/span>/,
+    );
   });
 
   it('shows only the not-included installation row when there is no installation', () => {
@@ -111,6 +184,7 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).not.toContain('Non-refundable deposit');
     expect(html).not.toContain('USER_SELECTED');
     expect(html).not.toContain('FIELD_ADDED');
+    expect(html).not.toContain('Estimated factory rate');
   });
 
   it('renders the dealer project-total PDF without itemized customer prices', () => {
@@ -151,7 +225,8 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).toContain('thead { display: table-header-group; }');
     expect(html).toContain('.product-row');
     expect(html).toContain('page-break-inside: avoid !important;');
-    expect(html).toContain('Internal profitability');
+    expect(html).toContain('Estimated material profitability');
+    expect(html).toContain('Estimated factory rate');
   });
 
   it('keeps the expiration message in the real PDF footer instead of the document flow', () => {

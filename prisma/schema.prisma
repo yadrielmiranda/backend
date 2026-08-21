@@ -29,6 +29,16 @@ model Role {
   @@index([installationPriceProfileId])
 }
 
+enum DealerMode {
+  EXTERNAL
+  INTERNAL
+}
+
+enum DealerAffiliation {
+  IMPACT
+  AUTHENTIC
+}
+
 model User {
   id                Int      @id @default(autoincrement())
   username          String   @unique
@@ -46,6 +56,10 @@ model User {
 
   markupOverride Decimal? @db.Decimal(24, 18)
   isTaxExempt    Boolean  @default(false)
+
+  // Only dealer accounts use these two independent classifications.
+  dealerMode        DealerMode?
+  dealerAffiliation DealerAffiliation?
 
   isActive  Boolean   @default(true)
   deletedAt DateTime?
@@ -73,6 +87,7 @@ model User {
   installationAppointmentsResponded InstallationAppointment[]   @relation("InstallationAppointmentRespondedBy")
   orderExtraChargesCreated          OrderExtraCharge[]          @relation("OrderExtraChargeCreatedBy")
   orderExtraChargesResponded        OrderExtraCharge[]          @relation("OrderExtraChargeRespondedBy")
+  manualPaymentsRecorded            Payment[]                   @relation("PaymentRecordedBy")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -80,6 +95,7 @@ model User {
   @@index([isActive])
   @@index([deletedAt])
   @@index([installationPriceProfileId])
+  @@index([dealerMode, dealerAffiliation])
 }
 
 model Session {
@@ -939,6 +955,12 @@ model Estimate {
   // --- BASE ---
   units Int // suma de qty de todas las piezas
 
+  // Stable commercial classification used by payment/order creation.
+  // Profit reporting itself remains exclusively on Order.
+  dealerModeSnapshot        DealerMode?
+  dealerAffiliationSnapshot DealerAffiliation?
+  ownerMarkupSnapshot       Decimal            @default(0) @db.Decimal(24, 18)
+
   // --- TÚ → DEALER O CLIENTE ---
   rateT     Decimal @db.Decimal(12, 2) // suma(rate * qty)
   priceT    Decimal @db.Decimal(12, 2) // suma(price * qty)
@@ -1053,7 +1075,7 @@ model Piece {
 
   qty              Int
   rate             Decimal  @db.Decimal(12, 2)
-  markup           Decimal @default(0) @db.Decimal(24, 18)
+  markup           Decimal  @default(0) @db.Decimal(24, 18)
   price            Decimal  @db.Decimal(12, 2)
   subtotal         Decimal  @db.Decimal(12, 2)
   netProfit        Decimal  @db.Decimal(12, 2)
@@ -1095,15 +1117,27 @@ model Order {
   // amount = total con taxes incluidos (lo que paga el usuario)
   amount Decimal @db.Decimal(12, 2)
 
-  // snapshot financiero (sin taxes) para cálculo de ganancia
-  price     Decimal @db.Decimal(12, 2) // tu precio total (sin taxes)
-  rate      Decimal @db.Decimal(12, 2) // tu costo estimado total (fábrica estimada)
-  netProfit Decimal @db.Decimal(12, 2) // price - rate (ganancia estimada)
+  // Material-only financial snapshot (installation profit is intentionally excluded).
+  // price/saleSubtotal are priceT for external sales and customerPriceT for internal sales.
+  price        Decimal @db.Decimal(12, 2)
+  saleSubtotal Decimal @default(0) @db.Decimal(12, 2)
+  rate         Decimal @db.Decimal(12, 2) // estimated factory cost
+  netProfit    Decimal @db.Decimal(12, 2) // total estimated material profit
+
+  dealerModeSnapshot        DealerMode?
+  dealerAffiliationSnapshot DealerAffiliation?
+  impactMarkupRate          Decimal            @default(0) @db.Decimal(24, 18)
+  factoryPriceWithMarkup    Decimal            @default(0) @db.Decimal(12, 2)
+  impactProfit              Decimal            @default(0) @db.Decimal(12, 2)
+  authenticProfit           Decimal            @default(0) @db.Decimal(12, 2)
 
   // datos reales luego de meter la orden en la fábrica
-  poNumber      String?  @unique @db.VarChar(50) // PO real de fábrica (único). Nullable hasta que lo tengas.
-  rateReal      Decimal? @db.Decimal(12, 2) // costo real total que te cobra la fábrica
-  netProfitReal Decimal? @db.Decimal(12, 2) // price - rateReal (ganancia real)
+  poNumber                   String?  @unique @db.VarChar(50) // PO real de fábrica (único). Nullable hasta que lo tengas.
+  rateReal                   Decimal? @db.Decimal(12, 2) // costo real total que te cobra la fábrica
+  netProfitReal              Decimal? @db.Decimal(12, 2) // total real material profit
+  factoryPriceWithMarkupReal Decimal? @db.Decimal(12, 2)
+  impactProfitReal           Decimal? @db.Decimal(12, 2)
+  authenticProfitReal        Decimal? @db.Decimal(12, 2)
 
   estimate Estimate @relation(fields: [idEst], references: [id])
   idEst    Int      @unique
@@ -1134,15 +1168,19 @@ model Order {
 //   Modelo de Notificaciones
 // =======================================
 model Notification {
-  id        Int      @id @default(autoincrement())
-  message   String
-  isRead    Boolean  @default(false)
-  createdAt DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  message     String
+  actionUrl   String?  @db.VarChar(500)
+  actionLabel String?  @db.VarChar(80)
+  dedupeKey   String?  @db.VarChar(191)
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
 
   // La única relación necesaria es con el usuario que recibe la notificación
   recipient   User @relation(fields: [recipientId], references: [id], onDelete: Cascade)
   recipientId Int
 
+  @@unique([recipientId, dedupeKey], map: "uq_notification_recipient_dedupe")
   @@index([recipientId])
 }
 
@@ -1828,6 +1866,21 @@ enum PaymentStatus {
   REFUNDED // reembolsado (opcional para futuro)
 }
 
+enum PaymentMethod {
+  CARD
+  CHECK
+  ZELLE
+  CASH
+  ACH
+  WIRE
+  OTHER
+}
+
+enum PaymentPayerType {
+  ACCOUNT_OWNER
+  CUSTOMER
+}
+
 model Payment {
   id       Int           @id @default(autoincrement())
   status   PaymentStatus @default(PENDING)
@@ -1846,9 +1899,15 @@ model Payment {
   extraCharge   OrderExtraCharge? @relation(fields: [extraChargeId], references: [id], onDelete: SetNull)
   extraChargeId Int?              @unique
 
-  // Quién pagó (dealer o client; ambos son usuarios en tu sistema)
+  // Account responsible for the estimate. For an internal dealer, the actual
+  // payer is the final customer and is captured by payerType + snapshots.
   user   User @relation(fields: [userId], references: [id], onDelete: Restrict)
   userId Int
+
+  payerType  PaymentPayerType @default(ACCOUNT_OWNER)
+  payerName  String?          @db.VarChar(201)
+  payerEmail String?          @db.VarChar(150)
+  payerPhone String?          @db.VarChar(30)
 
   // Monto cobrado (normalmente estimate.totalPayable)
   baseAmount       Decimal @default(0) @db.Decimal(12, 2)
@@ -1862,6 +1921,13 @@ model Payment {
   stripePaymentIntentId String? @unique @db.VarChar(255)
   stripeCustomerId      String? @db.VarChar(255)
 
+  paymentMethod   PaymentMethod @default(CARD)
+  paidAt          DateTime?
+  manualReference String?       @db.VarChar(150)
+  manualNote      String?       @db.VarChar(1000)
+  recordedBy      User?         @relation("PaymentRecordedBy", fields: [recordedById], references: [id], onDelete: SetNull)
+  recordedById    Int?
+
   // Relación 1:1 con Order (solo existe si el pago fue exitoso y se creó la orden)
   order Order?
 
@@ -1872,6 +1938,7 @@ model Payment {
   @@index([userId])
   @@index([status])
   @@index([installationJobId])
+  @@index([recordedById])
   @@map("payments")
 }
 

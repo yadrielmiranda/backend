@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
-} from "@nestjs/common";
+} from '@nestjs/common';
 import {
   GlobalParameterKey,
   InstallationJobStatus,
@@ -13,33 +13,35 @@ import {
   PaymentStatus,
   PaymentType,
   Prisma,
-} from "@prisma/client";
-import Decimal from "decimal.js";
-import { PrismaService } from "@/prisma/prisma.service";
-import { UpdateOrderDto } from "./dto/update-order.dto";
-import { NotificationsService } from "@/notifications/notifications.service";
-import { AuthUser } from "@/auth/types/auth-user.type";
-import { getRoleName } from "@/auth/utils/get-role-name";
-import { LogsService } from "@/logs/logs.service";
-import { InstallationWorkflowService } from "@/installation/installation-workflow.service";
+} from '@prisma/client';
+import Decimal from 'decimal.js';
+import { PrismaService } from '@/prisma/prisma.service';
+import { UpdateOrderDto } from './dto/update-order.dto';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { AuthUser } from '@/auth/types/auth-user.type';
+import { getRoleName } from '@/auth/utils/get-role-name';
+import { LogsService } from '@/logs/logs.service';
+import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
 import {
   CreateOrderExtraChargeDto,
   OrderExtraChargeDecision,
   RespondOrderExtraChargeDto,
-} from "./dto/order-extra-charge.dto";
+} from './dto/order-extra-charge.dto';
 import {
   canCreateInstallationExtraCharge,
   nextManualOrderStatus,
-} from "@/installation/installation-flow-policy";
+} from '@/installation/installation-flow-policy';
+import { calculateMaterialFinancials } from './order-material-financials';
 
 const orderDetailsInclude = {
   estimate: true,
   status: true,
   user: true,
+  payment: true,
   extraCharges: {
-    orderBy: { sequence: "asc" as const },
+    orderBy: { sequence: 'asc' as const },
     include: {
-      lines: { orderBy: { sortOrder: "asc" as const } },
+      lines: { orderBy: { sortOrder: 'asc' as const } },
       payment: true,
     },
   },
@@ -57,7 +59,7 @@ export class OrdersService {
   async findAll(): Promise<Order[]> {
     return this.prisma.order.findMany({
       include: orderDetailsInclude,
-      orderBy: { date: "desc" },
+      orderBy: { date: 'desc' },
     });
   }
 
@@ -72,7 +74,7 @@ export class OrdersService {
   }
 
   async findAllStatuses(): Promise<OrderStatus[]> {
-    return this.prisma.orderStatus.findMany({ orderBy: { id: "asc" } });
+    return this.prisma.orderStatus.findMany({ orderBy: { id: 'asc' } });
   }
 
   async update(
@@ -90,8 +92,8 @@ export class OrdersService {
             installationJob: {
               include: {
                 quotes: {
-                  where: { status: "APPROVED" },
-                  orderBy: { version: "desc" },
+                  where: { status: 'APPROVED' },
+                  orderBy: { version: 'desc' },
                   take: 1,
                 },
                 payments: {
@@ -134,7 +136,7 @@ export class OrdersService {
     const normalizedPo =
       updateOrderDto.poNumber === undefined
         ? undefined
-        : String(updateOrderDto.poNumber || "").trim() || null;
+        : String(updateOrderDto.poNumber || '').trim() || null;
 
     const normalizedRateReal =
       updateOrderDto.rateReal === undefined
@@ -143,35 +145,41 @@ export class OrdersService {
           ? null
           : new Prisma.Decimal(updateOrderDto.rateReal);
 
+    if (normalizedRateReal !== undefined && normalizedRateReal !== null) {
+      if (normalizedRateReal.lte(0)) {
+        throw new BadRequestException('Rate Real must be greater than zero.');
+      }
+    }
+
     const statusWillChange =
       updateOrderDto.statusId !== undefined &&
       updateOrderDto.statusId !== current.statusId;
 
     // comentario en espanol: las transiciones operativas son secuenciales.
     if (statusWillChange && nextStatus) {
-      if (["Installation in progress", "Installed"].includes(nextStatus.name)) {
+      if (['Installation in progress', 'Installed'].includes(nextStatus.name)) {
         throw new BadRequestException(
-          "Start and complete installation from the Installation workflow.",
-      );
+          'Start and complete installation from the Installation workflow.',
+        );
       }
 
       const expected = nextManualOrderStatus(current.status.name);
       if (expected !== nextStatus.name) {
         throw new BadRequestException(
-          `Order status must advance from "${current.status.name}" to ${expected ? `"${expected}"` : "its installation workflow"}.`,
+          `Order status must advance from "${current.status.name}" to ${expected ? `"${expected}"` : 'its installation workflow'}.`,
         );
       }
 
       const installation = current.estimate.installationJob;
       if (
-        nextStatus.name === "Delivered" &&
+        nextStatus.name === 'Delivered' &&
         installation &&
         installation.status !== InstallationJobStatus.CANCELED
       ) {
         const quote = installation.quotes[0];
         if (!quote) {
           throw new BadRequestException(
-            "An approved installation quote is required before delivery.",
+            'An approved installation quote is required before delivery.',
           );
         }
         const paidInstallation = installation.payments.reduce(
@@ -180,15 +188,15 @@ export class OrdersService {
         );
         if (paidInstallation.lt(quote.total.toString())) {
           throw new BadRequestException(
-            "Installation must be paid before an installation order can be marked Delivered.",
+            'Installation must be paid before an installation order can be marked Delivered.',
           );
         }
       }
 
       const requiresPO = [
-        "In production",
-        "Ready to pick up",
-        "Delivered",
+        'In production',
+        'Ready to pick up',
+        'Delivered',
       ].includes(nextStatus.name);
 
       if (requiresPO) {
@@ -208,10 +216,22 @@ export class OrdersService {
     const finalRateReal =
       normalizedRateReal !== undefined ? normalizedRateReal : current.rateReal;
 
-    const nextNetProfitReal =
-      finalRateReal === null || finalRateReal === undefined
-        ? null
-        : current.price.minus(finalRateReal);
+    const finalPoNumber =
+      normalizedPo !== undefined ? normalizedPo : current.poNumber;
+    if (finalRateReal && !finalPoNumber) {
+      throw new BadRequestException(
+        'PO Number is required before recording the real factory cost.',
+      );
+    }
+
+    const realMaterialFinancials = finalRateReal
+      ? calculateMaterialFinancials({
+          saleSubtotal: current.saleSubtotal.toString(),
+          factoryRate: finalRateReal.toString(),
+          dealerAffiliation: current.dealerAffiliationSnapshot,
+          impactMarkupRate: current.impactMarkupRate.toString(),
+        })
+      : null;
 
     const data: Prisma.OrderUpdateInput = {
       ...(updateOrderDto.statusId !== undefined && {
@@ -219,7 +239,20 @@ export class OrdersService {
       }),
       ...(normalizedPo !== undefined && { poNumber: normalizedPo }),
       ...(normalizedRateReal !== undefined && { rateReal: normalizedRateReal }),
-      netProfitReal: nextNetProfitReal,
+      netProfitReal: realMaterialFinancials
+        ? new Prisma.Decimal(realMaterialFinancials.totalProfit.toFixed(2))
+        : null,
+      factoryPriceWithMarkupReal: realMaterialFinancials
+        ? new Prisma.Decimal(
+            realMaterialFinancials.factoryPriceWithMarkup.toFixed(2),
+          )
+        : null,
+      impactProfitReal: realMaterialFinancials
+        ? new Prisma.Decimal(realMaterialFinancials.impactProfit.toFixed(2))
+        : null,
+      authenticProfitReal: realMaterialFinancials
+        ? new Prisma.Decimal(realMaterialFinancials.authenticProfit.toFixed(2))
+        : null,
       ...(statusWillChange && { updateStatus: new Date() }),
     };
 
@@ -230,10 +263,11 @@ export class OrdersService {
         status: true,
         estimate: { include: { user: true } },
         user: true,
+        payment: true,
         extraCharges: {
-          orderBy: { sequence: "asc" },
+          orderBy: { sequence: 'asc' },
           include: {
-            lines: { orderBy: { sortOrder: "asc" } },
+            lines: { orderBy: { sortOrder: 'asc' } },
             payment: true,
           },
         },
@@ -249,23 +283,23 @@ export class OrdersService {
 
     // comentario en espanol: calculamos qué campos realmente cambiaron (para auditoría)
     const changedFields: string[] = [];
-    if (statusWillChange) changedFields.push("statusId");
+    if (statusWillChange) changedFields.push('statusId');
     if (normalizedPo !== undefined && normalizedPo !== current.poNumber)
-      changedFields.push("poNumber");
+      changedFields.push('poNumber');
     if (normalizedRateReal !== undefined) {
       const curr = current.rateReal?.toString() ?? null;
       const next = normalizedRateReal?.toString() ?? null;
-      if (curr !== next) changedFields.push("rateReal");
+      if (curr !== next) changedFields.push('rateReal');
     }
 
     await this.logsService.log({
-      action: "UPDATE",
-      entityType: "Order",
+      action: 'UPDATE',
+      entityType: 'Order',
       entityId: updated.id,
       userId: actor.id, // ✅ quien hizo el cambio
       message: statusWillChange
-        ? `Order status changed: "${current.status?.name ?? ""}" -> "${updated.status?.name ?? ""}"`
-        : "Order updated",
+        ? `Order status changed: "${current.status?.name ?? ''}" -> "${updated.status?.name ?? ''}"`
+        : 'Order updated',
 
       // comentario en espanol: snapshot corto, NO toda la orden
       before: {
@@ -275,6 +309,9 @@ export class OrdersService {
         poNumber: current.poNumber ?? null,
         rateReal: current.rateReal ?? null,
         netProfitReal: current.netProfitReal ?? null,
+        factoryPriceWithMarkupReal: current.factoryPriceWithMarkupReal ?? null,
+        impactProfitReal: current.impactProfitReal ?? null,
+        authenticProfitReal: current.authenticProfitReal ?? null,
         updateStatus: current.updateStatus ?? null,
       },
       after: {
@@ -284,6 +321,9 @@ export class OrdersService {
         poNumber: updated.poNumber ?? null,
         rateReal: updated.rateReal ?? null,
         netProfitReal: updated.netProfitReal ?? null,
+        factoryPriceWithMarkupReal: updated.factoryPriceWithMarkupReal ?? null,
+        impactProfitReal: updated.impactProfitReal ?? null,
+        authenticProfitReal: updated.authenticProfitReal ?? null,
         updateStatus: updated.updateStatus ?? null,
       },
 
@@ -303,13 +343,32 @@ export class OrdersService {
       await this.notificationsService.createAndSend({
         recipientId: updated.estimate.idUser,
         message: `The status of your order #${updated.number} has changed to "${updated.status.name}".`,
+        actionUrl: `/orders/${updated.id}`,
+        actionLabel: 'Open order',
+        dedupeKey: `order:${updated.id}:status:${updated.statusId}:${updated.updateStatus.toISOString()}`,
       });
     }
 
-    if (statusWillChange && updated.status.name === "Ready to pick up") {
+    if (statusWillChange && updated.status.name === 'Ready to pick up') {
       await this.prisma.$transaction((tx) =>
         this.installationWorkflow.markOrderReady(tx, updated.idEst),
       );
+      const installation = await this.prisma.installationJob.findUnique({
+        where: { estimateId: updated.idEst },
+        select: { id: true, status: true },
+      });
+      if (
+        installation?.status ===
+        InstallationJobStatus.INSTALLATION_PAYMENT_PENDING
+      ) {
+        await this.notificationsService.createAndSend({
+          recipientId: updated.estimate.idUser,
+          message: `Installation balance is due for Order #${updated.number}.`,
+          actionUrl: `/orders/${updated.id}`,
+          actionLabel: 'Open payment',
+          dedupeKey: `order:${updated.id}:installation-balance-due`,
+        });
+      }
     }
 
     return updated;
@@ -331,8 +390,8 @@ export class OrdersService {
               installationJob: {
                 include: {
                   quotes: {
-                    where: { status: "APPROVED" },
-                    orderBy: { version: "desc" },
+                    where: { status: 'APPROVED' },
+                    orderBy: { version: 'desc' },
                     take: 1,
                   },
                   payments: {
@@ -362,19 +421,19 @@ export class OrdersService {
         installation.status === InstallationJobStatus.CANCELED
       ) {
         throw new BadRequestException(
-          "Installation extra charges require an installation order.",
+          'Installation extra charges require an installation order.',
         );
       }
       if (!canCreateInstallationExtraCharge(order.status.name)) {
         throw new BadRequestException(
-          "Extra charges can be created after the installation order is Delivered.",
+          'Extra charges can be created after the installation order is Delivered.',
         );
       }
 
       const quote = installation.quotes[0];
       if (!quote) {
         throw new BadRequestException(
-          "An approved installation quote is required.",
+          'An approved installation quote is required.',
         );
       }
       const installationPaid = installation.payments.reduce(
@@ -383,7 +442,7 @@ export class OrdersService {
       );
       if (installationPaid.lt(quote.total.toString())) {
         throw new BadRequestException(
-          "Installation must be paid before creating extra charges.",
+          'Installation must be paid before creating extra charges.',
         );
       }
 
@@ -395,7 +454,7 @@ export class OrdersService {
         : new Decimal(taxParameter?.value.toString() ?? 0);
       if (taxRate.lt(0) || taxRate.gt(1)) {
         throw new BadRequestException(
-          "Sales tax must be stored as a decimal fraction between 0 and 1.",
+          'Sales tax must be stored as a decimal fraction between 0 and 1.',
         );
       }
 
@@ -422,7 +481,7 @@ export class OrdersService {
       });
       if (lines.some((line) => !line.description)) {
         throw new BadRequestException(
-          "Every extra-charge line requires a description.",
+          'Every extra-charge line requires a description.',
         );
       }
 
@@ -436,7 +495,7 @@ export class OrdersService {
       );
       const latest = await tx.orderExtraCharge.findFirst({
         where: { orderId },
-        orderBy: { sequence: "desc" },
+        orderBy: { sequence: 'desc' },
         select: { sequence: true },
       });
 
@@ -455,15 +514,15 @@ export class OrdersService {
           lines: { create: lines },
         },
         include: {
-          lines: { orderBy: { sortOrder: "asc" } },
+          lines: { orderBy: { sortOrder: 'asc' } },
           payment: true,
         },
       });
     });
 
     await this.logsService.log({
-      action: "CREATE",
-      entityType: "OrderExtraCharge",
+      action: 'CREATE',
+      entityType: 'OrderExtraCharge',
       entityId: created.id,
       userId: actor.id,
       message: `Extra charge #${created.sequence} created for Order #${orderId}.`,
@@ -473,6 +532,17 @@ export class OrdersService {
         total: created.total.toString(),
         status: created.status,
       },
+    });
+    const order = await this.prisma.order.findUniqueOrThrow({
+      where: { id: orderId },
+      select: { userId: true, number: true },
+    });
+    await this.notificationsService.createAndSend({
+      recipientId: order.userId,
+      message: `Extra charge #${created.sequence} for Order #${order.number} needs your approval.`,
+      actionUrl: `/orders/${orderId}`,
+      actionLabel: 'Review charge',
+      dedupeKey: `order:${orderId}:extra:${created.id}:approval:owner`,
     });
     return created;
   }
@@ -487,11 +557,11 @@ export class OrdersService {
       include: { order: true },
     });
     if (!charge || charge.order.userId !== actor.id) {
-      throw new NotFoundException("Extra charge not found.");
+      throw new NotFoundException('Extra charge not found.');
     }
     if (charge.status !== OrderExtraChargeStatus.PENDING_CUSTOMER_APPROVAL) {
       throw new BadRequestException(
-        "This extra charge is not awaiting customer approval.",
+        'This extra charge is not awaiting customer approval.',
       );
     }
 
@@ -507,34 +577,53 @@ export class OrdersService {
         respondedAt: new Date(),
       },
       include: {
-        lines: { orderBy: { sortOrder: "asc" } },
+        lines: { orderBy: { sortOrder: 'asc' } },
         payment: true,
       },
     });
 
     await this.logsService.log({
-      action: "UPDATE",
-      entityType: "OrderExtraCharge",
+      action: 'UPDATE',
+      entityType: 'OrderExtraCharge',
       entityId: updated.id,
       userId: actor.id,
-      message: `Extra charge #${updated.sequence} ${approved ? "approved" : "rejected"}.`,
+      message: `Extra charge #${updated.sequence} ${approved ? 'approved' : 'rejected'}.`,
       before: { status: charge.status },
       after: { status: updated.status },
     });
+    const responseMessage = `The project owner ${approved ? 'approved' : 'rejected'} extra charge #${updated.sequence} for Order #${charge.order.number}.`;
+    const dedupeKey = `order:${charge.orderId}:extra:${updated.id}:response:${updated.status}`;
+    await this.notificationsService.createAndSend({
+      recipientId: charge.createdById,
+      message: responseMessage,
+      actionUrl: `/orders/${charge.orderId}`,
+      actionLabel: 'Review response',
+      dedupeKey: `${dedupeKey}:creator`,
+    });
+    await this.notificationsService.createAndSendToRoles(
+      ['admin'],
+      {
+        message: responseMessage,
+        actionUrl: `/orders/${charge.orderId}`,
+        actionLabel: 'Review response',
+        dedupeKey: `${dedupeKey}:admin`,
+      },
+      { excludeUserIds: [charge.createdById, actor.id] },
+    );
     return updated;
   }
 
   async findAllForUser(user: AuthUser) {
     const roleName = getRoleName(user);
 
-    if (roleName === "admin" || roleName === "operator") {
+    if (roleName === 'admin' || roleName === 'operator') {
       return this.findAll();
     }
 
     return this.prisma.order.findMany({
       where: { userId: user.id },
       include: orderDetailsInclude,
-      orderBy: { date: "desc" },
+      orderBy: { date: 'desc' },
     });
   }
 
@@ -548,7 +637,7 @@ export class OrdersService {
 
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
 
-    if (roleName === "admin" || roleName === "operator") return order;
+    if (roleName === 'admin' || roleName === 'operator') return order;
 
     if (order.userId !== user.id) {
       throw new NotFoundException(`Order with ID #${id} not found.`);

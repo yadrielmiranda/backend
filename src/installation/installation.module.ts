@@ -9,13 +9,11 @@ import { InstallationWorkflowService } from './installation-workflow.service';
 import { EstimateDimensionValidationService } from '@/estimates/dimensions/estimate-dimension-validation.service';
 import { EstimateMuntinService } from '@/estimates/muntins/estimate-muntin.service';
 import { EstimatePieceCalculatorService } from '@/estimates/calculation/estimate-piece-calculator.service';
+import { NotificationsModule } from '@/notifications/notifications.module';
 
 @Module({
-  imports: [PrismaModule, LogsModule],
-  controllers: [
-    InstallationCatalogController,
-    InstallationWorkflowController,
-  ],
+  imports: [PrismaModule, LogsModule, NotificationsModule],
+  controllers: [InstallationCatalogController, InstallationWorkflowController],
   providers: [
     InstallationCatalogService,
     InstallationPricingService,

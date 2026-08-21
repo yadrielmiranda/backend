@@ -54,12 +54,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 // Prisma Transaction Client Type
 type PrismaTransactionClient = Omit<
   PrismaClient,
-  | '$connect'
-  | '$disconnect'
-  | '$on'
-  | '$transaction'
-  | '$use'
-  | '$extends'
+  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
 >;
 
 type BulkPieceAttributeUpdate = {
@@ -107,7 +102,10 @@ export type EstimateWithRelations = Estimate & {
   order?: Order | null;
   status?: EstimateStatus | null;
   payments?: Prisma.PaymentGetPayload<{}>[];
-  installationJob?: Pick<Prisma.InstallationJobGetPayload<{}>, 'id' | 'status'> | null;
+  installationJob?: Pick<
+    Prisma.InstallationJobGetPayload<{}>,
+    'id' | 'status'
+  > | null;
   installationSummary?: EstimateInstallationReportSummary | null;
   branding?: Branding | null;
 };
@@ -130,7 +128,7 @@ export class EstimatesService {
     private pieceCalculator: EstimatePieceCalculatorService,
     private muntinService: EstimateMuntinService,
     private installationWorkflow: InstallationWorkflowService,
-  ) { }
+  ) {}
 
   private decimalOrNull(value: string | number | null | undefined) {
     return value == null || value === '' ? null : new Prisma.Decimal(value);
@@ -153,11 +151,11 @@ export class EstimatesService {
   }
 
   /**
- * Convierte una pieza ya calculada en los campos escalares
- * que se almacenan en Piece.
- *
- * No incluye idEst ni PieceMuntin.
- */
+   * Convierte una pieza ya calculada en los campos escalares
+   * que se almacenan en Piece.
+   *
+   * No incluye idEst ni PieceMuntin.
+   */
   private buildCalculatedPiecePersistenceData(
     piece: CalculatedPieceCombined,
   ): Omit<Prisma.PieceUncheckedCreateInput, 'idEst'> {
@@ -180,17 +178,11 @@ export class EstimatesService {
       price: new Prisma.Decimal(piece.price.toFixed(2)),
       markup: new Prisma.Decimal(piece.markup.toFixed(18)),
       subtotal: new Prisma.Decimal(piece.subtotal.toFixed(2)),
-      dealerMarkup: new Prisma.Decimal(
-        piece.dealerMarkupDecimal.toFixed(4),
-      ),
+      dealerMarkup: new Prisma.Decimal(piece.dealerMarkupDecimal.toFixed(4)),
       netProfit: new Prisma.Decimal(piece.netProfit.toFixed(2)),
       netProfitD: new Prisma.Decimal(piece.netProfitD.toFixed(2)),
-      customerPrice: new Prisma.Decimal(
-        piece.customerPrice.toFixed(2),
-      ),
-      customerSubtotal: new Prisma.Decimal(
-        piece.customerSubtotal.toFixed(2),
-      ),
+      customerPrice: new Prisma.Decimal(piece.customerPrice.toFixed(2)),
+      customerSubtotal: new Prisma.Decimal(piece.customerSubtotal.toFixed(2)),
 
       width: this.decimalOrNull(piece.width),
       height: this.decimalOrNull(piece.height),
@@ -202,19 +194,13 @@ export class EstimatesService {
 
       doorWidth: this.decimalOrNull((piece as any).doorWidth),
       doorHeight: this.decimalOrNull((piece as any).doorHeight),
-      leftSideliteWidth: this.decimalOrNull(
-        (piece as any).leftSideliteWidth,
-      ),
-      rightSideliteWidth: this.decimalOrNull(
-        (piece as any).rightSideliteWidth,
-      ),
+      leftSideliteWidth: this.decimalOrNull((piece as any).leftSideliteWidth),
+      rightSideliteWidth: this.decimalOrNull((piece as any).rightSideliteWidth),
 
       leftPanels: this.intOrNull((piece as any).leftPanels),
       rightPanels: this.intOrNull((piece as any).rightPanels),
       panelCount: this.intOrNull((piece as any).panelCount),
-      horizontalHeights: this.jsonArrayOrNull(
-        (piece as any).horizontalHeights,
-      ),
+      horizontalHeights: this.jsonArrayOrNull((piece as any).horizontalHeights),
 
       idProd: piece.idProd,
       idBrand: piece.idBrand,
@@ -232,9 +218,9 @@ export class EstimatesService {
   }
 
   /**
- * Elimina el muntin anterior de una pieza y crea el nuevo,
- * cuando la pieza calculada contiene configuración de muntin.
- */
+   * Elimina el muntin anterior de una pieza y crea el nuevo,
+   * cuando la pieza calculada contiene configuración de muntin.
+   */
   private async replacePieceMuntin(
     tx: PrismaTransactionClient,
     pieceId: number,
@@ -246,8 +232,7 @@ export class EstimatesService {
 
     if (!muntin) return;
 
-    const muntinCreate =
-      this.muntinService.buildPieceMuntinCreateInput(muntin);
+    const muntinCreate = this.muntinService.buildPieceMuntinCreateInput(muntin);
 
     if (!muntinCreate) return;
 
@@ -261,33 +246,33 @@ export class EstimatesService {
         },
         ...(muntin.idType
           ? {
-            type: {
-              connect: { id: muntin.idType },
-            },
-          }
+              type: {
+                connect: { id: muntin.idType },
+              },
+            }
           : {}),
         totalLites: muntinCreate.totalLites,
         ...(muntin.panels.length > 0
           ? {
-            panels: {
-              create: muntin.panels.map((panel) => ({
-                panelIndex: panel.panelIndex,
-                panelCode: panel.panelCode ?? null,
-                panelLabel: panel.panelLabel,
-                horizontalLites: panel.horizontalLites,
-                verticalLites: panel.verticalLites,
-              })),
-            },
-          }
+              panels: {
+                create: muntin.panels.map((panel) => ({
+                  panelIndex: panel.panelIndex,
+                  panelCode: panel.panelCode ?? null,
+                  panelLabel: panel.panelLabel,
+                  horizontalLites: panel.horizontalLites,
+                  verticalLites: panel.verticalLites,
+                })),
+              },
+            }
           : {}),
       },
     });
   }
 
   /**
- * Obtiene el Estimate con las mismas relaciones que utiliza
- * la pantalla de edición.
- */
+   * Obtiene el Estimate con las mismas relaciones que utiliza
+   * la pantalla de edición.
+   */
   private async getEstimateWithRelationsInTransaction(
     tx: PrismaTransactionClient,
     estimateId: number,
@@ -342,8 +327,8 @@ export class EstimatesService {
   }
 
   /**
- * Confirma propiedad, estado editable y ausencia de Order.
- */
+   * Confirma propiedad, estado editable y ausencia de Order.
+   */
   private async assertEstimateCanBeEdited(
     estimate: {
       id: number;
@@ -377,14 +362,13 @@ export class EstimatesService {
     } satisfies AuthUser;
 
     if (!estimate || (!isPrivileged(actorUser) && estimate.idUser !== userId)) {
-      throw new NotFoundException(
-        `Estimate #${estimateId} not found/denied.`,
-      );
+      throw new NotFoundException(`Estimate #${estimateId} not found/denied.`);
     }
 
     if (estimate.status?.name !== 'Active') {
       throw new BadRequestException(
-        `Estimate #${estimate.number} cannot be edited because its status is ${estimate.status?.name ?? 'UNKNOWN'
+        `Estimate #${estimate.number} cannot be edited because its status is ${
+          estimate.status?.name ?? 'UNKNOWN'
         }.`,
       );
     }
@@ -414,24 +398,19 @@ export class EstimatesService {
     );
   }
 
-  private async resolveEstimateOwnerMarkup(
-    tx: PrismaTransactionClient,
-    ownerUserId: number,
-  ): Promise<Decimal> {
-    const owner = await tx.user.findUnique({
-      where: { id: ownerUserId },
-      include: { role: true },
-    });
-    if (!owner) throw new NotFoundException('Estimate owner not found.');
-    return owner.markupOverride !== null
-      ? new Decimal(owner.markupOverride.toString())
-      : new Decimal(owner.role.markup.toString());
+  private resolveBaseMarkupForUser(user: {
+    markupOverride: Prisma.Decimal | null;
+    role: { name: string; markup: Prisma.Decimal };
+  }): Decimal {
+    return user.markupOverride !== null
+      ? new Decimal(user.markupOverride.toString())
+      : new Decimal(user.role.markup.toString());
   }
 
   /**
- * Suma las piezas ya guardadas y actualiza los totales
- * del encabezado del Estimate.
- */
+   * Suma las piezas ya guardadas y actualiza los totales
+   * del encabezado del Estimate.
+   */
   private async updateEstimateTotalsFromPersistedPieces(
     tx: PrismaTransactionClient,
     estimateId: number,
@@ -475,9 +454,9 @@ export class EstimatesService {
   }
 
   /**
- * Convierte una pieza persistida en el DTO completo
- * requerido por el calculador.
- */
+   * Convierte una pieza persistida en el DTO completo
+   * requerido por el calculador.
+   */
   private buildPieceDtoFromPersistedPiece(
     piece: PieceWithRelations,
     dealerMarkupPercent: number,
@@ -497,12 +476,10 @@ export class EstimatesService {
       horizontalHeights?: Prisma.JsonValue | null;
     };
 
-    const horizontalHeights = Array.isArray(
-      extendedPiece.horizontalHeights,
-    )
+    const horizontalHeights = Array.isArray(extendedPiece.horizontalHeights)
       ? extendedPiece.horizontalHeights
-        .map((value) => Number(value))
-        .filter((value) => Number.isFinite(value))
+          .map((value) => Number(value))
+          .filter((value) => Number.isFinite(value))
       : null;
 
     return {
@@ -514,64 +491,51 @@ export class EstimatesService {
       idConf: piece.idConf,
       idFC: piece.idFC,
 
-      width:
-        piece.width === null
-          ? null
-          : piece.width.toString(),
+      width: piece.width === null ? null : piece.width.toString(),
 
-      height:
-        piece.height === null
-          ? null
-          : piece.height.toString(),
+      height: piece.height === null ? null : piece.height.toString(),
 
       heightLeft:
-        piece.heightLeft === null
-          ? null
-          : piece.heightLeft.toString(),
+        piece.heightLeft === null ? null : piece.heightLeft.toString(),
 
       heightRight:
-        piece.heightRight === null
-          ? null
-          : piece.heightRight.toString(),
+        piece.heightRight === null ? null : piece.heightRight.toString(),
 
-      legHeight:
-        piece.legHeight === null
-          ? null
-          : piece.legHeight.toString(),
+      legHeight: piece.legHeight === null ? null : piece.legHeight.toString(),
 
       sashHeight:
         extendedPiece.sashHeight === null ||
-          extendedPiece.sashHeight === undefined
+        extendedPiece.sashHeight === undefined
           ? null
           : extendedPiece.sashHeight.toString(),
 
       windowHeight:
         extendedPiece.windowHeight === null ||
-          extendedPiece.windowHeight === undefined
+        extendedPiece.windowHeight === undefined
           ? null
           : extendedPiece.windowHeight.toString(),
 
       doorWidth:
         extendedPiece.doorWidth === null ||
-          extendedPiece.doorWidth === undefined
+        extendedPiece.doorWidth === undefined
           ? null
           : extendedPiece.doorWidth.toString(),
 
       doorHeight:
         extendedPiece.doorHeight === null ||
-          extendedPiece.doorHeight === undefined
+        extendedPiece.doorHeight === undefined
           ? null
           : extendedPiece.doorHeight.toString(),
 
       leftSideliteWidth:
         extendedPiece.leftSideliteWidth === null ||
-          extendedPiece.leftSideliteWidth === undefined
+        extendedPiece.leftSideliteWidth === undefined
           ? null
           : extendedPiece.leftSideliteWidth.toString(),
 
       rightSideliteWidth:
         extendedPiece.rightSideliteWidth === null ||
-          extendedPiece.rightSideliteWidth === undefined
+        extendedPiece.rightSideliteWidth === undefined
           ? null
           : extendedPiece.rightSideliteWidth.toString(),
 
@@ -588,37 +552,30 @@ export class EstimatesService {
       highBottom: piece.highBottom ?? false,
 
       idActiveOption: piece.idActiveOption ?? null,
-      idPreparationOption:
-        piece.idPreparationOption ?? null,
+      idPreparationOption: piece.idPreparationOption ?? null,
       idSillOption: piece.idSillOption ?? null,
-      idReinforcementOption:
-        piece.idReinforcementOption ?? null,
+      idReinforcementOption: piece.idReinforcementOption ?? null,
 
       muntin: piece.pieceMuntin
         ? {
-          idPattern: piece.pieceMuntin.patternId,
-          idType: piece.pieceMuntin.typeId ?? null,
+            idPattern: piece.pieceMuntin.patternId,
+            idType: piece.pieceMuntin.typeId ?? null,
 
-          panels: piece.pieceMuntin.panels.map(
-            (panel) => ({
+            panels: piece.pieceMuntin.panels.map((panel) => ({
               panelIndex: panel.panelIndex,
 
-              panelCode:
-                panel.panelCode ?? undefined,
+              panelCode: panel.panelCode ?? undefined,
 
               panelLabel:
                 panel.panelLabel ??
                 panel.panelCode ??
                 `Panel ${panel.panelIndex}`,
 
-              horizontalLites:
-                panel.horizontalLites,
+              horizontalLites: panel.horizontalLites,
 
-              verticalLites:
-                panel.verticalLites,
-            }),
-          ),
-        }
+              verticalLites: panel.verticalLites,
+            })),
+          }
         : null,
 
       qty: piece.qty,
@@ -691,6 +648,7 @@ export class EstimatesService {
   async calculateAndReturnPieceMetrics(
     pieceDto: CreatePieceDto,
     userId: number,
+    estimateId?: number,
   ): Promise<any> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -698,10 +656,23 @@ export class EstimatesService {
     });
     if (!user) throw new NotFoundException('User not found');
 
-    const effectiveMarkupDecimal =
-      user.markupOverride !== null
-        ? new Decimal(user.markupOverride.toString())
-        : new Decimal(user.role.markup.toString());
+    let effectiveMarkupDecimal = this.resolveBaseMarkupForUser(user);
+    if (estimateId) {
+      const estimate = await this.prisma.estimate.findUnique({
+        where: { id: estimateId },
+        select: { idUser: true, ownerMarkupSnapshot: true },
+      });
+      const actor = {
+        id: user.id,
+        role: { name: user.role.name as AuthUser['role']['name'] },
+      } satisfies AuthUser;
+      if (!estimate || (!isPrivileged(actor) && estimate.idUser !== user.id)) {
+        throw new NotFoundException(`Estimate #${estimateId} not found.`);
+      }
+      effectiveMarkupDecimal = new Decimal(
+        estimate.ownerMarkupSnapshot.toString(),
+      );
+    }
     const cache = this.pieceCalculator.createCalculationCache();
     const calculated: CalculatedPieceCombined =
       await this.pieceCalculator.calculatePieceMetrics(
@@ -723,10 +694,14 @@ export class EstimatesService {
       netProfit: new Prisma.Decimal(calculated.netProfit.toFixed(2)),
       markup: new Prisma.Decimal(calculated.markup.toFixed(18)),
       subtotal: new Prisma.Decimal(calculated.subtotal.toFixed(2)),
-      dealerMarkup: new Prisma.Decimal(calculated.dealerMarkupDecimal.toFixed(4)),
+      dealerMarkup: new Prisma.Decimal(
+        calculated.dealerMarkupDecimal.toFixed(4),
+      ),
       netProfitD: new Prisma.Decimal(calculated.netProfitD.toFixed(2)),
       customerPrice: new Prisma.Decimal(calculated.customerPrice.toFixed(2)),
-      customerSubtotal: new Prisma.Decimal(calculated.customerSubtotal.toFixed(2)),
+      customerSubtotal: new Prisma.Decimal(
+        calculated.customerSubtotal.toFixed(2),
+      ),
       dpPosPsf: new Prisma.Decimal(calculated.dpPosPsf.toFixed(2)),
       dpNegPsf: new Prisma.Decimal(calculated.dpNegPsf.toFixed(2)),
     };
@@ -838,9 +813,7 @@ export class EstimatesService {
   }
 
   // --- estimates (Get List) ---
-  async estimates(params: {
-    where?: Prisma.EstimateWhereInput;
-  }) {
+  async estimates(params: { where?: Prisma.EstimateWhereInput }) {
     const estimates = await this.prisma.estimate.findMany({
       where: params.where,
       include: {
@@ -872,7 +845,8 @@ export class EstimatesService {
 
   async findOneForUser(id: number, user: AuthUser) {
     const estimate = await this.estimate({ id });
-    if (!estimate) throw new NotFoundException(`Estimate with ID #${id} not found.`);
+    if (!estimate)
+      throw new NotFoundException(`Estimate with ID #${id} not found.`);
 
     if (isPrivileged(user)) return estimate;
 
@@ -893,7 +867,8 @@ export class EstimatesService {
       },
     });
 
-    if (!estimate) throw new NotFoundException(`Estimate with ID #${id} not found.`);
+    if (!estimate)
+      throw new NotFoundException(`Estimate with ID #${id} not found.`);
 
     if (estimate.idUser !== user.id) {
       throw new NotFoundException(`Estimate with ID #${id} not found.`);
@@ -919,6 +894,15 @@ export class EstimatesService {
       select: {
         id: true,
         isTaxExempt: true,
+        markupOverride: true,
+        dealerMode: true,
+        dealerAffiliation: true,
+        role: {
+          select: {
+            name: true,
+            markup: true,
+          },
+        },
       },
     });
 
@@ -934,9 +918,7 @@ export class EstimatesService {
       });
 
       if (!taxParameter) {
-        throw new InternalServerErrorException(
-          'SALES_TAX config missing.',
-        );
+        throw new InternalServerErrorException('SALES_TAX config missing.');
       }
 
       const activeStatus = await tx.estimateStatus.findUnique({
@@ -962,16 +944,16 @@ export class EstimatesService {
         ? new Decimal(0)
         : new Decimal(taxParameter.value.toString());
 
-      const customerTaxRate = new Decimal(
-        dto.customerTaxRate ?? 0,
-      );
+      const customerTaxRate = new Decimal(dto.customerTaxRate ?? 0);
 
-      const estimateTotals =
-        this.pieceCalculator.calculateEstimateTotals(
-          [],
-          factoryTaxRate,
-          customerTaxRate,
-        );
+      const ownerMarkupSnapshot = this.resolveBaseMarkupForUser(user);
+      const ownerIsDealer = user.role.name === 'dealer';
+
+      const estimateTotals = this.pieceCalculator.calculateEstimateTotals(
+        [],
+        factoryTaxRate,
+        customerTaxRate,
+      );
 
       const sequence = await tx.estimateSequence.create({
         data: {},
@@ -996,6 +978,14 @@ export class EstimatesService {
 
           units: 0,
 
+          dealerModeSnapshot: ownerIsDealer ? user.dealerMode : null,
+          dealerAffiliationSnapshot: ownerIsDealer
+            ? user.dealerAffiliation
+            : null,
+          ownerMarkupSnapshot: new Prisma.Decimal(
+            ownerMarkupSnapshot.toFixed(18),
+          ),
+
           rateT: estimateTotals.rateT,
           priceT: estimateTotals.priceT,
           netProfit: estimateTotals.netProfit,
@@ -1007,8 +997,7 @@ export class EstimatesService {
           customerPriceT: estimateTotals.customerPriceT,
           customerTaxRate: estimateTotals.customerTaxRate,
           customerTaxAmount: estimateTotals.customerTaxAmount,
-          customerTotalPayable:
-            estimateTotals.customerTotalPayable,
+          customerTotalPayable: estimateTotals.customerTotalPayable,
 
           netProfitD: estimateTotals.netProfitD,
 
@@ -1029,11 +1018,10 @@ export class EstimatesService {
         },
       });
 
-      const createdEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          createdBase.id,
-        );
+      const createdEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        createdBase.id,
+      );
 
       if (!createdEstimate) {
         throw new InternalServerErrorException(
@@ -1048,8 +1036,7 @@ export class EstimatesService {
         userId,
         message: `Estimate created (#${createdEstimate.number})`,
         before: null,
-        after:
-          EstimateAuditSnapshotBuilder.build(createdEstimate),
+        after: EstimateAuditSnapshotBuilder.build(createdEstimate),
         meta: {
           source: 'EstimatesService.createEmptyEstimate',
         },
@@ -1069,11 +1056,10 @@ export class EstimatesService {
     userId: number,
   ): Promise<EstimateWithRelations> {
     return this.prisma.$transaction(async (tx) => {
-      const beforeEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       await this.assertEstimateCanBeEdited(
         beforeEstimate,
@@ -1085,56 +1071,56 @@ export class EstimatesService {
       const headerData: Prisma.EstimateUpdateInput = {
         ...(dto.name !== undefined
           ? {
-            name: dto.name,
-          }
+              name: dto.name,
+            }
           : {}),
 
         ...(dto.customerFirstName !== undefined
           ? {
-            customerFirstName: dto.customerFirstName,
-          }
+              customerFirstName: dto.customerFirstName,
+            }
           : {}),
 
         ...(dto.customerLastName !== undefined
           ? {
-            customerLastName: dto.customerLastName,
-          }
+              customerLastName: dto.customerLastName,
+            }
           : {}),
 
         ...(dto.customerEmail !== undefined
           ? {
-            customerEmail: dto.customerEmail,
-          }
+              customerEmail: dto.customerEmail,
+            }
           : {}),
 
         ...(dto.customerPhone !== undefined
           ? {
-            customerPhone: dto.customerPhone,
-          }
+              customerPhone: dto.customerPhone,
+            }
           : {}),
 
         ...(dto.customerStreet !== undefined
           ? {
-            customerStreet: dto.customerStreet,
-          }
+              customerStreet: dto.customerStreet,
+            }
           : {}),
 
         ...(dto.customerCity !== undefined
           ? {
-            customerCity: dto.customerCity,
-          }
+              customerCity: dto.customerCity,
+            }
           : {}),
 
         ...(dto.customerState !== undefined
           ? {
-            customerState: dto.customerState,
-          }
+              customerState: dto.customerState,
+            }
           : {}),
 
         ...(dto.customerPostalCode !== undefined
           ? {
-            customerPostalCode: dto.customerPostalCode,
-          }
+              customerPostalCode: dto.customerPostalCode,
+            }
           : {}),
       };
 
@@ -1147,16 +1133,12 @@ export class EstimatesService {
         });
       }
 
-      const factoryTaxRate = new Decimal(
-        beforeEstimate!.taxRate.toString(),
-      );
+      const factoryTaxRate = new Decimal(beforeEstimate!.taxRate.toString());
 
       const customerTaxRate =
         dto.customerTaxRate !== undefined
           ? new Decimal(dto.customerTaxRate)
-          : new Decimal(
-            beforeEstimate!.customerTaxRate.toString(),
-          );
+          : new Decimal(beforeEstimate!.customerTaxRate.toString());
 
       await this.updateEstimateTotalsFromPersistedPieces(
         tx as PrismaTransactionClient,
@@ -1165,11 +1147,10 @@ export class EstimatesService {
         customerTaxRate,
       );
 
-      const updatedEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       if (!updatedEstimate) {
         throw new NotFoundException(
@@ -1183,10 +1164,8 @@ export class EstimatesService {
         entityId: updatedEstimate.id,
         userId,
         message: `Estimate header updated (#${updatedEstimate.number})`,
-        before:
-          EstimateAuditSnapshotBuilder.build(beforeEstimate),
-        after:
-          EstimateAuditSnapshotBuilder.build(updatedEstimate),
+        before: EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after: EstimateAuditSnapshotBuilder.build(updatedEstimate),
         meta: {
           source: 'EstimatesService.updateEstimateHeader',
         },
@@ -1218,17 +1197,11 @@ export class EstimatesService {
       throw new NotFoundException('User not found');
     }
 
-    const effectiveMarkupDecimal =
-      user.markupOverride !== null
-        ? new Decimal(user.markupOverride.toString())
-        : new Decimal(user.role.markup.toString());
-
     return this.prisma.$transaction(async (tx) => {
-      const beforeEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       await this.assertEstimateCanBeEdited(
         beforeEstimate,
@@ -1237,27 +1210,21 @@ export class EstimatesService {
         tx as PrismaTransactionClient,
       );
 
-      const effectiveMarkupDecimal =
-        await this.resolveEstimateOwnerMarkup(
-          tx as PrismaTransactionClient,
-          beforeEstimate!.idUser,
-        );
+      const effectiveMarkupDecimal = new Decimal(
+        beforeEstimate!.ownerMarkupSnapshot.toString(),
+      );
 
-      const cache =
-        this.pieceCalculator.createCalculationCache();
+      const cache = this.pieceCalculator.createCalculationCache();
 
-      const calculatedPiece =
-        await this.pieceCalculator.calculatePieceMetrics(
-          dto,
-          effectiveMarkupDecimal,
-          tx as PrismaTransactionClient,
-          cache,
-        );
+      const calculatedPiece = await this.pieceCalculator.calculatePieceMetrics(
+        dto,
+        effectiveMarkupDecimal,
+        tx as PrismaTransactionClient,
+        cache,
+      );
 
       const pieceData =
-        this.buildCalculatedPiecePersistenceData(
-          calculatedPiece,
-        );
+        this.buildCalculatedPiecePersistenceData(calculatedPiece);
 
       const createdPiece = await tx.piece.create({
         data: {
@@ -1275,9 +1242,7 @@ export class EstimatesService {
         calculatedPiece.muntin,
       );
 
-      const factoryTaxRate = new Decimal(
-        beforeEstimate!.taxRate.toString(),
-      );
+      const factoryTaxRate = new Decimal(beforeEstimate!.taxRate.toString());
 
       const customerTaxRate = new Decimal(
         beforeEstimate!.customerTaxRate.toString(),
@@ -1290,11 +1255,10 @@ export class EstimatesService {
         customerTaxRate,
       );
 
-      const updatedEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       if (!updatedEstimate) {
         throw new NotFoundException(
@@ -1308,10 +1272,8 @@ export class EstimatesService {
         entityId: updatedEstimate.id,
         userId,
         message: `Piece added to Estimate #${updatedEstimate.number}`,
-        before:
-          EstimateAuditSnapshotBuilder.build(beforeEstimate),
-        after:
-          EstimateAuditSnapshotBuilder.build(updatedEstimate),
+        before: EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after: EstimateAuditSnapshotBuilder.build(updatedEstimate),
         meta: {
           source: 'EstimatesService.addPieceToEstimate',
           pieceId: createdPiece.id,
@@ -1345,17 +1307,11 @@ export class EstimatesService {
       throw new NotFoundException('User not found');
     }
 
-    const effectiveMarkupDecimal =
-      user.markupOverride !== null
-        ? new Decimal(user.markupOverride.toString())
-        : new Decimal(user.role.markup.toString());
-
     return this.prisma.$transaction(async (tx) => {
-      const beforeEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       await this.assertEstimateCanBeEdited(
         beforeEstimate,
@@ -1364,11 +1320,9 @@ export class EstimatesService {
         tx as PrismaTransactionClient,
       );
 
-      const effectiveMarkupDecimal =
-        await this.resolveEstimateOwnerMarkup(
-          tx as PrismaTransactionClient,
-          beforeEstimate!.idUser,
-        );
+      const effectiveMarkupDecimal = new Decimal(
+        beforeEstimate!.ownerMarkupSnapshot.toString(),
+      );
 
       const existingPiece = beforeEstimate!.pieces.find(
         (piece) => piece.id === pieceId,
@@ -1380,21 +1334,17 @@ export class EstimatesService {
         );
       }
 
-      const cache =
-        this.pieceCalculator.createCalculationCache();
+      const cache = this.pieceCalculator.createCalculationCache();
 
-      const calculatedPiece =
-        await this.pieceCalculator.calculatePieceMetrics(
-          dto,
-          effectiveMarkupDecimal,
-          tx as PrismaTransactionClient,
-          cache,
-        );
+      const calculatedPiece = await this.pieceCalculator.calculatePieceMetrics(
+        dto,
+        effectiveMarkupDecimal,
+        tx as PrismaTransactionClient,
+        cache,
+      );
 
       const pieceData =
-        this.buildCalculatedPiecePersistenceData(
-          calculatedPiece,
-        );
+        this.buildCalculatedPiecePersistenceData(calculatedPiece);
 
       await tx.piece.update({
         where: {
@@ -1409,9 +1359,7 @@ export class EstimatesService {
         calculatedPiece.muntin,
       );
 
-      const factoryTaxRate = new Decimal(
-        beforeEstimate!.taxRate.toString(),
-      );
+      const factoryTaxRate = new Decimal(beforeEstimate!.taxRate.toString());
 
       const customerTaxRate = new Decimal(
         beforeEstimate!.customerTaxRate.toString(),
@@ -1424,11 +1372,10 @@ export class EstimatesService {
         customerTaxRate,
       );
 
-      const updatedEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       if (!updatedEstimate) {
         throw new NotFoundException(
@@ -1442,10 +1389,8 @@ export class EstimatesService {
         entityId: updatedEstimate.id,
         userId,
         message: `Piece updated in Estimate #${updatedEstimate.number}`,
-        before:
-          EstimateAuditSnapshotBuilder.build(beforeEstimate),
-        after:
-          EstimateAuditSnapshotBuilder.build(updatedEstimate),
+        before: EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after: EstimateAuditSnapshotBuilder.build(updatedEstimate),
         meta: {
           source: 'EstimatesService.updatePieceInEstimate',
           pieceId,
@@ -1457,18 +1402,15 @@ export class EstimatesService {
   }
 
   /**
- * Aplica el mismo Dealer Markup a todas las piezas
- * mediante una sola transacción.
- */
+   * Aplica el mismo Dealer Markup a todas las piezas
+   * mediante una sola transacción.
+   */
   async applyGeneralDealerMarkupToEstimate(
     estimateId: number,
     dealerMarkupPercent: number,
     userId: number,
   ): Promise<EstimateWithRelations> {
-    if (
-      !Number.isFinite(dealerMarkupPercent) ||
-      dealerMarkupPercent < 0
-    ) {
+    if (!Number.isFinite(dealerMarkupPercent) || dealerMarkupPercent < 0) {
       throw new BadRequestException(
         'Dealer Markup must be greater than or equal to zero.',
       );
@@ -1487,17 +1429,11 @@ export class EstimatesService {
       throw new NotFoundException('User not found');
     }
 
-    const effectiveMarkupDecimal =
-      user.markupOverride !== null
-        ? new Decimal(user.markupOverride.toString())
-        : new Decimal(user.role.markup.toString());
-
     return this.prisma.$transaction(async (tx) => {
-      const beforeEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       await this.assertEstimateCanBeEdited(
         beforeEstimate,
@@ -1506,11 +1442,9 @@ export class EstimatesService {
         tx as PrismaTransactionClient,
       );
 
-      const effectiveMarkupDecimal =
-        await this.resolveEstimateOwnerMarkup(
-          tx as PrismaTransactionClient,
-          beforeEstimate!.idUser,
-        );
+      const effectiveMarkupDecimal = new Decimal(
+        beforeEstimate!.ownerMarkupSnapshot.toString(),
+      );
 
       if (!beforeEstimate!.pieces.length) {
         throw new BadRequestException(
@@ -1518,8 +1452,7 @@ export class EstimatesService {
         );
       }
 
-      const cache =
-        this.pieceCalculator.createCalculationCache();
+      const cache = this.pieceCalculator.createCalculationCache();
 
       const calculatedPieces: Array<{
         pieceId: number;
@@ -1529,11 +1462,10 @@ export class EstimatesService {
       // Primero calculamos todas las piezas.
       // Si una falla, todavía no se ha modificado ninguna.
       for (const persistedPiece of beforeEstimate!.pieces) {
-        const pieceDto =
-          this.buildPieceDtoFromPersistedPiece(
-            persistedPiece,
-            dealerMarkupPercent,
-          );
+        const pieceDto = this.buildPieceDtoFromPersistedPiece(
+          persistedPiece,
+          dealerMarkupPercent,
+        );
 
         const calculatedPiece =
           await this.pieceCalculator.calculatePieceMetrics(
@@ -1552,10 +1484,9 @@ export class EstimatesService {
       // Las actualizaciones comienzan solamente después
       // de que todas las piezas fueron calculadas.
       for (const item of calculatedPieces) {
-        const pieceData =
-          this.buildCalculatedPiecePersistenceData(
-            item.calculatedPiece,
-          );
+        const pieceData = this.buildCalculatedPiecePersistenceData(
+          item.calculatedPiece,
+        );
 
         await tx.piece.update({
           where: {
@@ -1571,9 +1502,7 @@ export class EstimatesService {
         );
       }
 
-      const factoryTaxRate = new Decimal(
-        beforeEstimate!.taxRate.toString(),
-      );
+      const factoryTaxRate = new Decimal(beforeEstimate!.taxRate.toString());
 
       const customerTaxRate = new Decimal(
         beforeEstimate!.customerTaxRate.toString(),
@@ -1586,11 +1515,10 @@ export class EstimatesService {
         customerTaxRate,
       );
 
-      const updatedEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       if (!updatedEstimate) {
         throw new NotFoundException(
@@ -1604,22 +1532,14 @@ export class EstimatesService {
         entityId: updatedEstimate.id,
         userId,
 
-        message:
-          `General Dealer Markup applied to Estimate #${updatedEstimate.number}`,
+        message: `General Dealer Markup applied to Estimate #${updatedEstimate.number}`,
 
-        before:
-          EstimateAuditSnapshotBuilder.build(
-            beforeEstimate,
-          ),
+        before: EstimateAuditSnapshotBuilder.build(beforeEstimate),
 
-        after:
-          EstimateAuditSnapshotBuilder.build(
-            updatedEstimate,
-          ),
+        after: EstimateAuditSnapshotBuilder.build(updatedEstimate),
 
         meta: {
-          source:
-            'EstimatesService.applyGeneralDealerMarkupToEstimate',
+          source: 'EstimatesService.applyGeneralDealerMarkupToEstimate',
 
           dealerMarkupPercent,
           updatedPieceCount: calculatedPieces.length,
@@ -1631,9 +1551,9 @@ export class EstimatesService {
   }
 
   /**
- * Aplica Frame Color, Tint o Coating a todas las piezas
- * mediante una sola transacción.
- */
+   * Aplica Frame Color, Tint o Coating a todas las piezas
+   * mediante una sola transacción.
+   */
   async applyBulkPieceAttributeToEstimate(
     estimateId: number,
     changes: BulkPieceAttributeUpdate,
@@ -1652,13 +1572,8 @@ export class EstimatesService {
     }
 
     for (const [field, value] of Object.entries(changes)) {
-      if (
-        value !== undefined &&
-        (!Number.isInteger(value) || value <= 0)
-      ) {
-        throw new BadRequestException(
-          `${field} must be a positive integer.`,
-        );
+      if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
+        throw new BadRequestException(`${field} must be a positive integer.`);
       }
     }
 
@@ -1675,17 +1590,11 @@ export class EstimatesService {
       throw new NotFoundException('User not found');
     }
 
-    const effectiveMarkupDecimal =
-      user.markupOverride !== null
-        ? new Decimal(user.markupOverride.toString())
-        : new Decimal(user.role.markup.toString());
-
     return this.prisma.$transaction(async (tx) => {
-      const beforeEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       await this.assertEstimateCanBeEdited(
         beforeEstimate,
@@ -1694,11 +1603,9 @@ export class EstimatesService {
         tx as PrismaTransactionClient,
       );
 
-      const effectiveMarkupDecimal =
-        await this.resolveEstimateOwnerMarkup(
-          tx as PrismaTransactionClient,
-          beforeEstimate!.idUser,
-        );
+      const effectiveMarkupDecimal = new Decimal(
+        beforeEstimate!.ownerMarkupSnapshot.toString(),
+      );
 
       if (!beforeEstimate!.pieces.length) {
         throw new BadRequestException(
@@ -1706,8 +1613,7 @@ export class EstimatesService {
         );
       }
 
-      const cache =
-        this.pieceCalculator.createCalculationCache();
+      const cache = this.pieceCalculator.createCalculationCache();
 
       const calculatedPieces: Array<{
         pieceId: number;
@@ -1720,29 +1626,23 @@ export class EstimatesService {
         const currentDealerMarkupPercent =
           Number(persistedPiece.dealerMarkup.toString()) * 100;
 
-        const pieceDto =
-          this.buildPieceDtoFromPersistedPiece(
-            persistedPiece,
-            currentDealerMarkupPercent,
-          );
+        const pieceDto = this.buildPieceDtoFromPersistedPiece(
+          persistedPiece,
+          currentDealerMarkupPercent,
+        );
 
-        const isLinearMaterial =
-          persistedPiece.prod.kind === 'LINEAR_MATERIAL';
+        const isLinearMaterial = persistedPiece.prod.kind === 'LINEAR_MATERIAL';
 
         if (changes.idFC !== undefined) {
           pieceDto.idFC = changes.idFC;
         }
 
         if (changes.idTint !== undefined) {
-          pieceDto.idTint = isLinearMaterial
-            ? null
-            : changes.idTint;
+          pieceDto.idTint = isLinearMaterial ? null : changes.idTint;
         }
 
         if (changes.idCoat !== undefined) {
-          pieceDto.idCoat = isLinearMaterial
-            ? null
-            : changes.idCoat;
+          pieceDto.idCoat = isLinearMaterial ? null : changes.idCoat;
         }
 
         const calculatedPiece =
@@ -1762,10 +1662,9 @@ export class EstimatesService {
       // Las actualizaciones comienzan únicamente después
       // de calcular correctamente todas las piezas.
       for (const item of calculatedPieces) {
-        const pieceData =
-          this.buildCalculatedPiecePersistenceData(
-            item.calculatedPiece,
-          );
+        const pieceData = this.buildCalculatedPiecePersistenceData(
+          item.calculatedPiece,
+        );
 
         await tx.piece.update({
           where: {
@@ -1781,9 +1680,7 @@ export class EstimatesService {
         );
       }
 
-      const factoryTaxRate = new Decimal(
-        beforeEstimate!.taxRate.toString(),
-      );
+      const factoryTaxRate = new Decimal(beforeEstimate!.taxRate.toString());
 
       const customerTaxRate = new Decimal(
         beforeEstimate!.customerTaxRate.toString(),
@@ -1796,11 +1693,10 @@ export class EstimatesService {
         customerTaxRate,
       );
 
-      const updatedEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       if (!updatedEstimate) {
         throw new NotFoundException(
@@ -1813,19 +1709,11 @@ export class EstimatesService {
         entityType: 'Estimate',
         entityId: updatedEstimate.id,
         userId,
-        message:
-          `Bulk Piece attribute updated in Estimate #${updatedEstimate.number}`,
-        before:
-          EstimateAuditSnapshotBuilder.build(
-            beforeEstimate,
-          ),
-        after:
-          EstimateAuditSnapshotBuilder.build(
-            updatedEstimate,
-          ),
+        message: `Bulk Piece attribute updated in Estimate #${updatedEstimate.number}`,
+        before: EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after: EstimateAuditSnapshotBuilder.build(updatedEstimate),
         meta: {
-          source:
-            'EstimatesService.applyBulkPieceAttributeToEstimate',
+          source: 'EstimatesService.applyBulkPieceAttributeToEstimate',
           changes,
           updatedPieceCount: calculatedPieces.length,
         },
@@ -1845,11 +1733,10 @@ export class EstimatesService {
     userId: number,
   ): Promise<EstimateWithRelations> {
     return this.prisma.$transaction(async (tx) => {
-      const beforeEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       await this.assertEstimateCanBeEdited(
         beforeEstimate,
@@ -1874,9 +1761,7 @@ export class EstimatesService {
         },
       });
 
-      const factoryTaxRate = new Decimal(
-        beforeEstimate!.taxRate.toString(),
-      );
+      const factoryTaxRate = new Decimal(beforeEstimate!.taxRate.toString());
 
       const customerTaxRate = new Decimal(
         beforeEstimate!.customerTaxRate.toString(),
@@ -1889,11 +1774,10 @@ export class EstimatesService {
         customerTaxRate,
       );
 
-      const updatedEstimate =
-        await this.getEstimateWithRelationsInTransaction(
-          tx as PrismaTransactionClient,
-          estimateId,
-        );
+      const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
 
       if (!updatedEstimate) {
         throw new NotFoundException(
@@ -1907,10 +1791,8 @@ export class EstimatesService {
         entityId: updatedEstimate.id,
         userId,
         message: `Piece deleted from Estimate #${updatedEstimate.number}`,
-        before:
-          EstimateAuditSnapshotBuilder.build(beforeEstimate),
-        after:
-          EstimateAuditSnapshotBuilder.build(updatedEstimate),
+        before: EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after: EstimateAuditSnapshotBuilder.build(updatedEstimate),
         meta: {
           source: 'EstimatesService.deletePieceFromEstimate',
           pieceId,
@@ -1932,11 +1814,6 @@ export class EstimatesService {
     });
 
     if (!dbUser) throw new NotFoundException('User not found');
-
-    const effectiveMarkupDecimal =
-      dbUser.markupOverride !== null
-        ? new Decimal(dbUser.markupOverride.toString())
-        : new Decimal(dbUser.role.markup.toString());
 
     const result = await this.prisma.$transaction(async (tx) => {
       const beforeEstimate = await tx.estimate.findUnique({
@@ -1967,10 +1844,13 @@ export class EstimatesService {
         },
       });
 
-
       if (!beforeEstimate) {
         throw new NotFoundException(`Estimate #${estimateId} not found.`);
       }
+
+      const effectiveMarkupDecimal = new Decimal(
+        beforeEstimate.ownerMarkupSnapshot.toString(),
+      );
 
       if (!isPrivileged(user) && beforeEstimate.idUser !== user.id) {
         throw new NotFoundException(`Estimate #${estimateId} not found.`);
@@ -1990,7 +1870,8 @@ export class EstimatesService {
 
       if (beforeEstimate.status?.name !== 'Expired') {
         throw new BadRequestException(
-          `Only expired estimates can be recalculated. Current status: ${beforeEstimate.status?.name ?? 'UNKNOWN'
+          `Only expired estimates can be recalculated. Current status: ${
+            beforeEstimate.status?.name ?? 'UNKNOWN'
           }.`,
         );
       }
@@ -2024,7 +1905,7 @@ export class EstimatesService {
         tx as PrismaTransactionClient,
       );
 
-      const factoryTaxRate = dbUser.isTaxExempt
+      const factoryTaxRate = beforeEstimate.user.isTaxExempt
         ? new Decimal(0)
         : new Decimal(taxParameter.value.toString());
 
@@ -2055,9 +1936,7 @@ export class EstimatesService {
             ? null
             : (p as any).windowHeight.toString(),
         doorWidth:
-          (p as any).doorWidth == null
-            ? null
-            : (p as any).doorWidth.toString(),
+          (p as any).doorWidth == null ? null : (p as any).doorWidth.toString(),
         doorHeight:
           (p as any).doorHeight == null
             ? null
@@ -2091,16 +1970,16 @@ export class EstimatesService {
 
         muntin: p.pieceMuntin
           ? {
-            idPattern: p.pieceMuntin.patternId,
-            idType: p.pieceMuntin.typeId ?? null,
-            panels: p.pieceMuntin.panels.map((panel) => ({
-              panelIndex: panel.panelIndex,
-              panelCode: panel.panelCode ?? undefined,
-              panelLabel: panel.panelLabel,
-              horizontalLites: panel.horizontalLites,
-              verticalLites: panel.verticalLites,
-            })),
-          }
+              idPattern: p.pieceMuntin.patternId,
+              idType: p.pieceMuntin.typeId ?? null,
+              panels: p.pieceMuntin.panels.map((panel) => ({
+                panelIndex: panel.panelIndex,
+                panelCode: panel.panelCode ?? undefined,
+                panelLabel: panel.panelLabel,
+                horizontalLites: panel.horizontalLites,
+                verticalLites: panel.verticalLites,
+              })),
+            }
           : null,
 
         qty: p.qty,
@@ -2116,7 +1995,7 @@ export class EstimatesService {
           p,
           effectiveMarkupDecimal,
           tx as PrismaTransactionClient,
-          cache
+          cache,
         );
 
         calculatedPieces.push(result);
@@ -2158,15 +2037,11 @@ export class EstimatesService {
             price: new Prisma.Decimal(p.price.toFixed(2)),
             markup: new Prisma.Decimal(p.markup.toFixed(18)),
             subtotal: new Prisma.Decimal(p.subtotal.toFixed(2)),
-            dealerMarkup: new Prisma.Decimal(
-              p.dealerMarkupDecimal.toFixed(4),
-            ),
+            dealerMarkup: new Prisma.Decimal(p.dealerMarkupDecimal.toFixed(4)),
             netProfit: new Prisma.Decimal(p.netProfit.toFixed(2)),
             netProfitD: new Prisma.Decimal(p.netProfitD.toFixed(2)),
             customerPrice: new Prisma.Decimal(p.customerPrice.toFixed(2)),
-            customerSubtotal: new Prisma.Decimal(
-              p.customerSubtotal.toFixed(2),
-            ),
+            customerSubtotal: new Prisma.Decimal(p.customerSubtotal.toFixed(2)),
 
             width: this.decimalOrNull(p.width),
             height: this.decimalOrNull(p.height),
@@ -2179,11 +2054,15 @@ export class EstimatesService {
             doorWidth: this.decimalOrNull((p as any).doorWidth),
             doorHeight: this.decimalOrNull((p as any).doorHeight),
             leftSideliteWidth: this.decimalOrNull((p as any).leftSideliteWidth),
-            rightSideliteWidth: this.decimalOrNull((p as any).rightSideliteWidth),
+            rightSideliteWidth: this.decimalOrNull(
+              (p as any).rightSideliteWidth,
+            ),
             leftPanels: this.intOrNull((p as any).leftPanels),
             rightPanels: this.intOrNull((p as any).rightPanels),
             panelCount: this.intOrNull((p as any).panelCount),
-            horizontalHeights: this.jsonArrayOrNull((p as any).horizontalHeights),
+            horizontalHeights: this.jsonArrayOrNull(
+              (p as any).horizontalHeights,
+            ),
 
             idProd: p.idProd,
             idBrand: p.idBrand,
@@ -2205,7 +2084,9 @@ export class EstimatesService {
         });
 
         if (p.muntin) {
-          const muntinCreate = this.muntinService.buildPieceMuntinCreateInput(p.muntin);
+          const muntinCreate = this.muntinService.buildPieceMuntinCreateInput(
+            p.muntin,
+          );
 
           if (muntinCreate) {
             await tx.pieceMuntin.create({
@@ -2218,16 +2099,16 @@ export class EstimatesService {
                 totalLites: muntinCreate.totalLites,
                 ...(p.muntin.panels.length > 0
                   ? {
-                    panels: {
-                      create: p.muntin.panels.map((panel) => ({
-                        panelIndex: panel.panelIndex,
-                        panelCode: panel.panelCode ?? null,
-                        panelLabel: panel.panelLabel,
-                        horizontalLites: panel.horizontalLites,
-                        verticalLites: panel.verticalLites,
-                      })),
-                    },
-                  }
+                      panels: {
+                        create: p.muntin.panels.map((panel) => ({
+                          panelIndex: panel.panelIndex,
+                          panelCode: panel.panelCode ?? null,
+                          panelLabel: panel.panelLabel,
+                          horizontalLites: panel.horizontalLites,
+                          verticalLites: panel.verticalLites,
+                        })),
+                      },
+                    }
                   : {}),
               },
             });
@@ -2310,7 +2191,6 @@ export class EstimatesService {
     return result as EstimateWithRelations;
   }
 
-
   // --- deleteEstimate ---
   async deleteEstimate(
     where: Prisma.EstimateWhereUniqueInput,
@@ -2334,7 +2214,7 @@ export class EstimatesService {
 
       if (estimate.order) {
         throw new BadRequestException(
-          `Estimate #${estimate.number} already has an order and cannot be deleted.`
+          `Estimate #${estimate.number} already has an order and cannot be deleted.`,
         );
       }
 
@@ -2464,7 +2344,9 @@ export class EstimatesService {
   ): Promise<Buffer> {
     const estimate = await this.findOneForUser(estimateId, user);
     const ownerIsDealer =
-      String(estimate.user?.role?.name ?? '').trim().toLowerCase() === 'dealer';
+      String(estimate.user?.role?.name ?? '')
+        .trim()
+        .toLowerCase() === 'dealer';
     const dealerView =
       view === 'dealer_internal' ||
       view === 'dealer_public' ||
@@ -2491,5 +2373,4 @@ export class EstimatesService {
       view,
     });
   }
-
 }

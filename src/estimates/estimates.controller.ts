@@ -36,7 +36,7 @@ export class EstimatesController {
     private readonly estimatesService: EstimatesService,
     private readonly estimatePublicShareService: EstimatePublicShareService,
     private readonly installationWorkflowService: InstallationWorkflowService,
-  ) { }
+  ) {}
 
   @Post('preview-dimension')
   async previewDimension(
@@ -103,9 +103,7 @@ export class EstimatesController {
       body.horizontalHeights !== undefined &&
       !Array.isArray(body.horizontalHeights)
     ) {
-      throw new BadRequestException(
-        'Invalid parameter: horizontalHeights',
-      );
+      throw new BadRequestException('Invalid parameter: horizontalHeights');
     }
 
     return this.estimatesService.previewDimensionValidation(body);
@@ -115,12 +113,21 @@ export class EstimatesController {
   calculatePieceMetrics(
     @Body() pieceDto: CreatePieceDto,
     @Req() req: Request,
+    @Query('estimateId') estimateIdRaw?: string,
   ) {
     const user = req.user as AuthUser;
+    const estimateId = estimateIdRaw ? Number(estimateIdRaw) : undefined;
+    if (
+      estimateId !== undefined &&
+      (!Number.isInteger(estimateId) || estimateId < 1)
+    ) {
+      throw new BadRequestException('estimateId must be a positive integer.');
+    }
 
     return this.estimatesService.calculateAndReturnPieceMetrics(
       pieceDto,
       user.id,
+      estimateId,
     );
   }
 
@@ -187,9 +194,9 @@ export class EstimatesController {
   }
 
   /**
- * Aplica un mismo Dealer Markup a todas las piezas.
- * Toda la operación se ejecuta en una sola transacción.
- */
+   * Aplica un mismo Dealer Markup a todas las piezas.
+   * Toda la operación se ejecuta en una sola transacción.
+   */
   @Patch(':id/pieces/general-markup')
   async applyGeneralDealerMarkup(
     @Param('id', ParseIntPipe) estimateId: number,
@@ -208,11 +215,12 @@ export class EstimatesController {
       );
     }
 
-    const result = await this.estimatesService.applyGeneralDealerMarkupToEstimate(
-      estimateId,
-      dealerMarkup,
-      user.id,
-    );
+    const result =
+      await this.estimatesService.applyGeneralDealerMarkupToEstimate(
+        estimateId,
+        dealerMarkup,
+        user.id,
+      );
     await this.installationWorkflowService.refreshAfterEstimateChange(
       estimateId,
       user,
@@ -221,9 +229,9 @@ export class EstimatesController {
   }
 
   /**
- * Aplica Frame Color, Tint o Coating
- * a todas las piezas del Estimate.
- */
+   * Aplica Frame Color, Tint o Coating
+   * a todas las piezas del Estimate.
+   */
   @Patch(':id/pieces/bulk-attribute')
   async applyBulkPieceAttribute(
     @Param('id', ParseIntPipe) estimateId: number,
@@ -238,17 +246,11 @@ export class EstimatesController {
     const user = req.user as AuthUser;
 
     const changes = {
-      ...(body.idFC !== undefined
-        ? { idFC: Number(body.idFC) }
-        : {}),
+      ...(body.idFC !== undefined ? { idFC: Number(body.idFC) } : {}),
 
-      ...(body.idTint !== undefined
-        ? { idTint: Number(body.idTint) }
-        : {}),
+      ...(body.idTint !== undefined ? { idTint: Number(body.idTint) } : {}),
 
-      ...(body.idCoat !== undefined
-        ? { idCoat: Number(body.idCoat) }
-        : {}),
+      ...(body.idCoat !== undefined ? { idCoat: Number(body.idCoat) } : {}),
     };
 
     const providedValues = Object.values(changes);
@@ -259,17 +261,14 @@ export class EstimatesController {
       );
     }
 
-    if (
-      !Number.isInteger(providedValues[0]) ||
-      providedValues[0] <= 0
-    ) {
+    if (!Number.isInteger(providedValues[0]) || providedValues[0] <= 0) {
       throw new BadRequestException(
         'The selected value must be a positive integer.',
       );
     }
 
-    const result = await this.estimatesService
-      .applyBulkPieceAttributeToEstimate(
+    const result =
+      await this.estimatesService.applyBulkPieceAttributeToEstimate(
         estimateId,
         changes,
         user.id,
@@ -331,13 +330,9 @@ export class EstimatesController {
     return result;
   }
 
-
-
   @Get()
   findAll(@Req() req: Request) {
-    return this.estimatesService.findAllForUser(
-      req.user as AuthUser,
-    );
+    return this.estimatesService.findAllForUser(req.user as AuthUser);
   }
 
   @Post(':id/public-token')
@@ -365,9 +360,7 @@ export class EstimatesController {
     const user = req.user as AuthUser;
 
     const roleName =
-      (user as any)?.role?.name ??
-      (user as any)?.roleName ??
-      null;
+      (user as any)?.role?.name ?? (user as any)?.roleName ?? null;
 
     // comentario en español: si no mandan view,
     // elegimos un valor predeterminado según el rol.
@@ -422,38 +415,20 @@ export class EstimatesController {
   ) {
     const user = req.user as AuthUser;
 
-    return this.estimatesService.recalculateExpiredEstimate(
-      id,
-      user,
-    );
+    return this.estimatesService.recalculateExpiredEstimate(id, user);
   }
 
   @Get(':id')
-  findOne(
-    @Param('id', ParseIntPipe) id: number,
-    @Req() req: Request,
-  ) {
-    return this.estimatesService.findOneForUser(
-      id,
-      req.user as AuthUser,
-    );
+  findOne(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.estimatesService.findOneForUser(id, req.user as AuthUser);
   }
 
   @Delete(':id')
-  async remove(
-    @Param('id', ParseIntPipe) id: number,
-    @Req() req: Request,
-  ) {
+  async remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     const user = req.user as AuthUser;
 
-    await this.estimatesService.assertEstimateOwnerOrThrow(
-      id,
-      user,
-    );
+    await this.estimatesService.assertEstimateOwnerOrThrow(id, user);
 
-    return this.estimatesService.deleteEstimate(
-      { id },
-      user.id,
-    );
+    return this.estimatesService.deleteEstimate({ id }, user.id);
   }
 }
