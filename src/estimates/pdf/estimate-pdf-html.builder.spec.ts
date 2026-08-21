@@ -73,6 +73,99 @@ const estimateFixture = (installationIncluded = true) =>
       : null,
   }) as unknown as EstimateWithRelations;
 
+function withExternalDealerCustomerCharges(
+  estimate = estimateFixture(),
+): EstimateWithRelations {
+  estimate.customerChargesSummary = {
+    enabled: true,
+    systemTotal: '1525.00',
+    customerTotal: '2300.00',
+    knownSystemMargin: '475.00',
+    dealerCreatedTotal: '300.00',
+    systemTotalIncomplete: true,
+    customerTotalIncomplete: false,
+    lines: [
+      {
+        id: 1,
+        origin: 'SYSTEM',
+        source: 'INSTALLATION',
+        sourceKey: 'INSTALLATION',
+        sourceRefId: null,
+        description: 'Installation',
+        systemAmount: '400.00',
+        customerAmount: '650.00',
+        pricingMode: 'FINAL',
+        pricingValue: '650.0000',
+        usedInCustomerQuote: true,
+        needsReview: false,
+        sortOrder: 10,
+      },
+      {
+        id: 2,
+        origin: 'SYSTEM',
+        source: 'INSTALLATION_SERVICE',
+        sourceKey: 'SERVICE:22',
+        sourceRefId: 22,
+        description: 'Concrete Cutting',
+        systemAmount: '125.00',
+        customerAmount: '175.00',
+        pricingMode: 'AMOUNT',
+        pricingValue: '50.0000',
+        usedInCustomerQuote: true,
+        needsReview: false,
+        sortOrder: 100,
+      },
+      {
+        id: 3,
+        origin: 'SYSTEM',
+        source: 'PERMIT',
+        sourceKey: 'PERMIT',
+        sourceRefId: null,
+        description: 'Permit Fee',
+        systemAmount: '1000.00',
+        customerAmount: '1100.00',
+        pricingMode: 'AMOUNT',
+        pricingValue: '100.0000',
+        usedInCustomerQuote: true,
+        needsReview: false,
+        sortOrder: 900,
+      },
+      {
+        id: 4,
+        origin: 'SYSTEM',
+        source: 'CITY_FEE',
+        sourceKey: 'CITY_FEE',
+        sourceRefId: null,
+        description: 'City Fee',
+        systemAmount: null,
+        customerAmount: '75.00',
+        pricingMode: 'FINAL',
+        pricingValue: '75.0000',
+        usedInCustomerQuote: true,
+        needsReview: false,
+        sortOrder: 910,
+      },
+      {
+        id: 5,
+        origin: 'DEALER',
+        source: 'CUSTOM',
+        sourceKey: null,
+        sourceRefId: null,
+        description: 'Remove shutters',
+        systemAmount: null,
+        customerAmount: '300.00',
+        pricingMode: 'FINAL',
+        pricingValue: '300.0000',
+        usedInCustomerQuote: true,
+        needsReview: false,
+        sortOrder: 1000,
+      },
+    ],
+  };
+
+  return estimate;
+}
+
 describe('EstimatePdfHtmlBuilder', () => {
   it('keeps the dealer customer PDF free of internal pricing', () => {
     const html = EstimatePdfHtmlBuilder.build(
@@ -86,6 +179,135 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).not.toContain('Estimated material profitability');
     expect(html).not.toContain('Estimated factory rate');
     expect(html).not.toContain('Production cost');
+  });
+
+  it('renders external dealer service prices for the customer while hiding company cost', () => {
+    const html = EstimatePdfHtmlBuilder.build(
+      withExternalDealerCustomerCharges(),
+      'dealer_public',
+    );
+
+    expect(html).toContain('$650.00');
+    expect(html).toContain('$175.00');
+    expect(html).toContain('$1,100.00');
+    expect(html).toContain('$75.00');
+    expect(html).toContain('$300.00');
+    expect(html).toContain('$2,580.29');
+    expect(html).not.toContain('$400.00');
+    expect(html).not.toContain('$125.00');
+    expect(html).not.toContain('$1,000.00');
+    expect(html).not.toContain('Dealer-created');
+  });
+
+  it('shows both company cost and customer price in the external dealer PDF', () => {
+    const html = EstimatePdfHtmlBuilder.build(
+      withExternalDealerCustomerCharges(),
+      'dealer_internal',
+    );
+
+    expect(html).toContain('Dealer Cost');
+    expect(html).toContain('Customer Price');
+    expect(html).toContain('$400.00');
+    expect(html).toContain('$650.00');
+    expect(html).toContain('Dealer-created');
+    expect(html).toContain('$2,580.29');
+  });
+
+  it('hides an unused system charge from customer PDFs but keeps it in the dealer comparison', () => {
+    const estimate = withExternalDealerCustomerCharges();
+    const cityFee = estimate.customerChargesSummary?.lines.find(
+      (line) => line.source === 'CITY_FEE',
+    );
+    if (!cityFee || !estimate.customerChargesSummary) {
+      throw new Error('City Fee fixture is missing.');
+    }
+    cityFee.usedInCustomerQuote = false;
+    estimate.customerChargesSummary.customerTotal = '2225.00';
+
+    const customerHtml = EstimatePdfHtmlBuilder.build(
+      estimate,
+      'dealer_public',
+    );
+    const dealerHtml = EstimatePdfHtmlBuilder.build(
+      estimate,
+      'dealer_internal',
+    );
+
+    expect(customerHtml).not.toContain('City Fee');
+    expect(customerHtml).not.toContain('$75.00');
+    expect(customerHtml).toContain('$2,505.29');
+    expect(dealerHtml).toContain('City Fee');
+    expect(dealerHtml).toContain('Not used');
+  });
+
+  it('uses one customer total without itemized service prices in the total-only PDF', () => {
+    const html = EstimatePdfHtmlBuilder.build(
+      withExternalDealerCustomerCharges(),
+      'dealer_public_total',
+    );
+
+    expect(html).toContain('Project scope');
+    expect(html).toContain('Remove shutters');
+    expect(html).toContain('$2,580.29');
+    expect(html).not.toContain('$650.00');
+    expect(html).not.toContain('$175.00');
+    expect(html).not.toContain('$1,100.00');
+    expect(html).not.toContain('$75.00');
+    expect(html).not.toContain('$300.00');
+  });
+
+  it('supports dealer-created installation prices without company installation', () => {
+    const estimate = estimateFixture(false);
+    estimate.customerChargesSummary = {
+      enabled: true,
+      systemTotal: '0.00',
+      customerTotal: '2400.00',
+      knownSystemMargin: '0.00',
+      dealerCreatedTotal: '2400.00',
+      systemTotalIncomplete: false,
+      customerTotalIncomplete: false,
+      lines: [
+        {
+          id: 10,
+          origin: 'DEALER',
+          source: 'CUSTOM',
+          sourceKey: null,
+          sourceRefId: null,
+          description: 'Installation',
+          systemAmount: null,
+          customerAmount: '2000.00',
+          pricingMode: 'FINAL',
+          pricingValue: '2000.0000',
+          usedInCustomerQuote: true,
+          needsReview: false,
+          sortOrder: 1000,
+        },
+        {
+          id: 11,
+          origin: 'DEALER',
+          source: 'CUSTOM',
+          sourceKey: null,
+          sourceRefId: null,
+          description: 'Remove shutters',
+          systemAmount: null,
+          customerAmount: '400.00',
+          pricingMode: 'FINAL',
+          pricingValue: '400.0000',
+          usedInCustomerQuote: true,
+          needsReview: false,
+          sortOrder: 1010,
+        },
+      ],
+    };
+
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'dealer_public');
+
+    expect(html).toContain('Installation');
+    expect(html).toContain('$2,000.00');
+    expect(html).toContain('Remove shutters');
+    expect(html).toContain('$400.00');
+    expect(html).toContain('$2,680.29');
+    expect(html).not.toContain('Not included');
   });
 
   it('assigns an internal Impact dealer customer margin to Impact in the admin PDF', () => {

@@ -343,6 +343,12 @@ export class EstimatePdfHtmlBuilder {
       ? customerMaterial
       : internalMaterial;
     const installationSummary = estimate.installationSummary ?? null;
+    const externalDealerCharges = ownerIsDealer
+      ? (estimate.customerChargesSummary ?? null)
+      : null;
+    const customerVisibleServiceLines =
+      externalDealerCharges?.lines.filter((line) => line.usedInCustomerQuote) ??
+      [];
     const installationTotal = numberValue(
       installationSummary?.installationTotal,
     );
@@ -351,14 +357,18 @@ export class EstimatePdfHtmlBuilder {
       : 0;
     const cityFee = numberValue(installationSummary?.cityFee);
     const sharedCharges = roundMoney(installationTotal + permitFee + cityFee);
+    const customerServiceCharges = externalDealerCharges
+      ? numberValue(externalDealerCharges.customerTotal)
+      : sharedCharges;
     const internalProjectTotal = roundMoney(
       internalMaterial.total + sharedCharges,
     );
     const customerProjectTotal = roundMoney(
-      customerMaterial.total + sharedCharges,
+      customerMaterial.total + customerServiceCharges,
     );
     const selectedProjectTotal = roundMoney(
-      selectedMaterial.total + sharedCharges,
+      selectedMaterial.total +
+        (customerFacing ? customerServiceCharges : sharedCharges),
     );
     const cityFeePending = Boolean(
       installationSummary?.permitIncluded &&
@@ -372,7 +382,12 @@ export class EstimatePdfHtmlBuilder {
         (installationSummary.quoteStatus !== 'APPROVED' ||
           installationSummary.status === 'DEPOSIT_PAYMENT_PENDING'),
     );
-    const incompleteTotal = cityFeePending || installationAmountPending;
+    const incompleteTotal = externalDealerCharges
+      ? customerFacing
+        ? externalDealerCharges.customerTotalIncomplete
+        : externalDealerCharges.systemTotalIncomplete ||
+          externalDealerCharges.customerTotalIncomplete
+      : cityFeePending || installationAmountPending;
 
     const productRows = estimate.pieces.length
       ? estimate.pieces
@@ -434,6 +449,56 @@ export class EstimatePdfHtmlBuilder {
         </div>`;
 
     const installationSummaryHtml = (() => {
+      if (externalDealerCharges) {
+        const displayedLines = comparisonView
+          ? externalDealerCharges.lines
+          : customerVisibleServiceLines;
+
+        if (displayedLines.length === 0) {
+          return `
+            <div class="card keep-together">
+              <div class="card-title">Installation &amp; services</div>
+              <div class="card-body">${summaryRow('Installation', '<span class="badge badge-not-included">Not included</span>')}</div>
+            </div>`;
+        }
+
+        if (comparisonView) {
+          const rows = displayedLines
+            .map(
+              (line) => `
+                <tr>
+                  <td>${escapeHtml(line.description)}${line.origin === 'DEALER' ? '<small>Dealer-created</small>' : ''}</td>
+                  <td class="right">${line.origin === 'DEALER' ? '&mdash;' : line.systemAmount == null ? 'Pending' : formatMoney(line.systemAmount)}</td>
+                  <td class="right">${!line.usedInCustomerQuote ? 'Not used' : line.customerAmount == null ? 'Pending' : formatMoney(line.customerAmount)}</td>
+                </tr>`,
+            )
+            .join('');
+
+          return `
+            <div class="card keep-together">
+              <table class="comparison-table">
+                <thead><tr><th>Installation &amp; services</th><th class="right">Dealer Cost</th><th class="right">Customer Price</th></tr></thead>
+                <tbody>${rows}<tr class="table-total"><td>Services total</td><td class="right">${formatMoney(externalDealerCharges.systemTotal)}</td><td class="right">${formatMoney(externalDealerCharges.customerTotal)}</td></tr></tbody>
+              </table>
+            </div>`;
+        }
+
+        return `
+          <div class="card keep-together">
+            <div class="card-title">Installation &amp; services</div>
+            <div class="card-body">${displayedLines
+              .map((line) =>
+                summaryRow(
+                  line.description,
+                  line.customerAmount == null
+                    ? 'Pending'
+                    : formatMoney(line.customerAmount),
+                ),
+              )
+              .join('')}</div>
+          </div>`;
+      }
+
       if (!installationSummary) {
         return `
           <div class="card keep-together">
@@ -492,6 +557,25 @@ export class EstimatePdfHtmlBuilder {
     })();
 
     const projectScopeHtml = (() => {
+      if (externalDealerCharges) {
+        const rows = customerVisibleServiceLines.length
+          ? customerVisibleServiceLines
+              .map((line) =>
+                summaryRow(
+                  line.description,
+                  line.customerAmount == null ? 'Pending' : 'Included',
+                ),
+              )
+              .join('')
+          : summaryRow('Installation', 'Not included');
+
+        return `
+          <div class="card keep-together">
+            <div class="card-title">Project scope</div>
+            <div class="card-body">${rows}</div>
+          </div>`;
+      }
+
       if (!installationSummary) {
         return `
           <div class="card keep-together">
@@ -542,9 +626,10 @@ export class EstimatePdfHtmlBuilder {
     })();
 
     const notices = `
-      ${installationAmountPending ? '<p class="notice warning">Installation amount is pending.</p>' : ''}
-      ${cityFeePending ? '<p class="notice warning">Final total is pending the City Fee.</p>' : ''}
-      ${preliminaryInstallation && !installationAmountPending ? '<p class="notice">Installation is proposed and is not yet confirmed.</p>' : ''}`;
+      ${!externalDealerCharges && installationAmountPending ? '<p class="notice warning">Installation amount is pending.</p>' : ''}
+      ${!externalDealerCharges && cityFeePending ? '<p class="notice warning">Final total is pending the City Fee.</p>' : ''}
+      ${!externalDealerCharges && preliminaryInstallation && !installationAmountPending ? '<p class="notice">Installation is proposed and is not yet confirmed.</p>' : ''}
+      ${externalDealerCharges?.customerTotalIncomplete && customerFacing ? '<p class="notice warning">Customer service pricing is incomplete.</p>' : ''}`;
     const projectTotalHtml = comparisonView
       ? `
         <div class="project-total keep-together">

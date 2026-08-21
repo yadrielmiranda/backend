@@ -47,6 +47,10 @@ import {
   estimateInstallationSummarySelect,
   type EstimateInstallationReportSummary,
 } from './reporting/estimate-installation-summary';
+import {
+  EstimateCustomerChargesService,
+  type EstimateCustomerChargeSummary,
+} from './estimate-customer-charges.service';
 
 // Logs (EventLog + TempLog)
 import { LogsService } from '@/logs/logs.service';
@@ -109,6 +113,7 @@ export type EstimateWithRelations = Estimate & {
     'id' | 'status'
   > | null;
   installationSummary?: EstimateInstallationReportSummary | null;
+  customerChargesSummary?: EstimateCustomerChargeSummary | null;
   branding?: Branding | null;
 };
 
@@ -130,6 +135,7 @@ export class EstimatesService {
     private pieceCalculator: EstimatePieceCalculatorService,
     private muntinService: EstimateMuntinService,
     private installationWorkflow: InstallationWorkflowService,
+    private customerChargesService: EstimateCustomerChargesService,
   ) {}
 
   private decimalOrNull(value: string | number | null | undefined) {
@@ -752,6 +758,9 @@ export class EstimatesService {
         status: true,
         order: true,
         payments: true,
+        customerCharges: {
+          orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+        },
         installationJob: { select: estimateInstallationSummarySelect },
         pieces: {
           orderBy: { id: 'asc' },
@@ -799,6 +808,11 @@ export class EstimatesService {
     const installationSummary = buildEstimateInstallationSummary(
       estimate.installationJob,
     );
+    const customerChargesSummary = this.customerChargesService.buildSummary({
+      estimate,
+      installation: installationSummary,
+      charges: estimate.customerCharges,
+    });
     const installationJob = estimate.installationJob
       ? {
           id: estimate.installationJob.id,
@@ -806,10 +820,13 @@ export class EstimatesService {
         }
       : null;
 
+    const { customerCharges: _customerCharges, ...estimateResult } = estimate;
+
     return {
-      ...(estimate as any),
+      ...(estimateResult as any),
       installationJob,
       installationSummary,
+      customerChargesSummary,
       branding,
     } as EstimateWithRelations;
   }

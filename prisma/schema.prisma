@@ -39,6 +39,26 @@ enum DealerAffiliation {
   AUTHENTIC
 }
 
+enum EstimateCustomerChargeOrigin {
+  SYSTEM
+  DEALER
+}
+
+enum EstimateCustomerChargeSource {
+  INSTALLATION
+  INSTALLATION_SERVICE
+  PERMIT
+  CITY_FEE
+  CUSTOM
+}
+
+enum EstimateCustomerChargePricingMode {
+  SAME
+  PERCENTAGE
+  AMOUNT
+  FINAL
+}
+
 model User {
   id                Int      @id @default(autoincrement())
   username          String   @unique
@@ -993,6 +1013,7 @@ model Estimate {
   payments        Payment[]
   installationJob InstallationJob?
   revisions       EstimateRevision[]
+  customerCharges EstimateCustomerCharge[]
 
   // --- CUSTOMER (dealer fills; not a relation) ---
   customerFirstName  String?  @db.VarChar(100)
@@ -1005,6 +1026,42 @@ model Estimate {
   customerPostalCode String?  @db.VarChar(20)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+}
+
+model EstimateCustomerCharge {
+  id         Int                          @id @default(autoincrement())
+  estimateId Int
+  origin     EstimateCustomerChargeOrigin
+  source     EstimateCustomerChargeSource
+
+  // Stable only for system-generated charges, for example INSTALLATION or SERVICE:22.
+  // Dealer-created rows intentionally leave this null so multiple custom charges are allowed.
+  sourceKey   String? @db.VarChar(100)
+  sourceRefId Int?
+
+  description String @db.VarChar(150)
+
+  // PERCENTAGE and AMOUNT are calculated over the current system price.
+  // FINAL stores the exact amount the dealer wants to show the customer.
+  pricingMode  EstimateCustomerChargePricingMode
+  pricingValue Decimal                           @db.Decimal(12, 4)
+
+  // Controls only the dealer's customer quote. The underlying company charge remains unchanged.
+  usedInCustomerQuote Boolean @default(true)
+
+  // Used to flag a dealer's saved price when the underlying company price changes.
+  systemAmountSnapshot Decimal? @db.Decimal(12, 2)
+  sortOrder            Int      @default(0)
+
+  estimate Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([estimateId, sourceKey], map: "uq_estimate_customer_charge_source")
+  @@index([estimateId, sortOrder])
+  @@index([estimateId, origin])
+  @@map("estimate_customer_charges")
 }
 
 model Piece {

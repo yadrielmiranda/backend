@@ -19,6 +19,7 @@ import {
   estimateInstallationSummarySelect,
 } from '../reporting/estimate-installation-summary';
 import type { CustomerReportPricingMode } from '../dto/create-estimate-public-token.dto';
+import { EstimateCustomerChargesService } from '../estimate-customer-charges.service';
 
 function numberValue(value: unknown) {
   const parsed = Number(value ?? 0);
@@ -34,6 +35,7 @@ export class EstimatePublicShareService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
+    private readonly customerChargesService: EstimateCustomerChargesService,
   ) {}
 
   private createPublicToken(pricingMode: CustomerReportPricingMode) {
@@ -228,6 +230,9 @@ export class EstimatePublicShareService {
         installationJob: {
           select: estimateInstallationSummarySelect,
         },
+        customerCharges: {
+          orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+        },
         pieces: {
           orderBy: { id: 'asc' },
           include: {
@@ -276,22 +281,39 @@ export class EstimatePublicShareService {
     const fullInstallationSummary = buildEstimateInstallationSummary(
       estimate.installationJob,
     );
-    const publicProjectTotalIncomplete = Boolean(
-      fullInstallationSummary &&
-        (fullInstallationSummary.installationTotal == null ||
-          (fullInstallationSummary.permitIncluded &&
-            fullInstallationSummary.cityFee == null)),
+    const fullCustomerChargesSummary = this.customerChargesService.buildSummary(
+      {
+        estimate,
+        installation: fullInstallationSummary,
+        charges: estimate.customerCharges ?? [],
+      },
     );
-    const publicProjectTotal = roundMoney(
-      numberValue(estimate.customerTotalPayable) +
-        numberValue(fullInstallationSummary?.installationTotal) +
+    const customerServiceTotal = fullCustomerChargesSummary
+      ? numberValue(fullCustomerChargesSummary.customerTotal)
+      : numberValue(fullInstallationSummary?.installationTotal) +
         (fullInstallationSummary?.permitIncluded
           ? numberValue(fullInstallationSummary.permitFee)
           : 0) +
-        numberValue(fullInstallationSummary?.cityFee),
+        numberValue(fullInstallationSummary?.cityFee);
+    const publicProjectTotalIncomplete = fullCustomerChargesSummary
+      ? fullCustomerChargesSummary.customerTotalIncomplete
+      : Boolean(
+          fullInstallationSummary &&
+            (fullInstallationSummary.installationTotal == null ||
+              (fullInstallationSummary.permitIncluded &&
+                fullInstallationSummary.cityFee == null)),
+        );
+    const publicProjectTotal = roundMoney(
+      numberValue(estimate.customerTotalPayable) + customerServiceTotal,
     );
+    // An external dealer's customer must never receive the company's
+    // installation prices, even though the customer-facing report renders a
+    // different summary. Keep status/scope metadata, but zero every internal
+    // amount at the public API boundary.
+    const hideSystemInstallationPrices = Boolean(fullCustomerChargesSummary);
     const installationSummary =
-      pricingMode === 'total' && fullInstallationSummary
+      (pricingMode === 'total' || hideSystemInstallationPrices) &&
+      fullInstallationSummary
         ? {
             ...fullInstallationSummary,
             installationAmount:
@@ -311,6 +333,36 @@ export class EstimatePublicShareService {
             cityFee: fullInstallationSummary.cityFee == null ? null : '0.00',
           }
         : fullInstallationSummary;
+    const customerChargesSummary = fullCustomerChargesSummary
+      ? {
+          ...fullCustomerChargesSummary,
+          systemTotal: '0.00',
+          knownSystemMargin: '0.00',
+          dealerCreatedTotal: '0.00',
+          customerTotal:
+            pricingMode === 'total'
+              ? '0.00'
+              : fullCustomerChargesSummary.customerTotal,
+          lines: fullCustomerChargesSummary.lines
+            .filter((line) => line.usedInCustomerQuote)
+            .map((line) => ({
+              id: null,
+              origin: 'DEALER' as const,
+              source: 'CUSTOM' as const,
+              sourceKey: null,
+              sourceRefId: null,
+              description: line.description,
+              systemAmount: null,
+              customerAmount:
+                pricingMode === 'total' ? '0.00' : line.customerAmount,
+              pricingMode: null,
+              pricingValue: null,
+              usedInCustomerQuote: true,
+              needsReview: false,
+              sortOrder: line.sortOrder,
+            })),
+        }
+      : null;
 
     return {
       id: estimate.id,
@@ -337,6 +389,7 @@ export class EstimatePublicShareService {
         pricingMode === 'total' ? 0 : estimate.customerTotalPayable,
 
       installationSummary,
+      customerChargesSummary,
       publicPricingMode: pricingMode,
       publicProjectTotal:
         pricingMode === 'total' ? publicProjectTotal : undefined,

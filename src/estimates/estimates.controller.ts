@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Body,
   Patch,
   Param,
@@ -28,6 +29,12 @@ import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { EstimatePublicShareService } from './public-share/estimate-public-share.service';
 import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
+import { EstimateCustomerChargesService } from './estimate-customer-charges.service';
+import {
+  CreateDealerCustomerChargeDto,
+  UpdateDealerCustomerChargeDto,
+  UpsertSystemCustomerChargeDto,
+} from './dto/estimate-customer-charge.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('estimates')
@@ -36,6 +43,7 @@ export class EstimatesController {
     private readonly estimatesService: EstimatesService,
     private readonly estimatePublicShareService: EstimatePublicShareService,
     private readonly installationWorkflowService: InstallationWorkflowService,
+    private readonly estimateCustomerChargesService: EstimateCustomerChargesService,
   ) {}
 
   @Post('preview-dimension')
@@ -416,6 +424,68 @@ export class EstimatesController {
     const user = req.user as AuthUser;
 
     return this.estimatesService.recalculateExpiredEstimate(id, user);
+  }
+
+  @Get(':id/customer-charges')
+  customerCharges(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.estimateCustomerChargesService.findForEstimate(
+      id,
+      req.user as AuthUser,
+    );
+  }
+
+  @Put(':id/customer-charges/system')
+  upsertSystemCustomerCharge(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpsertSystemCustomerChargeDto,
+    @Req() req: Request,
+  ) {
+    return this.estimateCustomerChargesService.upsertSystemCharge(
+      id,
+      dto,
+      req.user as AuthUser,
+    );
+  }
+
+  @Post(':id/customer-charges')
+  createDealerCustomerCharge(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateDealerCustomerChargeDto,
+    @Req() req: Request,
+  ) {
+    return this.estimateCustomerChargesService.createDealerCharge(
+      id,
+      dto,
+      req.user as AuthUser,
+    );
+  }
+
+  @Patch(':id/customer-charges/:chargeId')
+  updateDealerCustomerCharge(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('chargeId', ParseIntPipe) chargeId: number,
+    @Body() dto: UpdateDealerCustomerChargeDto,
+    @Req() req: Request,
+  ) {
+    return this.estimateCustomerChargesService.updateDealerCharge(
+      id,
+      chargeId,
+      dto,
+      req.user as AuthUser,
+    );
+  }
+
+  @Delete(':id/customer-charges/:chargeId')
+  removeCustomerCharge(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('chargeId', ParseIntPipe) chargeId: number,
+    @Req() req: Request,
+  ) {
+    return this.estimateCustomerChargesService.removeCharge(
+      id,
+      chargeId,
+      req.user as AuthUser,
+    );
   }
 
   @Get(':id')

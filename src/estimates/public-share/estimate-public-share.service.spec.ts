@@ -1,4 +1,5 @@
 import { EstimatePublicShareService } from './estimate-public-share.service';
+import { EstimateCustomerChargesService } from '../estimate-customer-charges.service';
 
 function sharedEstimateFixture() {
   return {
@@ -22,8 +23,15 @@ function sharedEstimateFixture() {
     customerTaxRate: '0.07',
     customerTaxAmount: '18.34',
     customerTotalPayable: '280.29',
+    dealerModeSnapshot: 'EXTERNAL',
+    dealerAffiliationSnapshot: 'AUTHENTIC',
     status: { name: 'Active' },
-    user: { role: { name: 'dealer' } },
+    user: {
+      dealerMode: 'EXTERNAL',
+      dealerAffiliation: 'AUTHENTIC',
+      role: { name: 'dealer' },
+    },
+    customerCharges: [],
     installationJob: {
       id: 18,
       status: 'REQUESTED',
@@ -114,6 +122,7 @@ function buildService(estimate = sharedEstimateFixture()) {
   const notifications = {
     createAndSend: jest.fn().mockResolvedValue(undefined),
   };
+  const customerCharges = new EstimateCustomerChargesService(prisma as any);
 
   return {
     prisma,
@@ -121,6 +130,7 @@ function buildService(estimate = sharedEstimateFixture()) {
     service: new EstimatePublicShareService(
       prisma as any,
       notifications as any,
+      customerCharges,
     ),
   };
 }
@@ -135,8 +145,109 @@ describe('EstimatePublicShareService customer pricing modes', () => {
     expect(result.customerTotalPayable).toBe('280.29');
     expect(result.pieces[0].customerPrice).toBe('261.95');
     expect(result.installationSummary?.additionalServices[0].amount).toBe(
-      '125.00',
+      '0.00',
     );
+    expect(result.customerChargesSummary?.systemTotal).toBe('0.00');
+    expect(result.customerChargesSummary?.dealerCreatedTotal).toBe('0.00');
+    expect(result.customerChargesSummary?.lines[0]).toEqual(
+      expect.objectContaining({
+        origin: 'DEALER',
+        source: 'CUSTOM',
+        systemAmount: null,
+        customerAmount: '400.00',
+        pricingMode: null,
+        pricingValue: null,
+      }),
+    );
+  });
+
+  it('uses the external dealer customer prices without exposing company installation cost', async () => {
+    const estimate = sharedEstimateFixture();
+    estimate.customerCharges = [
+      {
+        id: 1,
+        origin: 'SYSTEM',
+        source: 'INSTALLATION',
+        sourceKey: 'INSTALLATION',
+        sourceRefId: null,
+        description: 'Installation',
+        pricingMode: 'PERCENTAGE',
+        pricingValue: '25.0000',
+        systemAmountSnapshot: '400.00',
+        sortOrder: 10,
+      },
+      {
+        id: 2,
+        origin: 'DEALER',
+        source: 'CUSTOM',
+        sourceKey: null,
+        sourceRefId: null,
+        description: 'Remove shutters',
+        pricingMode: 'FINAL',
+        pricingValue: '250.0000',
+        systemAmountSnapshot: null,
+        sortOrder: 1000,
+      },
+    ] as any;
+    const { service } = buildService(estimate);
+
+    const result = await service.findPublicEstimateByToken('detailed-token');
+
+    expect(result.customerChargesSummary?.customerTotal).toBe('1875.00');
+    expect(result.customerChargesSummary?.lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          description: 'Installation',
+          customerAmount: '500.00',
+          systemAmount: null,
+        }),
+        expect.objectContaining({
+          description: 'Remove shutters',
+          customerAmount: '250.00',
+          systemAmount: null,
+        }),
+      ]),
+    );
+    expect(result.installationSummary).toEqual(
+      expect.objectContaining({
+        installationAmount: '0.00',
+        installationTotal: '0.00',
+        permitFee: '0.00',
+      }),
+    );
+    expect(result.installationSummary?.additionalServices[0].amount).toBe(
+      '0.00',
+    );
+  });
+
+  it('omits unused system charges from the customer link and its pending total', async () => {
+    const estimate = sharedEstimateFixture();
+    estimate.customerCharges = [
+      {
+        id: 3,
+        origin: 'SYSTEM',
+        source: 'CITY_FEE',
+        sourceKey: 'CITY_FEE',
+        sourceRefId: null,
+        description: 'City Fee',
+        pricingMode: 'SAME',
+        pricingValue: '0.0000',
+        usedInCustomerQuote: false,
+        systemAmountSnapshot: null,
+        sortOrder: 910,
+      },
+    ] as any;
+    const { service } = buildService(estimate);
+
+    const result = await service.findPublicEstimateByToken('detailed-token');
+
+    expect(result.customerChargesSummary?.customerTotal).toBe('1525.00');
+    expect(result.customerChargesSummary?.customerTotalIncomplete).toBe(false);
+    expect(
+      result.customerChargesSummary?.lines.some(
+        (line: any) => line.description === 'City Fee',
+      ),
+    ).toBe(false);
   });
 
   it('returns one project total and removes every component price for the total token', async () => {

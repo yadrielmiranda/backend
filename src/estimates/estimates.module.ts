@@ -13,16 +13,17 @@ import { EstimatePublicShareService } from './public-share/estimate-public-share
 import { PublicEstimatesController } from './public-share/public-estimates.controller';
 import { NotificationsModule } from '@/notifications/notifications.module';
 import { InstallationModule } from '@/installation/installation.module';
+import { EstimateCustomerChargesService } from './estimate-customer-charges.service';
 
 @Module({
   imports: [
-  PrismaModule,
-  PricingRulesModule,
-  LogsModule,
-  FrameColorModule,
-  NotificationsModule,
-  InstallationModule,
-],
+    PrismaModule,
+    PricingRulesModule,
+    LogsModule,
+    FrameColorModule,
+    NotificationsModule,
+    InstallationModule,
+  ],
   controllers: [EstimatesController, PublicEstimatesController],
   providers: [
     EstimatesService,
@@ -31,6 +32,7 @@ import { InstallationModule } from '@/installation/installation.module';
     EstimatePieceCalculatorService,
     EstimateMuntinService,
     EstimatePublicShareService,
+    EstimateCustomerChargesService,
   ],
 })
-export class EstimatesModule { }
+export class EstimatesModule {}
