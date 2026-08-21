@@ -18,6 +18,8 @@ import {
   InstallationJobStatus,
   PaymentStatus,
   PaymentType,
+  DealerMode,
+  DealerAffiliation,
 } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { UpsertPieceDto } from './dto/upsert-piece.dto';
@@ -813,6 +815,50 @@ export class EstimatesService {
   }
 
   // --- estimates (Get List) ---
+  private async syncActiveDealerClassification(user: AuthUser) {
+    if (user.role?.name !== 'dealer') return;
+
+    const dealer = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: {
+        dealerMode: true,
+        dealerAffiliation: true,
+        role: { select: { name: true } },
+      },
+    });
+    if (!dealer || dealer.role.name !== 'dealer') return;
+
+    const dealerMode = dealer.dealerMode ?? DealerMode.EXTERNAL;
+    const dealerAffiliation =
+      dealer.dealerAffiliation ?? DealerAffiliation.AUTHENTIC;
+
+    await this.prisma.estimate.updateMany({
+      where: {
+        idUser: user.id,
+        status: { name: 'Active' },
+        order: null,
+        payments: {
+          none: {
+            OR: [
+              { status: PaymentStatus.PAID },
+              { stripeSessionId: { not: null } },
+            ],
+          },
+        },
+        OR: [
+          { dealerModeSnapshot: null },
+          { dealerModeSnapshot: { not: dealerMode } },
+          { dealerAffiliationSnapshot: null },
+          { dealerAffiliationSnapshot: { not: dealerAffiliation } },
+        ],
+      },
+      data: {
+        dealerModeSnapshot: dealerMode,
+        dealerAffiliationSnapshot: dealerAffiliation,
+      },
+    });
+  }
+
   async estimates(params: { where?: Prisma.EstimateWhereInput }) {
     const estimates = await this.prisma.estimate.findMany({
       where: params.where,
@@ -838,12 +884,18 @@ export class EstimatesService {
       return this.estimates({ where: {} });
     }
 
+    await this.syncActiveDealerClassification(user);
+
     return this.estimates({
       where: { idUser: user.id },
     });
   }
 
   async findOneForUser(id: number, user: AuthUser) {
+    if (!isPrivileged(user)) {
+      await this.syncActiveDealerClassification(user);
+    }
+
     const estimate = await this.estimate({ id });
     if (!estimate)
       throw new NotFoundException(`Estimate with ID #${id} not found.`);

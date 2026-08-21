@@ -173,8 +173,16 @@ describe('EstimatePublicShareService customer pricing modes', () => {
       publicToken: 'detailed-token',
       publicTotalToken: null,
       publicTokenEnabled: true,
+      dealerModeSnapshot: 'EXTERNAL',
+      dealerAffiliationSnapshot: 'AUTHENTIC',
+      order: null,
+      payments: [],
       status: { name: 'Active' },
-      user: { role: { name: 'dealer' } },
+      user: {
+        dealerMode: 'EXTERNAL',
+        dealerAffiliation: 'AUTHENTIC',
+        role: { name: 'dealer' },
+      },
     });
     prisma.estimate.update.mockImplementation(async ({ data }: any) => ({
       publicToken: 'detailed-token',
@@ -191,5 +199,46 @@ describe('EstimatePublicShareService customer pricing modes', () => {
     expect(result.pricingMode).toBe('total');
     expect(result.token).toMatch(/^total_[0-9a-f-]{36}$/);
     expect(result.token).not.toBe('detailed-token');
+  });
+
+  it('updates a legacy active estimate to the dealer current classification before returning its token', async () => {
+    const { prisma, service } = buildService();
+    prisma.estimate.findUnique.mockResolvedValue({
+      id: 9,
+      idUser: 44,
+      publicToken: 'detailed-token',
+      publicTotalToken: null,
+      publicTokenEnabled: true,
+      dealerModeSnapshot: 'EXTERNAL',
+      dealerAffiliationSnapshot: 'IMPACT',
+      order: null,
+      payments: [],
+      status: { name: 'Active' },
+      user: {
+        dealerMode: 'INTERNAL',
+        dealerAffiliation: 'AUTHENTIC',
+        role: { name: 'dealer' },
+      },
+    });
+    prisma.estimate.update.mockResolvedValue({});
+
+    const result = await service.getOrCreatePublicLinkToken(
+      9,
+      { id: 44, role: { name: 'dealer' } } as any,
+      'detailed',
+    );
+
+    expect(prisma.estimate.update).toHaveBeenCalledWith({
+      where: { id: 9 },
+      data: {
+        dealerModeSnapshot: 'INTERNAL',
+        dealerAffiliationSnapshot: 'AUTHENTIC',
+      },
+    });
+    expect(result).toEqual({
+      token: 'detailed-token',
+      enabled: true,
+      pricingMode: 'detailed',
+    });
   });
 });

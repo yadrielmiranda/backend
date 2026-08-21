@@ -3,7 +3,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { BrandingType } from '@prisma/client';
+import {
+  BrandingType,
+  DealerAffiliation,
+  DealerMode,
+  PaymentStatus,
+} from '@prisma/client';
 import { randomUUID } from 'crypto';
 
 import { PrismaService } from '@/prisma/prisma.service';
@@ -79,6 +84,19 @@ export class EstimatePublicShareService {
         publicToken: true,
         publicTotalToken: true,
         publicTokenEnabled: true,
+        dealerModeSnapshot: true,
+        dealerAffiliationSnapshot: true,
+        order: { select: { id: true } },
+        payments: {
+          where: {
+            OR: [
+              { status: PaymentStatus.PAID },
+              { stripeSessionId: { not: null } },
+            ],
+          },
+          select: { id: true },
+          take: 1,
+        },
         status: {
           select: {
             name: true,
@@ -86,6 +104,8 @@ export class EstimatePublicShareService {
         },
         user: {
           select: {
+            dealerMode: true,
+            dealerAffiliation: true,
             role: {
               select: {
                 name: true,
@@ -110,6 +130,33 @@ export class EstimatePublicShareService {
       throw new BadRequestException(
         'Only active or ordered estimates can be shared with customers.',
       );
+    }
+
+    const currentDealerMode = estimate.user.dealerMode ?? DealerMode.EXTERNAL;
+    const currentDealerAffiliation =
+      estimate.user.dealerAffiliation ?? DealerAffiliation.AUTHENTIC;
+    const classificationChanged =
+      estimate.dealerModeSnapshot !== currentDealerMode ||
+      estimate.dealerAffiliationSnapshot !== currentDealerAffiliation;
+
+    if (
+      estimate.status?.name === 'Active' &&
+      !estimate.order &&
+      classificationChanged
+    ) {
+      if (estimate.payments.length > 0) {
+        throw new BadRequestException(
+          'Cancel or reconcile the checkout created under the previous dealer mode before generating the customer payment link.',
+        );
+      }
+
+      await this.prisma.estimate.update({
+        where: { id },
+        data: {
+          dealerModeSnapshot: currentDealerMode,
+          dealerAffiliationSnapshot: currentDealerAffiliation,
+        },
+      });
     }
 
     const existingToken =
