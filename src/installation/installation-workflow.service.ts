@@ -444,7 +444,7 @@ export class InstallationWorkflowService {
     return {
       items: items.map(({ _count, quotes, appointments, ...job }) => ({
         ...job,
-        openings: _count.measurements,
+        unitCount: _count.measurements,
         latestQuote: quotes[0] ?? null,
         nextAppointment: appointments[0] ?? null,
       })),
