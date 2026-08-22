@@ -13,20 +13,27 @@ type JwtPayload = { sub?: string | number };
 @WebSocketGateway({
   cors: {
     origin: (origin, callback) => {
-      const allowedOrigins = ['http://localhost:3000', 'http://10.0.0.4:3000'];
-      if (!origin || allowedOrigins.includes(origin)) callback(null, true);
-      else callback(new Error('Origin not allowed by CORS'));
+      const allowedOrigins = (process.env.FRONTEND_URL ?? '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error('Origin not allowed by CORS'), false);
     },
     credentials: true,
   },
 })
 export class NotificationsGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
-{
+  implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  constructor(private jwtService: JwtService) {}
+  constructor(private jwtService: JwtService) { }
 
   // ✅ PRO: múltiples sockets por usuario
   private userSockets = new Map<number, Set<string>>();
