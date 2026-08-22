@@ -211,7 +211,8 @@ export function nextManualOrderStatus(currentStatus: string): string | null {
   const transitions: Record<string, string | null> = {
     Pending: "In production",
     "In production": "Ready to pick up",
-    "Ready to pick up": "Delivered",
+    "Ready to pick up": null,
+    "Picked up": null,
     Delivered: null,
     "Installation in progress": null,
     Installed: null,

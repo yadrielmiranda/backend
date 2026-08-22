@@ -8,6 +8,8 @@ import {
   EstimateRevisionChangeReason,
   EstimateRevisionItemAction,
   EstimateRevisionStatus,
+  DeliveryStatus,
+  DeliveryType,
   GlobalParameterKey,
   InstallationApprovalDecision,
   InstallationApprovalStage,
@@ -20,6 +22,7 @@ import {
   InstallationQuoteReason,
   InstallationQuoteStatus,
   OrderExtraChargeStatus,
+  OrderFulfillmentMethod,
   PaymentStatus,
   PaymentType,
   Prisma,
@@ -176,7 +179,15 @@ const jobInclude = {
     include: {
       user: { include: { role: true } },
       status: true,
-      order: { include: { status: true } },
+      order: {
+        include: {
+          status: true,
+          deliveries: {
+            orderBy: { sequence: 'asc' as const },
+            include: { payment: true },
+          },
+        },
+      },
       payments: { orderBy: { createdAt: 'asc' as const } },
       pieces: {
         orderBy: { id: 'asc' as const },
@@ -3442,6 +3453,21 @@ export class InstallationWorkflowService {
         'Installation must be paid before scheduling its appointment.',
       );
     }
+    if (dto.type === InstallationAppointmentType.INSTALLATION) {
+      const unpaidDeliveryOverride =
+        job.estimate.order?.deliveries.find(
+          (delivery) =>
+            delivery.type === DeliveryType.INSTALLATION_OVERRIDE &&
+            delivery.status !== DeliveryStatus.CANCELED &&
+            delivery.status !== DeliveryStatus.COMPLETED &&
+            delivery.payment?.status !== PaymentStatus.PAID,
+        );
+      if (unpaidDeliveryOverride) {
+        throw new BadRequestException(
+          'The delivery charge must be paid before scheduling installation.',
+        );
+      }
+    }
 
     const startsAt = new Date(dto.startsAt);
     const endsAt = dto.endsAt ? new Date(dto.endsAt) : null;
@@ -3600,9 +3626,32 @@ export class InstallationWorkflowService {
         'Installation requires an accepted schedule before it can start.',
       );
     }
-    if (!job.estimate.order || job.estimate.order.status.name !== 'Delivered') {
+    const order = job.estimate.order;
+    if (!order) {
       throw new BadRequestException(
-        'The order must be Delivered before installation can start.',
+        'The material order is required before installation can start.',
+      );
+    }
+    const deliveryOverride = order.deliveries.find(
+      (delivery) =>
+        delivery.type === DeliveryType.INSTALLATION_OVERRIDE &&
+        delivery.status !== DeliveryStatus.CANCELED,
+    );
+    if (
+      deliveryOverride &&
+      deliveryOverride.payment?.status !== PaymentStatus.PAID
+    ) {
+      throw new BadRequestException(
+        'The delivery charge must be paid before installation can start.',
+      );
+    }
+    const deliveredBeforeInstallation = order.status.name === 'Delivered';
+    const deliveredWithInstallation =
+      order.status.name === 'Ready to pick up' &&
+      order.fulfillmentMethod === OrderFulfillmentMethod.INSTALLATION_DELIVERY;
+    if (!deliveredBeforeInstallation && !deliveredWithInstallation) {
+      throw new BadRequestException(
+        'The order must be delivered beforehand or assigned to delivery with installation.',
       );
     }
 
@@ -3639,9 +3688,21 @@ export class InstallationWorkflowService {
         );
       }
       await tx.order.update({
-        where: { id: job.estimate.order!.id },
+        where: { id: order.id },
         data: { statusId: inProgress.id, updateStatus: new Date() },
       });
+      if (
+        deliveryOverride &&
+        deliveryOverride.status !== DeliveryStatus.COMPLETED
+      ) {
+        await tx.orderDelivery.update({
+          where: { id: deliveryOverride.id },
+          data: {
+            status: DeliveryStatus.COMPLETED,
+            completedAt: new Date(),
+          },
+        });
+      }
       await tx.installationJob.update({
         where: { id: jobId },
         data: { status: InstallationJobStatus.IN_PROGRESS },
@@ -3652,7 +3713,7 @@ export class InstallationWorkflowService {
           entityType: 'InstallationJob',
           entityId: jobId,
           userId: user.id,
-          message: `Installation started for Order #${job.estimate.order!.number}.`,
+          message: `Installation started for Order #${order.number}.`,
         },
       });
     });
@@ -3875,7 +3936,12 @@ export class InstallationWorkflowService {
           },
         },
         status: true,
-        order: { include: { status: true } },
+        order: {
+          include: {
+            status: true,
+            deliveries: { orderBy: { sequence: 'asc' } },
+          },
+        },
         installationJob: {
           include: {
             permit: true,
@@ -3896,6 +3962,7 @@ export class InstallationWorkflowService {
     let description: string;
     let paymentSequence = 1;
     let extraCharge: Prisma.OrderExtraChargeGetPayload<{}> | null = null;
+    let delivery: Prisma.OrderDeliveryGetPayload<{}> | null = null;
 
     if (type === PaymentType.INSTALLATION_DEPOSIT) {
       if (
@@ -4046,7 +4113,30 @@ export class InstallationWorkflowService {
       description = paidBalanceBase.gt(0)
         ? `Installation change order — Estimate #${estimate.number}`
         : `Installation balance after deposit — Estimate #${estimate.number}`;
-    } else {
+    } else if (type === PaymentType.DELIVERY) {
+      if (!estimate.order) {
+        throw new BadRequestException(
+          'Delivery is paid from an existing material order.',
+        );
+      }
+      if (!Number.isInteger(sequence) || Number(sequence) < 1) {
+        throw new BadRequestException('Delivery sequence is required.');
+      }
+      delivery = await tx.orderDelivery.findFirst({
+        where: {
+          orderId: estimate.order.id,
+          sequence: Number(sequence),
+        },
+      });
+      if (!delivery || delivery.status !== DeliveryStatus.PAYMENT_DUE) {
+        throw new BadRequestException(
+          'This delivery charge is not available for payment.',
+        );
+      }
+      baseAmount = new Decimal(delivery.total.toString());
+      paymentSequence = delivery.sequence;
+      description = `Delivery — Order #${estimate.order.number}`;
+    } else if (type === PaymentType.EXTRA) {
       if (!job || !estimate.order) {
         throw new BadRequestException(
           'Extra charges are paid from an existing installation order.',
@@ -4098,6 +4188,8 @@ export class InstallationWorkflowService {
       baseAmount = new Decimal(extraCharge.total.toString());
       paymentSequence = extraCharge.sequence;
       description = `Extra charge #${extraCharge.sequence} — Order #${estimate.order.number}`;
+    } else {
+      throw new BadRequestException(`Unsupported payment type: ${type}.`);
     }
 
     if (baseAmount.lte(0))
@@ -4125,6 +4217,7 @@ export class InstallationWorkflowService {
       estimate,
       job,
       extraCharge,
+      delivery,
       type,
       description,
       baseAmount: baseAmount.toDecimalPlaces(2, Decimal.ROUND_HALF_UP),
@@ -4202,6 +4295,7 @@ export class InstallationWorkflowService {
       type: PaymentType;
       installationJobId: number | null;
       extraChargeId: number | null;
+      deliveryId?: number | null;
     },
   ): Promise<boolean> {
     if (payment.type === PaymentType.INSTALLATION_DEPOSIT) {
@@ -4333,6 +4427,34 @@ export class InstallationWorkflowService {
         data: { status: restoredStatus },
       });
       return true;
+    } else if (payment.type === PaymentType.DELIVERY) {
+      if (!payment.deliveryId) {
+        throw new Error('Paid delivery has no delivery record.');
+      }
+      const delivery = await tx.orderDelivery.findUnique({
+        where: { id: payment.deliveryId },
+      });
+      if (!delivery) {
+        throw new Error(`Delivery #${payment.deliveryId} not found.`);
+      }
+      if (delivery.status === DeliveryStatus.PAYMENT_DUE) {
+        await tx.orderDelivery.update({
+          where: { id: payment.deliveryId },
+          data: {
+            status: DeliveryStatus.READY_TO_SCHEDULE,
+            paidAt: new Date(),
+          },
+        });
+        return true;
+      }
+      if (!delivery.paidAt) {
+        await tx.orderDelivery.update({
+          where: { id: payment.deliveryId },
+          data: { paidAt: new Date() },
+        });
+        return true;
+      }
+      return false;
     } else if (payment.type === PaymentType.EXTRA) {
       if (!payment.extraChargeId) {
         throw new Error('Paid extra charge has no extra charge record.');

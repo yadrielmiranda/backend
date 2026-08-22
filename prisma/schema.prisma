@@ -107,6 +107,7 @@ model User {
   installationAppointmentsResponded InstallationAppointment[]   @relation("InstallationAppointmentRespondedBy")
   orderExtraChargesCreated          OrderExtraCharge[]          @relation("OrderExtraChargeCreatedBy")
   orderExtraChargesResponded        OrderExtraCharge[]          @relation("OrderExtraChargeRespondedBy")
+  orderDeliveriesCreated            OrderDelivery[]             @relation("OrderDeliveryCreatedBy")
   manualPaymentsRecorded            Payment[]                   @relation("PaymentRecordedBy")
 
   createdAt DateTime @default(now())
@@ -825,6 +826,9 @@ enum GlobalParameterKey {
   INSTALLATION_DEPOSIT
   INSTALLATION_PERMIT_FEE
   CARD_SURCHARGE_PERCENT
+  DELIVERY_BASE_PRICE
+  DELIVERY_INCLUDED_MILES
+  DELIVERY_ADDITIONAL_MILE_PRICE
 }
 
 model GlobalParameter {
@@ -1164,6 +1168,13 @@ model OrderStatus {
   orders Order[]
 }
 
+enum OrderFulfillmentMethod {
+  UNDECIDED
+  CUSTOMER_PICKUP
+  COMPANY_DELIVERY
+  INSTALLATION_DELIVERY
+}
+
 model Order {
   id     Int      @id @default(autoincrement())
   number String   @unique
@@ -1204,6 +1215,10 @@ model Order {
 
   updateStatus DateTime @default(now())
 
+  fulfillmentMethod     OrderFulfillmentMethod @default(UNDECIDED)
+  fulfillmentSelectedAt DateTime?
+  pickupCompletedAt     DateTime?
+
   user   User @relation(fields: [userId], references: [id])
   userId Int
 
@@ -1212,6 +1227,7 @@ model Order {
   paymentId Int     @unique
 
   extraCharges OrderExtraCharge[]
+  deliveries   OrderDelivery[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1846,7 +1862,79 @@ enum PaymentType {
   INSTALLATION_DEPOSIT
   PERMIT
   INSTALLATION
+  DELIVERY
   EXTRA
+}
+
+enum DeliveryType {
+  STANDARD
+  INSTALLATION_OVERRIDE
+  PRE_DELIVERY
+  REDELIVERY
+}
+
+enum DeliveryStatus {
+  PAYMENT_DUE
+  READY_TO_SCHEDULE
+  SCHEDULED
+  COMPLETED
+  CANCELED
+}
+
+model OrderDelivery {
+  id       Int            @id @default(autoincrement())
+  orderId  Int
+  sequence Int
+  type     DeliveryType
+  status   DeliveryStatus @default(PAYMENT_DUE)
+
+  // Kept as strings so a future truck profile/provider does not require a schema redesign.
+  vehicleProfile String @default("PICKUP") @db.VarChar(30)
+  routeProvider  String @default("GOOGLE_ROUTES") @db.VarChar(50)
+
+  originStreet     String @db.VarChar(150)
+  originCity       String @db.VarChar(100)
+  originState      String @db.VarChar(50)
+  originPostalCode String @db.VarChar(20)
+
+  destinationStreet     String @db.VarChar(150)
+  destinationCity       String @db.VarChar(100)
+  destinationState      String @db.VarChar(50)
+  destinationPostalCode String @db.VarChar(20)
+
+  distanceMeters Int
+  roadMiles      Decimal @db.Decimal(10, 2)
+
+  basePriceSnapshot           Decimal @db.Decimal(12, 2)
+  includedMilesSnapshot       Decimal @db.Decimal(10, 2)
+  additionalMilePriceSnapshot Decimal @db.Decimal(12, 2)
+  additionalMiles             Int
+  tollAmount                  Decimal @default(0) @db.Decimal(12, 2)
+  taxable                     Boolean @default(false)
+  taxRateSnapshot             Decimal @default(0) @db.Decimal(10, 4)
+  subtotal                    Decimal @db.Decimal(12, 2)
+  taxAmount                   Decimal @default(0) @db.Decimal(12, 2)
+  total                       Decimal @db.Decimal(12, 2)
+
+  // Company-only explanation for overrides, pre-deliveries and redeliveries.
+  internalReason String? @db.VarChar(1000)
+
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  createdBy   User     @relation("OrderDeliveryCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdById Int
+  payment     Payment?
+
+  scheduledFor DateTime?
+  paidAt       DateTime?
+  completedAt  DateTime?
+  canceledAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([orderId, sequence], map: "uq_order_delivery_sequence")
+  @@index([orderId, status])
+  @@index([createdById])
+  @@map("order_deliveries")
 }
 
 enum OrderExtraChargeStatus {
@@ -1955,6 +2043,9 @@ model Payment {
 
   extraCharge   OrderExtraCharge? @relation(fields: [extraChargeId], references: [id], onDelete: SetNull)
   extraChargeId Int?              @unique
+
+  delivery   OrderDelivery? @relation(fields: [deliveryId], references: [id], onDelete: SetNull)
+  deliveryId Int?           @unique
 
   // Account responsible for the estimate. For an internal dealer, the actual
   // payer is the final customer and is captured by payerType + snapshots.

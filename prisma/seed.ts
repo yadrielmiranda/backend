@@ -31,6 +31,7 @@ async function main() {
     'Pending',
     'In production',
     'Ready to pick up',
+    'Picked up',
     'Delivered',
     'Installation in progress',
     'Installed',
@@ -201,6 +202,41 @@ async function main() {
       value: 0,
       description: 'Card surcharge applied to checkout payments.',
       unit: '%',
+    },
+  });
+
+  await prisma.globalParameter.upsert({
+    where: { key: GlobalParameterKey.DELIVERY_BASE_PRICE },
+    update: {},
+    create: {
+      key: GlobalParameterKey.DELIVERY_BASE_PRICE,
+      value: 200,
+      description:
+        'Base delivery price through the included-mile threshold.',
+      unit: 'USD',
+    },
+  });
+
+  await prisma.globalParameter.upsert({
+    where: { key: GlobalParameterKey.DELIVERY_INCLUDED_MILES },
+    update: {},
+    create: {
+      key: GlobalParameterKey.DELIVERY_INCLUDED_MILES,
+      value: 30,
+      description: 'One-way road miles included in the base delivery price.',
+      unit: 'miles',
+    },
+  });
+
+  await prisma.globalParameter.upsert({
+    where: { key: GlobalParameterKey.DELIVERY_ADDITIONAL_MILE_PRICE },
+    update: {},
+    create: {
+      key: GlobalParameterKey.DELIVERY_ADDITIONAL_MILE_PRICE,
+      value: 5,
+      description:
+        'Price for each additional one-way road mile, rounded upward.',
+      unit: 'USD/mile',
     },
   });
 

@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   DealerMode,
+  DeliveryStatus,
   InstallationJobStatus,
   InstallationPermitStatus,
   OrderExtraChargeStatus,
@@ -257,6 +258,11 @@ export class PaymentsService {
           label: 'Installation balance',
           adminNextStep: 'Schedule installation',
         };
+      case PaymentType.DELIVERY:
+        return {
+          label: `Delivery #${sequence}`,
+          adminNextStep: 'Schedule delivery',
+        };
       case PaymentType.EXTRA:
         return {
           label: `Extra charge #${sequence}`,
@@ -438,6 +444,12 @@ export class PaymentsService {
               is: { status: OrderExtraChargeStatus.PAYMENT_DUE },
             },
           },
+          {
+            type: PaymentType.DELIVERY,
+            delivery: {
+              is: { status: DeliveryStatus.PAYMENT_DUE },
+            },
+          },
         ],
       },
       select: { id: true },
@@ -602,6 +614,10 @@ export class PaymentsService {
               where: { status: OrderExtraChargeStatus.PAYMENT_DUE },
               orderBy: { sequence: 'asc' },
             },
+            deliveries: {
+              where: { status: DeliveryStatus.PAYMENT_DUE },
+              orderBy: { sequence: 'asc' },
+            },
           },
         },
         installationJob: { select: { id: true, status: true } },
@@ -619,6 +635,7 @@ export class PaymentsService {
     status: { name: string };
     order: {
       extraCharges: Array<{ sequence: number }>;
+      deliveries: Array<{ sequence: number }>;
     } | null;
     installationJob: {
       status: InstallationJobStatus;
@@ -629,25 +646,27 @@ export class PaymentsService {
         ? null
         : estimate.installationJob;
 
-    if (!job) {
-      return !estimate.order && estimate.status.name === 'Active'
-        ? { type: PaymentType.MATERIAL }
-        : null;
-    }
-
-    if (job.status === InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) {
-      return { type: PaymentType.INSTALLATION_DEPOSIT };
-    }
-    if (job.status === InstallationJobStatus.PERMIT_PAYMENT_PENDING) {
-      return { type: PaymentType.PERMIT };
-    }
-    if (job.status === InstallationJobStatus.MATERIAL_PAYMENT_PENDING) {
+    if (!job && !estimate.order && estimate.status.name === 'Active') {
       return { type: PaymentType.MATERIAL };
     }
-    if (job.status === InstallationJobStatus.INSTALLATION_PAYMENT_PENDING) {
+
+    if (job?.status === InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) {
+      return { type: PaymentType.INSTALLATION_DEPOSIT };
+    }
+    if (job?.status === InstallationJobStatus.PERMIT_PAYMENT_PENDING) {
+      return { type: PaymentType.PERMIT };
+    }
+    if (job?.status === InstallationJobStatus.MATERIAL_PAYMENT_PENDING) {
+      return { type: PaymentType.MATERIAL };
+    }
+    if (job?.status === InstallationJobStatus.INSTALLATION_PAYMENT_PENDING) {
       return { type: PaymentType.INSTALLATION };
     }
 
+    const delivery = estimate.order?.deliveries[0];
+    if (delivery) {
+      return { type: PaymentType.DELIVERY, sequence: delivery.sequence };
+    }
     const extraCharge = estimate.order?.extraCharges[0];
     return extraCharge
       ? { type: PaymentType.EXTRA, sequence: extraCharge.sequence }
@@ -661,6 +680,7 @@ export class PaymentsService {
     if (type === PaymentType.PERMIT) return 'Permit Fee';
     if (type === PaymentType.MATERIAL) return 'Material payment';
     if (type === PaymentType.INSTALLATION) return 'Installation balance';
+    if (type === PaymentType.DELIVERY) return `Delivery #${sequence}`;
     return `Extra charge #${sequence}`;
   }
 
@@ -900,6 +920,7 @@ export class PaymentsService {
           sequence: context.paymentSequence,
           installationJobId: context.job?.id ?? null,
           extraChargeId: context.extraCharge?.id ?? null,
+          deliveryId: context.delivery?.id ?? null,
           userId: context.estimate.idUser,
           ...payer,
           baseAmount: new Prisma.Decimal(context.baseAmount.toFixed(2)),
@@ -917,6 +938,7 @@ export class PaymentsService {
         update: {
           installationJobId: context.job?.id ?? null,
           extraChargeId: context.extraCharge?.id ?? null,
+          deliveryId: context.delivery?.id ?? null,
           userId: context.estimate.idUser,
           ...payer,
           baseAmount: new Prisma.Decimal(context.baseAmount.toFixed(2)),
@@ -1306,6 +1328,7 @@ export class PaymentsService {
           sequence: context.paymentSequence,
           installationJobId: context.job?.id ?? null,
           extraChargeId: context.extraCharge?.id ?? null,
+          deliveryId: context.delivery?.id ?? null,
           userId: context.estimate.idUser,
           ...payer,
           baseAmount,
@@ -1323,6 +1346,7 @@ export class PaymentsService {
         update: {
           installationJobId: context.job?.id ?? null,
           extraChargeId: context.extraCharge?.id ?? null,
+          deliveryId: context.delivery?.id ?? null,
           userId: context.estimate.idUser,
           ...payer,
           baseAmount,

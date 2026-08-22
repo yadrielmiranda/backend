@@ -9,6 +9,7 @@ import {
   InstallationJobStatus,
   Order,
   OrderExtraChargeStatus,
+  OrderFulfillmentMethod,
   OrderStatus,
   PaymentStatus,
   PaymentType,
@@ -36,7 +37,7 @@ import { calculateMaterialFinancials } from './order-material-financials';
 const orderDetailsInclude = {
   estimate: true,
   status: true,
-  user: true,
+  user: { include: { role: true } },
   payment: true,
   extraCharges: {
     orderBy: { sequence: 'asc' as const },
@@ -44,6 +45,10 @@ const orderDetailsInclude = {
       lines: { orderBy: { sortOrder: 'asc' as const } },
       payment: true,
     },
+  },
+  deliveries: {
+    orderBy: { sequence: 'asc' as const },
+    include: { payment: true },
   },
 } satisfies Prisma.OrderInclude;
 
@@ -111,7 +116,7 @@ export class OrdersService {
             },
           },
         },
-        user: true,
+        user: { include: { role: true } },
       },
     });
 
@@ -165,6 +170,11 @@ export class OrdersService {
 
       const expected = nextManualOrderStatus(current.status.name);
       if (expected !== nextStatus.name) {
+        if (current.status.name === 'Ready to pick up') {
+          throw new BadRequestException(
+            'Complete this order from its Pickup & Delivery workflow.',
+          );
+        }
         throw new BadRequestException(
           `Order status must advance from "${current.status.name}" to ${expected ? `"${expected}"` : 'its installation workflow'}.`,
         );
@@ -254,6 +264,22 @@ export class OrdersService {
         ? new Prisma.Decimal(realMaterialFinancials.authenticProfit.toFixed(2))
         : null,
       ...(statusWillChange && { updateStatus: new Date() }),
+      ...(statusWillChange &&
+        nextStatus?.name === 'Ready to pick up' && {
+          fulfillmentMethod:
+            current.estimate.installationJob &&
+            current.estimate.installationJob.status !==
+              InstallationJobStatus.CANCELED
+              ? OrderFulfillmentMethod.INSTALLATION_DELIVERY
+              : OrderFulfillmentMethod.UNDECIDED,
+          fulfillmentSelectedAt:
+            current.estimate.installationJob &&
+            current.estimate.installationJob.status !==
+              InstallationJobStatus.CANCELED
+              ? new Date()
+              : null,
+          pickupCompletedAt: null,
+        }),
     };
 
     const updated = await this.prisma.order.update({
@@ -262,7 +288,7 @@ export class OrdersService {
       include: {
         status: true,
         estimate: { include: { user: true } },
-        user: true,
+        user: { include: { role: true } },
         payment: true,
         extraCharges: {
           orderBy: { sequence: 'asc' },
@@ -270,6 +296,10 @@ export class OrdersService {
             lines: { orderBy: { sortOrder: 'asc' } },
             payment: true,
           },
+        },
+        deliveries: {
+          orderBy: { sequence: 'asc' },
+          include: { payment: true },
         },
       },
     });
@@ -620,11 +650,18 @@ export class OrdersService {
       return this.findAll();
     }
 
-    return this.prisma.order.findMany({
+    const orders = await this.prisma.order.findMany({
       where: { userId: user.id },
       include: orderDetailsInclude,
       orderBy: { date: 'desc' },
     });
+    return orders.map((order) => ({
+      ...order,
+      deliveries: order.deliveries.map((delivery) => ({
+        ...delivery,
+        internalReason: null,
+      })),
+    }));
   }
 
   async findOneForUser(id: number, user: AuthUser) {
@@ -643,6 +680,12 @@ export class OrdersService {
       throw new NotFoundException(`Order with ID #${id} not found.`);
     }
 
-    return order;
+    return {
+      ...order,
+      deliveries: order.deliveries.map((delivery) => ({
+        ...delivery,
+        internalReason: null,
+      })),
+    };
   }
 }

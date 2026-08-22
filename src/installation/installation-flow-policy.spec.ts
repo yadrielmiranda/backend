@@ -124,7 +124,8 @@ describe("installation flow policy", () => {
   it("keeps manual order transitions sequential and reserves installation states", () => {
     expect(nextManualOrderStatus("Pending")).toBe("In production");
     expect(nextManualOrderStatus("In production")).toBe("Ready to pick up");
-    expect(nextManualOrderStatus("Ready to pick up")).toBe("Delivered");
+    expect(nextManualOrderStatus("Ready to pick up")).toBeNull();
+    expect(nextManualOrderStatus("Picked up")).toBeNull();
     expect(nextManualOrderStatus("Delivered")).toBeNull();
     expect(nextManualOrderStatus("Installation in progress")).toBeNull();
   });

@@ -1,5 +1,6 @@
 import {
   InstallationAppointmentStatus,
+  DeliveryStatus,
   InstallationJobStatus,
   InstallationPermitStatus,
   InstallationQuoteStatus,
@@ -217,5 +218,48 @@ describe('Installation payment effects', () => {
     );
 
     expect(tx.orderExtraCharge.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes a paid delivery ready to schedule only once', async () => {
+    const paidAt = new Date('2026-08-22T18:00:00Z');
+    const tx = {
+      orderDelivery: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: 22,
+            status: DeliveryStatus.PAYMENT_DUE,
+            paidAt: null,
+          })
+          .mockResolvedValueOnce({
+            id: 22,
+            status: DeliveryStatus.READY_TO_SCHEDULE,
+            paidAt,
+          }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const payment = {
+      type: PaymentType.DELIVERY,
+      installationJobId: null,
+      extraChargeId: null,
+      deliveryId: 22,
+    };
+
+    await expect(workflow.markPaymentPaid(tx as never, payment)).resolves.toBe(
+      true,
+    );
+    await expect(workflow.markPaymentPaid(tx as never, payment)).resolves.toBe(
+      false,
+    );
+
+    expect(tx.orderDelivery.update).toHaveBeenCalledTimes(1);
+    expect(tx.orderDelivery.update).toHaveBeenCalledWith({
+      where: { id: 22 },
+      data: {
+        status: DeliveryStatus.READY_TO_SCHEDULE,
+        paidAt: expect.any(Date),
+      },
+    });
   });
 });

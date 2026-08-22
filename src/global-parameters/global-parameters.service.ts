@@ -28,6 +28,24 @@ export class GlobalParametersService {
       throw new BadRequestException('Invalid numeric value.');
     }
 
+    if (
+      key === GlobalParameterKey.DELIVERY_BASE_PRICE &&
+      dec.lte(0)
+    ) {
+      throw new BadRequestException(
+        'Delivery base price must be greater than zero.',
+      );
+    }
+    if (
+      (key === GlobalParameterKey.DELIVERY_INCLUDED_MILES ||
+        key === GlobalParameterKey.DELIVERY_ADDITIONAL_MILE_PRICE) &&
+      dec.lt(0)
+    ) {
+      throw new BadRequestException(
+        'Delivery miles and additional-mile price cannot be negative.',
+      );
+    }
+
     try {
       return await this.prisma.globalParameter.update({
         where: { key },

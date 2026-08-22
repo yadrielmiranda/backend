@@ -41,6 +41,7 @@ import { LinearPricingRulesModule } from "./linear-pricing-rules/linear-pricing-
 import { ScheduleModule } from '@nestjs/schedule';
 import { InstallationModule } from './installation/installation.module';
 import { PrivacyModule } from './privacy/privacy.module';
+import { DeliveriesModule } from './deliveries/deliveries.module';
 
 @Module({
   imports: [
@@ -83,6 +84,7 @@ import { PrivacyModule } from './privacy/privacy.module';
     ConfigCategoriesModule,
     LinearPricingRulesModule,
     InstallationModule,
+    DeliveriesModule,
   ],
   controllers: [AppController],
   providers: [
