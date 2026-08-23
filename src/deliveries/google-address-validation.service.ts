@@ -57,7 +57,6 @@ const criticalComponents = new Set([
   'locality',
   'administrative_area_level_1',
   'postal_code',
-  'subpremise',
 ]);
 
 @Injectable()
@@ -133,15 +132,19 @@ export class GoogleAddressValidationService {
     const dpvConfirmation = result?.uspsData?.dpvConfirmation;
 
     const unitWasEntered = verdict.inputGranularity === 'SUB_PREMISE';
-    const needsUnit =
-      !unitWasEntered &&
-      (missing.includes('subpremise') ||
-        dpvConfirmation === 'D' ||
-        dpvConfirmation === 'S' ||
-        verdict.possibleNextAction === 'CONFIRM_ADD_SUBPREMISES');
     const missingStreet = missing.some((component) =>
       missingStreetComponents.has(component),
     );
+    const postalCodeNeedsCorrection =
+      missing.includes('postal_code') ||
+      unconfirmed.includes('postal_code') ||
+      components.some(
+        (component) =>
+          component.componentType === 'postal_code' &&
+          (component.replaced === true ||
+            (component.confirmationLevel !== undefined &&
+              component.confirmationLevel !== 'CONFIRMED')),
+      );
     const missingCoreComponent = missing.some(
       (component) => component !== 'subpremise',
     );
@@ -191,15 +194,15 @@ export class GoogleAddressValidationService {
         !placeId,
     );
 
-    if (needsUnit || hasBlockingSignal) {
-      if (needsUnit) {
-        throw new BadRequestException(
-          'Add or correct the apartment, suite, or unit number and try again.',
-        );
-      }
+    if (hasBlockingSignal) {
       if (missingStreet) {
         throw new BadRequestException(
           'Enter a complete street address, including the street number, and try again.',
+        );
+      }
+      if (postalCodeNeedsCorrection) {
+        throw new BadRequestException(
+          'The ZIP code does not match this street address. Enter the correct ZIP code and try again.',
         );
       }
       throw new BadRequestException(

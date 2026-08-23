@@ -105,7 +105,7 @@ describe('GoogleAddressValidationService', () => {
     );
   });
 
-  it('requires the customer to correct an address that was changed', async () => {
+  it('identifies a ZIP code that Google replaced', async () => {
     post.mockReturnValue(
       of({
         data: {
@@ -139,11 +139,11 @@ describe('GoogleAddressValidationService', () => {
     );
 
     await expect(service.validateDeliveryAddress(input)).rejects.toThrow(
-      'We could not verify the address exactly as entered',
+      'The ZIP code does not match this street address',
     );
   });
 
-  it('asks for a missing apartment or unit number', async () => {
+  it('accepts a verified building address when apartment or unit is omitted', async () => {
     post.mockReturnValue(
       of({
         data: {
@@ -165,9 +165,46 @@ describe('GoogleAddressValidationService', () => {
       }),
     );
 
-    await expect(service.validateDeliveryAddress(input)).rejects.toThrow(
-      'Add or correct the apartment, suite, or unit number',
+    await expect(service.validateDeliveryAddress(input)).resolves.toEqual({
+      ...input,
+      placeId: 'apartment-place-id',
+    });
+  });
+
+  it('reports the wrong ZIP before an optional missing apartment', async () => {
+    const wrongZipInput = { ...input, postalCode: '33172' };
+    post.mockReturnValue(
+      of({
+        data: {
+          result: {
+            verdict: {
+              inputGranularity: 'PREMISE',
+              validationGranularity: 'PREMISE',
+              addressComplete: false,
+              hasReplacedComponents: true,
+              possibleNextAction: 'CONFIRM_ADD_SUBPREMISES',
+            },
+            address: {
+              formattedAddress: '7415 SW 153rd Ct, Miami, FL 33193, USA',
+              missingComponentTypes: ['subpremise'],
+              addressComponents: [
+                {
+                  componentType: 'postal_code',
+                  confirmationLevel: 'CONFIRMED',
+                  replaced: true,
+                },
+              ],
+            },
+            geocode: { placeId: 'apartment-place-id' },
+            uspsData: { dpvConfirmation: 'D' },
+          },
+        },
+      }),
     );
+
+    await expect(
+      service.validateDeliveryAddress(wrongZipInput),
+    ).rejects.toThrow('The ZIP code does not match this street address');
   });
 
   it('accepts a valid premise when the entered apartment is only normalized', async () => {
