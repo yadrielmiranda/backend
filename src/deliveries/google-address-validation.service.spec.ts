@@ -118,6 +118,13 @@ describe('GoogleAddressValidationService', () => {
             },
             address: {
               formattedAddress: '100 Corrected St, Miami, FL 33172, USA',
+              addressComponents: [
+                {
+                  componentType: 'postal_code',
+                  confirmationLevel: 'CONFIRMED',
+                  replaced: true,
+                },
+              ],
               postalAddress: {
                 addressLines: ['100 Corrected St'],
                 locality: 'Miami',
@@ -142,6 +149,7 @@ describe('GoogleAddressValidationService', () => {
         data: {
           result: {
             verdict: {
+              inputGranularity: 'PREMISE',
               validationGranularity: 'PREMISE',
               addressComplete: false,
               possibleNextAction: 'CONFIRM_ADD_SUBPREMISES',
@@ -160,6 +168,64 @@ describe('GoogleAddressValidationService', () => {
     await expect(service.validateDeliveryAddress(input)).rejects.toThrow(
       'Add or correct the apartment, suite, or unit number',
     );
+  });
+
+  it('accepts a valid premise when the entered apartment is only normalized', async () => {
+    const apartmentInput = {
+      street: '7415 Southwest 153rd Court apt 108',
+      city: 'Miami',
+      state: 'FL',
+      postalCode: '33193',
+    };
+    post.mockReturnValue(
+      of({
+        data: {
+          result: {
+            verdict: {
+              inputGranularity: 'SUB_PREMISE',
+              validationGranularity: 'PREMISE',
+              addressComplete: true,
+              hasUnconfirmedComponents: true,
+              hasInferredComponents: true,
+              hasSpellCorrectedComponents: true,
+              possibleNextAction: 'CONFIRM',
+            },
+            address: {
+              formattedAddress:
+                '7415 SW 153rd Ct Apt 108, Miami, FL 33193, USA',
+              unconfirmedComponentTypes: ['subpremise'],
+              addressComponents: [
+                {
+                  componentType: 'street_number',
+                  confirmationLevel: 'CONFIRMED',
+                },
+                {
+                  componentType: 'route',
+                  confirmationLevel: 'CONFIRMED',
+                  spellCorrected: true,
+                },
+                {
+                  componentType: 'subpremise',
+                  confirmationLevel: 'UNCONFIRMED_BUT_PLAUSIBLE',
+                },
+                {
+                  componentType: 'postal_code',
+                  confirmationLevel: 'CONFIRMED',
+                },
+              ],
+            },
+            geocode: { placeId: 'verified-apartment-building' },
+          },
+        },
+      }),
+    );
+
+    await expect(
+      service.validateDeliveryAddress(apartmentInput),
+    ).resolves.toEqual({
+      ...apartmentInput,
+      placeId: 'verified-apartment-building',
+    });
   });
 
   it('treats an incomplete provider response as unavailable', async () => {

@@ -13,6 +13,7 @@ import type { DeliveryRouteAddress } from './google-routes.service';
 type GoogleAddressValidationResponse = {
   result?: {
     verdict?: {
+      inputGranularity?: string;
       validationGranularity?: string;
       addressComplete?: boolean;
       hasUnconfirmedComponents?: boolean;
@@ -26,6 +27,14 @@ type GoogleAddressValidationResponse = {
       missingComponentTypes?: string[];
       unconfirmedComponentTypes?: string[];
       unresolvedTokens?: string[];
+      addressComponents?: Array<{
+        componentType?: string;
+        confirmationLevel?: string;
+        inferred?: boolean;
+        replaced?: boolean;
+        spellCorrected?: boolean;
+        unexpected?: boolean;
+      }>;
     };
     geocode?: {
       placeId?: string;
@@ -41,8 +50,15 @@ export type ValidatedDeliveryAddress = DeliveryRouteAddress & {
 };
 
 const acceptedGranularities = new Set(['PREMISE', 'SUB_PREMISE']);
-const reviewActions = new Set(['FIX', 'CONFIRM', 'CONFIRM_ADD_SUBPREMISES']);
 const missingStreetComponents = new Set(['street_number', 'route']);
+const criticalComponents = new Set([
+  'street_number',
+  'route',
+  'locality',
+  'administrative_area_level_1',
+  'postal_code',
+  'subpremise',
+]);
 
 @Injectable()
 export class GoogleAddressValidationService {
@@ -113,33 +129,69 @@ export class GoogleAddressValidationService {
     const missing = address?.missingComponentTypes ?? [];
     const unconfirmed = address?.unconfirmedComponentTypes ?? [];
     const unresolved = address?.unresolvedTokens ?? [];
+    const components = address?.addressComponents ?? [];
     const dpvConfirmation = result?.uspsData?.dpvConfirmation;
 
+    const unitWasEntered = verdict.inputGranularity === 'SUB_PREMISE';
     const needsUnit =
-      missing.includes('subpremise') ||
-      unconfirmed.includes('subpremise') ||
-      dpvConfirmation === 'D' ||
-      dpvConfirmation === 'S' ||
-      verdict?.possibleNextAction === 'CONFIRM_ADD_SUBPREMISES';
+      !unitWasEntered &&
+      (missing.includes('subpremise') ||
+        dpvConfirmation === 'D' ||
+        dpvConfirmation === 'S' ||
+        verdict.possibleNextAction === 'CONFIRM_ADD_SUBPREMISES');
     const missingStreet = missing.some((component) =>
       missingStreetComponents.has(component),
     );
-    const hasReviewSignal = Boolean(
-      !verdict?.addressComplete ||
-        !acceptedGranularities.has(verdict.validationGranularity ?? '') ||
-        verdict.hasUnconfirmedComponents ||
-        verdict.hasInferredComponents ||
-        verdict.hasReplacedComponents ||
-        verdict.hasSpellCorrectedComponents ||
-        reviewActions.has(verdict.possibleNextAction ?? '') ||
-        missing.length ||
-        unconfirmed.length ||
+    const missingCoreComponent = missing.some(
+      (component) => component !== 'subpremise',
+    );
+    const unconfirmedCoreComponent = unconfirmed.some(
+      (component) =>
+        criticalComponents.has(component) &&
+        !(component === 'subpremise' && unitWasEntered),
+    );
+    const replacedCriticalComponent = components.some(
+      (component) =>
+        component.replaced === true &&
+        criticalComponents.has(component.componentType ?? ''),
+    );
+    const unconfirmedCriticalComponent = components.some(
+      (component) =>
+        criticalComponents.has(component.componentType ?? '') &&
+        component.confirmationLevel !== undefined &&
+        component.confirmationLevel !== 'CONFIRMED' &&
+        !(
+          component.componentType === 'subpremise' &&
+          unitWasEntered &&
+          component.confirmationLevel === 'UNCONFIRMED_BUT_PLAUSIBLE'
+        ),
+    );
+    const replacementDetailsMissing =
+      verdict.hasReplacedComponents === true &&
+      !components.some((component) => component.replaced === true);
+    const unconfirmedDetailsMissing =
+      verdict.hasUnconfirmedComponents === true &&
+      unconfirmed.length === 0 &&
+      !components.some(
+        (component) =>
+          component.confirmationLevel !== undefined &&
+          component.confirmationLevel !== 'CONFIRMED',
+      );
+    const hasBlockingSignal = Boolean(
+      !acceptedGranularities.has(verdict.validationGranularity ?? '') ||
+        verdict.possibleNextAction === 'FIX' ||
+        missingCoreComponent ||
+        unconfirmedCoreComponent ||
+        replacedCriticalComponent ||
+        unconfirmedCriticalComponent ||
+        replacementDetailsMissing ||
+        unconfirmedDetailsMissing ||
         unresolved.length ||
         dpvConfirmation === 'N' ||
         !placeId,
     );
 
-    if (hasReviewSignal) {
+    if (needsUnit || hasBlockingSignal) {
       if (needsUnit) {
         throw new BadRequestException(
           'Add or correct the apartment, suite, or unit number and try again.',
