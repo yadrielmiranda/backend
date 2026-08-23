@@ -26,6 +26,7 @@ import {
   GoogleRoutesService,
   type DeliveryRouteAddress,
 } from './google-routes.service';
+import { GoogleAddressValidationService } from './google-address-validation.service';
 import { CreateDeliveryDto, ScheduleDeliveryDto } from './dto/delivery.dto';
 import { deliveryToPickupBlockReason } from './delivery-selection-policy';
 
@@ -96,6 +97,7 @@ export class DeliveriesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly routes: GoogleRoutesService,
+    private readonly addressValidation: GoogleAddressValidationService,
     private readonly notifications: NotificationsService,
     private readonly logs: LogsService,
   ) {}
@@ -125,12 +127,14 @@ export class DeliveriesService {
     }
 
     if (hasAnySupplied) {
-      return {
+      const destination = {
         street: dto.street!.trim(),
         city: dto.city!.trim(),
         state: dto.state!.trim().toUpperCase(),
         postalCode: dto.postalCode!.trim(),
       };
+      this.assertUsAddressFormat(destination);
+      return destination;
     }
 
     const dealerCustomer = order.user.role.name === 'dealer';
@@ -158,12 +162,25 @@ export class DeliveriesService {
         'Complete the delivery address before calculating delivery.',
       );
     }
-    return {
+    const resolved = {
       street: destination.street,
       city: destination.city,
       state: destination.state.toUpperCase(),
       postalCode: destination.postalCode,
     };
+    this.assertUsAddressFormat(resolved);
+    return resolved;
+  }
+
+  private assertUsAddressFormat(address: DeliveryRouteAddress) {
+    if (!/^[A-Z]{2}$/.test(address.state)) {
+      throw new BadRequestException(
+        'Enter the two-letter state code, for example FL.',
+      );
+    }
+    if (!/^\d{5}(?:-\d{4})?$/.test(address.postalCode)) {
+      throw new BadRequestException('Enter a valid 5-digit ZIP code or ZIP+4.');
+    }
   }
 
   private assertInstallationPaid(order: DeliveryOrder) {
@@ -437,7 +454,7 @@ export class DeliveriesService {
       );
     }
 
-    const destination = this.resolveDestination(order, dto);
+    const requestedDestination = this.resolveDestination(order, dto);
     const [company, parameters] = await Promise.all([
       this.prisma.branding.findFirst({
         where: { type: BrandingType.COMPANY, isActive: true },
@@ -488,6 +505,10 @@ export class DeliveriesService {
       taxable && !order.user.isTaxExempt
         ? (byKey.get(GlobalParameterKey.SALES_TAX)?.toString() ?? '0')
         : '0';
+    const destination =
+      await this.addressValidation.validateDeliveryAddress(
+        requestedDestination,
+      );
     const route = await this.routes.calculateDrivingRoute(origin, destination);
     let pricing;
     try {

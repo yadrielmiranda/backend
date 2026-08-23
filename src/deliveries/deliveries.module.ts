@@ -6,11 +6,16 @@ import { LogsModule } from '@/logs/logs.module';
 import { DeliveriesController } from './deliveries.controller';
 import { DeliveriesService } from './deliveries.service';
 import { GoogleRoutesService } from './google-routes.service';
+import { GoogleAddressValidationService } from './google-address-validation.service';
 
 @Module({
   imports: [HttpModule, PrismaModule, NotificationsModule, LogsModule],
   controllers: [DeliveriesController],
-  providers: [DeliveriesService, GoogleRoutesService],
+  providers: [
+    DeliveriesService,
+    GoogleRoutesService,
+    GoogleAddressValidationService,
+  ],
   exports: [DeliveriesService],
 })
 export class DeliveriesModule {}

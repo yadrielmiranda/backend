@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -10,6 +10,10 @@ export type DeliveryRouteAddress = {
   postalCode: string;
 };
 
+export type DeliveryRouteDestination = DeliveryRouteAddress & {
+  placeId: string;
+};
+
 type GoogleRoutesResponse = {
   routes?: Array<{ distanceMeters?: number; duration?: string }>;
 };
@@ -19,6 +23,8 @@ const formatAddress = (address: DeliveryRouteAddress) =>
 
 @Injectable()
 export class GoogleRoutesService {
+  private readonly logger = new Logger(GoogleRoutesService.name);
+
   constructor(
     private readonly http: HttpService,
     private readonly config: ConfigService,
@@ -26,12 +32,13 @@ export class GoogleRoutesService {
 
   async calculateDrivingRoute(
     origin: DeliveryRouteAddress,
-    destination: DeliveryRouteAddress,
+    destination: DeliveryRouteDestination,
   ) {
     const apiKey = this.config.get<string>('GOOGLE_ROUTES_API_KEY')?.trim();
     if (!apiKey) {
+      this.logger.error('GOOGLE_ROUTES_API_KEY is not configured.');
       throw new BadRequestException(
-        'GOOGLE_ROUTES_API_KEY is not configured on the backend.',
+        'Delivery route calculation is temporarily unavailable. Please contact support.',
       );
     }
 
@@ -41,7 +48,7 @@ export class GoogleRoutesService {
           'https://routes.googleapis.com/directions/v2:computeRoutes',
           {
             origin: { address: formatAddress(origin) },
-            destination: { address: formatAddress(destination) },
+            destination: { placeId: destination.placeId },
             travelMode: 'DRIVE',
             routingPreference: 'TRAFFIC_UNAWARE',
             computeAlternativeRoutes: false,
@@ -49,6 +56,7 @@ export class GoogleRoutesService {
             units: 'IMPERIAL',
           },
           {
+            timeout: 10_000,
             headers: {
               'Content-Type': 'application/json',
               'X-Goog-Api-Key': apiKey,
@@ -72,10 +80,11 @@ export class GoogleRoutesService {
       };
     } catch (error) {
       if (error instanceof BadRequestException) throw error;
+      this.logger.error(
+        `Google Routes request failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
       throw new BadRequestException(
-        `Google Routes could not calculate a driving route between the company and delivery addresses. ${
-          error instanceof Error ? error.message : ''
-        }`.trim(),
+        'A driving route could not be calculated for the verified delivery address. Please contact support.',
       );
     }
   }
