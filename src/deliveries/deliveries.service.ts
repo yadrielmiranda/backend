@@ -27,6 +27,7 @@ import {
   type DeliveryRouteAddress,
 } from './google-routes.service';
 import { CreateDeliveryDto, ScheduleDeliveryDto } from './dto/delivery.dto';
+import { deliveryToPickupBlockReason } from './delivery-selection-policy';
 
 const deliveryInclude = {
   payment: true,
@@ -202,29 +203,119 @@ export class DeliveriesService {
         'This order already includes delivery with its installation.',
       );
     }
-    if (order.deliveries.some((delivery) => activeDelivery(delivery.status))) {
+    const activeDeliveries = order.deliveries.filter((delivery) =>
+      activeDelivery(delivery.status),
+    );
+    if (activeDeliveries.length > 1) {
       throw new BadRequestException(
-        'Pickup cannot replace an existing delivery charge. Contact an administrator.',
+        'Pickup cannot replace multiple active delivery charges. Contact an administrator.',
       );
     }
 
-    const updated = await this.prisma.order.update({
-      where: { id: orderId },
-      data: {
-        fulfillmentMethod: OrderFulfillmentMethod.CUSTOMER_PICKUP,
-        fulfillmentSelectedAt: new Date(),
-        pickupCompletedAt: null,
+    const delivery = activeDeliveries[0] ?? null;
+    if (delivery) {
+      const blockReason = deliveryToPickupBlockReason(delivery);
+      if (blockReason === 'ACTIVE_CHECKOUT') {
+        throw new BadRequestException(
+          'Cancel the active delivery checkout before changing this order to pickup.',
+        );
+      }
+      if (blockReason === 'ALREADY_PAID') {
+        throw new BadRequestException(
+          'A paid delivery cannot be changed to pickup automatically. Contact an administrator about a refund or adjustment.',
+        );
+      }
+      if (blockReason === 'NOT_STANDARD') {
+        throw new BadRequestException(
+          'Only an unpaid standard delivery can be replaced by customer pickup.',
+        );
+      }
+      if (blockReason === 'NOT_AWAITING_PAYMENT') {
+        throw new BadRequestException(
+          'Only a delivery awaiting payment can be replaced by customer pickup.',
+        );
+      }
+    }
+
+    const selectedAt = new Date();
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        let canceledDelivery = null;
+        if (delivery) {
+          const currentDelivery = await tx.orderDelivery.findUnique({
+            where: { id: delivery.id },
+            include: deliveryInclude,
+          });
+          if (!currentDelivery) {
+            throw new BadRequestException(
+              'Delivery no longer exists. Refresh the order and try again.',
+            );
+          }
+          const currentBlockReason =
+            deliveryToPickupBlockReason(currentDelivery);
+          if (currentBlockReason === 'ACTIVE_CHECKOUT') {
+            throw new BadRequestException(
+              'Cancel the active delivery checkout before changing this order to pickup.',
+            );
+          }
+          if (currentBlockReason !== null) {
+            throw new BadRequestException(
+              'Delivery changed while pickup was being selected. Refresh the order and try again.',
+            );
+          }
+
+          const canceled = await tx.orderDelivery.updateMany({
+            where: {
+              id: delivery.id,
+              status: DeliveryStatus.PAYMENT_DUE,
+            },
+            data: {
+              status: DeliveryStatus.CANCELED,
+              canceledAt: selectedAt,
+            },
+          });
+          if (canceled.count !== 1) {
+            throw new BadRequestException(
+              'Delivery changed while pickup was being selected. Refresh the order and try again.',
+            );
+          }
+          canceledDelivery = await tx.orderDelivery.findUnique({
+            where: { id: delivery.id },
+            include: deliveryInclude,
+          });
+        }
+
+        const updatedOrder = await tx.order.update({
+          where: { id: orderId },
+          data: {
+            fulfillmentMethod: OrderFulfillmentMethod.CUSTOMER_PICKUP,
+            fulfillmentSelectedAt: selectedAt,
+            pickupCompletedAt: null,
+          },
+          include: { status: true },
+        });
+        return { order: updatedOrder, canceledDelivery };
       },
-      include: { status: true },
-    });
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      },
+    );
     await this.logs.log({
       action: 'UPDATE',
       entityType: 'Order',
       entityId: orderId,
       userId: actor.id,
       message: `Customer pickup selected for Order #${order.number}.`,
-      before: { fulfillmentMethod: order.fulfillmentMethod },
-      after: { fulfillmentMethod: updated.fulfillmentMethod },
+      before: {
+        fulfillmentMethod: order.fulfillmentMethod,
+        deliveryId: delivery?.id ?? null,
+        deliveryStatus: delivery?.status ?? null,
+      },
+      after: {
+        fulfillmentMethod: result.order.fulfillmentMethod,
+        deliveryId: result.canceledDelivery?.id ?? null,
+        deliveryStatus: result.canceledDelivery?.status ?? null,
+      },
     });
     if (!isStaff(getRoleName(actor))) {
       await this.notifications.createAndSendToRoles(['admin'], {
@@ -234,7 +325,7 @@ export class DeliveriesService {
         dedupeKey: `order:${order.id}:pickup:selected:admin`,
       });
     }
-    return updated;
+    return result;
   }
 
   async completePickup(orderId: number, actor: AuthUser) {
