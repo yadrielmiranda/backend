@@ -35,10 +35,13 @@ export function calculateDeliveryPricing(input: DeliveryPricingInput) {
     throw new Error('Tax rate must be a decimal fraction between 0 and 1.');
   }
 
-  const roadMiles = new Decimal(input.distanceMeters).div(METERS_PER_MILE);
-  const additionalMiles = Decimal.max(0, roadMiles.minus(includedMiles))
-    .ceil()
-    .toNumber();
+  const roadMiles = new Decimal(input.distanceMeters)
+    .div(METERS_PER_MILE)
+    .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  const additionalMiles = Decimal.max(
+    0,
+    roadMiles.minus(includedMiles),
+  ).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
   const subtotal = basePrice
     .add(additionalMilePrice.mul(additionalMiles))
     .add(tollAmount)

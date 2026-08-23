@@ -557,7 +557,9 @@ export class DeliveriesService {
           additionalMilePriceSnapshot: new Prisma.Decimal(
             pricing.additionalMilePrice.toFixed(2),
           ),
-          additionalMiles: pricing.additionalMiles,
+          additionalMiles: new Prisma.Decimal(
+            pricing.additionalMiles.toFixed(2),
+          ),
           tollAmount: new Prisma.Decimal(pricing.tollAmount.toFixed(2)),
           taxable,
           taxRateSnapshot: new Prisma.Decimal(pricing.taxRate.toFixed(4)),
@@ -597,7 +599,7 @@ export class DeliveriesService {
         type,
         status: delivery.status,
         roadMiles: delivery.roadMiles.toString(),
-        additionalMiles: delivery.additionalMiles,
+        additionalMiles: delivery.additionalMiles.toString(),
         total: delivery.total.toString(),
       },
     });

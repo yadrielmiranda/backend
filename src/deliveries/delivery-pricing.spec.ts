@@ -12,11 +12,11 @@ describe('delivery pricing', () => {
       additionalMilePrice: 5,
     });
 
-    expect(result.additionalMiles).toBe(0);
+    expect(result.additionalMiles.toFixed(2)).toBe('0.00');
     expect(result.total.toFixed(2)).toBe('200.00');
   });
 
-  it('rounds only additional one-way miles upward', () => {
+  it('prorates the exact additional one-way mileage', () => {
     const result = calculateDeliveryPricing({
       distanceMeters: metersForMiles('30.01'),
       basePrice: 200,
@@ -24,8 +24,22 @@ describe('delivery pricing', () => {
       additionalMilePrice: 5,
     });
 
-    expect(result.additionalMiles).toBe(1);
-    expect(result.total.toFixed(2)).toBe('205.00');
+    expect(result.additionalMiles.toFixed(2)).toBe('0.01');
+    expect(result.total.toFixed(2)).toBe('200.05');
+  });
+
+  it('charges 5.60 additional miles for a 55.60-mile route', () => {
+    const result = calculateDeliveryPricing({
+      distanceMeters: metersForMiles('55.6'),
+      basePrice: 500,
+      includedMiles: 50,
+      additionalMilePrice: 5,
+    });
+
+    expect(result.roadMiles.toFixed(2)).toBe('55.60');
+    expect(result.additionalMiles.toFixed(2)).toBe('5.60');
+    expect(result.subtotal.toFixed(2)).toBe('528.00');
+    expect(result.total.toFixed(2)).toBe('528.00');
   });
 
   it('keeps the fixed formula when configuration values change', () => {
@@ -38,9 +52,9 @@ describe('delivery pricing', () => {
       taxRate: '0.07',
     });
 
-    expect(result.additionalMiles).toBe(3);
-    expect(result.subtotal.toFixed(2)).toBe('544.00');
-    expect(result.taxAmount.toFixed(2)).toBe('38.08');
-    expect(result.total.toFixed(2)).toBe('582.08');
+    expect(result.additionalMiles.toFixed(2)).toBe('2.20');
+    expect(result.subtotal.toFixed(2)).toBe('534.40');
+    expect(result.taxAmount.toFixed(2)).toBe('37.41');
+    expect(result.total.toFixed(2)).toBe('571.81');
   });
 });

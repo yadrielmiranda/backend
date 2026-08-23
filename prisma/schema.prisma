@@ -1908,7 +1908,7 @@ model OrderDelivery {
   basePriceSnapshot           Decimal @db.Decimal(12, 2)
   includedMilesSnapshot       Decimal @db.Decimal(10, 2)
   additionalMilePriceSnapshot Decimal @db.Decimal(12, 2)
-  additionalMiles             Int
+  additionalMiles             Decimal @db.Decimal(10, 2)
   tollAmount                  Decimal @default(0) @db.Decimal(12, 2)
   taxable                     Boolean @default(false)
   taxRateSnapshot             Decimal @default(0) @db.Decimal(10, 4)
