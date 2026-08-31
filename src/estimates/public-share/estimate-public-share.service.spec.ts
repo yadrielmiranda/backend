@@ -115,6 +115,27 @@ function buildService(estimate = sharedEstimateFixture()) {
     branding: {
       findFirst: jest.fn().mockResolvedValue({ name: 'Dealer Windows' }),
     },
+    sysConf: {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          idSystem: 1,
+          idConfig: 1,
+          dimensionMode: 'STANDARD',
+        },
+      ]),
+    },
+    brandCoating: {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          idBrand: 1,
+          idCoating: 1,
+          surchargeEnabled: false,
+        },
+      ]),
+    },
+    brandPrivacy: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     notification: {
       findFirst: jest.fn().mockResolvedValue(null),
     },
@@ -144,6 +165,11 @@ describe('EstimatePublicShareService customer pricing modes', () => {
     expect(result.publicPricingMode).toBe('detailed');
     expect(result.customerTotalPayable).toBe('280.29');
     expect(result.pieces[0].customerPrice).toBe('261.95');
+    expect(result.pieces[0].diagramMetadata).toEqual({
+      dimensionMode: 'STANDARD',
+      hasCoating: false,
+      hasPrivacy: false,
+    });
     expect(result.installationSummary?.additionalServices[0].amount).toBe(
       '0.00',
     );

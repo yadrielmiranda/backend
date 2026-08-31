@@ -38,6 +38,7 @@ const estimateFixture = (installationIncluded = true) =>
     branding: { name: 'Dealer Windows' },
     pieces: [
       {
+        id: 77,
         mark: 'F1',
         qty: 1,
         width: 35,
@@ -47,6 +48,7 @@ const estimateFixture = (installationIncluded = true) =>
         bran: { name: 'Eco Windows' },
         syst: { name: 'Series 100' },
         conf: { conf: 'Equal Lites' },
+        fColor: { color: 'Bronze' },
         cryst: { glass: '3/16 + 3/16' },
         tin: { color: 'Clear' },
         coat: { name: 'None' },
@@ -179,6 +181,12 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).not.toContain('Estimated material profitability');
     expect(html).not.toContain('Estimated factory rate');
     expect(html).not.toContain('Production cost');
+    expect(html).toContain('Product Details');
+    expect(html).toContain('Frame Color: Bronze');
+    expect(html).toContain('Unit Price');
+    expect(html).toContain('Subtotal');
+    expect(html).not.toContain('Regular');
+    expect(html).not.toContain('50% OFF');
   });
 
   it('renders external dealer service prices for the customer while hiding company cost', () => {
@@ -380,14 +388,14 @@ describe('EstimatePdfHtmlBuilder', () => {
     );
   });
 
-  it('shows only the not-included installation row when there is no installation', () => {
+  it('omits the installation section when there is no installation', () => {
     const html = EstimatePdfHtmlBuilder.build(
       estimateFixture(false),
       'dealer_public',
     );
 
-    expect(html).toContain('Installation &amp; services');
-    expect(html).toContain('Not included');
+    expect(html).not.toContain('Installation &amp; services');
+    expect(html).not.toContain('Not included');
     expect(html).not.toContain('Additional services');
     expect(html).not.toContain('Permit service');
     expect(html).not.toContain('City Fee');
@@ -419,7 +427,7 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).toContain('Project scope');
     expect(html).toContain('Current Project Total');
     expect(html).toContain('$1,805.29');
-    expect(html).not.toContain('Unit price');
+    expect(html).not.toContain('Unit Price');
     expect(html).not.toContain('Material subtotal');
     expect(html).not.toContain('Sales Tax');
     expect(html).not.toContain('$261.95');
@@ -427,28 +435,81 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).not.toContain('$1,000.00');
   });
 
-  it('keeps installation explicitly excluded in a project-total PDF', () => {
+  it('omits an empty scope section in a project-total PDF', () => {
     const html = EstimatePdfHtmlBuilder.build(
       estimateFixture(false),
       'dealer_public_total',
     );
 
-    expect(html).toContain('Installation');
-    expect(html).toContain('Not included');
+    expect(html).not.toContain('Installation');
+    expect(html).not.toContain('Not included');
     expect(html).toContain('Project Total');
     expect(html).toContain('$280.29');
     expect(html).not.toContain('Additional services');
     expect(html).not.toContain('Permit service');
   });
 
-  it('includes print fragmentation rules for product rows and repeated headers', () => {
+  it('keeps complete product cards together when printing', () => {
     const html = EstimatePdfHtmlBuilder.build(estimateFixture(), 'admin');
 
-    expect(html).toContain('thead { display: table-header-group; }');
-    expect(html).toContain('.product-row');
+    expect(html).toContain('.product-card');
+    expect(html).toContain('break-inside: avoid-page !important;');
     expect(html).toContain('page-break-inside: avoid !important;');
     expect(html).toContain('Estimated material profitability');
     expect(html).toContain('Estimated factory rate');
+  });
+
+  it('embeds a captured diagram in its matching product card', () => {
+    const diagram = 'data:image/png;base64,ZmFrZQ==';
+    const html = EstimatePdfHtmlBuilder.build(estimateFixture(), 'admin', {
+      '77': diagram,
+    });
+
+    expect(html).toContain(diagram);
+    expect(html).toContain('alt="Diagram for F1"');
+    expect(html).toContain(
+      '<div class="diagram-column"><div class="mark-badge">F1</div><div class="diagram-frame">',
+    );
+    expect(html).not.toContain('Diagram unavailable');
+  });
+
+  it('uses green final-price styling without adding discount copy', () => {
+    const html = EstimatePdfHtmlBuilder.build(
+      estimateFixture(),
+      'dealer_public',
+    );
+
+    expect(html).toContain(
+      '<div class="price-block subtotal-block price-success">',
+    );
+    expect(html).toContain(
+      '<div class="project-total project-total-success keep-together">',
+    );
+    expect(html).toContain('Product illustrations are visual references');
+    expect(html).not.toContain('50% OFF');
+    expect(html).not.toContain('Regular material price');
+  });
+
+  it('does not invent a company name when branding is missing', () => {
+    const estimate = estimateFixture();
+    estimate.branding = null;
+
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+
+    expect(html).not.toContain('<div class="brand-name">Impact Plus</div>');
+    expect(html).toContain('<div class="logo-wrap"></div>');
+  });
+
+  it('uses the item number when a product mark is empty', () => {
+    const estimate = estimateFixture();
+    estimate.pieces[0].mark = ' ';
+    const diagram = 'data:image/png;base64,ZmFrZQ==';
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'admin', {
+      '77': diagram,
+    });
+
+    expect(html).toContain('<div class="mark-badge">#1</div>');
+    expect(html).toContain('alt="Diagram for #1"');
   });
 
   it('keeps the expiration message in the real PDF footer instead of the document flow', () => {

@@ -20,6 +20,7 @@ import {
 } from '../reporting/estimate-installation-summary';
 import type { CustomerReportPricingMode } from '../dto/create-estimate-public-token.dto';
 import { EstimateCustomerChargesService } from '../estimate-customer-charges.service';
+import { attachEstimatePieceDiagramMetadata } from '../reporting/estimate-piece-diagram-metadata';
 
 function numberValue(value: unknown) {
   const parsed = Number(value ?? 0);
@@ -274,9 +275,10 @@ export class EstimatePublicShareService {
 
     await this.notifyDealerPublicEstimateViewed(estimate);
 
-    const branding = await this.resolveBrandingForDealerEstimate(
-      estimate.idUser,
-    );
+    const [branding, pieces] = await Promise.all([
+      this.resolveBrandingForDealerEstimate(estimate.idUser),
+      attachEstimatePieceDiagramMetadata(this.prisma, estimate.pieces),
+    ]);
 
     const fullInstallationSummary = buildEstimateInstallationSummary(
       estimate.installationJob,
@@ -398,7 +400,7 @@ export class EstimatePublicShareService {
 
       branding,
 
-      pieces: estimate.pieces.map((p) => ({
+      pieces: pieces.map((p) => ({
         id: p.id,
         mark: p.mark,
         qty: p.qty,
@@ -408,8 +410,11 @@ export class EstimatePublicShareService {
         heightLeft: p.heightLeft,
         heightRight: p.heightRight,
         legHeight: p.legHeight,
+        sashHeight: p.sashHeight,
+        windowHeight: p.windowHeight,
 
         doorWidth: p.doorWidth,
+        doorHeight: p.doorHeight,
         leftSideliteWidth: p.leftSideliteWidth,
         rightSideliteWidth: p.rightSideliteWidth,
         leftPanels: p.leftPanels,
@@ -428,6 +433,8 @@ export class EstimatePublicShareService {
         idPrivacy: p.idPrivacy,
 
         screen: p.screen,
+        highBottom: p.highBottom,
+        highBottomPercent: p.highBottomPercent,
 
         dpPosPsf: p.dpPosPsf,
         dpNegPsf: p.dpNegPsf,
@@ -451,6 +458,7 @@ export class EstimatePublicShareService {
         reinforcementOption: p.reinforcementOption,
 
         pieceMuntin: p.pieceMuntin,
+        diagramMetadata: p.diagramMetadata,
       })),
     };
   }

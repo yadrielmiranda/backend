@@ -48,6 +48,10 @@ import {
   type EstimateInstallationReportSummary,
 } from './reporting/estimate-installation-summary';
 import {
+  attachEstimatePieceDiagramMetadata,
+  type EstimatePieceDiagramMetadata,
+} from './reporting/estimate-piece-diagram-metadata';
+import {
   EstimateCustomerChargesService,
   type EstimateCustomerChargeSummary,
 } from './estimate-customer-charges.service';
@@ -97,6 +101,7 @@ type PieceWithRelations = Piece & {
       panels: true;
     };
   }> | null;
+  diagramMetadata?: EstimatePieceDiagramMetadata;
 };
 
 // incluyo order para que el front sepa si ya fue ordenado
@@ -724,21 +729,23 @@ export class EstimatesService {
   ) {
     const roleName = estimate?.user?.role?.name ?? null;
 
-    // ✅ dealer => branding propio
+    // comentario en español: el dealer usa su branding; si no existe, usamos Company.
     if (roleName === 'dealer') {
       const dealerId = estimate?.idUser;
-      if (!Number.isFinite(dealerId)) return null;
+      if (Number.isFinite(dealerId)) {
+        const dealerBranding = await (tx as any).branding.findFirst({
+          where: {
+            type: BrandingType.DEALER,
+            userId: dealerId,
+            isActive: true,
+          },
+        });
 
-      return (tx as any).branding.findFirst({
-        where: {
-          type: BrandingType.DEALER,
-          userId: dealerId,
-          isActive: true,
-        },
-      });
+        if (dealerBranding) return dealerBranding;
+      }
     }
 
-    // ✅ resto => company
+    // comentario en español: Company es el branding predeterminado del sistema.
     return (tx as any).branding.findFirst({
       where: {
         type: BrandingType.COMPANY,
@@ -800,10 +807,13 @@ export class EstimatesService {
 
     if (!estimate) return null;
 
-    const branding = await this.resolveBrandingForEstimate(
-      estimate,
-      this.prisma as PrismaTransactionClient,
-    );
+    const [branding, pieces] = await Promise.all([
+      this.resolveBrandingForEstimate(
+        estimate,
+        this.prisma as PrismaTransactionClient,
+      ),
+      attachEstimatePieceDiagramMetadata(this.prisma, estimate.pieces),
+    ]);
 
     const installationSummary = buildEstimateInstallationSummary(
       estimate.installationJob,
@@ -824,6 +834,7 @@ export class EstimatesService {
 
     return {
       ...(estimateResult as any),
+      pieces,
       installationJob,
       installationSummary,
       customerChargesSummary,
@@ -2410,6 +2421,7 @@ export class EstimatesService {
     estimateId: number,
     user: AuthUser,
     view: PdfView,
+    cookieHeader?: string,
   ): Promise<Buffer> {
     const estimate = await this.findOneForUser(estimateId, user);
     const ownerIsDealer =
@@ -2440,6 +2452,7 @@ export class EstimatesService {
       estimate,
       user,
       view,
+      cookieHeader,
     });
   }
 }

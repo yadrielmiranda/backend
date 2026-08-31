@@ -405,6 +405,7 @@ export class EstimatesController {
         id,
         user,
         view,
+        req.headers.cookie,
       );
 
     res.setHeader('Content-Type', 'application/pdf');
