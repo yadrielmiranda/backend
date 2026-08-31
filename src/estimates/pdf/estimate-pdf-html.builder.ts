@@ -842,11 +842,11 @@ export class EstimatePdfHtmlBuilder {
     .piece-system { margin-top: 4px; color: #b91c1c; font-size: 10px; font-weight: 700; }
     .piece-summary { margin-top: 11px; color: #0f172a; font-size: 10px; font-weight: 700; }
     .piece-detail { margin-top: 3px; color: #475569; font-size: 8.5px; line-height: 1.3; }
-    .piece-pricing { display: flex; flex-direction: column; gap: 16px; padding: 12px 11px; border-left: 1px solid #dbe3ee; background: #fff; }
+    .piece-pricing { display: flex; flex-direction: column; justify-content: space-between; gap: 0; padding: 12px 11px; border-left: 1px solid #dbe3ee; background: #fff; }
     .price-block { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
     .price-label { flex: 0 0 auto; color: #64748b; font-size: 8px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
     .price-value { color: #0f172a; font-size: 11px; font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; white-space: nowrap; }
-    .subtotal-block { margin-top: auto; padding-top: 8px; }
+    .subtotal-block { margin-top: 0; padding-top: 0; }
     .price-strong { font-size: 13px; font-weight: 700; }
     .price-success .price-label, .price-success .price-value { color: #07883f; }
     .price-success .price-strong { font-size: 17px; font-weight: 800; }
