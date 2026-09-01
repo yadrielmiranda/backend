@@ -1,7 +1,16 @@
-import type { Branding } from '@prisma/client';
+import {
+  DealerAffiliation,
+  DealerMode,
+  type Branding,
+} from '@prisma/client';
 
 import type { EstimateInstallationReportSummary } from '../reporting/estimate-installation-summary';
 import type { EstimateWithRelations, PdfView } from '../estimates.service';
+import {
+  calculateMaterialFinancials,
+  resolveImpactMarkupRate,
+  resolveMaterialSaleSubtotal,
+} from '../../orders/order-material-financials';
 
 type ReportKind =
   | 'client'
@@ -94,15 +103,30 @@ const estimatedMaterialProfitability = (
   estimate: EstimateWithRelations,
   ownerIsDealer: boolean,
 ) => {
-  const internalDealer =
-    ownerIsDealer && estimate.dealerModeSnapshot === 'INTERNAL';
-  const belongsToImpact =
-    ownerIsDealer && estimate.dealerAffiliationSnapshot === 'IMPACT';
-  const expectedCompanyProfit = roundMoney(
-    internalDealer
-      ? numberValue(estimate.customerPriceT) - numberValue(estimate.priceT)
-      : numberValue(estimate.priceT) - numberValue(estimate.rateT),
-  );
+  const dealerMode = ownerIsDealer ? estimate.dealerModeSnapshot : null;
+  const dealerAffiliation = ownerIsDealer
+    ? estimate.dealerAffiliationSnapshot
+    : null;
+  const internalDealer = dealerMode === DealerMode.INTERNAL;
+  const belongsToImpact = dealerAffiliation === DealerAffiliation.IMPACT;
+  const saleSubtotal = resolveMaterialSaleSubtotal({
+    dealerMode,
+    priceT: estimate.priceT,
+    customerPriceT: estimate.customerPriceT,
+  });
+  const impactMarkupRate = resolveImpactMarkupRate({
+    dealerMode,
+    dealerAffiliation,
+    ownerMarkupSnapshot: estimate.ownerMarkupSnapshot,
+    priceT: estimate.priceT,
+    customerPriceT: estimate.customerPriceT,
+  });
+  const financials = calculateMaterialFinancials({
+    saleSubtotal,
+    factoryRate: estimate.rateT,
+    dealerAffiliation,
+    impactMarkupRate,
+  });
 
   return {
     saleChannel: ownerIsDealer
@@ -110,14 +134,18 @@ const estimatedMaterialProfitability = (
           estimate.dealerAffiliationSnapshot ?? 'AUTHENTIC'
         }`
       : 'DIRECT CLIENT · AUTHENTIC',
-    estimatedImpactProfit: belongsToImpact ? expectedCompanyProfit : 0,
-    estimatedAuthenticProfit: belongsToImpact ? 0 : expectedCompanyProfit,
-    expectedCompanyProfit,
-    calculationNote: internalDealer
-      ? "Expected profit uses customer material subtotal minus internal material subtotal. The dealer's intermediate pricing markup is excluded."
-      : ownerIsDealer
-        ? "Expected profit uses dealer material subtotal minus estimated factory rate. The dealer's customer resale markup is excluded."
-        : 'Expected profit uses material sale subtotal minus estimated factory rate.',
+    belongsToImpact,
+    estimatedImpactProfit: financials.impactProfit.toNumber(),
+    estimatedAuthenticProfit: financials.authenticProfit.toNumber(),
+    calculationNote: belongsToImpact
+      ? internalDealer
+        ? 'Estimated Impact profit keeps the full effective customer material markup. Estimated Authentic profit is only the remaining amount above it.'
+        : 'Estimated Impact profit keeps the full stored Impact markup. Estimated Authentic profit is only the remaining amount above it.'
+      : internalDealer
+        ? 'Estimated Authentic profit uses customer material subtotal minus estimated factory rate.'
+        : ownerIsDealer
+          ? "Estimated Authentic profit uses dealer material subtotal minus estimated factory rate. The dealer's customer resale markup is excluded."
+          : 'Estimated Authentic profit uses material sale subtotal minus estimated factory rate.',
   };
 };
 
@@ -812,9 +840,8 @@ export class EstimatePdfHtmlBuilder {
             <div class="profit-grid">
               ${summaryRow('Sale channel', escapeHtml(profitability.saleChannel))}
               ${summaryRow('Estimated factory rate', formatMoney(estimate.rateT))}
-              ${summaryRow('Estimated Impact profit', formatMoney(profitability.estimatedImpactProfit), { strong: true })}
+              ${profitability.belongsToImpact ? summaryRow('Estimated Impact profit', formatMoney(profitability.estimatedImpactProfit), { strong: true }) : ''}
               ${summaryRow('Estimated Authentic profit', formatMoney(profitability.estimatedAuthenticProfit), { strong: true })}
-              ${summaryRow('Estimated total company profit', formatMoney(profitability.expectedCompanyProfit), { strong: true })}
             </div>
             <p class="profit-note">${escapeHtml(profitability.calculationNote)}</p>
           </div>`
@@ -940,11 +967,11 @@ export class EstimatePdfHtmlBuilder {
   <header class="document-header">
     <div><h1>Estimate</h1><div class="number-label">Number</div><div class="estimate-number-row"><span class="estimate-number">${escapeHtml(estimate.number)}</span>${statusBadge}</div><div class="header-badges">${internalBadge}</div></div>
     <div class="logo-wrap">${logo}</div>
-    <div class="brand">${brandingName ? `<div class="brand-name">${escapeHtml(brandingName)}</div>` : ''}${brandingAddress ? `<div class="brand-line">${escapeHtml(brandingAddress)}</div>` : ''}${branding?.email ? `<div class="brand-line">${escapeHtml(branding.email)}</div>` : ''}${branding?.website ? `<div class="brand-line">${escapeHtml(branding.website)}</div>` : ''}${branding?.phone ? `<div class="brand-line">${escapeHtml(branding.phone)}</div>` : ''}</div>
+    <div class="brand">${brandingName ? `<div class="brand-name">${escapeHtml(brandingName)}</div>` : ''}${branding?.phone ? `<div class="brand-line">${escapeHtml(branding.phone)}</div>` : ''}${branding?.email ? `<div class="brand-line">${escapeHtml(branding.email)}</div>` : ''}${brandingAddress ? `<div class="brand-line">${escapeHtml(brandingAddress)}</div>` : ''}${branding?.website ? `<div class="brand-line">${escapeHtml(branding.website)}</div>` : ''}</div>
   </header>
   <section class="prepared-section">
     <div class="prepared-details"><div class="eyebrow">Prepared for</div><div class="prepared-name">${escapeHtml(preparedFor)}</div>${projectName ? `<div class="project-name">Project: ${escapeHtml(projectName)}</div>` : ''}</div>
-    <div class="contact">${contactEmail ? `<div>${escapeHtml(contactEmail)}</div>` : ''}${contactPhone ? `<div>${escapeHtml(contactPhone)}</div>` : ''}${contactAddress ? `<div>${escapeHtml(contactAddress)}</div>` : ''}</div>
+    <div class="contact">${contactPhone ? `<div>${escapeHtml(contactPhone)}</div>` : ''}${contactEmail ? `<div>${escapeHtml(contactEmail)}</div>` : ''}${contactAddress ? `<div>${escapeHtml(contactAddress)}</div>` : ''}</div>
     <div class="dates"><div class="date-group"><div class="date-label">Date</div><div class="date-value">${escapeHtml(formatDate(estimate.date))}</div></div>${estimate.expiresAt ? `<div class="date-group"><div class="date-label">Valid through</div><div class="date-value">${escapeHtml(formatDate(estimate.expiresAt))}</div></div>` : ''}</div>
   </section>
   <section class="products-section"><div class="products-heading"><h2 class="section-heading">Product Details</h2><div class="illustration-note">Illustrations are visual references; written specifications govern.</div></div><div class="product-list">${productCards}</div></section>
