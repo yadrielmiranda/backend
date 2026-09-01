@@ -23,6 +23,49 @@ type PieceReportDetails = {
   detailLines: string[];
 };
 
+const DEFAULT_BRANDING_COLOR = '#000000';
+
+const normalizeBrandingColor = (value: unknown) => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toUpperCase();
+
+  return /^#[0-9A-F]{6}$/.test(normalized)
+    ? normalized
+    : DEFAULT_BRANDING_COLOR;
+};
+
+const readableTextColor = (backgroundColor: unknown) => {
+  const color = normalizeBrandingColor(backgroundColor);
+  const channels = [
+    Number.parseInt(color.slice(1, 3), 16),
+    Number.parseInt(color.slice(3, 5), 16),
+    Number.parseInt(color.slice(5, 7), 16),
+  ];
+  const [red, green, blue] = channels.map((channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.04045
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  const whiteContrast = 1.05 / (luminance + 0.05);
+  const blackContrast = (luminance + 0.05) / 0.05;
+
+  return whiteContrast >= blackContrast ? '#FFFFFF' : '#000000';
+};
+
+const estimateStatusBadgeClassName = (value: unknown) => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+
+  if (normalized === 'active') return 'status-active';
+  if (normalized === 'ordered') return 'status-ordered';
+  if (normalized === 'expired') return 'status-expired';
+  return 'status-default';
+};
+
 const escapeHtml = (value: unknown) =>
   String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -359,6 +402,8 @@ export class EstimatePdfHtmlBuilder {
     const internalReport = reportKind === 'dealer' || reportKind === 'admin';
     const branding = (estimate.branding ?? null) as Branding | null;
     const brandingName = branding?.name?.trim() || '';
+    const brandingColor = normalizeBrandingColor(branding?.brandingColor);
+    const brandingContrastColor = readableTextColor(brandingColor);
     const brandingLocality = [branding?.city, branding?.state]
       .filter(Boolean)
       .join(', ');
@@ -783,7 +828,7 @@ export class EstimatePdfHtmlBuilder {
       : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${projectTotalHtml}${adminProfitability}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
 
     const statusBadge = estimate.status?.name
-      ? `<span class="status-badge">${escapeHtml(estimate.status.name)}</span>`
+      ? `<span class="status-badge ${estimateStatusBadgeClassName(estimate.status.name)}">${escapeHtml(estimate.status.name)}</span>`
       : '';
     const internalBadge = internalReport
       ? `<span class="internal-badge">Internal - ${escapeHtml(reportLabelFor(reportKind))}</span>`
@@ -794,63 +839,67 @@ export class EstimatePdfHtmlBuilder {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Estimate ${escapeHtml(estimate.number)} - ${escapeHtml(reportLabelFor(reportKind))}</title>
   <style>
+    :root { --branding-color: ${brandingColor}; --branding-contrast-color: ${brandingContrastColor}; --report-text-color: #000000; }
     @page { size: Letter portrait; margin: 12mm 12mm 18mm; }
     * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; background: #fff; color: #0f172a; font-family: Arial, Helvetica, sans-serif; font-size: 10px; line-height: 1.35; -webkit-print-color-adjust: exact; print-color-adjust: exact; orphans: 3; widows: 3; }
+    html, body { margin: 0; padding: 0; background: #fff; color: var(--report-text-color); font-family: Arial, Helvetica, sans-serif; font-size: 10px; line-height: 1.35; -webkit-print-color-adjust: exact; print-color-adjust: exact; orphans: 3; widows: 3; }
     .report { width: 100%; }
-    .document-header { display: grid; grid-template-columns: 1fr 190px 1fr; align-items: start; gap: 18px; padding-bottom: 15px; border-bottom: 1px solid #dbe3ee; break-inside: avoid; page-break-inside: avoid; }
-    h1 { margin: 0; color: #0f172a; font-size: 29px; font-weight: 800; letter-spacing: .08em; line-height: 1; text-transform: uppercase; }
-    .number-label, .eyebrow, .date-label { color: #64748b; font-size: 8px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    .document-header { display: grid; grid-template-columns: 1fr 230px 1fr; align-items: start; gap: 18px; padding-bottom: 15px; border-bottom: 1px solid #dbe3ee; break-inside: avoid; page-break-inside: avoid; }
+    h1 { margin: 0; color: var(--branding-color); font-size: 29px; font-weight: 800; letter-spacing: .08em; line-height: 1; text-transform: uppercase; }
+    .number-label, .eyebrow, .date-label { color: var(--report-text-color); font-size: 8px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
     .number-label { margin-top: 11px; }
     .estimate-number-row { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin-top: 2px; }
-    .estimate-number { color: #0f172a; font-size: 18px; font-weight: 700; }
+    .estimate-number { color: var(--branding-color); font-size: 18px; font-weight: 700; }
     .header-badges { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
     .status-badge, .internal-badge, .badge { display: inline-block; border-radius: 999px; padding: 3px 9px; font-size: 9px; font-weight: 700; line-height: 1.2; white-space: nowrap; }
-    .status-badge { border: 1px solid #cbd5e1; background: #f8fafc; color: #334155; }
+    .status-active { background: #dcfce7; color: #166534; }
+    .status-ordered { background: #dbeafe; color: #1e40af; }
+    .status-expired { background: #fee2e2; color: #991b1b; }
+    .status-default { background: #f3f4f6; color: #1f2937; }
     .internal-badge { background: #0f172a; color: #fff; }
     .badge-not-included { border: 1px solid #f3c765; background: #fffbeb; color: #92400e; }
     .badge-included { border: 1px solid #6ee7b7; background: #ecfdf5; color: #047857; }
     .badge-proposed { border: 1px solid #93c5fd; background: #eff6ff; color: #1d4ed8; }
-    .badge-preliminary { border: 1px solid #cbd5e1; background: #f8fafc; color: #475569; }
-    .logo-wrap { display: flex; align-items: center; justify-content: center; min-height: 72px; }
-    .brand-logo { display: block; max-width: 185px; max-height: 72px; object-fit: contain; }
-    .brand { text-align: right; color: #64748b; }
-    .brand-name { color: #0f172a; font-size: 16px; font-weight: 700; }
+    .badge-preliminary { border: 1px solid #cbd5e1; background: #f8fafc; color: var(--report-text-color); }
+    .logo-wrap { display: flex; align-items: center; justify-content: center; min-height: 112px; }
+    .brand-logo { display: block; width: 230px; height: 112px; max-width: 100%; object-fit: contain; }
+    .brand { text-align: right; color: var(--report-text-color); }
+    .brand-name { color: var(--branding-color); font-size: 16px; font-weight: 700; }
     .brand-line { margin-top: 2px; font-size: 9px; }
     .prepared-section { display: grid; grid-template-columns: 1.05fr 1.45fr auto; align-items: center; gap: 20px; margin: 16px 0 18px; padding: 12px 14px; border: 1px solid #dbe3ee; border-radius: 9px; background: #f8fafc; break-inside: avoid; page-break-inside: avoid; }
-    .prepared-name { margin-top: 4px; color: #0f172a; font-size: 15px; font-weight: 700; }
-    .project-name { margin-top: 3px; color: #475569; }
-    .contact { color: #475569; }
+    .prepared-name { margin-top: 4px; color: var(--branding-color); font-size: 15px; font-weight: 700; }
+    .project-name { margin-top: 3px; color: var(--report-text-color); }
+    .contact { color: var(--report-text-color); }
     .contact div { margin-top: 2px; }
     .dates { min-width: 150px; text-align: right; color: #0f172a; font-weight: 600; }
     .date-group + .date-group { margin-top: 8px; }
-    .date-value { margin-top: 2px; }
+    .date-value { margin-top: 2px; color: var(--branding-color); }
     .section-heading { margin: 0 0 9px; color: #0f172a; font-size: 15px; font-weight: 800; letter-spacing: .035em; text-transform: uppercase; break-after: avoid; page-break-after: avoid; }
     .products-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 9px; break-after: avoid; page-break-after: avoid; }
     .products-heading .section-heading { margin: 0; }
-    .illustration-note { color: #64748b; font-size: 8px; text-align: right; }
+    .illustration-note { color: var(--report-text-color); font-size: 8px; text-align: right; }
     table { width: 100%; border-spacing: 0; }
     .product-list { display: block; }
     .product-card { position: relative; display: grid; grid-template-columns: 190px minmax(0, 1fr) 180px; min-height: 202px; margin: 0 0 9px; overflow: hidden; border: 1px solid #dbe3ee; border-radius: 9px; background: #fff; break-inside: avoid-page !important; page-break-inside: avoid !important; }
-    .mark-badge { align-self: flex-start; min-width: 41px; margin-bottom: 2px; padding: 5px 10px; border-radius: 5px; background: #b91c1c; color: #fff; font-size: 10px; font-weight: 700; line-height: 1.2; text-align: center; }
+    .mark-badge { align-self: flex-start; min-width: 41px; margin-bottom: 2px; padding: 5px 10px; border-radius: 5px; background: var(--branding-color); color: var(--branding-contrast-color); font-size: 10px; font-weight: 700; line-height: 1.2; text-align: center; }
     .diagram-column { display: flex; flex-direction: column; align-items: stretch; padding: 8px; }
     .diagram-frame { display: flex; align-items: center; justify-content: center; width: 100%; height: 158px; overflow: hidden; border: 1px solid #dbe3ee; border-radius: 7px; background: #f1f5f9; }
     .diagram-frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
-    .diagram-placeholder { color: #94a3b8; font-size: 8px; text-align: center; }
+    .diagram-placeholder { color: var(--report-text-color); font-size: 8px; text-align: center; }
     .piece-description { min-width: 0; padding: 11px 12px; }
     .piece-name { color: #0f172a; font-size: 14px; font-weight: 700; line-height: 1.15; }
-    .piece-system { margin-top: 4px; color: #b91c1c; font-size: 10px; font-weight: 700; }
+    .piece-system { margin-top: 4px; color: var(--branding-color); font-size: 10px; font-weight: 700; }
     .piece-summary { margin-top: 11px; color: #0f172a; font-size: 10px; font-weight: 700; }
-    .piece-detail { margin-top: 3px; color: #475569; font-size: 8.5px; line-height: 1.3; }
+    .piece-detail { margin-top: 3px; color: var(--report-text-color); font-size: 8.5px; line-height: 1.3; }
     .piece-pricing { display: flex; flex-direction: column; justify-content: space-between; gap: 0; padding: 12px 11px; border-left: 1px solid #dbe3ee; background: #fff; }
     .price-block { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-    .price-label { flex: 0 0 auto; color: #64748b; font-size: 8px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+    .price-label { flex: 0 0 auto; color: var(--report-text-color); font-size: 8px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
     .price-value { color: #0f172a; font-size: 11px; font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; white-space: nowrap; }
     .subtotal-block { margin-top: 0; padding-top: 0; }
     .price-strong { font-size: 13px; font-weight: 700; }
     .price-success .price-label, .price-success .price-value { color: #07883f; }
     .price-success .price-strong { font-size: 17px; font-weight: 800; }
-    .empty { padding: 28px; border: 1px dashed #cbd5e1; border-radius: 9px; color: #64748b; text-align: center; }
+    .empty { padding: 28px; border: 1px dashed #cbd5e1; border-radius: 9px; color: var(--report-text-color); text-align: center; }
     .summary-section { margin-top: 22px; break-inside: avoid-page; page-break-inside: avoid; }
     .summary-start { break-inside: avoid; page-break-inside: avoid; }
     .summary-grid { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 10px; }
@@ -858,9 +907,9 @@ export class EstimatePdfHtmlBuilder {
     .card, .project-total { margin-top: 0; overflow: hidden; border: 1px solid #dbe3ee; border-radius: 9px; background: #fff; }
     .keep-together { break-inside: avoid; page-break-inside: avoid; }
     .card-title { padding: 10px 13px; background: #f8fafc; color: #172033; font-size: 12px; font-weight: 700; }
-    .card-title small { display: block; margin-top: 2px; color: #64748b; font-size: 8px; font-weight: 400; }
+    .card-title small { display: block; margin-top: 2px; color: var(--report-text-color); font-size: 8px; font-weight: 400; }
     .card-body { padding: 3px 13px; }
-    .summary-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 7px 0; color: #475569; }
+    .summary-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 7px 0; color: var(--report-text-color); }
     .summary-row > span:last-child { color: #172033; font-weight: 600; text-align: right; }
     .summary-row.strong { font-weight: 700; color: #172033; }
     .summary-row.strong > span:last-child { font-weight: 700; }
@@ -868,10 +917,10 @@ export class EstimatePdfHtmlBuilder {
     .value-with-badge { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; }
     .comparison-table { border-collapse: separate; }
     .comparison-table th, .comparison-table td { padding: 9px 13px; }
-    .comparison-table th { background: #f8fafc; color: #475569; font-size: 9px; text-align: left; text-transform: uppercase; }
-    .comparison-table td { border-top: 1px solid #e2e8f0; color: #475569; }
+    .comparison-table th { background: #f8fafc; color: var(--report-text-color); font-size: 9px; text-align: left; text-transform: uppercase; }
+    .comparison-table td { border-top: 1px solid #e2e8f0; color: var(--report-text-color); }
     .comparison-table .right { text-align: right; color: #172033; font-weight: 600; }
-    .comparison-table small { display: block; margin-top: 2px; color: #64748b; font-size: 8px; font-weight: 400; }
+    .comparison-table small { display: block; margin-top: 2px; color: var(--report-text-color); font-size: 8px; font-weight: 400; }
     .comparison-table .table-total td { background: #f8fafc; color: #172033; font-weight: 700; }
     .project-total { margin-top: 10px; padding: 6px 14px; border-color: #cbd5e1; background: #f1f5f9; }
     .project-total .summary-row.strong { font-size: 13px; }
@@ -884,8 +933,8 @@ export class EstimatePdfHtmlBuilder {
     .notice.warning { color: #92400e; font-weight: 600; }
     .profitability { margin-top: 14px; }
     .profit-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 30px; padding: 3px 13px; }
-    .profit-note { margin: 0; padding: 9px 13px; border-top: 1px solid #dbe3ee; color: #64748b; font-size: 8px; }
-    .illustration-footer { margin: 14px 0 0; color: #64748b; font-size: 8px; }
+    .profit-note { margin: 0; padding: 9px 13px; border-top: 1px solid #dbe3ee; color: var(--report-text-color); font-size: 8px; }
+    .illustration-footer { margin: 14px 0 0; color: var(--report-text-color); font-size: 8px; }
   </style>
 </head><body><main class="report">
   <header class="document-header">

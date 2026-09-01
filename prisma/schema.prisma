@@ -176,7 +176,8 @@ model Branding {
   state      String? @db.VarChar(50)
   postalCode String? @db.VarChar(20)
 
-  logoUrl String? @db.VarChar(500)
+  logoUrl       String? @db.VarChar(500)
+  brandingColor String @default("#000000") @db.VarChar(7)
 
   isActive Boolean @default(true)
 

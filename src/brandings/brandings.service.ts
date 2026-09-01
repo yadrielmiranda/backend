@@ -52,6 +52,7 @@ export class BrandingsService {
         state: dto.state,
         postalCode: dto.postalCode,
         logoUrl: stripQuery(dto.logoUrl),
+        brandingColor: dto.brandingColor,
         isActive: dto.isActive ?? true,
       },
     });
@@ -81,6 +82,7 @@ export class BrandingsService {
         state: dto.state,
         postalCode: dto.postalCode,
         logoUrl: stripQuery(dto.logoUrl),
+        brandingColor: dto.brandingColor,
         isActive: dto.isActive,
       },
     });
@@ -121,6 +123,7 @@ export class BrandingsService {
         state: dto.state,
         postalCode: dto.postalCode,
         logoUrl: stripQuery(dto.logoUrl),
+        brandingColor: dto.brandingColor,
         isActive: dto.isActive ?? true,
       },
     });
@@ -150,6 +153,7 @@ export class BrandingsService {
         state: dto.state,
         postalCode: dto.postalCode,
         logoUrl: stripQuery(dto.logoUrl),
+        brandingColor: dto.brandingColor,
         isActive: dto.isActive,
       },
     });

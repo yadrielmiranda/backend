@@ -1,4 +1,12 @@
-import { IsOptional, IsString, IsBoolean, IsEmail, IsUrl } from 'class-validator';
+import { Transform } from 'class-transformer';
+import {
+  IsOptional,
+  IsString,
+  IsBoolean,
+  IsEmail,
+  IsUrl,
+  Matches,
+} from 'class-validator';
 
 export class CreateBrandingDto {
   @IsString()
@@ -38,6 +46,16 @@ export class CreateBrandingDto {
   @IsOptional()
   @IsString()
   logoUrl?: string;
+
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
+  @IsOptional()
+  @IsString()
+  @Matches(/^#[0-9A-F]{6}$/, {
+    message: 'brandingColor must use the format #RRGGBB.',
+  })
+  brandingColor?: string;
 
   @IsOptional()
   @IsBoolean()

@@ -35,7 +35,7 @@ const estimateFixture = (installationIncluded = true) =>
       lastName: 'Owner',
       role: { name: 'dealer' },
     },
-    branding: { name: 'Dealer Windows' },
+    branding: { name: 'Dealer Windows', brandingColor: '#2563EB' },
     pieces: [
       {
         id: 77,
@@ -457,6 +457,76 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).toContain('page-break-inside: avoid !important;');
     expect(html).toContain('Estimated material profitability');
     expect(html).toContain('Estimated factory rate');
+  });
+
+  it('uses the resolved branding color throughout the report and PDF', () => {
+    const html = EstimatePdfHtmlBuilder.build(estimateFixture(), 'admin');
+
+    expect(html).toContain(
+      ':root { --branding-color: #2563EB; --branding-contrast-color: #FFFFFF; --report-text-color: #000000; }',
+    );
+    expect(html).toContain('h1 { margin: 0; color: var(--branding-color);');
+    expect(html).toContain('.estimate-number { color: var(--branding-color);');
+    expect(html).toContain('.brand-name { color: var(--branding-color);');
+    expect(html).toContain(
+      '.prepared-name { margin-top: 4px; color: var(--branding-color);',
+    );
+    expect(html).toContain(
+      '.date-value { margin-top: 2px; color: var(--branding-color);',
+    );
+    expect(html).toContain('background: var(--branding-color);');
+    expect(html).toContain('color: var(--branding-contrast-color);');
+    expect(html).toContain(
+      '.piece-system { margin-top: 4px; color: var(--branding-color);',
+    );
+  });
+
+  it('falls back to black when branding has no valid color', () => {
+    const estimate = estimateFixture();
+    estimate.branding = {
+      ...(estimate.branding as object),
+      brandingColor: 'not-a-color',
+    } as EstimateWithRelations['branding'];
+
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+
+    expect(html).toContain('--branding-color: #000000;');
+    expect(html).not.toContain('not-a-color');
+  });
+
+  it('uses a larger logo and dark neutral text in the PDF', () => {
+    const html = EstimatePdfHtmlBuilder.build(estimateFixture(), 'admin');
+
+    expect(html).toContain(
+      '.logo-wrap { display: flex; align-items: center; justify-content: center; min-height: 112px; }',
+    );
+    expect(html).toContain(
+      '.brand-logo { display: block; width: 230px; height: 112px; max-width: 100%; object-fit: contain; }',
+    );
+    expect(html).toContain(
+      '.brand { text-align: right; color: var(--report-text-color); }',
+    );
+    expect(html).toContain(
+      '.piece-detail { margin-top: 3px; color: var(--report-text-color);',
+    );
+  });
+
+  it('uses the same semantic estimate status colors as the estimates list', () => {
+    const estimate = estimateFixture();
+    const expectedClasses = {
+      Active: 'status-active',
+      Ordered: 'status-ordered',
+      Expired: 'status-expired',
+    } as const;
+
+    for (const [statusName, className] of Object.entries(expectedClasses)) {
+      estimate.status = { name: statusName } as EstimateWithRelations['status'];
+      const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+
+      expect(html).toContain(
+        `<span class="status-badge ${className}">${statusName}</span>`,
+      );
+    }
   });
 
   it('embeds a captured diagram in its matching product card', () => {
