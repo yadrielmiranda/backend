@@ -177,7 +177,7 @@ model Branding {
   postalCode String? @db.VarChar(20)
 
   logoUrl       String? @db.VarChar(500)
-  brandingColor String @default("#000000") @db.VarChar(7)
+  brandingColor String  @default("#000000") @db.VarChar(7)
 
   isActive Boolean @default(true)
 
@@ -220,6 +220,7 @@ model Product {
   name      String
   sortOrder Int     @default(0)
   isActive  Boolean @default(true)
+  isDefault Boolean @default(false)
 
   kind        ProductKind @default(GLAZED_UNIT)
   pricingMode PricingMode @default(AREA_PERIMETER)
@@ -239,6 +240,7 @@ model Product {
 
   @@index([isActive])
   @@index([isActive, sortOrder])
+  @@index([isDefault])
   @@index([kind])
   @@index([diagramFamily])
 }
@@ -268,9 +270,11 @@ model BrandProduct {
   idBrand   Int
   product   Product  @relation(fields: [idProduct], references: [id])
   idProduct Int
+  isDefault Boolean  @default(false)
   systems   System[]
 
   @@id([idBrand, idProduct])
+  @@index([idProduct, isDefault])
   @@map("brand_product")
 }
 
@@ -283,6 +287,7 @@ model System {
 
   sortOrder Int     @default(0)
   isActive  Boolean @default(true)
+  isDefault Boolean @default(false)
 
   allowHighBottom Boolean @default(false)
 
@@ -306,6 +311,7 @@ model System {
   @@index([defaultConfigId])
   @@index([isActive])
   @@index([idBrand, idProduct, sortOrder])
+  @@index([idBrand, idProduct, isDefault])
 }
 
 model Config {

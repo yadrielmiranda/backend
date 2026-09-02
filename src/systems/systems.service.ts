@@ -2,7 +2,7 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
-} from "@nestjs/common";
+} from '@nestjs/common';
 import {
   BillableHeightMode,
   DimensionMode,
@@ -10,19 +10,19 @@ import {
   Prisma,
   ProductKind,
   System,
-} from "@prisma/client";
-import { PrismaService } from "@/prisma/prisma.service";
-import { CreateSystemDto } from "./dto/create-system.dto";
-import { UpdateSystemDto } from "./dto/update-system.dto";
-import { UpdateSystemConfigDto } from "./dto/update-system-config.dto";
-import { UpdateSystemConfigOptionsDto } from "./dto/update-system-config-options.dto";
-import { UpdateSystemCrystalsDto } from "./dto/update-system-crystals.dto";
-import { UpdateSystemFrameColorsDto } from "./dto/update-system-frame-colors.dto";
-import { UpdateSystemConfigPricingComponentsDto } from "./dto/update-system-config-pricing-components.dto";
+} from '@prisma/client';
+import { PrismaService } from '@/prisma/prisma.service';
+import { CreateSystemDto } from './dto/create-system.dto';
+import { UpdateSystemDto } from './dto/update-system.dto';
+import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
+import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options.dto';
+import { UpdateSystemCrystalsDto } from './dto/update-system-crystals.dto';
+import { UpdateSystemFrameColorsDto } from './dto/update-system-frame-colors.dto';
+import { UpdateSystemConfigPricingComponentsDto } from './dto/update-system-config-pricing-components.dto';
 import {
   hasPanelCountSource,
   installationServiceRequiresPanelCount,
-} from "@/installation/panel-count-capability";
+} from '@/installation/panel-count-capability';
 
 @Injectable()
 export class SystemsService {
@@ -48,11 +48,11 @@ export class SystemsService {
           },
           orderBy: [
             {
-              sortOrder: "asc",
+              sortOrder: 'asc',
             },
             {
               config: {
-                conf: "asc",
+                conf: 'asc',
               },
             },
           ],
@@ -63,7 +63,7 @@ export class SystemsService {
             crystal: true,
           },
           orderBy: {
-            sortOrder: "asc",
+            sortOrder: 'asc',
           },
         },
         systemFrameColors: {
@@ -71,9 +71,9 @@ export class SystemsService {
             frameColor: true,
           },
           orderBy: [
-            { sortOrder: "asc" },
-            { frameColor: { color: "asc" } },
-            { idFrameColor: "asc" },
+            { sortOrder: 'asc' },
+            { frameColor: { color: 'asc' } },
+            { idFrameColor: 'asc' },
           ],
         },
       },
@@ -99,9 +99,9 @@ export class SystemsService {
       cursor,
       where,
       orderBy: orderBy ?? [
-        { sortOrder: "asc" },
-        { name: "asc" },
-        { id: "asc" },
+        { sortOrder: 'asc' },
+        { name: 'asc' },
+        { id: 'asc' },
       ],
       include: {
         brandProduct: {
@@ -117,11 +117,11 @@ export class SystemsService {
           },
           orderBy: [
             {
-              sortOrder: "asc",
+              sortOrder: 'asc',
             },
             {
               config: {
-                conf: "asc",
+                conf: 'asc',
               },
             },
           ],
@@ -132,7 +132,7 @@ export class SystemsService {
             crystal: true,
           },
           orderBy: {
-            sortOrder: "asc",
+            sortOrder: 'asc',
           },
         },
         systemFrameColors: {
@@ -140,9 +140,9 @@ export class SystemsService {
             frameColor: true,
           },
           orderBy: [
-            { sortOrder: "asc" },
-            { frameColor: { color: "asc" } },
-            { idFrameColor: "asc" },
+            { sortOrder: 'asc' },
+            { frameColor: { color: 'asc' } },
+            { idFrameColor: 'asc' },
           ],
         },
       },
@@ -165,7 +165,7 @@ export class SystemsService {
                 option: true,
               },
               orderBy: {
-                sortOrder: "asc",
+                sortOrder: 'asc',
               },
             },
 
@@ -174,7 +174,7 @@ export class SystemsService {
                 option: true,
               },
               orderBy: {
-                sortOrder: "asc",
+                sortOrder: 'asc',
               },
             },
 
@@ -183,7 +183,7 @@ export class SystemsService {
                 option: true,
               },
               orderBy: {
-                sortOrder: "asc",
+                sortOrder: 'asc',
               },
             },
             reinforcementOptions: {
@@ -191,7 +191,7 @@ export class SystemsService {
                 option: true,
               },
               orderBy: {
-                sortOrder: "asc",
+                sortOrder: 'asc',
               },
             },
             pricingComponents: {
@@ -204,11 +204,11 @@ export class SystemsService {
           },
           orderBy: [
             {
-              sortOrder: "asc",
+              sortOrder: 'asc',
             },
             {
               config: {
-                conf: "asc",
+                conf: 'asc',
               },
             },
           ],
@@ -227,7 +227,7 @@ export class SystemsService {
             crystal: true,
           },
           orderBy: {
-            sortOrder: "asc",
+            sortOrder: 'asc',
           },
         },
         systemFrameColors: {
@@ -235,13 +235,13 @@ export class SystemsService {
             frameColor: true,
           },
           orderBy: [
-            { sortOrder: "asc" },
-            { frameColor: { color: "asc" } },
-            { idFrameColor: "asc" },
+            { sortOrder: 'asc' },
+            { frameColor: { color: 'asc' } },
+            { idFrameColor: 'asc' },
           ],
         },
       },
-      orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }, { id: 'asc' }],
     });
   }
 
@@ -257,8 +257,15 @@ export class SystemsService {
           select: {
             id: true,
             name: true,
+            isActive: true,
             kind: true,
             pricingMode: true,
+          },
+        },
+        brand: {
+          select: {
+            id: true,
+            isActive: true,
           },
         },
       },
@@ -275,7 +282,7 @@ export class SystemsService {
 
     if (isLinearMaterial && allowHighBottom) {
       throw new BadRequestException(
-        "Linear material systems cannot allow high bottom.",
+        'Linear material systems cannot allow high bottom.',
       );
     }
 
@@ -286,15 +293,62 @@ export class SystemsService {
     const sortOrder =
       systemData.sortOrder ?? (currentMaxOrder._max.sortOrder ?? -1) + 1;
 
-    return this.prisma.system.create({
-      data: {
-        name,
-        idBrand,
-        idProduct,
-        sortOrder,
-        isActive: true,
-        allowHighBottom: isLinearMaterial ? false : (allowHighBottom ?? false),
-      },
+    const [hasDefaultSystem, activeSystemCount] = await Promise.all([
+      this.prisma.system.count({
+        where: {
+          idBrand,
+          idProduct,
+          isDefault: true,
+        },
+      }),
+      this.prisma.system.count({
+        where: {
+          idBrand,
+          idProduct,
+          isActive: true,
+        },
+      }),
+    ]);
+
+    const shouldBeDefault =
+      systemData.isDefault === true ||
+      (hasDefaultSystem === 0 && activeSystemCount === 0);
+
+    if (
+      shouldBeDefault &&
+      (!brandProductExists.brand.isActive ||
+        !brandProductExists.product.isActive)
+    ) {
+      throw new BadRequestException(
+        'A default System requires an active Brand and Product.',
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      if (shouldBeDefault) {
+        await tx.system.updateMany({
+          where: {
+            idBrand,
+            idProduct,
+            isDefault: true,
+          },
+          data: { isDefault: false },
+        });
+      }
+
+      return tx.system.create({
+        data: {
+          name,
+          idBrand,
+          idProduct,
+          sortOrder,
+          isActive: true,
+          isDefault: shouldBeDefault,
+          allowHighBottom: isLinearMaterial
+            ? false
+            : (allowHighBottom ?? false),
+        },
+      });
     });
   }
 
@@ -310,6 +364,8 @@ export class SystemsService {
         id: true,
         idBrand: true,
         idProduct: true,
+        isActive: true,
+        isDefault: true,
       },
     });
 
@@ -332,8 +388,15 @@ export class SystemsService {
           select: {
             id: true,
             name: true,
+            isActive: true,
             kind: true,
             pricingMode: true,
+          },
+        },
+        brand: {
+          select: {
+            id: true,
+            isActive: true,
           },
         },
       },
@@ -350,20 +413,67 @@ export class SystemsService {
 
     if (isLinearMaterial && data.allowHighBottom) {
       throw new BadRequestException(
-        "Linear material systems cannot allow high bottom.",
+        'Linear material systems cannot allow high bottom.',
+      );
+    }
+
+    const pairChanged =
+      nextIdBrand !== current.idBrand || nextIdProduct !== current.idProduct;
+    const nextIsActive = data.isActive ?? current.isActive;
+
+    if (current.isDefault && data.isDefault === false) {
+      throw new BadRequestException(
+        'Set another System as default before removing this default.',
+      );
+    }
+
+    if (current.isDefault && nextIsActive === false) {
+      throw new BadRequestException(
+        'Set another System as default before deactivating this System.',
+      );
+    }
+
+    if (current.isDefault && pairChanged) {
+      throw new BadRequestException(
+        "Set another System as default before changing this System's Brand or Product.",
+      );
+    }
+
+    if (
+      data.isDefault === true &&
+      (nextIsActive === false ||
+        !brandProduct.brand.isActive ||
+        !brandProduct.product.isActive)
+    ) {
+      throw new BadRequestException(
+        'The default System, Brand and Product must be active.',
       );
     }
 
     try {
-      return await this.prisma.system.update({
-        where,
-        data: {
-          ...data,
-          allowHighBottom: isLinearMaterial ? false : data.allowHighBottom,
-        },
+      return await this.prisma.$transaction(async (tx) => {
+        if (data.isDefault === true) {
+          await tx.system.updateMany({
+            where: {
+              idBrand: nextIdBrand,
+              idProduct: nextIdProduct,
+              isDefault: true,
+              id: { not: current.id },
+            },
+            data: { isDefault: false },
+          });
+        }
+
+        return tx.system.update({
+          where,
+          data: {
+            ...data,
+            allowHighBottom: isLinearMaterial ? false : data.allowHighBottom,
+          },
+        });
       });
     } catch (e: any) {
-      if (e?.code === "P2025") {
+      if (e?.code === 'P2025') {
         throw new NotFoundException(`System with ID #${where.id} not found.`);
       }
       throw e;
@@ -371,16 +481,27 @@ export class SystemsService {
   }
 
   async deleteSystem(where: Prisma.SystemWhereUniqueInput): Promise<System> {
+    const current = await this.prisma.system.findUnique({
+      where,
+      select: { isDefault: true },
+    });
+
+    if (current?.isDefault) {
+      throw new BadRequestException(
+        'Set another System as default before deleting this System.',
+      );
+    }
+
     try {
       return await this.prisma.system.delete({ where });
     } catch (e: any) {
-      if (e?.code === "P2025") {
+      if (e?.code === 'P2025') {
         throw new NotFoundException(`System with ID #${where.id} not found.`);
       }
 
-      if (e?.code === "P2003") {
+      if (e?.code === 'P2003') {
         throw new BadRequestException(
-          "This system is being used and cannot be deleted. Deactivate it instead.",
+          'This system is being used and cannot be deleted. Deactivate it instead.',
         );
       }
 
@@ -402,11 +523,11 @@ export class SystemsService {
           },
           orderBy: [
             {
-              sortOrder: "asc",
+              sortOrder: 'asc',
             },
             {
               config: {
-                conf: "asc",
+                conf: 'asc',
               },
             },
           ],
@@ -418,7 +539,7 @@ export class SystemsService {
             crystal: true,
           },
           orderBy: {
-            sortOrder: "asc",
+            sortOrder: 'asc',
           },
         },
         systemFrameColors: {
@@ -426,9 +547,9 @@ export class SystemsService {
             frameColor: true,
           },
           orderBy: [
-            { sortOrder: "asc" },
-            { frameColor: { color: "asc" } },
-            { idFrameColor: "asc" },
+            { sortOrder: 'asc' },
+            { frameColor: { color: 'asc' } },
+            { idFrameColor: 'asc' },
           ],
         },
       },
@@ -452,19 +573,19 @@ export class SystemsService {
       include: {
         activeOptions: {
           include: { option: true },
-          orderBy: { sortOrder: "asc" },
+          orderBy: { sortOrder: 'asc' },
         },
         preparationOptions: {
           include: { option: true },
-          orderBy: { sortOrder: "asc" },
+          orderBy: { sortOrder: 'asc' },
         },
         sillOptions: {
           include: { option: true },
-          orderBy: { sortOrder: "asc" },
+          orderBy: { sortOrder: 'asc' },
         },
         reinforcementOptions: {
           include: { option: true },
-          orderBy: { sortOrder: "asc" },
+          orderBy: { sortOrder: 'asc' },
         },
       },
     });
@@ -540,19 +661,19 @@ export class SystemsService {
       include: {
         activeOptions: {
           include: { option: true },
-          orderBy: { sortOrder: "asc" },
+          orderBy: { sortOrder: 'asc' },
         },
         preparationOptions: {
           include: { option: true },
-          orderBy: { sortOrder: "asc" },
+          orderBy: { sortOrder: 'asc' },
         },
         sillOptions: {
           include: { option: true },
-          orderBy: { sortOrder: "asc" },
+          orderBy: { sortOrder: 'asc' },
         },
         reinforcementOptions: {
           include: { option: true },
-          orderBy: { sortOrder: "asc" },
+          orderBy: { sortOrder: 'asc' },
         },
         system: {
           select: {
@@ -600,7 +721,7 @@ export class SystemsService {
             },
           },
           orderBy: {
-            componentType: "asc",
+            componentType: 'asc',
           },
         },
       },
@@ -621,19 +742,19 @@ export class SystemsService {
     ] = await Promise.all([
       this.prisma.activeOption.findMany({
         where: { isActive: true },
-        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       }),
       this.prisma.preparationOption.findMany({
         where: { isActive: true },
-        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       }),
       this.prisma.sillOption.findMany({
         where: { isActive: true },
-        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       }),
       this.prisma.reinforcementOption.findMany({
         where: { isActive: true },
-        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       }),
       this.prisma.sysConf.findMany({
         where: {
@@ -672,11 +793,11 @@ export class SystemsService {
         },
         orderBy: [
           {
-            sortOrder: "asc",
+            sortOrder: 'asc',
           },
           {
             config: {
-              conf: "asc",
+              conf: 'asc',
             },
           },
         ],
@@ -808,7 +929,7 @@ export class SystemsService {
       sysConf.system.defaultConfigId === configId
     ) {
       throw new BadRequestException(
-        "Select another default configuration before removing this configuration from estimates.",
+        'Select another default configuration before removing this configuration from estimates.',
       );
     }
 
@@ -873,19 +994,19 @@ export class SystemsService {
 
     if (validActiveOptions.length !== data.activeOptionIds.length) {
       throw new BadRequestException(
-        "One or more active options are invalid or inactive.",
+        'One or more active options are invalid or inactive.',
       );
     }
 
     if (validPreparationOptions.length !== data.preparationOptionIds.length) {
       throw new BadRequestException(
-        "One or more preparation options are invalid or inactive.",
+        'One or more preparation options are invalid or inactive.',
       );
     }
 
     if (validSillOptions.length !== data.sillOptionIds.length) {
       throw new BadRequestException(
-        "One or more sill options are invalid or inactive.",
+        'One or more sill options are invalid or inactive.',
       );
     }
 
@@ -893,7 +1014,7 @@ export class SystemsService {
       validReinforcementOptions.length !== data.reinforcementOptionIds.length
     ) {
       throw new BadRequestException(
-        "One or more reinforcement options are invalid or inactive.",
+        'One or more reinforcement options are invalid or inactive.',
       );
     }
 
@@ -903,7 +1024,7 @@ export class SystemsService {
       !data.activeOptionIds.includes(data.defaultActiveOptionId)
     ) {
       throw new BadRequestException(
-        "Default active option must be one of the selected active options.",
+        'Default active option must be one of the selected active options.',
       );
     }
 
@@ -912,7 +1033,7 @@ export class SystemsService {
       !data.preparationOptionIds.includes(data.defaultPreparationOptionId)
     ) {
       throw new BadRequestException(
-        "Default preparation option must be one of the selected preparation options.",
+        'Default preparation option must be one of the selected preparation options.',
       );
     }
 
@@ -921,7 +1042,7 @@ export class SystemsService {
       !data.sillOptionIds.includes(data.defaultSillOptionId)
     ) {
       throw new BadRequestException(
-        "Default sill option must be one of the selected sill options.",
+        'Default sill option must be one of the selected sill options.',
       );
     }
 
@@ -930,7 +1051,7 @@ export class SystemsService {
       !data.reinforcementOptionIds.includes(data.defaultReinforcementOptionId)
     ) {
       throw new BadRequestException(
-        "Default reinforcement option must be one of the selected reinforcement options.",
+        'Default reinforcement option must be one of the selected reinforcement options.',
       );
     }
 
@@ -1034,7 +1155,7 @@ export class SystemsService {
     if (nextBillableHeightMode === BillableHeightMode.WIDTH_PERCENTAGE) {
       if (nextBillableHeightPercentOfWidth == null) {
         throw new BadRequestException(
-          "Billable Height Percentage of Width is required.",
+          'Billable Height Percentage of Width is required.',
         );
       }
 
@@ -1042,7 +1163,7 @@ export class SystemsService {
 
       if (!Number.isFinite(percentage) || percentage <= 0) {
         throw new BadRequestException(
-          "Billable Height Percentage of Width must be greater than zero.",
+          'Billable Height Percentage of Width must be greater than zero.',
         );
       }
     }
@@ -1050,7 +1171,7 @@ export class SystemsService {
     if (nextBillableHeightMode === BillableHeightMode.FIXED) {
       if (nextBillableHeightFixedIn == null) {
         throw new BadRequestException(
-          "Billable Height Fixed Value is required when Billable Height is Fixed Value.",
+          'Billable Height Fixed Value is required when Billable Height is Fixed Value.',
         );
       }
 
@@ -1058,7 +1179,7 @@ export class SystemsService {
 
       if (!Number.isFinite(fixedValue) || fixedValue < 0) {
         throw new BadRequestException(
-          "Billable Height Fixed Value must be zero or greater.",
+          'Billable Height Fixed Value must be zero or greater.',
         );
       }
     }
@@ -1200,7 +1321,7 @@ export class SystemsService {
 
     if (new Set(componentTypes).size !== componentTypes.length) {
       throw new BadRequestException(
-        "Pricing component types cannot be duplicated.",
+        'Pricing component types cannot be duplicated.',
       );
     }
 
@@ -1210,7 +1331,7 @@ export class SystemsService {
 
     if (sourceConfigIds.includes(configId)) {
       throw new BadRequestException(
-        "A configuration cannot use itself as a pricing source.",
+        'A configuration cannot use itself as a pricing source.',
       );
     }
 
@@ -1260,7 +1381,7 @@ export class SystemsService {
 
       if (isLinearMaterial && data.components.length > 0) {
         throw new BadRequestException(
-          "Linear material configurations cannot use component pricing.",
+          'Linear material configurations cannot use component pricing.',
         );
       }
 
@@ -1269,7 +1390,7 @@ export class SystemsService {
         parentSysConf.usedAsPricingSource.length > 0
       ) {
         throw new BadRequestException(
-          "This configuration is already used as a pricing source and cannot use component pricing.",
+          'This configuration is already used as a pricing source and cannot use component pricing.',
         );
       }
 
@@ -1281,7 +1402,7 @@ export class SystemsService {
 
       if (componentWithInvalidQuantity) {
         throw new BadRequestException(
-          "Quantity can only be assigned to the SIDELITE pricing component.",
+          'Quantity can only be assigned to the SIDELITE pricing component.',
         );
       }
 
@@ -1296,7 +1417,7 @@ export class SystemsService {
         sideliteComponent.quantity == null
       ) {
         throw new BadRequestException(
-          "Sidelite Quantity is required for Eco Windows component pricing.",
+          'Sidelite Quantity is required for Eco Windows component pricing.',
         );
       }
 
@@ -1305,7 +1426,7 @@ export class SystemsService {
         sideliteComponent?.quantity != null
       ) {
         throw new BadRequestException(
-          "Sidelite Quantity is only configurable for Eco Windows door systems.",
+          'Sidelite Quantity is only configurable for Eco Windows door systems.',
         );
       }
 
@@ -1327,7 +1448,7 @@ export class SystemsService {
 
         if (directPricingRuleCount > 0 || pricingRangeCount > 0) {
           throw new BadRequestException(
-            "Remove the direct pricing rules and pricing ranges for this configuration before enabling component pricing.",
+            'Remove the direct pricing rules and pricing ranges for this configuration before enabling component pricing.',
           );
         }
 
@@ -1358,7 +1479,7 @@ export class SystemsService {
 
         if (sourceSysConfs.length !== uniqueSourceConfigIds.length) {
           throw new BadRequestException(
-            "One or more pricing source configurations are not associated with this system.",
+            'One or more pricing source configurations are not associated with this system.',
           );
         }
 
@@ -1421,7 +1542,7 @@ export class SystemsService {
             crystal: true,
           },
           orderBy: {
-            sortOrder: "asc",
+            sortOrder: 'asc',
           },
         },
         defaultCrystal: true,
@@ -1434,7 +1555,7 @@ export class SystemsService {
 
     const crystalsCatalog = await this.prisma.crystal.findMany({
       orderBy: {
-        glass: "asc",
+        glass: 'asc',
       },
     });
 
@@ -1476,7 +1597,7 @@ export class SystemsService {
 
     if (system.brandProduct.product.kind === ProductKind.LINEAR_MATERIAL) {
       throw new BadRequestException(
-        "Linear material systems do not use glass options.",
+        'Linear material systems do not use glass options.',
       );
     }
 
@@ -1488,7 +1609,7 @@ export class SystemsService {
     });
 
     if (validCrystals.length !== data.crystalIds.length) {
-      throw new BadRequestException("One or more glass types are invalid.");
+      throw new BadRequestException('One or more glass types are invalid.');
     }
 
     if (
@@ -1496,7 +1617,7 @@ export class SystemsService {
       !data.crystalIds.includes(data.defaultCrystalId)
     ) {
       throw new BadRequestException(
-        "Default glass type must be one of the selected glass types.",
+        'Default glass type must be one of the selected glass types.',
       );
     }
 
@@ -1543,9 +1664,9 @@ export class SystemsService {
             frameColor: true,
           },
           orderBy: [
-            { sortOrder: "asc" },
-            { frameColor: { color: "asc" } },
-            { idFrameColor: "asc" },
+            { sortOrder: 'asc' },
+            { frameColor: { color: 'asc' } },
+            { idFrameColor: 'asc' },
           ],
         },
       },
@@ -1556,7 +1677,7 @@ export class SystemsService {
     }
 
     const frameColorsCatalog = await this.prisma.frameColor.findMany({
-      orderBy: [{ globalSortOrder: "asc" }, { color: "asc" }, { id: "asc" }],
+      orderBy: [{ globalSortOrder: 'asc' }, { color: 'asc' }, { id: 'asc' }],
     });
 
     return {
@@ -1608,7 +1729,7 @@ export class SystemsService {
     });
 
     if (validFrameColors.length !== frameColorIds.length) {
-      throw new BadRequestException("One or more frame colors are invalid.");
+      throw new BadRequestException('One or more frame colors are invalid.');
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -1666,9 +1787,9 @@ export class SystemsService {
         category: true,
       },
       orderBy: [
-        { category: { sortOrder: "asc" } },
-        { category: { name: "asc" } },
-        { conf: "asc" },
+        { category: { sortOrder: 'asc' } },
+        { category: { name: 'asc' } },
+        { conf: 'asc' },
       ],
     });
   }
@@ -1712,12 +1833,12 @@ export class SystemsService {
     if (!config) throw new NotFoundException(`Config #${configId} not found.`);
 
     if (!system.isActive) {
-      throw new BadRequestException("Inactive systems cannot be modified.");
+      throw new BadRequestException('Inactive systems cannot be modified.');
     }
 
     if (!config.isActive) {
       throw new BadRequestException(
-        "Inactive configs cannot be linked to a system.",
+        'Inactive configs cannot be linked to a system.',
       );
     }
 
@@ -1822,7 +1943,7 @@ export class SystemsService {
 
     if (data.isDefault === true && !existingLink.isSelectableInEstimate) {
       throw new BadRequestException(
-        "A configuration that is not available in estimates cannot be set as default.",
+        'A configuration that is not available in estimates cannot be set as default.',
       );
     }
 
@@ -1832,7 +1953,7 @@ export class SystemsService {
 
     if (isLinearMaterial && data.allowScreen === true) {
       throw new BadRequestException(
-        "Linear material configs cannot allow screen.",
+        'Linear material configs cannot allow screen.',
       );
     }
 

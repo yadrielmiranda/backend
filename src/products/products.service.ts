@@ -5,11 +5,11 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
-} from "@nestjs/common";
-import { PrismaService } from "@/prisma/prisma.service";
-import { PricingMode, Prisma, Product, ProductKind } from "@prisma/client";
-import { CreateProductDto } from "./dto/create-product.dto";
-import { UpdateProductDto } from "./dto/update-product.dto";
+} from '@nestjs/common';
+import { PrismaService } from '@/prisma/prisma.service';
+import { PricingMode, Prisma, Product, ProductKind } from '@prisma/client';
+import { CreateProductDto } from './dto/create-product.dto';
+import { UpdateProductDto } from './dto/update-product.dto';
 
 function clampInt(v: any, def: number, min: number, max: number) {
   const n = Number(v);
@@ -38,7 +38,7 @@ function normalizeProductClassification(data: {
     pricingMode !== PricingMode.AREA_PERIMETER
   ) {
     throw new BadRequestException(
-      "GLAZED_UNIT products must use AREA_PERIMETER pricing mode.",
+      'GLAZED_UNIT products must use AREA_PERIMETER pricing mode.',
     );
   }
 
@@ -47,7 +47,7 @@ function normalizeProductClassification(data: {
     pricingMode !== PricingMode.LINEAR_INCH
   ) {
     throw new BadRequestException(
-      "LINEAR_MATERIAL products must use LINEAR_INCH pricing mode.",
+      'LINEAR_MATERIAL products must use LINEAR_INCH pricing mode.',
     );
   }
 
@@ -86,9 +86,9 @@ export class ProductsService {
       cursor: params.cursor,
       where: params.where,
       orderBy: params.orderBy ?? [
-        { sortOrder: "asc" },
-        { name: "asc" },
-        { id: "asc" },
+        { sortOrder: 'asc' },
+        { name: 'asc' },
+        { id: 'asc' },
       ],
     });
   }
@@ -105,19 +105,38 @@ export class ProductsService {
     const sortOrder =
       data.sortOrder ?? (currentMaxOrder._max.sortOrder ?? -1) + 1;
 
+    const [hasDefaultProduct, activeProductCount] = await Promise.all([
+      this.prisma.product.count({ where: { isDefault: true } }),
+      this.prisma.product.count({ where: { isActive: true } }),
+    ]);
+
+    const shouldBeDefault =
+      data.isDefault === true ||
+      (hasDefaultProduct === 0 && activeProductCount === 0);
+
     try {
-      return await this.prisma.product.create({
-        data: {
-          name: data.name,
-          sortOrder,
-          isActive: true,
-          diagramFamily: data.diagramFamily,
-          ...classification,
-        },
+      return await this.prisma.$transaction(async (tx) => {
+        if (shouldBeDefault) {
+          await tx.product.updateMany({
+            where: { isDefault: true },
+            data: { isDefault: false },
+          });
+        }
+
+        return tx.product.create({
+          data: {
+            name: data.name,
+            sortOrder,
+            isActive: true,
+            isDefault: shouldBeDefault,
+            diagramFamily: data.diagramFamily,
+            ...classification,
+          },
+        });
       });
     } catch (e: any) {
-      if (e?.code === "P2002") {
-        throw new ConflictException("Product already exists.");
+      if (e?.code === 'P2002') {
+        throw new ConflictException('Product already exists.');
       }
 
       throw e;
@@ -136,6 +155,8 @@ export class ProductsService {
         id: true,
         kind: true,
         pricingMode: true,
+        isActive: true,
+        isDefault: true,
       },
     });
 
@@ -145,30 +166,60 @@ export class ProductsService {
 
     const nextKind = data.kind ?? current.kind;
     const nextPricingMode = data.pricingMode ?? current.pricingMode;
+    const nextIsActive = data.isActive ?? current.isActive;
 
     const classification = normalizeProductClassification({
       kind: nextKind,
       pricingMode: nextPricingMode,
     });
 
+    if (current.isDefault && data.isDefault === false) {
+      throw new BadRequestException(
+        'Set another Product as default before removing this default.',
+      );
+    }
+
+    if (current.isDefault && data.isActive === false) {
+      throw new BadRequestException(
+        'Set another Product as default before deactivating this Product.',
+      );
+    }
+
+    if (data.isDefault === true && nextIsActive === false) {
+      throw new BadRequestException('The default Product must be active.');
+    }
+
     try {
-      return await this.prisma.product.update({
-        where,
-        data: {
-          name: data.name,
-          sortOrder: data.sortOrder,
-          isActive: data.isActive,
-          diagramFamily: data.diagramFamily,
-          ...classification,
-        },
+      return await this.prisma.$transaction(async (tx) => {
+        if (data.isDefault === true) {
+          await tx.product.updateMany({
+            where: {
+              isDefault: true,
+              id: { not: current.id },
+            },
+            data: { isDefault: false },
+          });
+        }
+
+        return tx.product.update({
+          where,
+          data: {
+            name: data.name,
+            sortOrder: data.sortOrder,
+            isActive: data.isActive,
+            isDefault: data.isDefault,
+            diagramFamily: data.diagramFamily,
+            ...classification,
+          },
+        });
       });
     } catch (e: any) {
-      if (e?.code === "P2025") {
+      if (e?.code === 'P2025') {
         throw new NotFoundException(`Product with ID #${where.id} not found`);
       }
 
-      if (e?.code === "P2002") {
-        throw new ConflictException("Product name already exists.");
+      if (e?.code === 'P2002') {
+        throw new ConflictException('Product name already exists.');
       }
 
       throw e;
@@ -176,18 +227,29 @@ export class ProductsService {
   }
 
   async deleteProduct(where: Prisma.ProductWhereUniqueInput): Promise<Product> {
+    const current = await this.prisma.product.findUnique({
+      where,
+      select: { isDefault: true },
+    });
+
+    if (current?.isDefault) {
+      throw new BadRequestException(
+        'Set another Product as default before deleting this Product.',
+      );
+    }
+
     try {
       return await this.prisma.product.delete({
         where,
       });
     } catch (e: any) {
-      if (e?.code === "P2025") {
+      if (e?.code === 'P2025') {
         throw new NotFoundException(`Product with ID #${where.id} not found`);
       }
 
-      if (e?.code === "P2003") {
+      if (e?.code === 'P2003') {
         throw new ConflictException(
-          "This product is being used and cannot be deleted. Deactivate it instead.",
+          'This product is being used and cannot be deleted. Deactivate it instead.',
         );
       }
 
@@ -210,7 +272,7 @@ export class ProductsService {
           },
         },
       },
-      orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }, { id: 'asc' }],
       take,
       skip,
     });

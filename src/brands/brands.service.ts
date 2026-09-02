@@ -2,12 +2,12 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
-} from "@nestjs/common";
-import { PrismaService } from "@/prisma/prisma.service";
-import { Brand, Prisma } from "@prisma/client";
-import { UpdateBrandCoatingsDto } from "./dto/update-brand-coatings.dto";
-import { UpdateBrandPrivaciesDto } from "./dto/update-brand-privacies.dto";
-import { UpdateBrandTintsDto } from "./dto/update-brand-tints.dto";
+} from '@nestjs/common';
+import { PrismaService } from '@/prisma/prisma.service';
+import { Brand, Prisma } from '@prisma/client';
+import { UpdateBrandCoatingsDto } from './dto/update-brand-coatings.dto';
+import { UpdateBrandPrivaciesDto } from './dto/update-brand-privacies.dto';
+import { UpdateBrandTintsDto } from './dto/update-brand-tints.dto';
 
 function clampInt(v: any, def: number, min: number, max: number) {
   const n = Number(v);
@@ -22,19 +22,23 @@ export class BrandsService {
   private async assertBrandExists(id: number) {
     const b = await this.prisma.brand.findUnique({
       where: { id },
-      select: { id: true },
+      select: { id: true, isActive: true },
     });
 
     if (!b) throw new NotFoundException(`Brand with ID #${id} not found.`);
+
+    return b;
   }
 
   private async assertProductExists(id: number) {
     const p = await this.prisma.product.findUnique({
       where: { id },
-      select: { id: true },
+      select: { id: true, isActive: true },
     });
 
     if (!p) throw new NotFoundException(`Product with ID #${id} not found.`);
+
+    return p;
   }
 
   async getBrandTintsForManage(brandId: number) {
@@ -50,10 +54,10 @@ export class BrandsService {
     const [catalog, associations] = await Promise.all([
       this.prisma.tint.findMany({
         orderBy: [
-          { isActive: "desc" },
-          { globalSortOrder: "asc" },
-          { color: "asc" },
-          { id: "asc" },
+          { isActive: 'desc' },
+          { globalSortOrder: 'asc' },
+          { color: 'asc' },
+          { id: 'asc' },
         ],
       }),
       this.prisma.brandTint.findMany({ where: { idBrand: brandId } }),
@@ -106,7 +110,7 @@ export class BrandsService {
 
     if (data.tints.length === 0) {
       throw new ConflictException(
-        "A Brand must have at least one available Tint.",
+        'A Brand must have at least one available Tint.',
       );
     }
 
@@ -126,7 +130,7 @@ export class BrandsService {
 
     if (defaults.length !== 1) {
       throw new ConflictException(
-        "Select exactly one default Tint for this Brand.",
+        'Select exactly one default Tint for this Brand.',
       );
     }
 
@@ -135,7 +139,7 @@ export class BrandsService {
     );
 
     if (!activeTintIds.has(defaults[0].tintId)) {
-      throw new ConflictException("The default Tint must be active.");
+      throw new ConflictException('The default Tint must be active.');
     }
 
     const normalized = data.tints.map((item, index) => {
@@ -165,7 +169,7 @@ export class BrandsService {
         )
       ) {
         throw new ConflictException(
-          "Tint surcharge Area Cost, Perimeter Cost and Fixed Cost are required and must be zero or greater.",
+          'Tint surcharge Area Cost, Perimeter Cost and Fixed Cost are required and must be zero or greater.',
         );
       }
 
@@ -202,10 +206,10 @@ export class BrandsService {
     const [catalog, associations] = await Promise.all([
       this.prisma.coating.findMany({
         orderBy: [
-          { isActive: "desc" },
-          { globalSortOrder: "asc" },
-          { name: "asc" },
-          { id: "asc" },
+          { isActive: 'desc' },
+          { globalSortOrder: 'asc' },
+          { name: 'asc' },
+          { id: 'asc' },
         ],
       }),
       this.prisma.brandCoating.findMany({ where: { idBrand: brandId } }),
@@ -258,7 +262,7 @@ export class BrandsService {
 
     if (data.coatings.length === 0) {
       throw new ConflictException(
-        "A Brand must have at least one available Coating.",
+        'A Brand must have at least one available Coating.',
       );
     }
 
@@ -280,7 +284,7 @@ export class BrandsService {
 
     if (defaults.length !== 1) {
       throw new ConflictException(
-        "Select exactly one default Coating for this Brand.",
+        'Select exactly one default Coating for this Brand.',
       );
     }
 
@@ -291,7 +295,7 @@ export class BrandsService {
     );
 
     if (!activeCoatingIds.has(defaults[0].coatingId)) {
-      throw new ConflictException("The default Coating must be active.");
+      throw new ConflictException('The default Coating must be active.');
     }
 
     const normalized = data.coatings.map((item, index) => {
@@ -321,7 +325,7 @@ export class BrandsService {
         )
       ) {
         throw new ConflictException(
-          "Coating surcharge Area Cost, Perimeter Cost and Fixed Cost are required and must be zero or greater.",
+          'Coating surcharge Area Cost, Perimeter Cost and Fixed Cost are required and must be zero or greater.',
         );
       }
 
@@ -357,11 +361,7 @@ export class BrandsService {
 
     const [catalog, associations] = await Promise.all([
       this.prisma.privacy.findMany({
-        orderBy: [
-          { isActive: "desc" },
-          { name: "asc" },
-          { id: "asc" },
-        ],
+        orderBy: [{ isActive: 'desc' }, { name: 'asc' }, { id: 'asc' }],
       }),
       this.prisma.brandPrivacy.findMany({ where: { idBrand: brandId } }),
     ]);
@@ -413,7 +413,7 @@ export class BrandsService {
 
     if (data.privacies.length === 0) {
       throw new ConflictException(
-        "A Brand must have at least one available Privacy option.",
+        'A Brand must have at least one available Privacy option.',
       );
     }
 
@@ -437,7 +437,7 @@ export class BrandsService {
 
     if (defaults.length !== 1) {
       throw new ConflictException(
-        "Select exactly one default Privacy option for this Brand.",
+        'Select exactly one default Privacy option for this Brand.',
       );
     }
 
@@ -448,9 +448,7 @@ export class BrandsService {
     );
 
     if (!activePrivacyIds.has(defaults[0].privacyId)) {
-      throw new ConflictException(
-        "The default Privacy option must be active.",
-      );
+      throw new ConflictException('The default Privacy option must be active.');
     }
 
     const normalized = data.privacies.map((item, index) => {
@@ -480,7 +478,7 @@ export class BrandsService {
         )
       ) {
         throw new ConflictException(
-          "Privacy surcharge Area Cost, Perimeter Cost and Fixed Cost are required and must be zero or greater.",
+          'Privacy surcharge Area Cost, Perimeter Cost and Fixed Cost are required and must be zero or greater.',
         );
       }
 
@@ -531,7 +529,7 @@ export class BrandsService {
       take,
       cursor: params.cursor,
       where: params.where,
-      orderBy: params.orderBy ?? { name: "asc" },
+      orderBy: params.orderBy ?? { name: 'asc' },
     });
   }
 
@@ -544,8 +542,8 @@ export class BrandsService {
         },
       });
     } catch (e: any) {
-      if (e?.code === "P2002") {
-        throw new ConflictException("Brand already exists.");
+      if (e?.code === 'P2002') {
+        throw new ConflictException('Brand already exists.');
       }
 
       throw e;
@@ -558,20 +556,35 @@ export class BrandsService {
   }): Promise<Brand> {
     const { where, data } = params;
 
+    if (data.isActive === false) {
+      const defaultAssociations = await this.prisma.brandProduct.count({
+        where: {
+          idBrand: Number(where.id),
+          isDefault: true,
+        },
+      });
+
+      if (defaultAssociations > 0) {
+        throw new ConflictException(
+          'Set another default Brand for its Products before deactivating this Brand.',
+        );
+      }
+    }
+
     try {
       return await this.prisma.brand.update({
         where,
         data,
       });
     } catch (e: any) {
-      if (e?.code === "P2025") {
+      if (e?.code === 'P2025') {
         throw new NotFoundException(
           `Brand with ID #${(where as any)?.id} not found.`,
         );
       }
 
-      if (e?.code === "P2002") {
-        throw new ConflictException("Brand name already exists.");
+      if (e?.code === 'P2002') {
+        throw new ConflictException('Brand name already exists.');
       }
 
       throw e;
@@ -579,18 +592,31 @@ export class BrandsService {
   }
 
   async deleteBrand(where: Prisma.BrandWhereUniqueInput): Promise<Brand> {
+    const defaultAssociations = await this.prisma.brandProduct.count({
+      where: {
+        idBrand: Number(where.id),
+        isDefault: true,
+      },
+    });
+
+    if (defaultAssociations > 0) {
+      throw new ConflictException(
+        'Set another default Brand for its Products before deleting this Brand.',
+      );
+    }
+
     try {
       return await this.prisma.brand.delete({ where });
     } catch (e: any) {
-      if (e?.code === "P2025") {
+      if (e?.code === 'P2025') {
         throw new NotFoundException(
           `Brand with ID #${(where as any)?.id} not found.`,
         );
       }
 
-      if (e?.code === "P2003") {
+      if (e?.code === 'P2003') {
         throw new ConflictException(
-          "This brand is being used and cannot be deleted. Deactivate it instead.",
+          'This brand is being used and cannot be deleted. Deactivate it instead.',
         );
       }
 
@@ -607,9 +633,9 @@ export class BrandsService {
         brandProducts: {
           include: { product: true },
           orderBy: [
-            { product: { sortOrder: "asc" } },
-            { product: { name: "asc" } },
-            { idProduct: "asc" },
+            { product: { sortOrder: 'asc' } },
+            { product: { name: 'asc' } },
+            { idProduct: 'asc' },
           ],
         },
       },
@@ -634,14 +660,14 @@ export class BrandsService {
     return this.prisma.brand.findMany({
       take,
       skip,
-      orderBy: { name: "asc" },
+      orderBy: { name: 'asc' },
       include: {
         brandProducts: {
           include: { product: true },
           orderBy: [
-            { product: { sortOrder: "asc" } },
-            { product: { name: "asc" } },
-            { idProduct: "asc" },
+            { product: { sortOrder: 'asc' } },
+            { product: { name: 'asc' } },
+            { idProduct: 'asc' },
           ],
         },
       },
@@ -665,37 +691,59 @@ export class BrandsService {
           ? { notIn: associatedProductIds }
           : undefined,
       },
-      orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }, { id: 'asc' }],
     });
   }
 
   async addProductToBrand(brandId: number, productId: number): Promise<Brand> {
-    await this.assertBrandExists(brandId);
-    await this.assertProductExists(productId);
+    const brand = await this.assertBrandExists(brandId);
+    const product = await this.assertProductExists(productId);
+
+    const [hasDefaultBrand, activeBrandCount] = await Promise.all([
+      this.prisma.brandProduct.count({
+        where: {
+          idProduct: productId,
+          isDefault: true,
+        },
+      }),
+      this.prisma.brandProduct.count({
+        where: {
+          idProduct: productId,
+          brand: { isActive: true },
+        },
+      }),
+    ]);
 
     try {
       return await this.prisma.brand.update({
         where: { id: brandId },
         data: {
           brandProducts: {
-            create: { idProduct: productId },
+            create: {
+              idProduct: productId,
+              isDefault:
+                hasDefaultBrand === 0 &&
+                activeBrandCount === 0 &&
+                brand.isActive &&
+                product.isActive,
+            },
           },
         },
         include: {
           brandProducts: {
             include: { product: true },
             orderBy: [
-              { product: { sortOrder: "asc" } },
-              { product: { name: "asc" } },
-              { idProduct: "asc" },
+              { product: { sortOrder: 'asc' } },
+              { product: { name: 'asc' } },
+              { idProduct: 'asc' },
             ],
           },
         },
       });
     } catch (e: any) {
-      if (e?.code === "P2002") {
+      if (e?.code === 'P2002') {
         throw new ConflictException(
-          "This product is already linked to the brand.",
+          'This product is already linked to the brand.',
         );
       }
 
@@ -709,6 +757,22 @@ export class BrandsService {
   ): Promise<Brand> {
     await this.assertBrandExists(brandId);
     await this.assertProductExists(productId);
+
+    const association = await this.prisma.brandProduct.findUnique({
+      where: {
+        idBrand_idProduct: {
+          idBrand: brandId,
+          idProduct: productId,
+        },
+      },
+      select: { isDefault: true },
+    });
+
+    if (association?.isDefault) {
+      throw new ConflictException(
+        'Set another default Brand for this Product before unlinking it.',
+      );
+    }
 
     try {
       return await this.prisma.brand.update({
@@ -727,19 +791,73 @@ export class BrandsService {
           brandProducts: {
             include: { product: true },
             orderBy: [
-              { product: { sortOrder: "asc" } },
-              { product: { name: "asc" } },
-              { idProduct: "asc" },
+              { product: { sortOrder: 'asc' } },
+              { product: { name: 'asc' } },
+              { idProduct: 'asc' },
             ],
           },
         },
       });
     } catch (e: any) {
-      if (e?.code === "P2025") {
-        throw new NotFoundException("Brand-product link not found.");
+      if (e?.code === 'P2025') {
+        throw new NotFoundException('Brand-product link not found.');
       }
 
       throw e;
     }
+  }
+
+  async setDefaultBrandForProduct(
+    brandId: number,
+    productId: number,
+  ): Promise<Brand> {
+    const association = await this.prisma.brandProduct.findUnique({
+      where: {
+        idBrand_idProduct: {
+          idBrand: brandId,
+          idProduct: productId,
+        },
+      },
+      include: {
+        brand: {
+          select: { id: true, isActive: true },
+        },
+        product: {
+          select: { id: true, isActive: true },
+        },
+      },
+    });
+
+    if (!association) {
+      throw new NotFoundException('Brand-product link not found.');
+    }
+
+    if (!association.brand.isActive || !association.product.isActive) {
+      throw new ConflictException(
+        'The default Brand and Product must both be active.',
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.brandProduct.updateMany({
+        where: {
+          idProduct: productId,
+          isDefault: true,
+        },
+        data: { isDefault: false },
+      });
+
+      await tx.brandProduct.update({
+        where: {
+          idBrand_idProduct: {
+            idBrand: brandId,
+            idProduct: productId,
+          },
+        },
+        data: { isDefault: true },
+      });
+    });
+
+    return this.getBrandWithProducts({ id: brandId });
   }
 }

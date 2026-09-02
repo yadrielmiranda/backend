@@ -1,4 +1,4 @@
-import { Type } from "class-transformer";
+import { Type } from 'class-transformer';
 import {
   IsBoolean,
   IsInt,
@@ -7,7 +7,7 @@ import {
   IsOptional,
   IsString,
   Min,
-} from "class-validator";
+} from 'class-validator';
 
 export class CreateSystemDto {
   @IsNotEmpty()
@@ -27,6 +27,10 @@ export class CreateSystemDto {
   @IsOptional()
   @IsBoolean()
   allowHighBottom?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isDefault?: boolean;
 
   @IsOptional()
   @Type(() => Number)
