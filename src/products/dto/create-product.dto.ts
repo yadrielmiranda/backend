@@ -3,7 +3,6 @@
 import { DiagramFamily, PricingMode, ProductKind } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
-  IsBoolean,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -34,8 +33,4 @@ export class CreateProductDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
-
-  @IsOptional()
-  @IsBoolean()
-  isDefault?: boolean;
 }

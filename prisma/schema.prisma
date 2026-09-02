@@ -220,7 +220,6 @@ model Product {
   name      String
   sortOrder Int     @default(0)
   isActive  Boolean @default(true)
-  isDefault Boolean @default(false)
 
   kind        ProductKind @default(GLAZED_UNIT)
   pricingMode PricingMode @default(AREA_PERIMETER)
@@ -240,7 +239,6 @@ model Product {
 
   @@index([isActive])
   @@index([isActive, sortOrder])
-  @@index([isDefault])
   @@index([kind])
   @@index([diagramFamily])
 }

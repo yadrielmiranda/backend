@@ -105,34 +105,15 @@ export class ProductsService {
     const sortOrder =
       data.sortOrder ?? (currentMaxOrder._max.sortOrder ?? -1) + 1;
 
-    const [hasDefaultProduct, activeProductCount] = await Promise.all([
-      this.prisma.product.count({ where: { isDefault: true } }),
-      this.prisma.product.count({ where: { isActive: true } }),
-    ]);
-
-    const shouldBeDefault =
-      data.isDefault === true ||
-      (hasDefaultProduct === 0 && activeProductCount === 0);
-
     try {
-      return await this.prisma.$transaction(async (tx) => {
-        if (shouldBeDefault) {
-          await tx.product.updateMany({
-            where: { isDefault: true },
-            data: { isDefault: false },
-          });
-        }
-
-        return tx.product.create({
-          data: {
-            name: data.name,
-            sortOrder,
-            isActive: true,
-            isDefault: shouldBeDefault,
-            diagramFamily: data.diagramFamily,
-            ...classification,
-          },
-        });
+      return await this.prisma.product.create({
+        data: {
+          name: data.name,
+          sortOrder,
+          isActive: true,
+          diagramFamily: data.diagramFamily,
+          ...classification,
+        },
       });
     } catch (e: any) {
       if (e?.code === 'P2002') {
@@ -155,8 +136,6 @@ export class ProductsService {
         id: true,
         kind: true,
         pricingMode: true,
-        isActive: true,
-        isDefault: true,
       },
     });
 
@@ -166,52 +145,21 @@ export class ProductsService {
 
     const nextKind = data.kind ?? current.kind;
     const nextPricingMode = data.pricingMode ?? current.pricingMode;
-    const nextIsActive = data.isActive ?? current.isActive;
-
     const classification = normalizeProductClassification({
       kind: nextKind,
       pricingMode: nextPricingMode,
     });
 
-    if (current.isDefault && data.isDefault === false) {
-      throw new BadRequestException(
-        'Set another Product as default before removing this default.',
-      );
-    }
-
-    if (current.isDefault && data.isActive === false) {
-      throw new BadRequestException(
-        'Set another Product as default before deactivating this Product.',
-      );
-    }
-
-    if (data.isDefault === true && nextIsActive === false) {
-      throw new BadRequestException('The default Product must be active.');
-    }
-
     try {
-      return await this.prisma.$transaction(async (tx) => {
-        if (data.isDefault === true) {
-          await tx.product.updateMany({
-            where: {
-              isDefault: true,
-              id: { not: current.id },
-            },
-            data: { isDefault: false },
-          });
-        }
-
-        return tx.product.update({
-          where,
-          data: {
-            name: data.name,
-            sortOrder: data.sortOrder,
-            isActive: data.isActive,
-            isDefault: data.isDefault,
-            diagramFamily: data.diagramFamily,
-            ...classification,
-          },
-        });
+      return await this.prisma.product.update({
+        where,
+        data: {
+          name: data.name,
+          sortOrder: data.sortOrder,
+          isActive: data.isActive,
+          diagramFamily: data.diagramFamily,
+          ...classification,
+        },
       });
     } catch (e: any) {
       if (e?.code === 'P2025') {
@@ -227,17 +175,6 @@ export class ProductsService {
   }
 
   async deleteProduct(where: Prisma.ProductWhereUniqueInput): Promise<Product> {
-    const current = await this.prisma.product.findUnique({
-      where,
-      select: { isDefault: true },
-    });
-
-    if (current?.isDefault) {
-      throw new BadRequestException(
-        'Set another Product as default before deleting this Product.',
-      );
-    }
-
     try {
       return await this.prisma.product.delete({
         where,
