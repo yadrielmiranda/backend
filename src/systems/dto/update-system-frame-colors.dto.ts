@@ -1,12 +1,13 @@
-import { Type } from "class-transformer";
+import { Type } from 'class-transformer';
 import {
   ArrayUnique,
   IsArray,
+  IsBoolean,
   IsInt,
   IsOptional,
   Min,
   ValidateNested,
-} from "class-validator";
+} from 'class-validator';
 
 export class UpdateSystemFrameColorItemDto {
   @Type(() => Number)
@@ -18,6 +19,10 @@ export class UpdateSystemFrameColorItemDto {
   @IsInt()
   @Min(0)
   sortOrder: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isDefault?: boolean;
 }
 
 export class UpdateSystemFrameColorsDto {

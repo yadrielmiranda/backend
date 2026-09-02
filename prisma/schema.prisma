@@ -615,13 +615,15 @@ model FrameColor {
 model SystemFrameColor {
   idSystem     Int
   idFrameColor Int
-  sortOrder    Int @default(0)
+  sortOrder    Int     @default(0)
+  isDefault    Boolean @default(false)
 
   system     System     @relation(fields: [idSystem], references: [id], onDelete: Cascade)
   frameColor FrameColor @relation(fields: [idFrameColor], references: [id], onDelete: Restrict)
 
   @@id([idSystem, idFrameColor])
   @@index([idFrameColor])
+  @@index([idSystem, isDefault])
   @@map("system_frame_colors")
 }
 

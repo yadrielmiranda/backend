@@ -1695,6 +1695,7 @@ export class SystemsService {
       selectedFrameColors: system.systemFrameColors.map((association) => ({
         idFrameColor: association.idFrameColor,
         sortOrder: association.sortOrder,
+        isDefault: association.isDefault,
       })),
       frameColorsCatalog,
     };
@@ -1706,19 +1707,52 @@ export class SystemsService {
   ) {
     const system = await this.prisma.system.findUnique({
       where: { id: systemId },
-      select: { id: true },
+      select: {
+        id: true,
+        systemFrameColors: {
+          where: { isDefault: true },
+          select: { idFrameColor: true },
+          take: 1,
+        },
+      },
     });
 
     if (!system) {
       throw new NotFoundException(`System with ID #${systemId} not found.`);
     }
 
-    const requestedFrameColors =
+    const existingDefaultFrameColorId =
+      system.systemFrameColors[0]?.idFrameColor ?? null;
+    const requestedFrameColors = (
       data.frameColors ??
       (data.frameColorIds ?? []).map((frameColorId, index) => ({
         frameColorId,
         sortOrder: index,
-      }));
+        isDefault: frameColorId === existingDefaultFrameColorId,
+      }))
+    ).map((item) => ({
+      ...item,
+      isDefault: item.isDefault === true,
+    }));
+
+    const requestedDefaults = requestedFrameColors.filter(
+      (item) => item.isDefault,
+    );
+
+    if (requestedDefaults.length > 1) {
+      throw new BadRequestException(
+        'Select only one default frame color for this System.',
+      );
+    }
+
+    if (requestedFrameColors.length > 0 && requestedDefaults.length === 0) {
+      const fallbackDefault =
+        requestedFrameColors.find(
+          (item) => item.frameColorId === existingDefaultFrameColorId,
+        ) ?? requestedFrameColors[0];
+
+      fallbackDefault.isDefault = true;
+    }
     const frameColorIds = requestedFrameColors.map((item) => item.frameColorId);
 
     const validFrameColors = await this.prisma.frameColor.findMany({
@@ -1745,6 +1779,7 @@ export class SystemsService {
             idSystem: systemId,
             idFrameColor: item.frameColorId,
             sortOrder: item.sortOrder,
+            isDefault: item.isDefault,
           })),
         });
       }
