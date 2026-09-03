@@ -44,6 +44,7 @@ import {
 import { EstimateMuntinService } from '@/estimates/muntins/estimate-muntin.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import type { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
+import { pieceMarkWithSuffix } from '@/pieces/piece.constants';
 import {
   calculateInstallationBalance,
   canOwnerEditInstallationEstimate,
@@ -953,8 +954,7 @@ export class InstallationWorkflowService {
         if (item?.action === EstimateRevisionItemAction.REMOVE) continue;
 
         const pricing = item?.calculatedSnapshot as
-          | (RevisionPiecePricingSnapshot & Prisma.JsonObject)
-          | null;
+          (RevisionPiecePricingSnapshot & Prisma.JsonObject) | null;
         rows.push({
           rate: new Decimal(pricing?.rate ?? piece.rate.toString()),
           price: new Decimal(pricing?.price ?? piece.price.toString()),
@@ -2971,8 +2971,7 @@ export class InstallationWorkflowService {
         if (item.action === EstimateRevisionItemAction.REMOVE) continue;
         const input = item.proposedPieceInput as Record<string, any> | null;
         const pricing = item.calculatedSnapshot as
-          | (RevisionPiecePricingSnapshot & Prisma.JsonObject)
-          | null;
+          (RevisionPiecePricingSnapshot & Prisma.JsonObject) | null;
         if (!input || !pricing) {
           throw new BadRequestException(
             `The proposal for "${originalPiece.mark}" is incomplete.`,
@@ -2997,10 +2996,14 @@ export class InstallationWorkflowService {
       );
       for (const group of createdGroups) {
         const requestedMark = String(group.input.mark ?? '').trim();
+        const baseMark = requestedMark || originalPiece.mark;
         const mark =
           createdGroups.length === 1 && group.items.length === originalPiece.qty
-            ? requestedMark || originalPiece.mark
-            : `${requestedMark || originalPiece.mark}-${group.items[0].sourceUnitIndex}`;
+            ? pieceMarkWithSuffix(baseMark, '')
+            : pieceMarkWithSuffix(
+                baseMark,
+                `-${group.items[0].sourceUnitIndex}`,
+              );
         const createdPiece = await this.createRevisionPiece(
           revision.estimateId,
           group.input,
@@ -3454,14 +3457,13 @@ export class InstallationWorkflowService {
       );
     }
     if (dto.type === InstallationAppointmentType.INSTALLATION) {
-      const unpaidDeliveryOverride =
-        job.estimate.order?.deliveries.find(
-          (delivery) =>
-            delivery.type === DeliveryType.INSTALLATION_OVERRIDE &&
-            delivery.status !== DeliveryStatus.CANCELED &&
-            delivery.status !== DeliveryStatus.COMPLETED &&
-            delivery.payment?.status !== PaymentStatus.PAID,
-        );
+      const unpaidDeliveryOverride = job.estimate.order?.deliveries.find(
+        (delivery) =>
+          delivery.type === DeliveryType.INSTALLATION_OVERRIDE &&
+          delivery.status !== DeliveryStatus.CANCELED &&
+          delivery.status !== DeliveryStatus.COMPLETED &&
+          delivery.payment?.status !== PaymentStatus.PAID,
+      );
       if (unpaidDeliveryOverride) {
         throw new BadRequestException(
           'The delivery charge must be paid before scheduling installation.',

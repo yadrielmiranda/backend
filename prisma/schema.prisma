@@ -1079,7 +1079,7 @@ model Piece {
   id      Int        @id @default(autoincrement())
   estim   Estimate   @relation(fields: [idEst], references: [id])
   idEst   Int
-  mark    String
+  mark    String     @db.VarChar(20)
   prod    Product    @relation(fields: [idProd], references: [id])
   idProd  Int
   bran    Brand      @relation(fields: [idBrand], references: [id])

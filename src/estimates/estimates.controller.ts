@@ -23,6 +23,7 @@ import {
   UpdateEstimateHeaderDto,
 } from './dto/estimate-header.dto';
 import { CreateEstimatePublicTokenDto } from './dto/create-estimate-public-token.dto';
+import { UpdatePieceMarkDto } from './dto/update-piece-mark.dto';
 
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
@@ -302,6 +303,31 @@ export class EstimatesController {
     const user = req.user as AuthUser;
 
     const result = await this.estimatesService.updatePieceInEstimate(
+      estimateId,
+      pieceId,
+      dto,
+      user.id,
+    );
+    await this.installationWorkflowService.refreshAfterEstimateChange(
+      estimateId,
+      user,
+    );
+    return result;
+  }
+
+  /**
+   * Actualiza únicamente el Mark sin recalcular precios ni dimensiones.
+   */
+  @Patch(':id/pieces/:pieceId/mark')
+  async updatePieceMark(
+    @Param('id', ParseIntPipe) estimateId: number,
+    @Param('pieceId', ParseIntPipe) pieceId: number,
+    @Body() dto: UpdatePieceMarkDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthUser;
+
+    const result = await this.estimatesService.updatePieceMarkInEstimate(
       estimateId,
       pieceId,
       dto,

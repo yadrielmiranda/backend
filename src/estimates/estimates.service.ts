@@ -28,6 +28,7 @@ import {
   UpdateEstimateHeaderDto,
 } from './dto/estimate-header.dto';
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
+import { UpdatePieceMarkDto } from './dto/update-piece-mark.dto';
 
 // --- Importación Estándar ---
 import Decimal from 'decimal.js';
@@ -1473,6 +1474,73 @@ export class EstimatesService {
         after: EstimateAuditSnapshotBuilder.build(updatedEstimate),
         meta: {
           source: 'EstimatesService.updatePieceInEstimate',
+          pieceId,
+        },
+      });
+
+      return updatedEstimate as EstimateWithRelations;
+    });
+  }
+
+  /**
+   * Cambia solamente el Mark de una pieza.
+   * Los importes y la configuración técnica permanecen intactos.
+   */
+  async updatePieceMarkInEstimate(
+    estimateId: number,
+    pieceId: number,
+    dto: UpdatePieceMarkDto,
+    userId: number,
+  ): Promise<EstimateWithRelations> {
+    return this.prisma.$transaction(async (tx) => {
+      const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
+
+      await this.assertEstimateCanBeEdited(
+        beforeEstimate,
+        estimateId,
+        userId,
+        tx as PrismaTransactionClient,
+      );
+
+      const existingPiece = beforeEstimate!.pieces.find(
+        (piece) => piece.id === pieceId,
+      );
+
+      if (!existingPiece) {
+        throw new NotFoundException(
+          `Piece #${pieceId} was not found in Estimate #${estimateId}.`,
+        );
+      }
+
+      await tx.piece.update({
+        where: { id: pieceId },
+        data: { mark: dto.mark },
+      });
+
+      const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
+        tx as PrismaTransactionClient,
+        estimateId,
+      );
+
+      if (!updatedEstimate) {
+        throw new NotFoundException(
+          `Estimate #${estimateId} not found after updating the Piece Mark.`,
+        );
+      }
+
+      await this.logs.log({
+        action: 'UPDATE',
+        entityType: 'Estimate',
+        entityId: updatedEstimate.id,
+        userId,
+        message: `Piece Mark updated in Estimate #${updatedEstimate.number}`,
+        before: EstimateAuditSnapshotBuilder.build(beforeEstimate),
+        after: EstimateAuditSnapshotBuilder.build(updatedEstimate),
+        meta: {
+          source: 'EstimatesService.updatePieceMarkInEstimate',
           pieceId,
         },
       });

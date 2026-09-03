@@ -9,9 +9,11 @@ import {
   IsArray,
   ValidateNested,
   Min,
-} from "class-validator";
-import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { Type } from "class-transformer";
+  MaxLength,
+} from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform, Type } from 'class-transformer';
+import { normalizePieceMark, PIECE_MARK_MAX_LENGTH } from '../piece.constants';
 
 export class CreatePieceMuntinPanelDto {
   @ApiProperty()
@@ -60,8 +62,10 @@ export class CreatePieceMuntinDto {
 }
 
 export class CreatePieceDto {
-  @ApiProperty()
+  @ApiProperty({ maxLength: PIECE_MARK_MAX_LENGTH })
+  @Transform(({ value }) => normalizePieceMark(value))
   @IsString()
+  @MaxLength(PIECE_MARK_MAX_LENGTH)
   mark: string;
 
   @ApiProperty()
@@ -172,7 +176,7 @@ export class CreatePieceDto {
   @IsNumber({}, { each: true })
   @Min(18, {
     each: true,
-    message: "Each Horizontal Height must be at least 18 inches.",
+    message: 'Each Horizontal Height must be at least 18 inches.',
   })
   horizontalHeights?: number[] | null;
 
