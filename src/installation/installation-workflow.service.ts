@@ -93,6 +93,13 @@ function preserveRemeasurementStage(
     : InstallationJobStatus.QUOTE_DRAFT;
 }
 
+function requestedLineForEstimateOwner(
+  dto: AddInstallationLineDto,
+  ownerRoleName: string | null | undefined,
+): AddInstallationLineDto {
+  return ownerRoleName === 'dealer' ? dto : { ...dto, description: undefined };
+}
+
 type PrismaTransactionClient = Omit<
   PrismaClient,
   '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
@@ -955,7 +962,8 @@ export class InstallationWorkflowService {
         if (item?.action === EstimateRevisionItemAction.REMOVE) continue;
 
         const pricing = item?.calculatedSnapshot as
-          (RevisionPiecePricingSnapshot & Prisma.JsonObject) | null;
+          | (RevisionPiecePricingSnapshot & Prisma.JsonObject)
+          | null;
         rows.push({
           rate: new Decimal(pricing?.rate ?? piece.rate.toString()),
           price: new Decimal(pricing?.price ?? piece.price.toString()),
@@ -1754,7 +1762,7 @@ export class InstallationWorkflowService {
       for (const selected of dto.selectedServices ?? []) {
         await this.addLineInTransaction(
           quote.id,
-          selected,
+          requestedLineForEstimateOwner(selected, estimate.user.role.name),
           InstallationLineOrigin.USER_SELECTED,
           tx,
         );
@@ -1828,7 +1836,13 @@ export class InstallationWorkflowService {
       const job = await tx.installationJob.findUnique({
         where: { id: jobId },
         include: {
-          estimate: { include: { status: true, order: true } },
+          estimate: {
+            include: {
+              status: true,
+              order: true,
+              user: { include: { role: true } },
+            },
+          },
           permit: true,
           payments: {
             where: {
@@ -1904,7 +1918,7 @@ export class InstallationWorkflowService {
       for (const selected of dto.selectedServices ?? []) {
         await this.addLineInTransaction(
           quote.id,
-          selected,
+          requestedLineForEstimateOwner(selected, job.estimate.user.role.name),
           InstallationLineOrigin.USER_SELECTED,
           tx,
         );
@@ -2589,7 +2603,11 @@ export class InstallationWorkflowService {
 
     await this.prisma.$transaction(async (tx) => {
       const quote = await this.ensureDraftQuote(jobId, user.id, tx);
-      await this.addLineInTransaction(quote.id, dto, origin, tx);
+      const lineInput =
+        origin === InstallationLineOrigin.USER_SELECTED
+          ? requestedLineForEstimateOwner(dto, job.estimate.user.role.name)
+          : dto;
+      await this.addLineInTransaction(quote.id, lineInput, origin, tx);
       if (job.status === InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) {
         await this.recalculateQuoteTotals(quote.id, tx);
       } else {
@@ -3118,7 +3136,8 @@ export class InstallationWorkflowService {
         if (item.action === EstimateRevisionItemAction.REMOVE) continue;
         const input = item.proposedPieceInput as Record<string, any> | null;
         const pricing = item.calculatedSnapshot as
-          (RevisionPiecePricingSnapshot & Prisma.JsonObject) | null;
+          | (RevisionPiecePricingSnapshot & Prisma.JsonObject)
+          | null;
         if (!input || !pricing) {
           throw new BadRequestException(
             `The proposal for "${originalPiece.mark}" is incomplete.`,
