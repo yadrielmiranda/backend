@@ -1951,8 +1951,8 @@ export class EstimatesService {
     });
   }
 
-  // recalcular estimado
-  async recalculateExpiredEstimate(
+  // Recalcula un Estimate activo editable o reactiva uno vencido.
+  async recalculateEstimate(
     estimateId: number,
     user: AuthUser,
   ): Promise<EstimateWithRelations> {
@@ -2004,29 +2004,38 @@ export class EstimatesService {
         throw new NotFoundException(`Estimate #${estimateId} not found.`);
       }
 
-      if (
-        beforeEstimate.payments.some(
-          (payment) =>
-            payment.status === PaymentStatus.PAID ||
-            Boolean(payment.stripeSessionId),
-        )
-      ) {
-        throw new BadRequestException(
-          `Estimate #${beforeEstimate.number} cannot be recalculated because its payment process has already started.`,
-        );
-      }
+      const statusName = beforeEstimate.status?.name ?? 'UNKNOWN';
 
-      if (beforeEstimate.status?.name !== 'Expired') {
-        throw new BadRequestException(
-          `Only expired estimates can be recalculated. Current status: ${
-            beforeEstimate.status?.name ?? 'UNKNOWN'
-          }.`,
+      if (statusName === 'Active') {
+        // Mantiene el recálculo manual bajo las mismas restricciones que
+        // cualquier otra modificación de un Estimate activo.
+        await this.assertEstimateCanBeEdited(
+          beforeEstimate,
+          estimateId,
+          user.id,
+          tx as PrismaTransactionClient,
         );
-      }
+      } else if (statusName === 'Expired') {
+        if (
+          beforeEstimate.payments.some(
+            (payment) =>
+              payment.status === PaymentStatus.PAID ||
+              Boolean(payment.stripeSessionId),
+          )
+        ) {
+          throw new BadRequestException(
+            `Estimate #${beforeEstimate.number} cannot be recalculated because its payment process has already started.`,
+          );
+        }
 
-      if (beforeEstimate.order) {
+        if (beforeEstimate.order) {
+          throw new BadRequestException(
+            `Estimate #${estimateId} already has an order and cannot be recalculated.`,
+          );
+        }
+      } else {
         throw new BadRequestException(
-          `Estimate #${estimateId} already has an order and cannot be recalculated.`,
+          `Only active or expired estimates can be recalculated. Current status: ${statusName}.`,
         );
       }
 
@@ -2330,7 +2339,7 @@ export class EstimatesService {
         message: `Estimate recalculated (#${refreshedEstimate.number})`,
         before: EstimateAuditSnapshotBuilder.build(beforeEstimate),
         after: EstimateAuditSnapshotBuilder.build(refreshedEstimate),
-        meta: { source: 'EstimatesService.recalculateExpiredEstimate' },
+        meta: { source: 'EstimatesService.recalculateEstimate' },
       });
 
       return refreshedEstimate;

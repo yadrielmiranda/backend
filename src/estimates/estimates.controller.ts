@@ -450,7 +450,9 @@ export class EstimatesController {
   ) {
     const user = req.user as AuthUser;
 
-    return this.estimatesService.recalculateExpiredEstimate(id, user);
+    const result = await this.estimatesService.recalculateEstimate(id, user);
+    await this.installationWorkflowService.refreshAfterEstimateChange(id, user);
+    return result;
   }
 
   @Get(':id/customer-charges')
