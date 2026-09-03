@@ -4,6 +4,7 @@ import {
   IsArray,
   IsBoolean,
   IsDateString,
+  IsDefined,
   IsEnum,
   IsInt,
   IsNumber,
@@ -76,9 +77,9 @@ export class AddInstallationLineDto {
 }
 
 export class RequestInstallationDto {
-  @IsOptional()
+  @IsDefined()
   @IsBoolean()
-  permitRequested?: boolean;
+  permitRequested: boolean;
 
   @IsOptional()
   @IsArray()
@@ -86,6 +87,8 @@ export class RequestInstallationDto {
   @Type(() => AddInstallationLineDto)
   selectedServices?: AddInstallationLineDto[];
 }
+
+export class UpdateInstallationRequestDto extends RequestInstallationDto {}
 
 export class AddInstallationMeasurementDto {
   @IsString()

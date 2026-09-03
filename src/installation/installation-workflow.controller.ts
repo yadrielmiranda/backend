@@ -26,6 +26,7 @@ import {
   SubmitInstallationQuoteDto,
   UpdateInstallationMeasurementDto,
   UpdateInstallationPermitDto,
+  UpdateInstallationRequestDto,
 } from './dto/installation-workflow.dto';
 import { FindInstallationJobsQueryDto } from './dto/find-installation-jobs-query.dto';
 
@@ -65,6 +66,19 @@ export class InstallationWorkflowController {
   ) {
     return this.workflow.requestInstallation(
       estimateId,
+      dto,
+      req.user as AuthUser,
+    );
+  }
+
+  @Patch('installations/:id/request')
+  updateInstallationRequest(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateInstallationRequestDto,
+    @Req() req: Request,
+  ) {
+    return this.workflow.updateInstallationRequest(
+      id,
       dto,
       req.user as AuthUser,
     );

@@ -67,6 +67,7 @@ import {
   SubmitInstallationQuoteDto,
   UpdateInstallationMeasurementDto,
   UpdateInstallationPermitDto,
+  UpdateInstallationRequestDto,
 } from './dto/installation-workflow.dto';
 import { FindInstallationJobsQueryDto } from './dto/find-installation-jobs-query.dto';
 import {
@@ -1810,6 +1811,152 @@ export class InstallationWorkflowService {
       }),
     ]);
     return result;
+  }
+
+  async updateInstallationRequest(
+    jobId: number,
+    dto: UpdateInstallationRequestDto,
+    user: AuthUser,
+  ) {
+    const currentJob = await this.findJob(jobId, user);
+    const beforeSelectedServiceIds =
+      currentJob.quotes[0]?.lines
+        .filter((line) => line.origin === InstallationLineOrigin.USER_SELECTED)
+        .map((line) => line.serviceId) ?? [];
+
+    await this.prisma.$transaction(async (tx) => {
+      const job = await tx.installationJob.findUnique({
+        where: { id: jobId },
+        include: {
+          estimate: { include: { status: true, order: true } },
+          permit: true,
+          payments: {
+            where: {
+              type: PaymentType.INSTALLATION_DEPOSIT,
+              OR: [
+                {
+                  status: {
+                    in: [PaymentStatus.PAID, PaymentStatus.REFUNDED],
+                  },
+                },
+                { paidAt: { not: null } },
+              ],
+            },
+          },
+          quotes: {
+            orderBy: { version: 'desc' },
+            take: 1,
+            include: { lines: true },
+          },
+        },
+      });
+
+      if (!job) {
+        throw new NotFoundException(`Installation job #${jobId} not found.`);
+      }
+      if (
+        job.status !== InstallationJobStatus.DEPOSIT_PAYMENT_PENDING ||
+        job.payments.length > 0
+      ) {
+        throw new BadRequestException(
+          'Installation details can only be changed before the installation deposit is paid.',
+        );
+      }
+      if (job.estimate.status.name !== 'Active' || job.estimate.order) {
+        throw new BadRequestException(
+          'Installation details cannot be changed after the estimate is ordered or closed.',
+        );
+      }
+
+      const quote = job.quotes[0];
+      if (!quote || quote.status !== InstallationQuoteStatus.DRAFT) {
+        throw new BadRequestException(
+          'Only the preliminary installation quote can be changed.',
+        );
+      }
+
+      if (dto.permitRequested && !job.permit) {
+        const parameter = await tx.globalParameter.findUnique({
+          where: { key: GlobalParameterKey.INSTALLATION_PERMIT_FEE },
+        });
+        if (!parameter || new Decimal(parameter.value.toString()).lte(0)) {
+          throw new BadRequestException(
+            'Configure a positive Installation Permit Fee before requesting a permit.',
+          );
+        }
+        await tx.installationPermit.create({
+          data: {
+            jobId,
+            status: InstallationPermitStatus.PAYMENT_PENDING,
+            permitFeeSnapshot: parameter.value,
+          },
+        });
+      } else if (!dto.permitRequested && job.permit) {
+        await tx.installationPermit.delete({ where: { jobId } });
+      }
+
+      await tx.installationQuoteLine.deleteMany({
+        where: {
+          quoteId: quote.id,
+          origin: InstallationLineOrigin.USER_SELECTED,
+        },
+      });
+      for (const selected of dto.selectedServices ?? []) {
+        await this.addLineInTransaction(
+          quote.id,
+          selected,
+          InstallationLineOrigin.USER_SELECTED,
+          tx,
+        );
+      }
+
+      const recalculatedQuote = await this.recalculateQuoteTotals(quote.id, tx);
+      const lineCount = await tx.installationQuoteLine.count({
+        where: { quoteId: quote.id },
+      });
+      if (
+        lineCount === 0 ||
+        new Decimal(recalculatedQuote.total.toString()).lte(0)
+      ) {
+        throw new BadRequestException(
+          'No installation price could be calculated for this estimate. Review the installation-service mappings.',
+        );
+      }
+      if (
+        new Decimal(job.depositAmountSnapshot.toString()).gt(
+          recalculatedQuote.total.toString(),
+        )
+      ) {
+        throw new BadRequestException(
+          'The Installation Deposit cannot exceed the preliminary installation total.',
+        );
+      }
+
+      await tx.installationJob.update({
+        where: { id: jobId },
+        data: { status: InstallationJobStatus.DEPOSIT_PAYMENT_PENDING },
+      });
+    });
+
+    await this.logs.log({
+      action: 'UPDATE',
+      entityType: 'InstallationJob',
+      entityId: jobId,
+      userId: user.id,
+      message: `Installation request updated for Estimate #${currentJob.estimate.number}.`,
+      before: {
+        permitRequested: Boolean(currentJob.permit),
+        selectedServiceIds: beforeSelectedServiceIds,
+      },
+      after: {
+        permitRequested: dto.permitRequested,
+        selectedServiceIds: (dto.selectedServices ?? []).map(
+          (service) => service.serviceId,
+        ),
+      },
+    });
+
+    return this.findJob(jobId, user);
   }
 
   async cancelInstallation(
