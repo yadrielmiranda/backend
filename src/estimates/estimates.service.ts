@@ -19,7 +19,6 @@ import {
   PaymentStatus,
   PaymentType,
   DealerMode,
-  DealerAffiliation,
 } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { UpsertPieceDto } from './dto/upsert-piece.dto';
@@ -121,6 +120,7 @@ export type EstimateWithRelations = Estimate & {
   installationSummary?: EstimateInstallationReportSummary | null;
   customerChargesSummary?: EstimateCustomerChargeSummary | null;
   branding?: Branding | null;
+  companyBranding?: Branding | null;
 };
 
 // vistas de PDF disponibles en la UI
@@ -755,6 +755,17 @@ export class EstimatesService {
     });
   }
 
+  private async resolveCompanyBranding(
+    tx: PrismaTransactionClient | PrismaService = this.prisma,
+  ) {
+    return (tx as any).branding.findFirst({
+      where: {
+        type: BrandingType.COMPANY,
+        isActive: true,
+      },
+    });
+  }
+
   // --- estimate (Get Single) ---
   async estimate(
     where: Prisma.EstimateWhereUniqueInput,
@@ -808,11 +819,12 @@ export class EstimatesService {
 
     if (!estimate) return null;
 
-    const [branding, pieces] = await Promise.all([
+    const [branding, companyBranding, pieces] = await Promise.all([
       this.resolveBrandingForEstimate(
         estimate,
         this.prisma as PrismaTransactionClient,
       ),
+      this.resolveCompanyBranding(this.prisma as PrismaTransactionClient),
       attachEstimatePieceDiagramMetadata(this.prisma, estimate.pieces),
     ]);
 
@@ -840,26 +852,24 @@ export class EstimatesService {
       installationSummary,
       customerChargesSummary,
       branding,
+      companyBranding,
     } as EstimateWithRelations;
   }
 
   // --- estimates (Get List) ---
-  private async syncActiveDealerClassification(user: AuthUser) {
+  private async syncActiveDealerMode(user: AuthUser) {
     if (user.role?.name !== 'dealer') return;
 
     const dealer = await this.prisma.user.findUnique({
       where: { id: user.id },
       select: {
         dealerMode: true,
-        dealerAffiliation: true,
         role: { select: { name: true } },
       },
     });
     if (!dealer || dealer.role.name !== 'dealer') return;
 
     const dealerMode = dealer.dealerMode ?? DealerMode.EXTERNAL;
-    const dealerAffiliation =
-      dealer.dealerAffiliation ?? DealerAffiliation.AUTHENTIC;
 
     await this.prisma.estimate.updateMany({
       where: {
@@ -877,13 +887,10 @@ export class EstimatesService {
         OR: [
           { dealerModeSnapshot: null },
           { dealerModeSnapshot: { not: dealerMode } },
-          { dealerAffiliationSnapshot: null },
-          { dealerAffiliationSnapshot: { not: dealerAffiliation } },
         ],
       },
       data: {
         dealerModeSnapshot: dealerMode,
-        dealerAffiliationSnapshot: dealerAffiliation,
       },
     });
   }
@@ -913,7 +920,7 @@ export class EstimatesService {
       return this.estimates({ where: {} });
     }
 
-    await this.syncActiveDealerClassification(user);
+    await this.syncActiveDealerMode(user);
 
     return this.estimates({
       where: { idUser: user.id },
@@ -922,7 +929,7 @@ export class EstimatesService {
 
   async findOneForUser(id: number, user: AuthUser) {
     if (!isPrivileged(user)) {
-      await this.syncActiveDealerClassification(user);
+      await this.syncActiveDealerMode(user);
     }
 
     const estimate = await this.estimate({ id });
@@ -977,7 +984,6 @@ export class EstimatesService {
         isTaxExempt: true,
         markupOverride: true,
         dealerMode: true,
-        dealerAffiliation: true,
         role: {
           select: {
             name: true,
@@ -1060,9 +1066,6 @@ export class EstimatesService {
           units: 0,
 
           dealerModeSnapshot: ownerIsDealer ? user.dealerMode : null,
-          dealerAffiliationSnapshot: ownerIsDealer
-            ? user.dealerAffiliation
-            : null,
           ownerMarkupSnapshot: new Prisma.Decimal(
             ownerMarkupSnapshot.toFixed(18),
           ),

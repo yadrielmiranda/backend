@@ -14,7 +14,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
-import { DealerAffiliation, DealerMode } from '@prisma/client';
+import { DealerMode } from '@prisma/client';
 import { US_STATE_CODES } from '@/common/us-states';
 import {
   trimOnly,
@@ -112,8 +112,4 @@ export class CreateUserDto {
   @IsOptional()
   @IsEnum(DealerMode)
   dealerMode?: DealerMode;
-
-  @IsOptional()
-  @IsEnum(DealerAffiliation)
-  dealerAffiliation?: DealerAffiliation;
 }

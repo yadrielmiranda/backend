@@ -1,14 +1,9 @@
-import {
-  DealerAffiliation,
-  DealerMode,
-  type Branding,
-} from '@prisma/client';
+import { DealerMode, type Branding } from '@prisma/client';
 
 import type { EstimateInstallationReportSummary } from '../reporting/estimate-installation-summary';
 import type { EstimateWithRelations, PdfView } from '../estimates.service';
 import {
   calculateMaterialFinancials,
-  resolveImpactMarkupRate,
   resolveMaterialSaleSubtotal,
 } from '../../orders/order-material-financials';
 
@@ -104,48 +99,29 @@ const estimatedMaterialProfitability = (
   ownerIsDealer: boolean,
 ) => {
   const dealerMode = ownerIsDealer ? estimate.dealerModeSnapshot : null;
-  const dealerAffiliation = ownerIsDealer
-    ? estimate.dealerAffiliationSnapshot
-    : null;
   const internalDealer = dealerMode === DealerMode.INTERNAL;
-  const belongsToImpact = dealerAffiliation === DealerAffiliation.IMPACT;
+  const companyName = estimate.companyBranding?.name?.trim() || 'Company';
   const saleSubtotal = resolveMaterialSaleSubtotal({
     dealerMode,
-    priceT: estimate.priceT,
-    customerPriceT: estimate.customerPriceT,
-  });
-  const impactMarkupRate = resolveImpactMarkupRate({
-    dealerMode,
-    dealerAffiliation,
-    ownerMarkupSnapshot: estimate.ownerMarkupSnapshot,
     priceT: estimate.priceT,
     customerPriceT: estimate.customerPriceT,
   });
   const financials = calculateMaterialFinancials({
     saleSubtotal,
     factoryRate: estimate.rateT,
-    dealerAffiliation,
-    impactMarkupRate,
   });
 
   return {
     saleChannel: ownerIsDealer
-      ? `${estimate.dealerModeSnapshot ?? 'EXTERNAL'} · ${
-          estimate.dealerAffiliationSnapshot ?? 'AUTHENTIC'
-        }`
-      : 'DIRECT CLIENT · AUTHENTIC',
-    belongsToImpact,
-    estimatedImpactProfit: financials.impactProfit.toNumber(),
-    estimatedAuthenticProfit: financials.authenticProfit.toNumber(),
-    calculationNote: belongsToImpact
-      ? internalDealer
-        ? 'Estimated Impact profit keeps the full effective customer material markup. Estimated Authentic profit is only the remaining amount above it.'
-        : 'Estimated Impact profit keeps the full stored Impact markup. Estimated Authentic profit is only the remaining amount above it.'
-      : internalDealer
-        ? 'Estimated Authentic profit uses customer material subtotal minus estimated factory rate.'
-        : ownerIsDealer
-          ? "Estimated Authentic profit uses dealer material subtotal minus estimated factory rate. The dealer's customer resale markup is excluded."
-          : 'Estimated Authentic profit uses material sale subtotal minus estimated factory rate.',
+      ? `${estimate.dealerModeSnapshot ?? 'EXTERNAL'} DEALER`
+      : 'DIRECT CLIENT',
+    profitLabel: `Estimated ${companyName} profit`,
+    estimatedProfit: financials.totalProfit.toNumber(),
+    calculationNote: internalDealer
+      ? `Estimated ${companyName} profit uses customer material subtotal minus estimated factory rate.`
+      : ownerIsDealer
+        ? `Estimated ${companyName} profit uses dealer material subtotal minus estimated factory rate. The dealer's customer resale markup is excluded.`
+        : `Estimated ${companyName} profit uses material sale subtotal minus estimated factory rate.`,
   };
 };
 
@@ -840,8 +816,7 @@ export class EstimatePdfHtmlBuilder {
             <div class="profit-grid">
               ${summaryRow('Sale channel', escapeHtml(profitability.saleChannel))}
               ${summaryRow('Estimated factory rate', formatMoney(estimate.rateT))}
-              ${profitability.belongsToImpact ? summaryRow('Estimated Impact profit', formatMoney(profitability.estimatedImpactProfit), { strong: true }) : ''}
-              ${summaryRow('Estimated Authentic profit', formatMoney(profitability.estimatedAuthenticProfit), { strong: true })}
+              ${summaryRow(escapeHtml(profitability.profitLabel), formatMoney(profitability.estimatedProfit), { strong: true })}
             </div>
             <p class="profit-note">${escapeHtml(profitability.calculationNote)}</p>
           </div>`

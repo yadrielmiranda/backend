@@ -238,8 +238,6 @@ export class OrdersService {
       ? calculateMaterialFinancials({
           saleSubtotal: current.saleSubtotal.toString(),
           factoryRate: finalRateReal.toString(),
-          dealerAffiliation: current.dealerAffiliationSnapshot,
-          impactMarkupRate: current.impactMarkupRate.toString(),
         })
       : null;
 
@@ -251,17 +249,6 @@ export class OrdersService {
       ...(normalizedRateReal !== undefined && { rateReal: normalizedRateReal }),
       netProfitReal: realMaterialFinancials
         ? new Prisma.Decimal(realMaterialFinancials.totalProfit.toFixed(2))
-        : null,
-      factoryPriceWithMarkupReal: realMaterialFinancials
-        ? new Prisma.Decimal(
-            realMaterialFinancials.factoryPriceWithMarkup.toFixed(2),
-          )
-        : null,
-      impactProfitReal: realMaterialFinancials
-        ? new Prisma.Decimal(realMaterialFinancials.impactProfit.toFixed(2))
-        : null,
-      authenticProfitReal: realMaterialFinancials
-        ? new Prisma.Decimal(realMaterialFinancials.authenticProfit.toFixed(2))
         : null,
       ...(statusWillChange && { updateStatus: new Date() }),
       ...(statusWillChange &&
@@ -339,9 +326,6 @@ export class OrdersService {
         poNumber: current.poNumber ?? null,
         rateReal: current.rateReal ?? null,
         netProfitReal: current.netProfitReal ?? null,
-        factoryPriceWithMarkupReal: current.factoryPriceWithMarkupReal ?? null,
-        impactProfitReal: current.impactProfitReal ?? null,
-        authenticProfitReal: current.authenticProfitReal ?? null,
         updateStatus: current.updateStatus ?? null,
       },
       after: {
@@ -351,9 +335,6 @@ export class OrdersService {
         poNumber: updated.poNumber ?? null,
         rateReal: updated.rateReal ?? null,
         netProfitReal: updated.netProfitReal ?? null,
-        factoryPriceWithMarkupReal: updated.factoryPriceWithMarkupReal ?? null,
-        impactProfitReal: updated.impactProfitReal ?? null,
-        authenticProfitReal: updated.authenticProfitReal ?? null,
         updateStatus: updated.updateStatus ?? null,
       },
 

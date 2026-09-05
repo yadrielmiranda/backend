@@ -3,12 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import {
-  BrandingType,
-  DealerAffiliation,
-  DealerMode,
-  PaymentStatus,
-} from '@prisma/client';
+import { BrandingType, DealerMode, PaymentStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 
 import { PrismaService } from '@/prisma/prisma.service';
@@ -88,7 +83,6 @@ export class EstimatePublicShareService {
         publicTotalToken: true,
         publicTokenEnabled: true,
         dealerModeSnapshot: true,
-        dealerAffiliationSnapshot: true,
         order: { select: { id: true } },
         payments: {
           where: {
@@ -108,7 +102,6 @@ export class EstimatePublicShareService {
         user: {
           select: {
             dealerMode: true,
-            dealerAffiliation: true,
             role: {
               select: {
                 name: true,
@@ -136,11 +129,8 @@ export class EstimatePublicShareService {
     }
 
     const currentDealerMode = estimate.user.dealerMode ?? DealerMode.EXTERNAL;
-    const currentDealerAffiliation =
-      estimate.user.dealerAffiliation ?? DealerAffiliation.AUTHENTIC;
     const classificationChanged =
-      estimate.dealerModeSnapshot !== currentDealerMode ||
-      estimate.dealerAffiliationSnapshot !== currentDealerAffiliation;
+      estimate.dealerModeSnapshot !== currentDealerMode;
 
     if (
       estimate.status?.name === 'Active' &&
@@ -157,7 +147,6 @@ export class EstimatePublicShareService {
         where: { id },
         data: {
           dealerModeSnapshot: currentDealerMode,
-          dealerAffiliationSnapshot: currentDealerAffiliation,
         },
       });
     }

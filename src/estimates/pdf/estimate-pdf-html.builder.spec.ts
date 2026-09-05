@@ -28,7 +28,6 @@ const estimateFixture = (installationIncluded = true) =>
     netProfit: '29.71',
     netProfitD: '34.17',
     dealerModeSnapshot: 'EXTERNAL',
-    dealerAffiliationSnapshot: 'AUTHENTIC',
     ownerMarkupSnapshot: '0.15',
     status: { name: 'Active' },
     user: {
@@ -37,6 +36,7 @@ const estimateFixture = (installationIncluded = true) =>
       role: { name: 'dealer' },
     },
     branding: { name: 'Dealer Windows', brandingColor: '#2563EB' },
+    companyBranding: { name: 'Configured Company' },
     pieces: [
       {
         id: 77,
@@ -319,78 +319,37 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).not.toContain('Not included');
   });
 
-  it('splits an internal Impact dealer customer margin between both companies in the admin PDF', () => {
+  it('shows one complete company profit for an internal dealer in the admin PDF', () => {
     const estimate = estimateFixture();
     Object.assign(estimate, {
       dealerModeSnapshot: 'INTERNAL',
-      dealerAffiliationSnapshot: 'IMPACT',
     });
 
     const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
 
-    expect(html).toContain('INTERNAL · IMPACT');
+    expect(html).toContain('INTERNAL DEALER');
     expect(html).toMatch(
-      /<span>Estimated Impact profit<\/span>\s*<span>\$29\.71<\/span>/,
+      /<span>Estimated Configured Company profit<\/span>\s*<span>\$63\.88<\/span>/,
     );
-    expect(html).toMatch(
-      /<span>Estimated Authentic profit<\/span>\s*<span>\$34\.17<\/span>/,
-    );
-    expect(html).not.toContain('Estimated total company profit');
+    expect(html).not.toContain('Estimated Impact profit');
+    expect(html).not.toContain('Estimated Authentic profit');
     expect(html).not.toContain('Dealer profit');
   });
 
-  it('assigns an internal Authentic dealer customer margin to Authentic in the admin PDF', () => {
-    const estimate = estimateFixture();
-    Object.assign(estimate, {
-      dealerModeSnapshot: 'INTERNAL',
-      dealerAffiliationSnapshot: 'AUTHENTIC',
-    });
-
-    const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
-
-    expect(html).toContain('INTERNAL · AUTHENTIC');
-    expect(html).not.toContain('Estimated Impact profit');
-    expect(html).toMatch(
-      /<span>Estimated Authentic profit<\/span>\s*<span>\$63\.88<\/span>/,
-    );
-    expect(html).not.toContain('Estimated total company profit');
-  });
-
-  it('assigns an external Impact dealer estimate margin to Impact in the admin PDF', () => {
-    const estimate = estimateFixture();
-    Object.assign(estimate, {
-      dealerModeSnapshot: 'EXTERNAL',
-      dealerAffiliationSnapshot: 'IMPACT',
-    });
-
-    const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
-
-    expect(html).toContain('EXTERNAL · IMPACT');
-    expect(html).toMatch(
-      /<span>Estimated Impact profit<\/span>\s*<span>\$29\.71<\/span>/,
-    );
-    expect(html).toMatch(
-      /<span>Estimated Authentic profit<\/span>\s*<span>\$0\.00<\/span>/,
-    );
-    expect(html).not.toContain('Estimated total company profit');
-  });
-
-  it('assigns an external Authentic dealer estimate margin to Authentic in the admin PDF', () => {
+  it('uses the dealer subtotal for an external dealer in the admin PDF', () => {
     const html = EstimatePdfHtmlBuilder.build(estimateFixture(), 'admin');
 
-    expect(html).toContain('EXTERNAL · AUTHENTIC');
+    expect(html).toContain('EXTERNAL DEALER');
     expect(html).not.toContain('Estimated Impact profit');
     expect(html).toMatch(
-      /<span>Estimated Authentic profit<\/span>\s*<span>\$29\.71<\/span>/,
+      /<span>Estimated Configured Company profit<\/span>\s*<span>\$29\.71<\/span>/,
     );
-    expect(html).not.toContain('Estimated total company profit');
   });
 
-  it('shows only Authentic profit for a direct client in the admin PDF', () => {
+  it('uses the configured company name for a direct client in the admin PDF', () => {
     const estimate = estimateFixture();
     Object.assign(estimate, {
       dealerModeSnapshot: null,
-      dealerAffiliationSnapshot: null,
       user: {
         ...estimate.user,
         role: { name: 'client' },
@@ -399,12 +358,11 @@ describe('EstimatePdfHtmlBuilder', () => {
 
     const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
 
-    expect(html).toContain('DIRECT CLIENT · AUTHENTIC');
+    expect(html).toContain('DIRECT CLIENT');
     expect(html).not.toContain('Estimated Impact profit');
     expect(html).toMatch(
-      /<span>Estimated Authentic profit<\/span>\s*<span>\$29\.71<\/span>/,
+      /<span>Estimated Configured Company profit<\/span>\s*<span>\$29\.71<\/span>/,
     );
-    expect(html).not.toContain('Estimated total company profit');
   });
 
   it('omits the installation section when there is no installation', () => {

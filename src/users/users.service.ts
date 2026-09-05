@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
-import { DealerAffiliation, DealerMode, Prisma, User } from '@prisma/client';
+import { DealerMode, Prisma, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -44,28 +44,14 @@ export class UsersService {
     return markup;
   }
 
-  private resolveDealerClassification(params: {
+  private resolveDealerMode(params: {
     roleName: string;
     dealerMode?: DealerMode | null;
-    dealerAffiliation?: DealerAffiliation | null;
     fallbackMode?: DealerMode | null;
-    fallbackAffiliation?: DealerAffiliation | null;
   }) {
-    if (params.roleName !== 'dealer') {
-      return {
-        dealerMode: null,
-        dealerAffiliation: null,
-      };
-    }
+    if (params.roleName !== 'dealer') return null;
 
-    return {
-      dealerMode:
-        params.dealerMode ?? params.fallbackMode ?? DealerMode.EXTERNAL,
-      dealerAffiliation:
-        params.dealerAffiliation ??
-        params.fallbackAffiliation ??
-        DealerAffiliation.AUTHENTIC,
-    };
+    return params.dealerMode ?? params.fallbackMode ?? DealerMode.EXTERNAL;
   }
 
   private readonly safeSelect = {
@@ -82,7 +68,6 @@ export class UsersService {
     markupOverride: true,
     isTaxExempt: true,
     dealerMode: true,
-    dealerAffiliation: true,
     isActive: true,
     deletedAt: true,
     idRole: true,
@@ -113,7 +98,6 @@ export class UsersService {
       markupOverride: u.markupOverride ?? null,
       isTaxExempt: u.isTaxExempt ?? null,
       dealerMode: u.dealerMode ?? null,
-      dealerAffiliation: u.dealerAffiliation ?? null,
       isActive: u.isActive ?? null,
       deletedAt: u.deletedAt ?? null,
       passwordUpdatedAt: u.passwordUpdatedAt ?? null,
@@ -165,13 +149,6 @@ export class UsersService {
 
     if ('dealerMode' in dto && cmp(before.dealerMode, after.dealerMode)) {
       changed.push('dealerMode');
-    }
-
-    if (
-      'dealerAffiliation' in dto &&
-      cmp(before.dealerAffiliation, after.dealerAffiliation)
-    ) {
-      changed.push('dealerAffiliation');
     }
 
     if ('isActive' in dto && cmp(before.isActive, after.isActive)) {
@@ -230,13 +207,8 @@ export class UsersService {
   }
 
   async createUser(userData: CreateUserDto): Promise<UserSafe> {
-    const {
-      idRole,
-      installationPriceProfileId,
-      dealerMode,
-      dealerAffiliation,
-      ...rest
-    } = userData;
+    const { idRole, installationPriceProfileId, dealerMode, ...rest } =
+      userData;
     const hashedPassword = await bcrypt.hash(rest.password, 10);
 
     const role = await this.prisma.role.findUnique({
@@ -247,10 +219,9 @@ export class UsersService {
       throw new BadRequestException('The selected role does not exist.');
     }
 
-    const classification = this.resolveDealerClassification({
+    const resolvedDealerMode = this.resolveDealerMode({
       roleName: role.name,
       dealerMode,
-      dealerAffiliation,
     });
 
     if (installationPriceProfileId != null) {
@@ -269,7 +240,7 @@ export class UsersService {
       data: {
         ...rest,
         password: hashedPassword,
-        ...classification,
+        dealerMode: resolvedDealerMode,
         role: { connect: { id: idRole } },
         ...(installationPriceProfileId
           ? {
@@ -295,7 +266,6 @@ export class UsersService {
       installationPriceProfileId,
       markupOverride,
       dealerMode,
-      dealerAffiliation,
       ...rest
     } = userData;
 
@@ -308,7 +278,6 @@ export class UsersService {
         id: true,
         idRole: true,
         dealerMode: true,
-        dealerAffiliation: true,
         role: { select: { name: true } },
       },
     });
@@ -340,15 +309,11 @@ export class UsersService {
       dataForPrisma.role = { connect: { id: idRole } };
     }
 
-    const classification = this.resolveDealerClassification({
+    dataForPrisma.dealerMode = this.resolveDealerMode({
       roleName: nextRoleName,
       dealerMode,
-      dealerAffiliation,
       fallbackMode: existing.dealerMode,
-      fallbackAffiliation: existing.dealerAffiliation,
     });
-    dataForPrisma.dealerMode = classification.dealerMode;
-    dataForPrisma.dealerAffiliation = classification.dealerAffiliation;
 
     if (installationPriceProfileId != null) {
       const profile = await this.prisma.installationPriceProfile.findFirst({

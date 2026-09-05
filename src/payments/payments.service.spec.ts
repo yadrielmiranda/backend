@@ -5,7 +5,6 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
-  DealerAffiliation,
   DealerMode,
   PaymentMethod,
   PaymentPayerType,
@@ -69,7 +68,6 @@ describe('PaymentsService reconciliation', () => {
         rateT: new Prisma.Decimal(800),
         netProfit: new Prisma.Decimal(300),
         dealerModeSnapshot: DealerMode.EXTERNAL,
-        dealerAffiliationSnapshot: DealerAffiliation.IMPACT,
         ownerMarkupSnapshot: new Prisma.Decimal(0.15),
         idUser: 7,
         user: {
@@ -345,7 +343,6 @@ describe('PaymentsService reconciliation', () => {
       customerPriceT: new Prisma.Decimal(1380),
       rateT: new Prisma.Decimal(1000),
       dealerModeSnapshot: DealerMode.INTERNAL,
-      dealerAffiliationSnapshot: DealerAffiliation.IMPACT,
       ownerMarkupSnapshot: new Prisma.Decimal(-0.1668954),
       customerFirstName: 'Final',
       customerLastName: 'Customer',
@@ -445,8 +442,7 @@ describe('PaymentsService reconciliation', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           saleSubtotal: new Prisma.Decimal(1380),
-          impactProfit: new Prisma.Decimal(150),
-          authenticProfit: new Prisma.Decimal(230),
+          netProfit: new Prisma.Decimal(380),
         }),
       }),
     );

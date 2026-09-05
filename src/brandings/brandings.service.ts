@@ -2,16 +2,16 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
-} from "@nestjs/common";
-import { PrismaService } from "@/prisma/prisma.service";
-import { BrandingType } from "@prisma/client";
-import { CreateBrandingDto } from "./dto/create-branding.dto";
-import { UpdateBrandingDto } from "./dto/update-branding.dto";
+} from '@nestjs/common';
+import { PrismaService } from '@/prisma/prisma.service';
+import { BrandingType } from '@prisma/client';
+import { CreateBrandingDto } from './dto/create-branding.dto';
+import { UpdateBrandingDto } from './dto/update-branding.dto';
 
 function stripQuery(url?: string | null) {
   // ✅ Guardamos limpio en DB: sin ?v=...
   if (!url) return url ?? null;
-  return url.split("?")[0];
+  return url.split('?')[0];
 }
 
 @Injectable()
@@ -28,6 +28,30 @@ export class BrandingsService {
     });
   }
 
+  async getPublicCompanyBranding() {
+    return this.prisma.branding.findFirst({
+      where: { type: BrandingType.COMPANY, isActive: true },
+      select: {
+        id: true,
+        type: true,
+        userId: true,
+        name: true,
+        phone: true,
+        email: true,
+        website: true,
+        street: true,
+        city: true,
+        state: true,
+        postalCode: true,
+        logoUrl: true,
+        brandingColor: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+  }
+
   async createCompanyBranding(dto: CreateBrandingDto) {
     const existing = await this.prisma.branding.findFirst({
       where: { type: BrandingType.COMPANY },
@@ -36,7 +60,7 @@ export class BrandingsService {
 
     if (existing) {
       throw new BadRequestException(
-        "Company branding already exists. Use update instead.",
+        'Company branding already exists. Use update instead.',
       );
     }
 
@@ -66,7 +90,7 @@ export class BrandingsService {
 
     if (!existing) {
       throw new NotFoundException(
-        "Company branding does not exist. Create it first.",
+        'Company branding does not exist. Create it first.',
       );
     }
 
@@ -106,7 +130,7 @@ export class BrandingsService {
 
     if (existing) {
       throw new BadRequestException(
-        "Dealer branding already exists. Use update instead.",
+        'Dealer branding already exists. Use update instead.',
       );
     }
 
@@ -137,7 +161,7 @@ export class BrandingsService {
 
     if (!existing) {
       throw new NotFoundException(
-        "Dealer branding does not exist. Create it first.",
+        'Dealer branding does not exist. Create it first.',
       );
     }
 

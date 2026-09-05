@@ -24,11 +24,9 @@ function sharedEstimateFixture() {
     customerTaxAmount: '18.34',
     customerTotalPayable: '280.29',
     dealerModeSnapshot: 'EXTERNAL',
-    dealerAffiliationSnapshot: 'AUTHENTIC',
     status: { name: 'Active' },
     user: {
       dealerMode: 'EXTERNAL',
-      dealerAffiliation: 'AUTHENTIC',
       role: { name: 'dealer' },
     },
     customerCharges: [],
@@ -311,13 +309,11 @@ describe('EstimatePublicShareService customer pricing modes', () => {
       publicTotalToken: null,
       publicTokenEnabled: true,
       dealerModeSnapshot: 'EXTERNAL',
-      dealerAffiliationSnapshot: 'AUTHENTIC',
       order: null,
       payments: [],
       status: { name: 'Active' },
       user: {
         dealerMode: 'EXTERNAL',
-        dealerAffiliation: 'AUTHENTIC',
         role: { name: 'dealer' },
       },
     });
@@ -338,7 +334,7 @@ describe('EstimatePublicShareService customer pricing modes', () => {
     expect(result.token).not.toBe('detailed-token');
   });
 
-  it('updates a legacy active estimate to the dealer current classification before returning its token', async () => {
+  it('updates an active estimate to the dealer current mode before returning its token', async () => {
     const { prisma, service } = buildService();
     prisma.estimate.findUnique.mockResolvedValue({
       id: 9,
@@ -347,13 +343,11 @@ describe('EstimatePublicShareService customer pricing modes', () => {
       publicTotalToken: null,
       publicTokenEnabled: true,
       dealerModeSnapshot: 'EXTERNAL',
-      dealerAffiliationSnapshot: 'IMPACT',
       order: null,
       payments: [],
       status: { name: 'Active' },
       user: {
         dealerMode: 'INTERNAL',
-        dealerAffiliation: 'AUTHENTIC',
         role: { name: 'dealer' },
       },
     });
@@ -369,7 +363,6 @@ describe('EstimatePublicShareService customer pricing modes', () => {
       where: { id: 9 },
       data: {
         dealerModeSnapshot: 'INTERNAL',
-        dealerAffiliationSnapshot: 'AUTHENTIC',
       },
     });
     expect(result).toEqual({

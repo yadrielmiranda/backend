@@ -1,71 +1,106 @@
-import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { BrandingType } from '@prisma/client';
 import * as nodemailer from 'nodemailer';
+import { PrismaService } from '@/prisma/prisma.service';
+
+const escapeHtml = (value: string) =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
 
 @Injectable()
 export class MailService {
-    private readonly logger = new Logger(MailService.name);
-    private readonly transporter: nodemailer.Transporter;
+  private readonly logger = new Logger(MailService.name);
+  private readonly transporter: nodemailer.Transporter;
 
-    constructor(private readonly config: ConfigService) {
-        const host = this.config.get<string>('SMTP_HOST');
-        const port = Number(this.config.get<string>('SMTP_PORT') ?? 587);
-        const secure = this.config.get<string>('SMTP_SECURE') === 'true';
-        const user = this.config.get<string>('SMTP_USER');
-        const pass = this.config.get<string>('SMTP_PASS');
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {
+    const host = this.config.get<string>('SMTP_HOST');
+    const port = Number(this.config.get<string>('SMTP_PORT') ?? 587);
+    const secure = this.config.get<string>('SMTP_SECURE') === 'true';
+    const user = this.config.get<string>('SMTP_USER');
+    const pass = this.config.get<string>('SMTP_PASS');
 
-        if (!host || !user || !pass) {
-            this.logger.warn(
-                'SMTP configuration is incomplete. Email sending will fail until SMTP env variables are configured.',
-            );
-        }
-
-        this.transporter = nodemailer.createTransport({
-            host,
-            port,
-            secure,
-            auth: {
-                user,
-                pass,
-            },
-        });
+    if (!host || !user || !pass) {
+      this.logger.warn(
+        'SMTP configuration is incomplete. Email sending will fail until SMTP env variables are configured.',
+      );
     }
 
-    private getFrom() {
-        const fromName = this.config.get<string>('SMTP_FROM_NAME') ?? 'Authentic Evolution';
-        const fromEmail = this.config.get<string>('SMTP_FROM_EMAIL');
+    this.transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: {
+        user,
+        pass,
+      },
+    });
+  }
 
-        if (!fromEmail) {
-            throw new InternalServerErrorException('SMTP_FROM_EMAIL is not configured.');
-        }
+  private async getCompanyName() {
+    try {
+      const branding = await this.prisma.branding.findFirst({
+        where: { type: BrandingType.COMPANY, isActive: true },
+        select: { name: true },
+      });
 
-        return `"${fromName}" <${fromEmail}>`;
+      if (branding?.name?.trim()) return branding.name.trim();
+    } catch (error) {
+      this.logger.warn('Could not load company branding for email.', error);
     }
 
-    async sendPasswordResetEmail(params: {
-        to: string;
-        resetLink: string;
-        expiresInMinutes: number;
-    }) {
-        const subject = 'Reset your password';
+    return this.config.get<string>('SMTP_FROM_NAME')?.trim() || 'Company';
+  }
 
-        const text = [
-            'You requested a password reset for your Authentic Evolution account.',
-            '',
-            `Open this link to set a new password:`,
-            params.resetLink,
-            '',
-            `This link will expire in ${params.expiresInMinutes} minutes.`,
-            '',
-            'If you did not request this, you can ignore this email.',
-        ].join('\n');
+  private getFrom(companyName: string) {
+    const fromEmail = this.config.get<string>('SMTP_FROM_EMAIL');
 
-        const html = `
+    if (!fromEmail) {
+      throw new InternalServerErrorException(
+        'SMTP_FROM_EMAIL is not configured.',
+      );
+    }
+
+    return `"${companyName.replaceAll('"', '')}" <${fromEmail}>`;
+  }
+
+  async sendPasswordResetEmail(params: {
+    to: string;
+    resetLink: string;
+    expiresInMinutes: number;
+  }) {
+    const companyName = await this.getCompanyName();
+    const safeCompanyName = escapeHtml(companyName);
+    const subject = 'Reset your password';
+
+    const text = [
+      `You requested a password reset for your ${companyName} account.`,
+      '',
+      `Open this link to set a new password:`,
+      params.resetLink,
+      '',
+      `This link will expire in ${params.expiresInMinutes} minutes.`,
+      '',
+      'If you did not request this, you can ignore this email.',
+    ].join('\n');
+
+    const html = `
       <div style="font-family: Arial, sans-serif; background: #f6f7fb; padding: 24px;">
         <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e5e7eb;">
           <div style="background: linear-gradient(135deg, #070b1a, #4a0b0f); padding: 28px;">
             <h1 style="color: #ffffff; margin: 0; font-size: 24px;">Reset your password</h1>
-            <p style="color: #cbd5e1; margin: 8px 0 0;">Authentic Evolution Impact Windows Portal</p>
+            <p style="color: #cbd5e1; margin: 8px 0 0;">${safeCompanyName}</p>
           </div>
 
           <div style="padding: 28px;">
@@ -103,17 +138,19 @@ export class MailService {
       </div>
     `;
 
-        try {
-            await this.transporter.sendMail({
-                from: this.getFrom(),
-                to: params.to,
-                subject,
-                text,
-                html,
-            });
-        } catch (error) {
-            this.logger.error('Failed to send password reset email', error);
-            throw new InternalServerErrorException('Could not send password reset email.');
-        }
+    try {
+      await this.transporter.sendMail({
+        from: this.getFrom(companyName),
+        to: params.to,
+        subject,
+        text,
+        html,
+      });
+    } catch (error) {
+      this.logger.error('Failed to send password reset email', error);
+      throw new InternalServerErrorException(
+        'Could not send password reset email.',
+      );
     }
+  }
 }

@@ -27,7 +27,6 @@ import { InstallationWorkflowService } from '@/installation/installation-workflo
 import { INSTALLATION_DEPOSIT_TERMS } from '@/installation/installation-workflow.service';
 import {
   calculateMaterialFinancials,
-  resolveImpactMarkupRate,
   resolveMaterialSaleSubtotal,
 } from '@/orders/order-material-financials';
 import { NotificationsService } from '@/notifications/notifications.service';
@@ -152,18 +151,9 @@ export class PaymentsService {
       priceT: estimate.priceT.toString(),
       customerPriceT: estimate.customerPriceT.toString(),
     });
-    const impactMarkupRate = resolveImpactMarkupRate({
-      dealerMode: estimate.dealerModeSnapshot,
-      dealerAffiliation: estimate.dealerAffiliationSnapshot,
-      ownerMarkupSnapshot: estimate.ownerMarkupSnapshot.toString(),
-      priceT: estimate.priceT.toString(),
-      customerPriceT: estimate.customerPriceT.toString(),
-    });
     const materialFinancials = calculateMaterialFinancials({
       saleSubtotal,
       factoryRate: estimate.rateT.toString(),
-      dealerAffiliation: estimate.dealerAffiliationSnapshot,
-      impactMarkupRate,
     });
 
     const order = await tx.order.create({
@@ -178,23 +168,9 @@ export class PaymentsService {
           materialFinancials.totalProfit.toFixed(2),
         ),
         dealerModeSnapshot: estimate.dealerModeSnapshot,
-        dealerAffiliationSnapshot: estimate.dealerAffiliationSnapshot,
-        impactMarkupRate: new Prisma.Decimal(impactMarkupRate.toFixed(18)),
-        factoryPriceWithMarkup: new Prisma.Decimal(
-          materialFinancials.factoryPriceWithMarkup.toFixed(2),
-        ),
-        impactProfit: new Prisma.Decimal(
-          materialFinancials.impactProfit.toFixed(2),
-        ),
-        authenticProfit: new Prisma.Decimal(
-          materialFinancials.authenticProfit.toFixed(2),
-        ),
         poNumber: null,
         rateReal: null,
         netProfitReal: null,
-        factoryPriceWithMarkupReal: null,
-        impactProfitReal: null,
-        authenticProfitReal: null,
         idEst: estimate.id,
         statusId: pendingStatus.id,
         userId: estimate.idUser,
