@@ -1,4 +1,4 @@
-import { DealerMode, type Branding } from '@prisma/client';
+import type { Branding } from '@prisma/client';
 
 import type { EstimateInstallationReportSummary } from '../reporting/estimate-installation-summary';
 import type { EstimateWithRelations, PdfView } from '../estimates.service';
@@ -99,8 +99,6 @@ const estimatedMaterialProfitability = (
   ownerIsDealer: boolean,
 ) => {
   const dealerMode = ownerIsDealer ? estimate.dealerModeSnapshot : null;
-  const internalDealer = dealerMode === DealerMode.INTERNAL;
-  const companyName = estimate.companyBranding?.name?.trim() || 'Company';
   const saleSubtotal = resolveMaterialSaleSubtotal({
     dealerMode,
     priceT: estimate.priceT,
@@ -115,13 +113,8 @@ const estimatedMaterialProfitability = (
     saleChannel: ownerIsDealer
       ? `${estimate.dealerModeSnapshot ?? 'EXTERNAL'} DEALER`
       : 'DIRECT CLIENT',
-    profitLabel: `Estimated ${companyName} profit`,
+    saleSubtotal: saleSubtotal.toNumber(),
     estimatedProfit: financials.totalProfit.toNumber(),
-    calculationNote: internalDealer
-      ? `Estimated ${companyName} profit uses customer material subtotal minus estimated factory rate.`
-      : ownerIsDealer
-        ? `Estimated ${companyName} profit uses dealer material subtotal minus estimated factory rate. The dealer's customer resale markup is excluded.`
-        : `Estimated ${companyName} profit uses material sale subtotal minus estimated factory rate.`,
   };
 };
 
@@ -812,13 +805,13 @@ export class EstimatePdfHtmlBuilder {
       reportKind === 'admin'
         ? `
           <div class="card profitability keep-together">
-            <div class="card-title"><strong>Estimated material profitability</strong><small>Admin only - materials only - before taxes - installation excluded</small></div>
+            <div class="profit-heading"><strong>Material financial summary</strong><small>Installation profit is not included in these figures.</small></div>
             <div class="profit-grid">
-              ${summaryRow('Sale channel', escapeHtml(profitability.saleChannel))}
-              ${summaryRow('Estimated factory rate', formatMoney(estimate.rateT))}
-              ${summaryRow(escapeHtml(profitability.profitLabel), formatMoney(profitability.estimatedProfit), { strong: true })}
+              <div class="profit-metric"><span>Sale channel</span><strong>${escapeHtml(profitability.saleChannel)}</strong></div>
+              <div class="profit-metric"><span>Material sale subtotal</span><strong>${formatMoney(profitability.saleSubtotal)}</strong></div>
+              <div class="profit-metric"><span>Estimated factory cost</span><strong>${formatMoney(estimate.rateT)}</strong></div>
+              <div class="profit-metric"><span>Estimated material profit</span><strong>${formatMoney(profitability.estimatedProfit)}</strong></div>
             </div>
-            <p class="profit-note">${escapeHtml(profitability.calculationNote)}</p>
           </div>`
         : '';
     const summaryGridClass =
@@ -934,8 +927,12 @@ export class EstimatePdfHtmlBuilder {
     .notice { margin: 0 0 7px; color: #1e40af; font-size: 9px; }
     .notice.warning { color: #92400e; font-weight: 600; }
     .profitability { margin-top: 14px; }
-    .profit-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 30px; padding: 3px 13px; }
-    .profit-note { margin: 0; padding: 9px 13px; border-top: 1px solid #dbe3ee; color: var(--report-text-color); font-size: 8px; }
+    .profit-heading { padding: 13px; }
+    .profit-heading strong { display: block; color: #172033; font-size: 11px; }
+    .profit-heading small { display: block; margin-top: 3px; color: var(--report-text-color); font-size: 8px; font-weight: 400; }
+    .profit-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px 30px; padding: 3px 13px 13px; }
+    .profit-metric span { display: block; color: var(--report-text-color); font-size: 9px; }
+    .profit-metric strong { display: block; margin-top: 3px; color: #172033; font-size: 10px; }
     .illustration-footer { margin: 14px 0 0; color: var(--report-text-color); font-size: 8px; }
   </style>
 </head><body><main class="report">

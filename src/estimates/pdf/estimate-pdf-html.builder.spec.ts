@@ -179,8 +179,8 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).toContain('$261.95');
     expect(html).not.toContain('$227.78');
     expect(html).not.toContain('$243.72');
-    expect(html).not.toContain('Estimated material profitability');
-    expect(html).not.toContain('Estimated factory rate');
+    expect(html).not.toContain('Material financial summary');
+    expect(html).not.toContain('Estimated factory cost');
     expect(html).not.toContain('Production cost');
     expect(html).toContain('Product Details');
     expect(html).toContain('Frame Color: Bronze');
@@ -328,9 +328,9 @@ describe('EstimatePdfHtmlBuilder', () => {
     const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
 
     expect(html).toContain('INTERNAL DEALER');
-    expect(html).toMatch(
-      /<span>Estimated Configured Company profit<\/span>\s*<span>\$63\.88<\/span>/,
-    );
+    expect(html).toContain('Estimated material profit');
+    expect(html).toContain('$63.88');
+    expect(html).not.toContain('Estimated Configured Company profit');
     expect(html).not.toContain('Estimated Impact profit');
     expect(html).not.toContain('Estimated Authentic profit');
     expect(html).not.toContain('Dealer profit');
@@ -341,12 +341,12 @@ describe('EstimatePdfHtmlBuilder', () => {
 
     expect(html).toContain('EXTERNAL DEALER');
     expect(html).not.toContain('Estimated Impact profit');
-    expect(html).toMatch(
-      /<span>Estimated Configured Company profit<\/span>\s*<span>\$29\.71<\/span>/,
-    );
+    expect(html).toContain('Estimated material profit');
+    expect(html).toContain('$29.71');
+    expect(html).not.toContain('Estimated Configured Company profit');
   });
 
-  it('uses the configured company name for a direct client in the admin PDF', () => {
+  it('uses a neutral material-profit label for a direct client', () => {
     const estimate = estimateFixture();
     Object.assign(estimate, {
       dealerModeSnapshot: null,
@@ -360,9 +360,9 @@ describe('EstimatePdfHtmlBuilder', () => {
 
     expect(html).toContain('DIRECT CLIENT');
     expect(html).not.toContain('Estimated Impact profit');
-    expect(html).toMatch(
-      /<span>Estimated Configured Company profit<\/span>\s*<span>\$29\.71<\/span>/,
-    );
+    expect(html).toContain('Estimated material profit');
+    expect(html).toContain('$29.71');
+    expect(html).not.toContain('Estimated Configured Company profit');
   });
 
   it('omits the installation section when there is no installation', () => {
@@ -432,8 +432,8 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).toContain('.product-card');
     expect(html).toContain('break-inside: avoid-page !important;');
     expect(html).toContain('page-break-inside: avoid !important;');
-    expect(html).toContain('Estimated material profitability');
-    expect(html).toContain('Estimated factory rate');
+    expect(html).toContain('Material financial summary');
+    expect(html).toContain('Estimated factory cost');
   });
 
   it('uses the resolved branding color throughout the report and PDF', () => {
