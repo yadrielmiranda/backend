@@ -1,3 +1,4 @@
+import { checkoutPromotionExpiry, promotionExpired, promotionTerms } from '@/promotions/promotion-pricing';
 import {
   BadRequestException,
   ConflictException,
@@ -196,11 +197,21 @@ export class PaymentsService {
     return true;
   }
 
+  private isCompletedCheckout(session: {payment_status: string; status: string | null; amount_total: number | null}) {
+    return session.payment_status === 'paid' || (session.status === 'complete' && session.payment_status === 'no_payment_required' && session.amount_total === 0);
+  }
+
   private async ensurePaidPaymentEffects(
     tx: Prisma.TransactionClient,
     payment: PaymentWithEstimate,
   ): Promise<boolean> {
     let changed = false;
+    if ((payment.type === PaymentType.MATERIAL || payment.type === PaymentType.INSTALLATION_DEPOSIT) && payment.estimate.promotionExpiresAt && !payment.estimate.promotionLockedAt) {
+      const pieces = await tx.piece.findMany({where:{idEst:payment.idEst},select:{promotionSnapshot:true}});
+      const terms = [...new Map(promotionTerms(pieces.map(p => p.promotionSnapshot)).map(p => [`${p.id}:${p.version}`, p])).values()];
+      await tx.estimate.update({where:{id:payment.idEst},data:{promotionLockedAt:payment.paidAt ?? new Date(),promotionContext:terms as unknown as Prisma.InputJsonValue}});
+      changed = true;
+    }
 
     if (payment.type === PaymentType.MATERIAL) {
       changed =
@@ -298,7 +309,7 @@ export class PaymentsService {
     tx: Prisma.TransactionClient,
     session: Stripe.Checkout.Session,
   ): Promise<boolean> {
-    if (session.payment_status !== 'paid') return false;
+    if (!this.isCompletedCheckout(session)) return false;
 
     const paymentIntentId =
       typeof session.payment_intent === 'string'
@@ -521,7 +532,7 @@ export class PaymentsService {
         try {
           const session =
             await this.stripe.checkout.sessions.retrieve(stripeSessionId);
-          if (session.payment_status === 'paid') {
+          if (this.isCompletedCheckout(session)) {
             const processed = await this.prisma.$transaction((tx) =>
               this.processPaidCheckoutSession(tx, session),
             );
@@ -672,6 +683,7 @@ export class PaymentsService {
         };
       }
 
+      if (promotionExpired(estimate)) return { enabled:true as const, status:'expired' as const, payment:null };
       const request = this.resolveNextPaymentRequest(estimate);
       if (!request) {
         return {
@@ -713,6 +725,7 @@ export class PaymentsService {
       return {
         enabled: true as const,
         status: 'due' as const,
+        promotionExpiresAt: estimate.promotionExpiresAt, expiresAt: estimate.expiresAt, promotionLockedAt: estimate.promotionLockedAt,
         payment: {
           type: request.type,
           sequence: context.paymentSequence,
@@ -841,7 +854,7 @@ export class PaymentsService {
           const existingSession = await this.stripe.checkout.sessions.retrieve(
             existingPayment.stripeSessionId,
           );
-          if (existingSession.payment_status === 'paid') {
+          if (this.isCompletedCheckout(existingSession)) {
             const processed = await this.processPaidCheckoutSession(
               tx,
               existingSession,
@@ -946,6 +959,7 @@ export class PaymentsService {
 
       const session = await this.stripe.checkout.sessions.create({
         mode: 'payment',
+        expires_at: checkoutPromotionExpiry(context.estimate),
         success_url: successUrl,
         cancel_url: cancelUrl,
         payment_method_types: ['card'],
@@ -1067,14 +1081,14 @@ export class PaymentsService {
       };
     }
 
-    if (session.payment_status === 'paid') return finalizePaid(session);
+    if (this.isCompletedCheckout(session)) return finalizePaid(session);
     if (session.status === 'open') {
       try {
         await this.stripe.checkout.sessions.expire(stripeSessionId);
       } catch (error) {
         const latest =
           await this.stripe.checkout.sessions.retrieve(stripeSessionId);
-        if (latest.payment_status === 'paid') return finalizePaid(latest);
+        if (this.isCompletedCheckout(latest)) return finalizePaid(latest);
         if (latest.status !== 'expired') throw error;
       }
     } else if (session.status === 'complete') {
@@ -1142,7 +1156,7 @@ export class PaymentsService {
       throw error;
     }
 
-    if (session.payment_status === 'paid') {
+    if (this.isCompletedCheckout(session)) {
       await this.prisma.$transaction((tx) =>
         this.processPaidCheckoutSession(tx, session),
       );
@@ -1160,7 +1174,7 @@ export class PaymentsService {
         await this.stripe.checkout.sessions.expire(session.id);
       } catch (error) {
         const latest = await this.stripe.checkout.sessions.retrieve(session.id);
-        if (latest.payment_status === 'paid') {
+        if (this.isCompletedCheckout(latest)) {
           await this.prisma.$transaction((tx) =>
             this.processPaidCheckoutSession(tx, latest),
           );

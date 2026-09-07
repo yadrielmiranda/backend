@@ -12,6 +12,7 @@ describe('EstimatesService', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
   }
 

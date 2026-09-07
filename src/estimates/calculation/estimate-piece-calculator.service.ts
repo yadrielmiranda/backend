@@ -1,3 +1,4 @@
+import { applyPromotion, PromotionTerms } from '@/promotions/promotion-pricing';
 import {
   Injectable,
   BadRequestException,
@@ -44,6 +45,7 @@ type ConfigSelect = {
 };
 
 export type CalculationCache = {
+  promotions?: PromotionTerms[];
   product: Map<number, any>;
   config: Map<number, ConfigSelect | null>;
   sysConf: Map<string, any>;
@@ -57,6 +59,9 @@ export type CalculationCache = {
 };
 
 export type CalculatedMetricsInternal = {
+  regularPrice?: Decimal;
+  regularCustomerPrice?: Decimal;
+  promotionSnapshot?: PromotionTerms | null;
   rate: Decimal;
   price: Decimal;
   netProfit: Decimal;
@@ -76,6 +81,9 @@ export type CalculatedPieceCombined = (CreatePieceDto | UpsertPieceDto) &
   CalculatedMetricsInternal;
 
 export type PersistedPieceTotalsInput = {
+  regularPrice?: Decimal | Prisma.Decimal;
+  regularCustomerPrice?: Decimal | Prisma.Decimal;
+  promotionSnapshot?: unknown;
   qty: number;
   rate: Prisma.Decimal;
   price: Prisma.Decimal;
@@ -84,6 +92,10 @@ export type PersistedPieceTotalsInput = {
 };
 
 export type EstimateTotalsResult = {
+  originalPriceT: Prisma.Decimal;
+  originalCustomerPriceT: Prisma.Decimal;
+  discountAmount: Prisma.Decimal;
+  customerDiscountAmount: Prisma.Decimal;
   rateT: Prisma.Decimal;
   priceT: Prisma.Decimal;
   netProfit: Prisma.Decimal;
@@ -98,6 +110,9 @@ export type EstimateTotalsResult = {
 };
 
 type NormalizedEstimateTotalsPiece = {
+  regularPrice?: Decimal | Prisma.Decimal;
+  regularCustomerPrice?: Decimal | Prisma.Decimal;
+  promotionSnapshot?: unknown;
   qty: number;
   rate: Decimal;
   price: Decimal;
@@ -643,7 +658,7 @@ export class EstimatePieceCalculatorService {
         dpNegPsf: new Decimal(0),
       };
 
-      return result;
+      return applyPromotion(result, cache.promotions);
     }
 
     if (!pieceDto.idCryst) {
@@ -1619,7 +1634,7 @@ export class EstimatePieceCalculatorService {
       dpNegPsf,
     };
 
-    return result;
+    return applyPromotion(result, cache.promotions);
   }
 
   calculateEstimateTotals(
@@ -1630,6 +1645,7 @@ export class EstimatePieceCalculatorService {
     const normalizedPieces: NormalizedEstimateTotalsPiece[] = pieces.map(
       (piece) => ({
         qty: piece.qty,
+        regularPrice: piece.regularPrice, regularCustomerPrice: piece.regularCustomerPrice, promotionSnapshot: piece.promotionSnapshot,
         rate: piece.rate,
         price: piece.price,
         customerPrice: piece.customerPrice,
@@ -1652,6 +1668,7 @@ export class EstimatePieceCalculatorService {
     const normalizedPieces: NormalizedEstimateTotalsPiece[] = pieces.map(
       (piece) => ({
         qty: piece.qty,
+        regularPrice: piece.regularPrice, regularCustomerPrice: piece.regularCustomerPrice, promotionSnapshot: piece.promotionSnapshot,
         rate: new Decimal(piece.rate.toString()),
         price: new Decimal(piece.price.toString()),
         customerPrice: new Decimal(piece.customerPrice.toString()),
@@ -1678,6 +1695,8 @@ export class EstimatePieceCalculatorService {
       (acc, piece) => {
         const qty = new Decimal(piece.qty || 0);
 
+        acc.originalPriceT = acc.originalPriceT.add(new Decimal((piece.regularPrice ?? piece.price).toString()).mul(qty));
+        acc.originalCustomerPriceT = acc.originalCustomerPriceT.add(new Decimal((piece.regularCustomerPrice ?? piece.customerPrice).toString()).mul(qty));
         acc.rateT = acc.rateT.add(piece.rate.mul(qty));
         acc.priceT = acc.priceT.add(piece.price.mul(qty));
 
@@ -1685,13 +1704,14 @@ export class EstimatePieceCalculatorService {
           piece.customerPrice.mul(qty),
         );
 
-        const dealerProfitPiece = piece.price.mul(piece.dealerMarkupDecimal);
+        const dealerProfitPiece = piece.promotionSnapshot ? piece.customerPrice.sub(piece.price) : piece.price.mul(piece.dealerMarkupDecimal);
 
         acc.netProfitD = acc.netProfitD.add(dealerProfitPiece.mul(qty));
 
         return acc;
       },
       {
+        originalPriceT: new Decimal(0), originalCustomerPriceT: new Decimal(0),
         rateT: new Decimal(0),
         priceT: new Decimal(0),
         customerPriceT: new Decimal(0),
@@ -1709,6 +1729,10 @@ export class EstimatePieceCalculatorService {
     const customerTotalPayable = totals.customerPriceT.add(customerTaxAmount);
 
     return {
+      originalPriceT: new Prisma.Decimal(totals.originalPriceT.toFixed(2)),
+      originalCustomerPriceT: new Prisma.Decimal(totals.originalCustomerPriceT.toFixed(2)),
+      discountAmount: new Prisma.Decimal(totals.originalPriceT.sub(totals.priceT).toFixed(2)),
+      customerDiscountAmount: new Prisma.Decimal(totals.originalCustomerPriceT.sub(totals.customerPriceT).toFixed(2)),
       rateT: new Prisma.Decimal(totals.rateT.toFixed(2)),
       priceT: new Prisma.Decimal(totals.priceT.toFixed(2)),
       netProfit: new Prisma.Decimal(yourNetProfit.toFixed(2)),

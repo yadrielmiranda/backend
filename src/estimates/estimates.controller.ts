@@ -123,6 +123,7 @@ export class EstimatesController {
     @Body() pieceDto: CreatePieceDto,
     @Req() req: Request,
     @Query('estimateId') estimateIdRaw?: string,
+    @Query('pieceId') pieceIdRaw?: string,
   ) {
     const user = req.user as AuthUser;
     const estimateId = estimateIdRaw ? Number(estimateIdRaw) : undefined;
@@ -133,10 +134,19 @@ export class EstimatesController {
       throw new BadRequestException('estimateId must be a positive integer.');
     }
 
+    const pieceId = pieceIdRaw ? Number(pieceIdRaw) : undefined;
+    if (pieceId !== undefined && (!Number.isInteger(pieceId) || pieceId < 1)) {
+      throw new BadRequestException('pieceId must be a positive integer.');
+    }
+    if (pieceId !== undefined && estimateId === undefined) {
+      throw new BadRequestException('pieceId requires an estimateId.');
+    }
+
     return this.estimatesService.calculateAndReturnPieceMetrics(
       pieceDto,
       user.id,
       estimateId,
+      pieceId,
     );
   }
 

@@ -372,6 +372,12 @@ export class EstimatePublicShareService {
       customerState: estimate.customerState,
       customerPostalCode: estimate.customerPostalCode,
 
+      promotionExpiresAt: estimate.promotionExpiresAt,
+      promotionLockedAt: estimate.promotionLockedAt,
+      customerDiscountAmount:
+        pricingMode === 'total' ? 0 : estimate.customerDiscountAmount,
+      originalCustomerPriceT:
+        pricingMode === 'total' ? 0 : estimate.originalCustomerPriceT,
       customerPriceT: pricingMode === 'total' ? 0 : estimate.customerPriceT,
       customerTaxRate: pricingMode === 'total' ? 0 : estimate.customerTaxRate,
       customerTaxAmount:
@@ -430,6 +436,11 @@ export class EstimatePublicShareService {
 
         customerPrice: pricingMode === 'total' ? 0 : p.customerPrice,
         customerSubtotal: pricingMode === 'total' ? 0 : p.customerSubtotal,
+        // Solo el precio original del cliente; el costo del dealer sigue privado.
+        regularCustomerPrice:
+          pricingMode === 'total' || !p.promotionSnapshot
+            ? undefined
+            : p.regularCustomerPrice,
 
         prod: p.prod,
         bran: p.bran,

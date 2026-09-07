@@ -16,6 +16,11 @@ export class EstimateAuditSnapshotBuilder {
       units: est.units,
 
       // totals
+      promotionExpiresAt: est.promotionExpiresAt ?? null,
+      standardExpiresAt: est.standardExpiresAt ?? null,
+      promotionLockedAt: est.promotionLockedAt ?? null,
+      discountAmount: est.discountAmount ?? null,
+      customerDiscountAmount: est.customerDiscountAmount ?? null,
       rateT: est.rateT ?? null,
       priceT: est.priceT ?? null,
       netProfit: est.netProfit ?? null,
@@ -82,6 +87,9 @@ export class EstimateAuditSnapshotBuilder {
             rate: p.rate ?? null,
             price: p.price ?? null,
             subtotal: p.subtotal ?? null,
+            regularPrice: p.regularPrice ?? null,
+            regularCustomerPrice: p.regularCustomerPrice ?? null,
+            promotionSnapshot: p.promotionSnapshot ?? null,
             netProfit: p.netProfit ?? null,
 
             dealerMarkup: p.dealerMarkup ?? null,

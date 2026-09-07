@@ -1,3 +1,4 @@
+import { PromotionsModule } from '@/promotions/promotions.module';
 import { Module } from '@nestjs/common';
 import { EstimatesService } from './estimates.service';
 import { EstimatesController } from './estimates.controller';
@@ -16,7 +17,7 @@ import { InstallationModule } from '@/installation/installation.module';
 import { EstimateCustomerChargesService } from './estimate-customer-charges.service';
 
 @Module({
-  imports: [
+  imports: [PromotionsModule,
     PrismaModule,
     PricingRulesModule,
     LogsModule,

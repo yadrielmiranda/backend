@@ -155,6 +155,31 @@ function buildService(estimate = sharedEstimateFixture()) {
 }
 
 describe('EstimatePublicShareService customer pricing modes', () => {
+  it('shares only the original customer price and hides it in total-only mode', async () => {
+    const estimate = sharedEstimateFixture();
+    Object.assign(estimate.pieces[0], {
+      regularPrice: '200.00',
+      regularCustomerPrice: '300.00',
+      promotionSnapshot: { id: 1, percent: '20' },
+    });
+    const { service } = buildService(estimate);
+
+    const detailed = await service.findPublicEstimateByToken('detailed-token');
+    expect(detailed.pieces[0].regularCustomerPrice).toBe('300.00');
+    expect(detailed.pieces[0]).not.toHaveProperty('regularPrice');
+    expect(detailed.pieces[0]).not.toHaveProperty('promotionSnapshot');
+
+    const totalOnly = await service.findPublicEstimateByToken('total-token');
+    expect(JSON.parse(JSON.stringify(totalOnly)).pieces[0]).not.toHaveProperty(
+      'regularCustomerPrice',
+    );
+    expect(totalOnly.pieces[0]).not.toHaveProperty('regularPrice');
+
+    Object.assign(estimate.pieces[0], { promotionSnapshot: null });
+    const ordinary = await service.findPublicEstimateByToken('detailed-token');
+    expect(ordinary.pieces[0].regularCustomerPrice).toBeUndefined();
+  });
+
   it('returns the detailed customer token with customer prices intact', async () => {
     const { service } = buildService();
 

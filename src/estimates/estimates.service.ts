@@ -1,3 +1,5 @@
+import { PromotionsService } from '@/promotions/promotions.service';
+import { savedPromotions, promotionDeadline, effectiveExpiry, promotionExpired, expiredPromotionMessage } from '@/promotions/promotion-pricing';
 // @/estimates/estimates.service.ts
 import {
   Injectable,
@@ -142,6 +144,7 @@ export class EstimatesService {
     private muntinService: EstimateMuntinService,
     private installationWorkflow: InstallationWorkflowService,
     private customerChargesService: EstimateCustomerChargesService,
+    private promotions: PromotionsService,
   ) {}
 
   private decimalOrNull(value: string | number | null | undefined) {
@@ -190,6 +193,9 @@ export class EstimatesService {
 
       rate: new Prisma.Decimal(piece.rate.toFixed(2)),
       price: new Prisma.Decimal(piece.price.toFixed(2)),
+            regularPrice: new Prisma.Decimal((piece.regularPrice ?? piece.price).toFixed(2)),
+            regularCustomerPrice: new Prisma.Decimal((piece.regularCustomerPrice ?? piece.customerPrice).toFixed(2)),
+            promotionSnapshot: piece.promotionSnapshot ? piece.promotionSnapshot as unknown as Prisma.InputJsonValue : Prisma.DbNull,
       markup: new Prisma.Decimal(piece.markup.toFixed(18)),
       subtotal: new Prisma.Decimal(piece.subtotal.toFixed(2)),
       dealerMarkup: new Prisma.Decimal(piece.dealerMarkupDecimal.toFixed(4)),
@@ -291,6 +297,7 @@ export class EstimatesService {
     tx: PrismaTransactionClient,
     estimateId: number,
   ) {
+    await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
     return tx.estimate.findUnique({
       where: { id: estimateId },
       include: {
@@ -346,6 +353,9 @@ export class EstimatesService {
   private async assertEstimateCanBeEdited(
     estimate: {
       id: number;
+      promotionLockedAt?: Date | null;
+      promotionExpiresAt?: Date | null;
+      expiresAt?: Date | null;
       number: string;
       idUser: number;
       status?: {
@@ -363,6 +373,7 @@ export class EstimatesService {
     estimateId: number,
     userId: number,
     tx: PrismaTransactionClient,
+    recalculating = false,
   ): Promise<void> {
     const actor = await tx.user.findUnique({
       where: { id: userId },
@@ -378,6 +389,9 @@ export class EstimatesService {
     if (!estimate || (!isPrivileged(actorUser) && estimate.idUser !== userId)) {
       throw new NotFoundException(`Estimate #${estimateId} not found/denied.`);
     }
+
+    if (estimate.promotionLockedAt) throw new BadRequestException('This estimate preserves paid promotion terms. Material changes must use the measured Estimate revision workflow.');
+    if (!recalculating && promotionExpired(estimate)) throw new BadRequestException(expiredPromotionMessage);
 
     if (estimate.status?.name !== 'Active') {
       throw new BadRequestException(
@@ -421,6 +435,17 @@ export class EstimatesService {
       : new Decimal(user.role.markup.toString());
   }
 
+  private promotionsForSavedPiece(
+    estimate: Pick<Estimate, 'promotionLockedAt'>,
+    piece: Pick<Piece, 'promotionSnapshot'>,
+  ) {
+    // Conserva la promoción de esta pieza; Recalculate renueva todas las piezas.
+    return savedPromotions({
+      promotionLockedAt: estimate.promotionLockedAt,
+      promotionContext: piece.promotionSnapshot ? [piece.promotionSnapshot] : [],
+    });
+  }
+
   /**
    * Suma las piezas ya guardadas y actualiza los totales
    * del encabezado del Estimate.
@@ -440,6 +465,7 @@ export class EstimatesService {
         rate: true,
         price: true,
         customerPrice: true,
+        regularPrice: true, regularCustomerPrice: true, promotionSnapshot: true,
         dealerMarkup: true,
       },
     });
@@ -456,11 +482,13 @@ export class EstimatesService {
       0,
     );
 
+    const header = await tx.estimate.findUniqueOrThrow({ where: { id: estimateId } });
+    const promotionExpiresAt = promotionDeadline(persistedPieces);
     await tx.estimate.update({
-      where: {
-        id: estimateId,
-      },
+      where: { id: estimateId },
       data: {
+        promotionExpiresAt,
+        expiresAt: effectiveExpiry(header.standardExpiresAt ?? header.expiresAt, promotionExpiresAt),
         ...estimateTotals,
         units: totalUnits,
       },
@@ -663,31 +691,51 @@ export class EstimatesService {
     pieceDto: CreatePieceDto,
     userId: number,
     estimateId?: number,
+    pieceId?: number,
   ): Promise<any> {
+    if (pieceId !== undefined && !estimateId) {
+      throw new BadRequestException('pieceId requires an estimateId.');
+    }
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: { role: true },
     });
     if (!user) throw new NotFoundException('User not found');
 
+    const cache = this.pieceCalculator.createCalculationCache();
     let effectiveMarkupDecimal = this.resolveBaseMarkupForUser(user);
     if (estimateId) {
       const estimate = await this.prisma.estimate.findUnique({
         where: { id: estimateId },
-        select: { idUser: true, ownerMarkupSnapshot: true },
+        include: { status: true, order: true, payments: true },
       });
-      const actor = {
-        id: user.id,
-        role: { name: user.role.name as AuthUser['role']['name'] },
-      } satisfies AuthUser;
-      if (!estimate || (!isPrivileged(actor) && estimate.idUser !== user.id)) {
-        throw new NotFoundException(`Estimate #${estimateId} not found.`);
-      }
-      effectiveMarkupDecimal = new Decimal(
-        estimate.ownerMarkupSnapshot.toString(),
+      await this.assertEstimateCanBeEdited(
+        estimate,
+        estimateId,
+        userId,
+        this.prisma as PrismaTransactionClient,
       );
+      effectiveMarkupDecimal = new Decimal(
+        estimate!.ownerMarkupSnapshot.toString(),
+      );
+      if (pieceId !== undefined) {
+        const piece = await this.prisma.piece.findFirst({
+          where: { id: pieceId, idEst: estimateId },
+          select: { promotionSnapshot: true },
+        });
+        if (!piece) {
+          throw new NotFoundException(
+            `Piece #${pieceId} was not found in Estimate #${estimateId}.`,
+          );
+        }
+        cache.promotions = this.promotionsForSavedPiece(estimate!, piece);
+      } else {
+        // Las piezas nuevas usan las ofertas vigentes del dueño del Estimate.
+        cache.promotions = await this.promotions.eligible(estimate!.idUser);
+      }
+    } else {
+      cache.promotions = await this.promotions.eligible(user.id);
     }
-    const cache = this.pieceCalculator.createCalculationCache();
     const calculated: CalculatedPieceCombined =
       await this.pieceCalculator.calculatePieceMetrics(
         pieceDto,
@@ -1053,6 +1101,8 @@ export class EstimatesService {
           number: nextNumber,
           name: dto.name,
           expiresAt,
+          standardExpiresAt: expiresAt,
+          promotionContext: await this.promotions.eligible(user.id, tx) as unknown as Prisma.InputJsonValue,
 
           customerFirstName: dto.customerFirstName ?? null,
           customerLastName: dto.customerLastName ?? null,
@@ -1299,6 +1349,10 @@ export class EstimatesService {
       );
 
       const cache = this.pieceCalculator.createCalculationCache();
+      cache.promotions = await this.promotions.eligible(
+        beforeEstimate!.idUser,
+        tx,
+      );
 
       const calculatedPiece = await this.pieceCalculator.calculatePieceMetrics(
         dto,
@@ -1419,6 +1473,10 @@ export class EstimatesService {
       }
 
       const cache = this.pieceCalculator.createCalculationCache();
+      cache.promotions = this.promotionsForSavedPiece(
+        beforeEstimate!,
+        existingPiece,
+      );
 
       const calculatedPiece = await this.pieceCalculator.calculatePieceMetrics(
         dto,
@@ -1613,6 +1671,10 @@ export class EstimatesService {
       // Primero calculamos todas las piezas.
       // Si una falla, todavía no se ha modificado ninguna.
       for (const persistedPiece of beforeEstimate!.pieces) {
+        cache.promotions = this.promotionsForSavedPiece(
+          beforeEstimate!,
+          persistedPiece,
+        );
         const pieceDto = this.buildPieceDtoFromPersistedPiece(
           persistedPiece,
           dealerMarkupPercent,
@@ -1774,6 +1836,10 @@ export class EstimatesService {
       // Primero se calculan todas las piezas.
       // Si alguna falla, todavía no se ha modificado ninguna.
       for (const persistedPiece of beforeEstimate!.pieces) {
+        cache.promotions = this.promotionsForSavedPiece(
+          beforeEstimate!,
+          persistedPiece,
+        );
         const currentDealerMarkupPercent =
           Number(persistedPiece.dealerMarkup.toString()) * 100;
 
@@ -1967,6 +2033,7 @@ export class EstimatesService {
     if (!dbUser) throw new NotFoundException('User not found');
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
       const beforeEstimate = await tx.estimate.findUnique({
         where: { id: estimateId },
         include: {
@@ -2007,6 +2074,7 @@ export class EstimatesService {
         throw new NotFoundException(`Estimate #${estimateId} not found.`);
       }
 
+      if (beforeEstimate.promotionLockedAt) throw new BadRequestException('Paid promotion terms cannot be recalculated.');
       const statusName = beforeEstimate.status?.name ?? 'UNKNOWN';
 
       if (statusName === 'Active') {
@@ -2017,6 +2085,7 @@ export class EstimatesService {
           estimateId,
           user.id,
           tx as PrismaTransactionClient,
+          true,
         );
       } else if (statusName === 'Expired') {
         if (
@@ -2148,6 +2217,7 @@ export class EstimatesService {
         dealerMarkup: Number(p.dealerMarkup ?? 0) * 100,
       }));
       const cache = this.pieceCalculator.createCalculationCache();
+      cache.promotions = await this.promotions.eligible(beforeEstimate.idUser, tx);
       const calculatedPieces: CalculatedPieceCombined[] = [];
 
       for (const p of pieceDtos) {
@@ -2195,6 +2265,9 @@ export class EstimatesService {
 
             rate: new Prisma.Decimal(p.rate.toFixed(2)),
             price: new Prisma.Decimal(p.price.toFixed(2)),
+            regularPrice: new Prisma.Decimal((p.regularPrice ?? p.price).toFixed(2)),
+            regularCustomerPrice: new Prisma.Decimal((p.regularCustomerPrice ?? p.customerPrice).toFixed(2)),
+            promotionSnapshot: p.promotionSnapshot ? p.promotionSnapshot as unknown as Prisma.InputJsonValue : Prisma.DbNull,
             markup: new Prisma.Decimal(p.markup.toFixed(18)),
             subtotal: new Prisma.Decimal(p.subtotal.toFixed(2)),
             dealerMarkup: new Prisma.Decimal(p.dealerMarkupDecimal.toFixed(4)),
@@ -2281,7 +2354,10 @@ export class EstimatesService {
         data: {
           ...estimateTotals,
           units: totalUnits,
-          expiresAt,
+          standardExpiresAt: expiresAt,
+          promotionExpiresAt: promotionDeadline(calculatedPieces),
+          expiresAt: effectiveExpiry(expiresAt, promotionDeadline(calculatedPieces)),
+          promotionContext: cache.promotions as unknown as Prisma.InputJsonValue,
           status: {
             connect: { id: activeStatus.id },
           },

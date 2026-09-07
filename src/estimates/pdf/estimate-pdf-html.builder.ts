@@ -14,6 +14,7 @@ type ReportKind =
   | 'dealer'
   | 'admin';
 type MaterialTotals = {
+  discount?: number;
   subtotal: number;
   taxRate: number;
   taxAmount: number;
@@ -358,6 +359,26 @@ const installationStatus = (summary: EstimateInstallationReportSummary) => {
   return { label: 'Preliminary', className: 'badge-preliminary' };
 };
 
+const originalPrice = (amount: number) =>
+  `<s class="price-original">${formatMoney(amount)}</s>`;
+
+const promotionPrice = (amount: number, originalAmount?: number) => {
+  if (
+    originalAmount == null ||
+    !Number.isFinite(originalAmount) ||
+    roundMoney(originalAmount) <= roundMoney(amount)
+  ) {
+    return formatMoney(amount);
+  }
+
+  return `<span class="promotion-price">${originalPrice(originalAmount)}<span class="promotion-current">${formatMoney(amount)}</span></span>`;
+};
+
+const originalMaterialSubtotal = (totals: MaterialTotals) =>
+  Number(totals.discount) > 0
+    ? originalPrice(totals.subtotal + totals.discount!)
+    : formatMoney(totals.subtotal);
+
 const summaryRow = (
   label: string,
   value: string,
@@ -373,11 +394,16 @@ const summaryRow = (
 
 export class EstimatePdfHtmlBuilder {
   static buildFooterText(
-    estimate: Pick<EstimateWithRelations, 'expiresAt'>,
+    estimate: Pick<EstimateWithRelations, 'expiresAt'> & {
+      promotionExpiresAt?: Date | null;
+      promotionLockedAt?: Date | null;
+    },
   ): string {
-    const expirationText = estimate.expiresAt
-      ? `This estimate is valid through ${formatDate(estimate.expiresAt)}.`
-      : 'This estimate is valid for 30 days.';
+    const expirationText = estimate.promotionLockedAt
+      ? 'The agreed promotion is preserved after payment.'
+      : estimate.expiresAt
+        ? `This estimate is valid through ${estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString('en-US') : formatDate(estimate.expiresAt)}.`
+        : 'This estimate is valid for 30 days.';
 
     return `${expirationText} Thank you for your business.`;
   }
@@ -446,12 +472,14 @@ export class EstimatePdfHtmlBuilder {
       .join(', ');
 
     const internalMaterial: MaterialTotals = {
+      discount: numberValue(estimate.discountAmount),
       subtotal: numberValue(estimate.priceT),
       taxRate: numberValue(estimate.taxRate),
       taxAmount: numberValue(estimate.taxAmount),
       total: numberValue(estimate.totalPayable),
     };
     const customerMaterial: MaterialTotals = {
+      discount: numberValue(estimate.customerDiscountAmount),
       subtotal: numberValue(estimate.customerPriceT),
       taxRate: numberValue(estimate.customerTaxRate),
       taxAmount: numberValue(estimate.customerTaxAmount),
@@ -522,6 +550,19 @@ export class EstimatePdfHtmlBuilder {
             const subtotal = customerFacing
               ? customerSubtotal
               : numberValue(piece.subtotal);
+            const originalUnitPrice = piece.promotionSnapshot
+              ? customerFacing
+                ? piece.regularCustomerPrice == null
+                  ? undefined
+                  : Number(piece.regularCustomerPrice)
+                : piece.regularPrice == null
+                  ? undefined
+                  : Number(piece.regularPrice)
+              : undefined;
+            const originalSubtotal =
+              originalUnitPrice == null
+                ? undefined
+                : originalUnitPrice * numberValue(piece.qty);
             const details = buildPieceReportDetails(piece);
             const detailLines = details.detailLines
               .map(
@@ -538,11 +579,11 @@ export class EstimatePdfHtmlBuilder {
               : `
                 <div class="price-block">
                   <div class="price-label">Unit Price</div>
-                  <div class="price-value">${formatMoney(unitPrice)}</div>
+                  <div class="price-value">${promotionPrice(unitPrice, originalUnitPrice)}</div>
                 </div>
                 <div class="price-block subtotal-block price-success">
                   <div class="price-label">Subtotal</div>
-                  <div class="price-value price-strong">${formatMoney(subtotal)}</div>
+                  <div class="price-value price-strong">${promotionPrice(subtotal, originalSubtotal)}</div>
                 </div>`;
 
             return `
@@ -576,7 +617,8 @@ export class EstimatePdfHtmlBuilder {
               <th class="right">Customer Price</th>
             </tr></thead>
             <tbody>
-              <tr><td>Material subtotal</td><td class="right">${formatMoney(internalMaterial.subtotal)}</td><td class="right">${formatMoney(customerMaterial.subtotal)}</td></tr>
+              ${internalMaterial.discount || customerMaterial.discount ? `<tr><td>Before promotion</td><td class="right">${originalMaterialSubtotal(internalMaterial)}</td><td class="right">${originalMaterialSubtotal(customerMaterial)}</td></tr><tr class="promotion-discount"><td>Promotion discount</td><td class="right">−${formatMoney(internalMaterial.discount ?? 0)}</td><td class="right">−${formatMoney(customerMaterial.discount ?? 0)}</td></tr>` : ''}
+              <tr><td>Material subtotal</td><td class="right">${internalMaterial.discount ? `<span class="promotion-current">${formatMoney(internalMaterial.subtotal)}</span>` : formatMoney(internalMaterial.subtotal)}</td><td class="right">${customerMaterial.discount ? `<span class="promotion-current">${formatMoney(customerMaterial.subtotal)}</span>` : formatMoney(customerMaterial.subtotal)}</td></tr>
               <tr><td>Sales Tax</td><td class="right">${formatMoney(internalMaterial.taxAmount)}<small>${(internalMaterial.taxRate * 100).toFixed(2)}%</small></td><td class="right">${formatMoney(customerMaterial.taxAmount)}<small>${(customerMaterial.taxRate * 100).toFixed(2)}%</small></td></tr>
               <tr class="table-total"><td>Material total</td><td class="right">${formatMoney(internalMaterial.total)}</td><td class="right">${formatMoney(customerMaterial.total)}</td></tr>
             </tbody>
@@ -586,7 +628,8 @@ export class EstimatePdfHtmlBuilder {
         <div class="card keep-together">
           <div class="card-title">Materials</div>
           <div class="card-body">
-            ${summaryRow('Material subtotal', formatMoney(selectedMaterial.subtotal))}
+            ${selectedMaterial.discount ? summaryRow('Before promotion', originalMaterialSubtotal(selectedMaterial)) + summaryRow('Promotion discount', '−' + formatMoney(selectedMaterial.discount), { extraClass: 'promotion-discount' }) : ''}
+            ${summaryRow('Material subtotal', formatMoney(selectedMaterial.subtotal), { extraClass: selectedMaterial.discount ? 'promotion-subtotal' : undefined })}
             ${summaryRow(`Sales Tax (${(selectedMaterial.taxRate * 100).toFixed(2)}%)`, formatMoney(selectedMaterial.taxAmount))}
             <div class="row-divider">${summaryRow('Material total', formatMoney(selectedMaterial.total), { strong: true })}</div>
           </div>
@@ -894,6 +937,10 @@ export class EstimatePdfHtmlBuilder {
     .price-strong { font-size: 13px; font-weight: 700; }
     .price-success .price-label, .price-success .price-value { color: #07883f; }
     .price-success .price-strong { font-size: 17px; font-weight: 800; }
+    .price-original { color: #dc2626; font-weight: 400; text-decoration: line-through; text-decoration-color: #dc2626; white-space: nowrap; }
+    .promotion-price { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 2px; vertical-align: middle; }
+    .promotion-price .price-original { font-size: 10px; line-height: 1.3; }
+    .promotion-current { color: #07883f; }
     .empty { padding: 28px; border: 1px dashed #cbd5e1; border-radius: 9px; color: var(--report-text-color); text-align: center; }
     .summary-section { margin-top: 22px; break-inside: avoid-page; page-break-inside: avoid; }
     .summary-start { break-inside: avoid; page-break-inside: avoid; }
@@ -915,6 +962,8 @@ export class EstimatePdfHtmlBuilder {
     .comparison-table th { background: #f8fafc; color: var(--report-text-color); font-size: 9px; text-align: left; text-transform: uppercase; }
     .comparison-table td { border-top: 1px solid #e2e8f0; color: var(--report-text-color); }
     .comparison-table .right { text-align: right; color: #172033; font-weight: 600; }
+    .summary-row.promotion-discount > span:last-child, .comparison-table .promotion-discount td { color: #dc2626; }
+    .summary-row.promotion-subtotal > span:last-child { color: #07883f; }
     .comparison-table small { display: block; margin-top: 2px; color: var(--report-text-color); font-size: 8px; font-weight: 400; }
     .comparison-table .table-total td { background: #f8fafc; color: #172033; font-weight: 700; }
     .project-total { margin-top: 10px; padding: 6px 14px; border-color: #cbd5e1; background: #f1f5f9; }
@@ -944,7 +993,7 @@ export class EstimatePdfHtmlBuilder {
   <section class="prepared-section">
     <div class="prepared-details"><div class="eyebrow">Prepared for</div><div class="prepared-name">${escapeHtml(preparedFor)}</div>${projectName ? `<div class="project-name">Project: ${escapeHtml(projectName)}</div>` : ''}</div>
     <div class="contact">${contactPhone ? `<div>${escapeHtml(contactPhone)}</div>` : ''}${contactEmail ? `<div>${escapeHtml(contactEmail)}</div>` : ''}${contactAddress ? `<div>${escapeHtml(contactAddress)}</div>` : ''}</div>
-    <div class="dates"><div class="date-group"><div class="date-label">Date</div><div class="date-value">${escapeHtml(formatDate(estimate.date))}</div></div>${estimate.expiresAt ? `<div class="date-group"><div class="date-label">Valid through</div><div class="date-value">${escapeHtml(formatDate(estimate.expiresAt))}</div></div>` : ''}</div>
+    <div class="dates"><div class="date-group"><div class="date-label">Date</div><div class="date-value">${escapeHtml(formatDate(estimate.date))}</div></div>${estimate.expiresAt && !estimate.promotionLockedAt ? `<div class="date-group"><div class="date-label">Valid through</div><div class="date-value">${escapeHtml(estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString('en-US') : formatDate(estimate.expiresAt))}</div></div>` : ''}</div>
   </section>
   <section class="products-section"><div class="products-heading"><h2 class="section-heading">Product Details</h2><div class="illustration-note">Illustrations are visual references; written specifications govern.</div></div><div class="product-list">${productCards}</div></section>
   <section class="summary-section">${projectSummaryHtml}</section>

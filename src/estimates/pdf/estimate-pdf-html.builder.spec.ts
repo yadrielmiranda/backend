@@ -170,6 +170,74 @@ function withExternalDealerCustomerCharges(
 }
 
 describe('EstimatePdfHtmlBuilder', () => {
+  it('compares saved unit and line prices using the report audience', () => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate, {
+      priceT: '120.00',
+      discountAmount: '30.00',
+      customerPriceT: '180.00',
+      customerDiscountAmount: '45.00',
+    });
+    Object.assign(estimate.pieces[0], {
+      qty: 3,
+      price: '40.00',
+      subtotal: '120.00',
+      regularPrice: '50.00',
+      customerPrice: '60.00',
+      customerSubtotal: '180.00',
+      regularCustomerPrice: '75.00',
+      promotionSnapshot: { id: 1, percent: '20' },
+    });
+
+    const internal = EstimatePdfHtmlBuilder.build(estimate, 'dealer_internal');
+    const customer = EstimatePdfHtmlBuilder.build(estimate, 'dealer_public');
+
+    expect(internal).toContain(
+      '<s class="price-original">$50.00</s><span class="promotion-current">$40.00</span>',
+    );
+    expect(internal).toContain(
+      '<s class="price-original">$150.00</s><span class="promotion-current">$120.00</span>',
+    );
+    expect(customer).toContain(
+      '<s class="price-original">$75.00</s><span class="promotion-current">$60.00</span>',
+    );
+    expect(customer).toContain(
+      '<s class="price-original">$225.00</s><span class="promotion-current">$180.00</span>',
+    );
+    expect(customer).not.toContain('<s class="price-original">$50.00</s>');
+    expect(customer).not.toContain('<s class="price-original">$150.00</s>');
+    expect(customer).toContain('−$45.00');
+
+    const totalOnly = EstimatePdfHtmlBuilder.build(
+      estimate,
+      'dealer_public_total',
+    );
+    expect(totalOnly).not.toContain('<s class="price-original">');
+    expect(totalOnly).not.toContain('<span class="promotion-price">');
+  });
+
+  it('shows the saved original for a free piece and keeps ordinary pieces unchanged', () => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate.pieces[0], {
+      qty: 2,
+      price: '0.00',
+      subtotal: '0.00',
+      regularPrice: '50.00',
+      promotionSnapshot: { id: 1, percent: '100' },
+    });
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+    expect(html).toContain(
+      '<s class="price-original">$50.00</s><span class="promotion-current">$0.00</span>',
+    );
+    expect(html).toContain(
+      '<s class="price-original">$100.00</s><span class="promotion-current">$0.00</span>',
+    );
+
+    Object.assign(estimate.pieces[0], { promotionSnapshot: null });
+    const ordinary = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+    expect(ordinary).not.toContain('<s class="price-original">');
+  });
+
   it('keeps the dealer customer PDF free of internal pricing', () => {
     const html = EstimatePdfHtmlBuilder.build(
       estimateFixture(),

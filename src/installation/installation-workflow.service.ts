@@ -1,3 +1,4 @@
+import { savedPromotions, promotionExpired, expiredPromotionMessage } from '@/promotions/promotion-pricing';
 import {
   BadRequestException,
   ConflictException,
@@ -162,6 +163,9 @@ type RevisionPieceRecord = Prisma.PieceGetPayload<{
 }>;
 
 type RevisionPiecePricingSnapshot = {
+  regularPrice?: string;
+  regularCustomerPrice?: string;
+  promotionSnapshot?: unknown;
   rate: string;
   price: string;
   netProfit: string;
@@ -688,6 +692,13 @@ export class InstallationWorkflowService {
     return input;
   }
 
+  private async promotionRevisionCache(estimateId: number, tx: PrismaTransactionClient) {
+    const estimate = await tx.estimate.findUniqueOrThrow({where:{id:estimateId}});
+    const cache = this.pieceCalculator.createCalculationCache();
+    cache.promotions = savedPromotions(estimate);
+    return cache;
+  }
+
   private originalRevisionSnapshot(piece: RevisionPieceRecord) {
     const source = this.sourceSnapshot(piece) as Prisma.InputJsonObject;
     return this.jsonValue({
@@ -696,6 +707,7 @@ export class InstallationWorkflowService {
       pricing: {
         rate: piece.rate.toString(),
         price: piece.price.toString(),
+        regularPrice: piece.regularPrice.toString(), regularCustomerPrice: piece.regularCustomerPrice.toString(), promotionSnapshot: piece.promotionSnapshot,
         netProfit: piece.netProfit.toString(),
         markup: piece.markup.toString(),
         dealerMarkupDecimal: piece.dealerMarkup.toString(),
@@ -744,6 +756,7 @@ export class InstallationWorkflowService {
     return {
       rate: calculated.rate.toFixed(2),
       price: calculated.price.toFixed(2),
+      regularPrice: (calculated.regularPrice ?? calculated.price).toFixed(2), regularCustomerPrice: (calculated.regularCustomerPrice ?? calculated.customerPrice).toFixed(2), promotionSnapshot: calculated.promotionSnapshot,
       netProfit: calculated.netProfit.toFixed(2),
       markup: calculated.markup.toFixed(18),
       dealerMarkupDecimal: calculated.dealerMarkupDecimal.toFixed(4),
@@ -765,6 +778,7 @@ export class InstallationWorkflowService {
   }
 
   private estimateTotalsSnapshot(estimate: {
+    originalPriceT?: Prisma.Decimal; originalCustomerPriceT?: Prisma.Decimal; discountAmount?: Prisma.Decimal; customerDiscountAmount?: Prisma.Decimal;
     units: number;
     rateT: Prisma.Decimal;
     priceT: Prisma.Decimal;
@@ -779,6 +793,7 @@ export class InstallationWorkflowService {
     netProfitD: Prisma.Decimal;
   }): Prisma.InputJsonValue {
     return {
+      originalPriceT: (estimate.originalPriceT ?? estimate.priceT).toString(), originalCustomerPriceT: (estimate.originalCustomerPriceT ?? estimate.customerPriceT).toString(), discountAmount: (estimate.discountAmount ?? 0).toString(), customerDiscountAmount: (estimate.customerDiscountAmount ?? 0).toString(),
       units: estimate.units,
       rateT: estimate.rateT.toString(),
       priceT: estimate.priceT.toString(),
@@ -950,6 +965,7 @@ export class InstallationWorkflowService {
     }
 
     const rows: Array<{
+      original: Decimal; originalCustomer: Decimal;
       rate: Decimal;
       price: Decimal;
       customerPrice: Decimal;
@@ -965,6 +981,7 @@ export class InstallationWorkflowService {
           | (RevisionPiecePricingSnapshot & Prisma.JsonObject)
           | null;
         rows.push({
+          original: new Decimal(pricing?.regularPrice ?? pricing?.price ?? piece.regularPrice.toString()), originalCustomer: new Decimal(pricing?.regularCustomerPrice ?? pricing?.customerPrice ?? piece.regularCustomerPrice.toString()),
           rate: new Decimal(pricing?.rate ?? piece.rate.toString()),
           price: new Decimal(pricing?.price ?? piece.price.toString()),
           customerPrice: new Decimal(
@@ -975,6 +992,7 @@ export class InstallationWorkflowService {
 
       for (let index = measurements.length; index < piece.qty; index += 1) {
         rows.push({
+          original: new Decimal(piece.regularPrice.toString()), originalCustomer: new Decimal(piece.regularCustomerPrice.toString()),
           rate: new Decimal(piece.rate.toString()),
           price: new Decimal(piece.price.toString()),
           customerPrice: new Decimal(piece.customerPrice.toString()),
@@ -998,7 +1016,10 @@ export class InstallationWorkflowService {
     const taxAmount = priceT.mul(taxRate);
     const customerTaxAmount = customerPriceT.mul(customerTaxRate);
 
+    const original = rows.reduce((s,r)=>s.add(r.original),new Decimal(0));
+    const originalCustomer = rows.reduce((s,r)=>s.add(r.originalCustomer),new Decimal(0));
     const revisedTotals: Prisma.InputJsonValue = {
+      originalPriceT:original.toFixed(2), originalCustomerPriceT:originalCustomer.toFixed(2), discountAmount:original.sub(priceT).toFixed(2), customerDiscountAmount:originalCustomer.sub(customerPriceT).toFixed(2),
       units: rows.length,
       rateT: rateT.toFixed(2),
       priceT: priceT.toFixed(2),
@@ -1054,7 +1075,7 @@ export class InstallationWorkflowService {
       proposedInput,
       effectiveMarkup,
       tx,
-      this.pieceCalculator.createCalculationCache(),
+      await this.promotionRevisionCache(revision.estimateId, tx),
     );
     const pricing = await this.calculatedRevisionSnapshot(calculated, tx);
     const action =
@@ -1618,6 +1639,7 @@ export class InstallationWorkflowService {
       ) {
         throw new NotFoundException(`Estimate #${estimateId} not found.`);
       }
+      if (promotionExpired(estimate)) throw new BadRequestException(expiredPromotionMessage);
       if (estimate.installationJob) {
         throw new ConflictException(
           'Installation has already been requested for this estimate.',
@@ -2491,7 +2513,7 @@ export class InstallationWorkflowService {
             replacementInput,
             effectiveMarkup,
             tx,
-            this.pieceCalculator.createCalculationCache(),
+            await this.promotionRevisionCache(revision.estimateId, tx),
           );
           const pricing = await this.calculatedRevisionSnapshot(calculated, tx);
           const product = await tx.product.findUnique({
@@ -2930,6 +2952,9 @@ export class InstallationWorkflowService {
     const customerPrice = new Decimal(pricing.customerPrice);
     const quantity = new Decimal(qty);
     return {
+      regularPrice: new Prisma.Decimal(pricing.regularPrice ?? pricing.price),
+      regularCustomerPrice: new Prisma.Decimal(pricing.regularCustomerPrice ?? pricing.customerPrice),
+      promotionSnapshot: pricing.promotionSnapshot ? pricing.promotionSnapshot as Prisma.InputJsonValue : Prisma.DbNull,
       mark,
       idProd: Number(input.idProd),
       idBrand: Number(input.idBrand),
@@ -3204,6 +3229,7 @@ export class InstallationWorkflowService {
         rate: true,
         price: true,
         customerPrice: true,
+        regularPrice: true, regularCustomerPrice: true, promotionSnapshot: true,
         dealerMarkup: true,
       },
     });
@@ -4090,6 +4116,7 @@ export class InstallationWorkflowService {
     tx: PrismaTransactionClient,
     options: { preview?: boolean } = {},
   ) {
+    if (!options.preview) await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
     const estimate = await tx.estimate.findUnique({
       where: { id: estimateId },
       include: {
@@ -4121,6 +4148,8 @@ export class InstallationWorkflowService {
     if (!estimate || estimate.idUser !== user.id) {
       throw new NotFoundException(`Estimate #${estimateId} not found.`);
     }
+
+    if (promotionExpired(estimate)) throw new BadRequestException(expiredPromotionMessage);
 
     const job =
       estimate.installationJob?.status === InstallationJobStatus.CANCELED
@@ -4360,7 +4389,7 @@ export class InstallationWorkflowService {
       throw new BadRequestException(`Unsupported payment type: ${type}.`);
     }
 
-    if (baseAmount.lte(0))
+    if (baseAmount.lte(0) && !(type === PaymentType.MATERIAL && baseAmount.eq(0) && estimate.units > 0 && Number(estimate.discountAmount) > 0))
       throw new BadRequestException(
         'Payment amount must be greater than zero.',
       );

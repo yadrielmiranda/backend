@@ -965,12 +965,40 @@ model EstimateSequence {
   createdAt DateTime @default(now())
 }
 
+model Promotion {
+  id        Int      @id @default(autoincrement())
+  name      String   @db.VarChar(120)
+  percent   Decimal  @db.Decimal(7, 4)
+  audience  String   @db.VarChar(10)
+  roleIds   Json
+  userIds   Json
+  brandId   Int?
+  productId Int?
+  systemId  Int?
+  startsAt  DateTime @db.DateTime(3)
+  endsAt    DateTime @db.DateTime(3)
+  enabled   Boolean  @default(true)
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled, startsAt, endsAt])
+}
+
 model Estimate {
-  id        Int       @id @default(autoincrement())
-  number    String    @unique
-  name      String
-  date      DateTime  @default(now())
-  expiresAt DateTime?
+  standardExpiresAt      DateTime?
+  promotionExpiresAt     DateTime?
+  promotionLockedAt      DateTime?
+  promotionContext       Json?
+  originalPriceT         Decimal   @default(0) @db.Decimal(12, 2)
+  originalCustomerPriceT Decimal   @default(0) @db.Decimal(12, 2)
+  discountAmount         Decimal   @default(0) @db.Decimal(12, 2)
+  customerDiscountAmount Decimal   @default(0) @db.Decimal(12, 2)
+  id                     Int       @id @default(autoincrement())
+  number                 String    @unique
+  name                   String
+  date                   DateTime  @default(now())
+  expiresAt              DateTime?
 
   publicToken          String?   @unique @db.VarChar(64)
   publicTotalToken     String?   @unique @db.VarChar(64)
@@ -1069,20 +1097,23 @@ model EstimateCustomerCharge {
 }
 
 model Piece {
-  id      Int        @id @default(autoincrement())
-  estim   Estimate   @relation(fields: [idEst], references: [id])
-  idEst   Int
-  mark    String     @db.VarChar(20)
-  prod    Product    @relation(fields: [idProd], references: [id])
-  idProd  Int
-  bran    Brand      @relation(fields: [idBrand], references: [id])
-  idBrand Int
-  syst    System     @relation(fields: [idSyst], references: [id])
-  idSyst  Int
-  conf    Config     @relation(fields: [idConf], references: [id])
-  idConf  Int
-  fColor  FrameColor @relation(fields: [idFC], references: [id])
-  idFC    Int
+  regularPrice         Decimal    @default(0) @db.Decimal(12, 2)
+  regularCustomerPrice Decimal    @default(0) @db.Decimal(12, 2)
+  promotionSnapshot    Json?
+  id                   Int        @id @default(autoincrement())
+  estim                Estimate   @relation(fields: [idEst], references: [id])
+  idEst                Int
+  mark                 String     @db.VarChar(20)
+  prod                 Product    @relation(fields: [idProd], references: [id])
+  idProd               Int
+  bran                 Brand      @relation(fields: [idBrand], references: [id])
+  idBrand              Int
+  syst                 System     @relation(fields: [idSyst], references: [id])
+  idSyst               Int
+  conf                 Config     @relation(fields: [idConf], references: [id])
+  idConf               Int
+  fColor               FrameColor @relation(fields: [idFC], references: [id])
+  idFC                 Int
 
   width        Decimal? @db.Decimal(10, 3)
   height       Decimal? @db.Decimal(10, 3)
