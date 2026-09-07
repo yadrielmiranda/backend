@@ -99,7 +99,7 @@ export class EstimatePdfService {
 
       const estimateNumber = escapeHtml(estimate.number);
       const footerText = escapeHtml(
-        EstimatePdfHtmlBuilder.buildFooterText(estimate),
+        EstimatePdfHtmlBuilder.buildFooterText(estimate, view),
       );
 
       const pdf = await page.pdf({

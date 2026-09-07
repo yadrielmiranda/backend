@@ -1,7 +1,9 @@
+import { calculateEstimateDiscount, estimateDiscountConfig } from '../discounts/estimate-discount';
 import type { Branding } from '@prisma/client';
 
 import type { EstimateInstallationReportSummary } from '../reporting/estimate-installation-summary';
 import type { EstimateWithRelations, PdfView } from '../estimates.service';
+import { isExternalDealerEstimate } from '../estimate-customer-charges.service';
 import {
   calculateMaterialFinancials,
   resolveMaterialSaleSubtotal,
@@ -14,6 +16,7 @@ type ReportKind =
   | 'dealer'
   | 'admin';
 type MaterialTotals = {
+  manualNetDiscount?: number;
   discount?: number;
   subtotal: number;
   taxRate: number;
@@ -379,6 +382,13 @@ const originalMaterialSubtotal = (totals: MaterialTotals) =>
     ? originalPrice(totals.subtotal + totals.discount!)
     : formatMoney(totals.subtotal);
 
+const materialSubtotal = (totals: MaterialTotals) =>
+  Number(totals.manualNetDiscount) > 0
+    ? originalPrice(totals.subtotal)
+    : Number(totals.discount) > 0
+      ? `<span class="promotion-current">${formatMoney(totals.subtotal)}</span>`
+      : formatMoney(totals.subtotal);
+
 const summaryRow = (
   label: string,
   value: string,
@@ -394,13 +404,17 @@ const summaryRow = (
 
 export class EstimatePdfHtmlBuilder {
   static buildFooterText(
-    estimate: Pick<EstimateWithRelations, 'expiresAt'> & {
-      promotionExpiresAt?: Date | null;
-      promotionLockedAt?: Date | null;
-    },
+    estimate: EstimateWithRelations,
+    view: PdfView = 'client',
   ): string {
-    const expirationText = estimate.promotionLockedAt
-      ? 'The agreed promotion is preserved after payment.'
+    const hideDealerPromotions =
+      (view === 'dealer_public' || view === 'dealer_public_total') &&
+      isExternalDealerEstimate(estimate);
+    const manualLocked = estimateDiscountConfig(estimate.manualDiscount)?.lockedAt;
+    const expirationText = estimate.promotionLockedAt || manualLocked
+      ? hideDealerPromotions || !estimate.promotionLockedAt
+        ? 'The agreed terms are preserved after payment.'
+        : 'The agreed promotion is preserved after payment.'
       : estimate.expiresAt
         ? `This estimate is valid through ${estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString('en-US') : formatDate(estimate.expiresAt)}.`
         : 'This estimate is valid for 30 days.';
@@ -420,6 +434,8 @@ export class EstimatePdfHtmlBuilder {
         .toLowerCase() === 'dealer';
     const projectTotalOnly = reportKind === 'dealer-customer-total';
     const customerFacing = reportKind === 'dealer-customer' || projectTotalOnly;
+    const hideDealerPromotions =
+      customerFacing && isExternalDealerEstimate(estimate);
     const comparisonView =
       reportKind === 'dealer' || (reportKind === 'admin' && ownerIsDealer);
     const internalReport = reportKind === 'dealer' || reportKind === 'admin';
@@ -479,12 +495,22 @@ export class EstimatePdfHtmlBuilder {
       total: numberValue(estimate.totalPayable),
     };
     const customerMaterial: MaterialTotals = {
-      discount: numberValue(estimate.customerDiscountAmount),
+      discount: hideDealerPromotions
+        ? 0
+        : numberValue(estimate.customerDiscountAmount),
       subtotal: numberValue(estimate.customerPriceT),
       taxRate: numberValue(estimate.customerTaxRate),
       taxAmount: numberValue(estimate.customerTaxAmount),
       total: numberValue(estimate.customerTotalPayable),
     };
+    const manualDiscount = hideDealerPromotions ? null : estimate.manualDiscountSummary ?? calculateEstimateDiscount(estimate);
+    const manualMaterial = manualDiscount?.payer === 'CUSTOMER' ? customerMaterial : internalMaterial;
+    if (manualDiscount) {
+      manualMaterial.taxAmount = Number(manualDiscount.material.tax);
+      manualMaterial.total = Number(manualDiscount.material.total);
+      manualMaterial.manualNetDiscount = Number(manualDiscount.material.netDiscount);
+    }
+    const serviceDiscount = Number(manualDiscount?.installation.discount ?? 0) + Number(manualDiscount?.permit.discount ?? 0) + Number(manualDiscount?.city.discount ?? 0);
     const selectedMaterial = customerFacing
       ? customerMaterial
       : internalMaterial;
@@ -505,16 +531,17 @@ export class EstimatePdfHtmlBuilder {
     const sharedCharges = roundMoney(installationTotal + permitFee + cityFee);
     const customerServiceCharges = externalDealerCharges
       ? numberValue(externalDealerCharges.customerTotal)
-      : sharedCharges;
+      : sharedCharges - (manualDiscount?.payer === "CUSTOMER" ? serviceDiscount : 0);
+    const internalCharges = sharedCharges - (manualDiscount?.payer === "ACCOUNT_OWNER" ? serviceDiscount : 0);
     const internalProjectTotal = roundMoney(
-      internalMaterial.total + sharedCharges,
+      internalMaterial.total + internalCharges,
     );
     const customerProjectTotal = roundMoney(
       customerMaterial.total + customerServiceCharges,
     );
     const selectedProjectTotal = roundMoney(
       selectedMaterial.total +
-        (customerFacing ? customerServiceCharges : sharedCharges),
+        (customerFacing ? customerServiceCharges : internalCharges),
     );
     const cityFeePending = Boolean(
       installationSummary?.permitIncluded &&
@@ -550,7 +577,7 @@ export class EstimatePdfHtmlBuilder {
             const subtotal = customerFacing
               ? customerSubtotal
               : numberValue(piece.subtotal);
-            const originalUnitPrice = piece.promotionSnapshot
+            const originalUnitPrice = !hideDealerPromotions && piece.promotionSnapshot
               ? customerFacing
                 ? piece.regularCustomerPrice == null
                   ? undefined
@@ -618,7 +645,8 @@ export class EstimatePdfHtmlBuilder {
             </tr></thead>
             <tbody>
               ${internalMaterial.discount || customerMaterial.discount ? `<tr><td>Before promotion</td><td class="right">${originalMaterialSubtotal(internalMaterial)}</td><td class="right">${originalMaterialSubtotal(customerMaterial)}</td></tr><tr class="promotion-discount"><td>Promotion discount</td><td class="right">−${formatMoney(internalMaterial.discount ?? 0)}</td><td class="right">−${formatMoney(customerMaterial.discount ?? 0)}</td></tr>` : ''}
-              <tr><td>Material subtotal</td><td class="right">${internalMaterial.discount ? `<span class="promotion-current">${formatMoney(internalMaterial.subtotal)}</span>` : formatMoney(internalMaterial.subtotal)}</td><td class="right">${customerMaterial.discount ? `<span class="promotion-current">${formatMoney(customerMaterial.subtotal)}</span>` : formatMoney(customerMaterial.subtotal)}</td></tr>
+              <tr><td>Material subtotal</td><td class="right">${materialSubtotal(internalMaterial)}</td><td class="right">${materialSubtotal(customerMaterial)}</td></tr>
+              ${internalMaterial.manualNetDiscount || customerMaterial.manualNetDiscount ? `<tr><td>Additional discount</td><td class="right">−${formatMoney(internalMaterial.manualNetDiscount ?? 0)}</td><td class="right">−${formatMoney(customerMaterial.manualNetDiscount ?? 0)}</td></tr><tr><td>Subtotal after discount</td><td class="right"><span class="promotion-current">${formatMoney(internalMaterial.subtotal - (internalMaterial.manualNetDiscount ?? 0))}</span></td><td class="right"><span class="promotion-current">${formatMoney(customerMaterial.subtotal - (customerMaterial.manualNetDiscount ?? 0))}</span></td></tr>` : ''}
               <tr><td>Sales Tax</td><td class="right">${formatMoney(internalMaterial.taxAmount)}<small>${(internalMaterial.taxRate * 100).toFixed(2)}%</small></td><td class="right">${formatMoney(customerMaterial.taxAmount)}<small>${(customerMaterial.taxRate * 100).toFixed(2)}%</small></td></tr>
               <tr class="table-total"><td>Material total</td><td class="right">${formatMoney(internalMaterial.total)}</td><td class="right">${formatMoney(customerMaterial.total)}</td></tr>
             </tbody>
@@ -629,7 +657,8 @@ export class EstimatePdfHtmlBuilder {
           <div class="card-title">Materials</div>
           <div class="card-body">
             ${selectedMaterial.discount ? summaryRow('Before promotion', originalMaterialSubtotal(selectedMaterial)) + summaryRow('Promotion discount', '−' + formatMoney(selectedMaterial.discount), { extraClass: 'promotion-discount' }) : ''}
-            ${summaryRow('Material subtotal', formatMoney(selectedMaterial.subtotal), { extraClass: selectedMaterial.discount ? 'promotion-subtotal' : undefined })}
+            ${summaryRow('Material subtotal', materialSubtotal(selectedMaterial))}
+            ${selectedMaterial.manualNetDiscount ? summaryRow('Additional discount', '−' + formatMoney(selectedMaterial.manualNetDiscount)) + summaryRow('Subtotal after discount', formatMoney(selectedMaterial.subtotal - selectedMaterial.manualNetDiscount), { strong: true, extraClass: 'promotion-subtotal' }) : ''}
             ${summaryRow(`Sales Tax (${(selectedMaterial.taxRate * 100).toFixed(2)}%)`, formatMoney(selectedMaterial.taxAmount))}
             <div class="row-divider">${summaryRow('Material total', formatMoney(selectedMaterial.total), { strong: true })}</div>
           </div>
@@ -651,7 +680,7 @@ export class EstimatePdfHtmlBuilder {
               (line) => `
                 <tr>
                   <td>${escapeHtml(line.description)}${line.origin === 'DEALER' ? '<small>Dealer-created</small>' : ''}</td>
-                  <td class="right">${line.origin === 'DEALER' ? '&mdash;' : line.systemAmount == null ? 'Pending' : formatMoney(line.systemAmount)}</td>
+                  <td class="right">${line.origin === 'DEALER' ? '&mdash;' : line.systemAmount == null ? 'Pending' : line.sourceKey === 'INSTALLATION' && Number(manualDiscount?.installation.discount) > 0 ? originalPrice(numberValue(line.systemAmount)) : formatMoney(line.systemAmount)}</td>
                   <td class="right">${!line.usedInCustomerQuote ? 'Not used' : line.customerAmount == null ? 'Pending' : formatMoney(line.customerAmount)}</td>
                 </tr>`,
             )
@@ -690,7 +719,9 @@ export class EstimatePdfHtmlBuilder {
       const installationValue =
         installationSummary.installationAmount == null
           ? 'Pending'
-          : formatMoney(installationSummary.installationAmount);
+          : Number(manualDiscount?.installation.discount) > 0
+            ? originalPrice(numberValue(installationSummary.installationAmount))
+            : formatMoney(installationSummary.installationAmount);
       const rows = [
         summaryRow(
           'Installation',
@@ -825,7 +856,7 @@ export class EstimatePdfHtmlBuilder {
                   'Dealer Profit - materials only, pre-tax',
                   formatMoney(
                     roundMoney(
-                      customerMaterial.subtotal - internalMaterial.subtotal,
+                      (customerMaterial.subtotal - (customerMaterial.manualNetDiscount ?? 0)) - (internalMaterial.subtotal - (internalMaterial.manualNetDiscount ?? 0)),
                     ),
                   ),
                   { extraClass: 'profit-row' },
@@ -841,7 +872,7 @@ export class EstimatePdfHtmlBuilder {
         </div>`;
 
     const profitability = estimatedMaterialProfitability(
-      estimate,
+      manualDiscount ? { ...estimate, ...(manualDiscount.payer === 'CUSTOMER' ? { customerPriceT: manualDiscount.material.subtotal } : { priceT: manualDiscount.material.subtotal }) } as unknown as EstimateWithRelations : estimate,
       ownerIsDealer,
     );
     const adminProfitability =
@@ -861,9 +892,10 @@ export class EstimatePdfHtmlBuilder {
       comparisonView || !installationSummaryHtml
         ? 'summary-grid single-column'
         : 'summary-grid';
+    const manualDiscountHtml = manualDiscount ? `<div class="card keep-together"><div class="card-body">${summaryRow('Additional discount · ' + ({ PROJECT: 'Project total', MATERIAL: 'Material', INSTALLATION: 'Installation' }[manualDiscount.scope]), '−' + formatMoney(manualDiscount.discount), { strong: true })}${serviceDiscount ? summaryRow('Included installation & services discount', '−' + formatMoney(serviceDiscount)) : ''}</div></div>` : '';
     const projectSummaryHtml = projectTotalOnly
       ? `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div>${projectScopeHtml}${projectTotalHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`
-      : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${projectTotalHtml}${adminProfitability}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
+      : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${manualDiscountHtml}${projectTotalHtml}${adminProfitability}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
 
     const statusBadge = estimate.status?.name
       ? `<span class="status-badge ${estimateStatusBadgeClassName(estimate.status.name)}">${escapeHtml(estimate.status.name)}</span>`
@@ -993,7 +1025,7 @@ export class EstimatePdfHtmlBuilder {
   <section class="prepared-section">
     <div class="prepared-details"><div class="eyebrow">Prepared for</div><div class="prepared-name">${escapeHtml(preparedFor)}</div>${projectName ? `<div class="project-name">Project: ${escapeHtml(projectName)}</div>` : ''}</div>
     <div class="contact">${contactPhone ? `<div>${escapeHtml(contactPhone)}</div>` : ''}${contactEmail ? `<div>${escapeHtml(contactEmail)}</div>` : ''}${contactAddress ? `<div>${escapeHtml(contactAddress)}</div>` : ''}</div>
-    <div class="dates"><div class="date-group"><div class="date-label">Date</div><div class="date-value">${escapeHtml(formatDate(estimate.date))}</div></div>${estimate.expiresAt && !estimate.promotionLockedAt ? `<div class="date-group"><div class="date-label">Valid through</div><div class="date-value">${escapeHtml(estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString('en-US') : formatDate(estimate.expiresAt))}</div></div>` : ''}</div>
+    <div class="dates"><div class="date-group"><div class="date-label">Date</div><div class="date-value">${escapeHtml(formatDate(estimate.date))}</div></div>${estimate.expiresAt && !estimate.promotionLockedAt && !estimateDiscountConfig(estimate.manualDiscount)?.lockedAt ? `<div class="date-group"><div class="date-label">Valid through</div><div class="date-value">${escapeHtml(estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString('en-US') : formatDate(estimate.expiresAt))}</div></div>` : ''}</div>
   </section>
   <section class="products-section"><div class="products-heading"><h2 class="section-heading">Product Details</h2><div class="illustration-note">Illustrations are visual references; written specifications govern.</div></div><div class="product-list">${productCards}</div></section>
   <section class="summary-section">${projectSummaryHtml}</section>

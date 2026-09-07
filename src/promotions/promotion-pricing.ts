@@ -14,7 +14,37 @@ export type PromotionTerms = {
   brandName?: string | null;
   productName?: string | null;
   systemName?: string | null;
+  excludedProductIds?: number[];
+  excludedSystemIds?: number[];
+  excludedProductNames?: string[];
+  excludedSystemNames?: string[];
+  automaticDealerAdjustment?: boolean;
+  // Guarda la proporción exacta por importes, sin depender de un porcentaje
+  // periódico. Las condiciones antiguas sin esta base conservan su porcentaje.
+  dealerPriceBasis?: { regularPrice: string; promotionalPrice: string };
+  // Solo se usa al calcular; no se guarda en la pieza ni se envía al usuario.
+  clientReferenceMarkup?: string;
 };
+
+const ExactPrice = Decimal.clone({ precision: 40 });
+function discountedPrice(amount: Decimal, promotion: PromotionTerms) {
+  const basis = promotion.automaticDealerAdjustment
+    ? promotion.dealerPriceBasis
+    : undefined;
+  if (basis) {
+    // Multiplica antes de dividir para conservar los empates de medio centavo.
+    return new Decimal(
+      new ExactPrice(amount.toString())
+        .mul(basis.promotionalPrice)
+        .div(basis.regularPrice)
+        .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+        .toString(),
+    );
+  }
+  return amount
+    .mul(new Decimal(1).sub(new Decimal(promotion.percent).div(100)))
+    .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+}
 export const expiredPromotionMessage =
   'This promotion has expired. Recalculate your estimate to continue.';
 export function promotionTerms(value: unknown): PromotionTerms[] {
@@ -104,28 +134,65 @@ export function applyPromotion<
     netProfit: Decimal;
     netProfitD: Decimal;
   },
->(piece: T, eligible: PromotionTerms[] = []) {
-  const promotion = eligible
-    .filter(
-      (p) =>
-        (!p.brandId || p.brandId === piece.idBrand) &&
-        (!p.productId || p.productId === piece.idProd) &&
-        (!p.systemId || p.systemId === piece.idSyst),
-    )
-    .sort((a, b) => Number(b.percent) - Number(a.percent) || a.id - b.id)[0];
+>(piece: T, eligible: PromotionTerms[] = [], pricingRate = piece.rate) {
+  const matching = eligible.filter(
+    (p) =>
+      (!p.brandId || p.brandId === piece.idBrand) &&
+      (!p.productId || p.productId === piece.idProd) &&
+      (!p.systemId || p.systemId === piece.idSyst) &&
+      !p.excludedProductIds?.includes(piece.idProd) &&
+      !p.excludedSystemIds?.includes(piece.idSyst),
+  );
+  // Las ofertas directas conservan prioridad y el porcentaje configurado.
+  const direct = matching.filter((p) => !p.automaticDealerAdjustment);
+  const candidates = direct.length
+    ? direct.map((promotion) => ({
+        promotion,
+        price: discountedPrice(piece.price, promotion),
+      }))
+    : matching.flatMap((p) => {
+        if (p.clientReferenceMarkup === undefined)
+          return [{ promotion: p, price: discountedPrice(piece.price, p) }];
+        if (!piece.price.gt(0)) return [];
+        const clientRegularPrice = pricingRate
+          .mul(new Decimal(1).add(p.clientReferenceMarkup))
+          .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+        const clientPromotionPrice = clientRegularPrice
+          .mul(new Decimal(1).sub(new Decimal(p.percent).div(100)))
+          .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+        if (clientPromotionPrice.gte(piece.price)) return [];
+        const price = Decimal.max(0, clientPromotionPrice);
+        const percent = piece.price.sub(price).mul(100).div(piece.price);
+        const { clientReferenceMarkup: _reference, ...terms } = p;
+        return [
+          {
+            promotion: {
+              ...terms,
+              percent: percent.toString(),
+              dealerPriceBasis: {
+                regularPrice: piece.price.toString(),
+                promotionalPrice: price.toString(),
+              },
+            },
+            // El dealer recibe directamente el importe promocional del client.
+            price,
+          },
+        ];
+      });
+  const selected = candidates.sort(
+    (a, b) =>
+      new Decimal(b.promotion.percent).cmp(a.promotion.percent) ||
+      a.promotion.id - b.promotion.id,
+  )[0];
+  const promotion = selected?.promotion;
   const originals = {
     regularPrice: piece.price,
     regularCustomerPrice: piece.customerPrice,
     promotionSnapshot: promotion ?? null,
   };
   if (!promotion) return { ...piece, ...originals };
-  const factor = new Decimal(1).sub(new Decimal(promotion.percent).div(100));
-  const price = piece.price
-    .mul(factor)
-    .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-  const customerPrice = piece.customerPrice
-    .mul(factor)
-    .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  const price = selected.price;
+  const customerPrice = discountedPrice(piece.customerPrice, promotion);
   const subtotal = price.mul(piece.qty);
   const customerSubtotal = customerPrice.mul(piece.qty);
   return {

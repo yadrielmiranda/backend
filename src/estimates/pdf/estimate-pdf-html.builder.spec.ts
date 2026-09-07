@@ -170,7 +170,44 @@ function withExternalDealerCustomerCharges(
 }
 
 describe('EstimatePdfHtmlBuilder', () => {
-  it('compares saved unit and line prices using the report audience', () => {
+  it('shows a material total discount once with adjusted tax in client PDF', () => {
+    const estimate = estimateFixture(false);
+    estimate.dealerModeSnapshot = null;
+    Object.assign(estimate, { priceT: '1000', taxAmount: '70', totalPayable: '1070',
+      manualDiscount: { scope: 'MATERIAL', type: 'PERCENTAGE', value: '10' } });
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'client');
+    expect(html).toContain('Subtotal after discount');
+    expect(html).toContain('−$100.00');
+    expect(html).toContain('$63.00');
+    expect(html).toContain('$963.00');
+    expect(html).not.toContain('−$107.00');
+  });
+  it('shows the exact $20 material discount and tax on $80.33 in the reported example', () => {
+    const estimate = estimateFixture(false);
+    estimate.dealerModeSnapshot = null;
+    Object.assign(estimate, {
+      priceT: '100.33', taxAmount: '7.02', totalPayable: '107.35',
+      manualDiscount: { scope: 'MATERIAL', type: 'AMOUNT', value: '20' },
+    });
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'client');
+    expect(html).toContain('−$20.00');
+    expect(html).toContain('$5.62');
+    expect(html).toContain('$85.95');
+    expect(html).not.toContain('−$18.69');
+    expect(html).not.toContain('−$21.40');
+  });
+  it('keeps an external dealer additional discount private from customer PDFs', () => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate, { manualDiscount: { scope: 'MATERIAL', type: 'PERCENTAGE', value: '10' } });
+    expect(EstimatePdfHtmlBuilder.build(estimate, 'dealer_internal')).toContain('Additional discount');
+    for (const view of ['dealer_public', 'dealer_public_total'] as const) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, view);
+      expect(html).not.toContain('Additional discount');
+      expect(html).toContain('$280.29');
+    }
+  });
+
+  it('shows promotion comparisons internally but only final prices to an external dealer customer', () => {
     const estimate = estimateFixture(false);
     Object.assign(estimate, {
       priceT: '120.00',
@@ -198,15 +235,15 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(internal).toContain(
       '<s class="price-original">$150.00</s><span class="promotion-current">$120.00</span>',
     );
-    expect(customer).toContain(
-      '<s class="price-original">$75.00</s><span class="promotion-current">$60.00</span>',
-    );
-    expect(customer).toContain(
-      '<s class="price-original">$225.00</s><span class="promotion-current">$180.00</span>',
-    );
-    expect(customer).not.toContain('<s class="price-original">$50.00</s>');
-    expect(customer).not.toContain('<s class="price-original">$150.00</s>');
-    expect(customer).toContain('−$45.00');
+    expect(customer).toContain('$60.00');
+    expect(customer).toContain('$180.00');
+    expect(customer).not.toContain('<s class="price-original">');
+    expect(customer).not.toContain('<span class="promotion-price">');
+    expect(customer).not.toContain('Before promotion');
+    expect(customer).not.toContain('Promotion discount');
+    expect(customer).not.toContain('−$45.00');
+    expect(customer).not.toContain('$75.00');
+    expect(customer).not.toContain('$225.00');
 
     const totalOnly = EstimatePdfHtmlBuilder.build(
       estimate,
@@ -214,6 +251,71 @@ describe('EstimatePdfHtmlBuilder', () => {
     );
     expect(totalOnly).not.toContain('<s class="price-original">');
     expect(totalOnly).not.toContain('<span class="promotion-price">');
+  });
+
+  it('preserves promotion comparisons for internal-dealer customers and direct clients', () => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate, {
+      dealerModeSnapshot: 'INTERNAL',
+      priceT: '120.00', discountAmount: '30.00',
+      customerPriceT: '180.00', customerDiscountAmount: '45.00',
+    });
+    Object.assign(estimate.pieces[0], {
+      qty: 3,
+      price: '40.00', subtotal: '120.00', regularPrice: '50.00',
+      customerPrice: '60.00', customerSubtotal: '180.00', regularCustomerPrice: '75.00',
+      promotionSnapshot: { id: 1, percent: '20' },
+    });
+    const customer = EstimatePdfHtmlBuilder.build(estimate, 'dealer_public');
+    expect(customer).toContain(
+      '<s class="price-original">$75.00</s><span class="promotion-current">$60.00</span>',
+    );
+    expect(customer).toContain('Promotion discount');
+    expect(customer).toContain('−$45.00');
+
+    estimate.user.role.name = 'client';
+    const client = EstimatePdfHtmlBuilder.build(estimate, 'client');
+    expect(client).toContain(
+      '<s class="price-original">$50.00</s><span class="promotion-current">$40.00</span>',
+    );
+    expect(client).toContain('Promotion discount');
+    expect(client).toContain('−$30.00');
+  });
+
+  it('keeps paid promotion wording private without expiring the external customer report', () => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate, {
+      promotionExpiresAt: new Date('2026-09-13T23:19:00.000Z'),
+      promotionLockedAt: new Date('2026-09-07T12:00:00.000Z'),
+    });
+    for (const view of ['dealer_public', 'dealer_public_total'] as const) {
+      expect(EstimatePdfHtmlBuilder.buildFooterText(estimate, view)).toBe(
+        'The agreed terms are preserved after payment. Thank you for your business.',
+      );
+      expect(EstimatePdfHtmlBuilder.build(estimate, view)).not.toContain('Valid through');
+    }
+    expect(EstimatePdfHtmlBuilder.buildFooterText(estimate, 'dealer_internal')).toContain(
+      'The agreed promotion is preserved after payment.',
+    );
+    estimate.dealerModeSnapshot = 'INTERNAL';
+    expect(EstimatePdfHtmlBuilder.buildFooterText(estimate, 'dealer_public')).toContain(
+      'The agreed promotion is preserved after payment.',
+    );
+  });
+
+  it('preserves the exact estimate expiration in the external customer report', () => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate, {
+      expiresAt: new Date('2026-09-13T23:19:00.000Z'),
+      promotionExpiresAt: new Date('2026-09-13T23:19:00.000Z'),
+    });
+    const date = new Date(estimate.expiresAt!).toLocaleString('en-US');
+    expect(EstimatePdfHtmlBuilder.buildFooterText(estimate, 'dealer_public')).toBe(
+      `This estimate is valid through ${date}. Thank you for your business.`,
+    );
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'dealer_public');
+    expect(html).toContain(date);
+    expect(html).toContain('Valid through');
   });
 
   it('shows the saved original for a free piece and keeps ordinary pieces unchanged', () => {

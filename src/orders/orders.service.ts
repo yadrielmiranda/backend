@@ -33,9 +33,10 @@ import {
   nextManualOrderStatus,
 } from '@/installation/installation-flow-policy';
 import { calculateMaterialFinancials } from './order-material-financials';
+import { calculateEstimateDiscount, discountedInstallationTotal } from '@/estimates/discounts/estimate-discount';
 
 const orderDetailsInclude = {
-  estimate: true,
+  estimate: { include: { installationJob: { include: { quotes: { orderBy: { version: 'desc' as const }, take: 1 }, permit: true } } } },
   status: true,
   user: { include: { role: true } },
   payment: true,
@@ -68,14 +69,14 @@ export class OrdersService {
     });
   }
 
-  async findOne(id: number): Promise<Order | null> {
+  async findOne(id: number) {
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: orderDetailsInclude,
     });
 
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
-    return order;
+    return { ...order, estimate: { ...order.estimate, manualDiscountSummary: calculateEstimateDiscount(order.estimate) } };
   }
 
   async findAllStatuses(): Promise<OrderStatus[]> {
@@ -196,7 +197,7 @@ export class OrdersService {
           (sum, payment) => sum.add(payment.baseAmount.toString()),
           new Decimal(0),
         );
-        if (paidInstallation.lt(quote.total.toString())) {
+        if (paidInstallation.lt(discountedInstallationTotal(current.estimate, installation))) {
           throw new BadRequestException(
             'Installation must be paid before an installation order can be marked Delivered.',
           );
@@ -451,7 +452,7 @@ export class OrdersService {
         (sum, payment) => sum.add(payment.baseAmount.toString()),
         new Decimal(0),
       );
-      if (installationPaid.lt(quote.total.toString())) {
+      if (installationPaid.lt(discountedInstallationTotal(order.estimate, installation))) {
         throw new BadRequestException(
           'Installation must be paid before creating extra charges.',
         );
@@ -655,7 +656,8 @@ export class OrdersService {
 
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
 
-    if (roleName === 'admin' || roleName === 'operator') return order;
+    const estimate = { ...order.estimate, manualDiscountSummary: calculateEstimateDiscount(order.estimate) };
+    if (roleName === 'admin' || roleName === 'operator') return { ...order, estimate };
 
     if (order.userId !== user.id) {
       throw new NotFoundException(`Order with ID #${id} not found.`);
@@ -663,6 +665,7 @@ export class OrdersService {
 
     return {
       ...order,
+      estimate,
       deliveries: order.deliveries.map((delivery) => ({
         ...delivery,
         internalReason: null,

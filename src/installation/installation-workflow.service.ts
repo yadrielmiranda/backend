@@ -1,3 +1,4 @@
+import { calculateEstimateDiscount, discountedInstallationTotal, discountAllocations, estimateDiscountConfig } from '@/estimates/discounts/estimate-discount';
 import { savedPromotions, promotionExpired, expiredPromotionMessage } from '@/promotions/promotion-pricing';
 import {
   BadRequestException,
@@ -338,7 +339,7 @@ export class InstallationWorkflowService {
     const job = await this.getJobRecord(id);
     if (!job) throw new NotFoundException(`Installation job #${id} not found.`);
     this.assertAccess(job, user);
-    return job;
+    return { ...job, manualDiscountSummary: calculateEstimateDiscount(job.estimate, job) };
   }
 
   async findJobByEstimate(estimateId: number, user: AuthUser) {
@@ -348,7 +349,7 @@ export class InstallationWorkflowService {
     });
     if (!job) return null;
     this.assertAccess(job, user);
-    return job;
+    return { ...job, manualDiscountSummary: calculateEstimateDiscount(job.estimate, job) };
   }
 
   async findJobs(query: FindInstallationJobsQueryDto, user: AuthUser) {
@@ -692,10 +693,14 @@ export class InstallationWorkflowService {
     return input;
   }
 
-  private async promotionRevisionCache(estimateId: number, tx: PrismaTransactionClient) {
+  private async promotionRevisionCache(estimateId: number, tx: PrismaTransactionClient, piece: RevisionPieceRecord) {
     const estimate = await tx.estimate.findUniqueOrThrow({where:{id:estimateId}});
     const cache = this.pieceCalculator.createCalculationCache();
-    cache.promotions = savedPromotions(estimate);
+    // Cada pieza conserva su propio porcentaje, incluso si comparten la promoción.
+    cache.promotions = savedPromotions({
+      promotionLockedAt: estimate.promotionLockedAt,
+      promotionContext: piece.promotionSnapshot ? [piece.promotionSnapshot] : [],
+    });
     return cache;
   }
 
@@ -1075,7 +1080,7 @@ export class InstallationWorkflowService {
       proposedInput,
       effectiveMarkup,
       tx,
-      await this.promotionRevisionCache(revision.estimateId, tx),
+      await this.promotionRevisionCache(revision.estimateId, tx, measurement.piece),
     );
     const pricing = await this.calculatedRevisionSnapshot(calculated, tx);
     const action =
@@ -2037,7 +2042,38 @@ export class InstallationWorkflowService {
       if (!isPrivileged(user) && job.estimate.idUser !== user.id) {
         throw new NotFoundException('Installation job not found.');
       }
-      await this.prisma.installationJob.delete({ where: { id: jobId } });
+      await this.prisma.$transaction(async (tx) => {
+        // Serializa la eliminación con los descuentos y los nuevos pagos.
+        await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${job.estimateId} FOR UPDATE`;
+        const current = await tx.installationJob.findUnique({
+          where: { id: jobId },
+          include: { payments: true },
+        });
+        if (!current || current.status !== job.status || current.payments.some(
+          (payment) =>
+            (payment.status === PaymentStatus.PENDING && Boolean(payment.stripeSessionId)) ||
+            (payment.type === PaymentType.INSTALLATION_DEPOSIT || payment.type === PaymentType.INSTALLATION) &&
+              (payment.status === PaymentStatus.PAID || payment.status === PaymentStatus.REFUNDED),
+        )) {
+          throw new BadRequestException('Installation or its payments changed. Reload the estimate before canceling installation.');
+        }
+        const estimate = await tx.estimate.findUnique({
+          where: { id: job.estimateId },
+          select: { manualDiscount: true },
+        });
+        const discount = estimateDiscountConfig(estimate?.manualDiscount);
+        await tx.installationJob.delete({ where: { id: jobId } });
+        if (discount?.scope === 'INSTALLATION' && !discount.lockedAt) {
+          await tx.estimate.update({
+            where: { id: job.estimateId },
+            data: { manualDiscount: Prisma.DbNull },
+          });
+          await tx.eventLog.create({ data: {
+            action: 'UPDATE', entityType: 'Estimate', entityId: job.estimateId, userId: user.id,
+            message: 'Additional installation discount removed with the unpaid installation request.',
+          } });
+        }
+      });
       await this.logs.log({
         action: 'DELETE',
         entityType: 'InstallationJob',
@@ -2513,7 +2549,7 @@ export class InstallationWorkflowService {
             replacementInput,
             effectiveMarkup,
             tx,
-            await this.promotionRevisionCache(revision.estimateId, tx),
+            await this.promotionRevisionCache(revision.estimateId, tx, measurement.piece),
           );
           const pricing = await this.calculatedRevisionSnapshot(calculated, tx);
           const product = await tx.product.findUnique({
@@ -3417,7 +3453,7 @@ export class InstallationWorkflowService {
         paidInstallation._sum.baseAmount?.toString() ?? 0,
       );
       const installationBalance = calculateInstallationBalance(
-        quote.total.toString(),
+        estimate ? discountedInstallationTotal(estimate, { status: 'APPROVED', quotes: [quote], permit }).toString() : quote.total.toString(),
         [paidInstallationTotal],
       );
       const paidInstallationBalanceTotal = new Decimal(
@@ -3866,7 +3902,7 @@ export class InstallationWorkflowService {
         (sum, payment) => sum.add(payment.baseAmount.toString()),
         new Decimal(0),
       );
-    if (paidInstallation.lt(approvedQuote.total.toString())) {
+    if (paidInstallation.lt(discountedInstallationTotal(job.estimate, { ...job, quotes: [approvedQuote] }))) {
       throw new BadRequestException(
         'Installation must be fully paid before work can start.',
       );
@@ -4120,6 +4156,7 @@ export class InstallationWorkflowService {
     const estimate = await tx.estimate.findUnique({
       where: { id: estimateId },
       include: {
+        payments: { select: { status: true } },
         user: {
           select: {
             id: true,
@@ -4155,6 +4192,21 @@ export class InstallationWorkflowService {
       estimate.installationJob?.status === InstallationJobStatus.CANCELED
         ? null
         : estimate.installationJob;
+    const manualDiscount = calculateEstimateDiscount(estimate, job);
+    if (manualDiscount && !options.preview) {
+      const config = estimateDiscountConfig(estimate.manualDiscount)!;
+      if (!config.lockedAt) {
+        estimate.manualDiscount = {
+          ...config,
+          checkoutAllocations: discountAllocations(manualDiscount),
+          ...(manualDiscount.materialDiscountBasis === 'BEFORE_TAX' ? {
+            materialDiscountBasis: 'BEFORE_TAX',
+            checkoutMaterialNetDiscount: manualDiscount.material.netDiscount,
+          } : {}),
+        };
+        await tx.estimate.update({ where: { id: estimateId }, data: { manualDiscount: estimate.manualDiscount } });
+      }
+    }
     let baseAmount: Decimal;
     let description: string;
     let paymentSequence = 1;
@@ -4191,7 +4243,9 @@ export class InstallationWorkflowService {
           data: { depositTermsAcceptedAt: new Date() },
         });
       }
-      baseAmount = new Decimal(job.depositAmountSnapshot.toString());
+      baseAmount = manualDiscount
+        ? Decimal.min(job.depositAmountSnapshot.toString(), manualDiscount.installation.total)
+        : new Decimal(job.depositAmountSnapshot.toString());
       paymentSequence = 1;
       description = `Non-refundable installation deposit — Estimate #${estimate.number}`;
     } else if (type === PaymentType.PERMIT) {
@@ -4213,7 +4267,7 @@ export class InstallationWorkflowService {
           'Remeasurement and customer approval must be completed before Permit payment.',
         );
       }
-      baseAmount = new Decimal(job.permit.permitFeeSnapshot.toString());
+      baseAmount = new Decimal(manualDiscount?.permit.total ?? job.permit.permitFeeSnapshot.toString());
       description = `Permit Fee — Estimate #${estimate.number}`;
     } else if (type === PaymentType.MATERIAL) {
       if (estimate.order)
@@ -4246,14 +4300,14 @@ export class InstallationWorkflowService {
               'The permit and City Fee must be approved before material payment.',
             );
           }
-          cityFee = new Decimal(job.permit.cityFee.toString());
+          cityFee = new Decimal(manualDiscount?.city.total ?? job.permit.cityFee.toString());
         }
       }
       const materialTotal =
         estimate.dealerModeSnapshot === 'INTERNAL'
           ? estimate.customerTotalPayable
           : estimate.totalPayable;
-      baseAmount = new Decimal(materialTotal.toString()).add(cityFee);
+      baseAmount = new Decimal(manualDiscount?.material.total ?? materialTotal.toString()).add(cityFee);
       description = job
         ? `Material${cityFee.gt(0) ? ' + City Fee' : ''} — Estimate #${estimate.number}`
         : `Estimate #${estimate.number}`;
@@ -4303,7 +4357,7 @@ export class InstallationWorkflowService {
           'Installation payment becomes available when the order is ready to pick up.',
         );
       }
-      baseAmount = calculateInstallationBalance(quote.total.toString(), [
+      baseAmount = calculateInstallationBalance(manualDiscount?.installation.total ?? quote.total.toString(), [
         paidBase,
       ]);
       paymentSequence = quote.version;
@@ -4376,7 +4430,7 @@ export class InstallationWorkflowService {
       const paidInstallationTotal = new Decimal(
         paidInstallation._sum.baseAmount?.toString() ?? 0,
       );
-      if (paidInstallationTotal.lt(quote.total.toString())) {
+      if (paidInstallationTotal.lt(manualDiscount?.installation.total ?? quote.total.toString())) {
         throw new BadRequestException(
           'Installation must be paid before extra charges.',
         );
@@ -4389,7 +4443,9 @@ export class InstallationWorkflowService {
       throw new BadRequestException(`Unsupported payment type: ${type}.`);
     }
 
-    if (baseAmount.lte(0) && !(type === PaymentType.MATERIAL && baseAmount.eq(0) && estimate.units > 0 && Number(estimate.discountAmount) > 0))
+    const discountedNoCharge = baseAmount.eq(0) && Number(manualDiscount?.discount) > 0 &&
+      [PaymentType.MATERIAL, PaymentType.INSTALLATION_DEPOSIT, PaymentType.PERMIT, PaymentType.INSTALLATION].includes(type as any);
+    if (baseAmount.lte(0) && !discountedNoCharge && !(type === PaymentType.MATERIAL && baseAmount.eq(0) && estimate.units > 0 && Number(estimate.discountAmount) > 0))
       throw new BadRequestException(
         'Payment amount must be greater than zero.',
       );
@@ -4692,6 +4748,8 @@ export class InstallationWorkflowService {
     const job = await tx.installationJob.findUnique({
       where: { estimateId },
       include: {
+        estimate: true,
+        permit: true,
         quotes: {
           where: { status: InstallationQuoteStatus.APPROVED },
           orderBy: { version: 'desc' },
@@ -4717,7 +4775,7 @@ export class InstallationWorkflowService {
         where: { id: job.id },
         data: {
           status:
-            quote && credit.gte(quote.total.toString())
+            quote && credit.gte(discountedInstallationTotal(job.estimate, job))
               ? InstallationJobStatus.INSTALLATION_PAID
               : InstallationJobStatus.INSTALLATION_PAYMENT_PENDING,
         },

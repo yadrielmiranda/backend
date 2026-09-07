@@ -15,6 +15,7 @@ import {
   BadRequestException,
   Query,
 } from '@nestjs/common';
+import { UpdateEstimateDiscountDto } from './dto/estimate-discount.dto';
 import { Request, Response } from 'express';
 
 import { EstimatesService, type PdfView } from './estimates.service';
@@ -46,6 +47,17 @@ export class EstimatesController {
     private readonly installationWorkflowService: InstallationWorkflowService,
     private readonly estimateCustomerChargesService: EstimateCustomerChargesService,
   ) {}
+
+  @Get(':id/discount')
+  async getDiscount(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    const estimate = await this.estimatesService.findOneForUser(id, req.user as AuthUser);
+    return { config: estimate.manualDiscount ?? null, summary: estimate.manualDiscountSummary ?? null };
+  }
+
+  @Patch(':id/discount')
+  updateDiscount(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateEstimateDiscountDto, @Req() req: Request) {
+    return this.estimatesService.updateManualDiscount(id, dto, req.user as AuthUser);
+  }
 
   @Post('preview-dimension')
   async previewDimension(

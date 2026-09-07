@@ -966,26 +966,29 @@ model EstimateSequence {
 }
 
 model Promotion {
-  id        Int      @id @default(autoincrement())
-  name      String   @db.VarChar(120)
-  percent   Decimal  @db.Decimal(7, 4)
-  audience  String   @db.VarChar(10)
-  roleIds   Json
-  userIds   Json
-  brandId   Int?
-  productId Int?
-  systemId  Int?
-  startsAt  DateTime @db.DateTime(3)
-  endsAt    DateTime @db.DateTime(3)
-  enabled   Boolean  @default(true)
-  version   Int      @default(1)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                 Int      @id @default(autoincrement())
+  name               String   @db.VarChar(120)
+  percent            Decimal  @db.Decimal(7, 4)
+  audience           String   @db.VarChar(10)
+  roleIds            Json
+  userIds            Json
+  excludedProductIds Json
+  excludedSystemIds  Json
+  brandId            Int?
+  productId          Int?
+  systemId           Int?
+  startsAt           DateTime @db.DateTime(3)
+  endsAt             DateTime @db.DateTime(3)
+  enabled            Boolean  @default(true)
+  version            Int      @default(1)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   @@index([enabled, startsAt, endsAt])
 }
 
 model Estimate {
+  manualDiscount         Json?
   standardExpiresAt      DateTime?
   promotionExpiresAt     DateTime?
   promotionLockedAt      DateTime?

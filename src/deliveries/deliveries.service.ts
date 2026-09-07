@@ -16,6 +16,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import Decimal from 'decimal.js';
+import { discountedInstallationTotal } from '@/estimates/discounts/estimate-discount';
 import { PrismaService } from '@/prisma/prisma.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { LogsService } from '@/logs/logs.service';
@@ -201,7 +202,7 @@ export class DeliveriesService {
       (sum, payment) => sum.add(payment.baseAmount.toString()),
       new Decimal(0),
     );
-    if (paid.lt(quote.total.toString())) {
+    if (paid.lt(discountedInstallationTotal(order.estimate, installation))) {
       throw new BadRequestException(
         'Installation must be paid before the materials can be delivered.',
       );

@@ -5,8 +5,14 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { Prisma } from '@prisma/client';
-import { PromotionTerms } from './promotion-pricing';
+import { PromotionTerms, promotionTerms } from './promotion-pricing';
 import { PromotionDto } from './promotions.dto';
+import Decimal from 'decimal.js';
+
+const ids = (value: unknown): number[] =>
+  Array.isArray(value)
+    ? value.filter((id) => Number.isInteger(id) && id > 0)
+    : [];
 @Injectable()
 export class PromotionsService {
   constructor(private prisma: PrismaService) {}
@@ -16,22 +22,83 @@ export class PromotionsService {
   ): Promise<PromotionTerms[]> {
     const user = await tx.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { idRole: true },
+      select: { idRole: true, role: { select: { name: true } } },
     });
     const now = new Date();
     const rows = await tx.promotion.findMany({
       where: { enabled: true, startsAt: { lte: now }, endsAt: { gt: now } },
     });
-    const eligible = rows.filter(
-      (p) =>
-        p.audience === 'ALL' ||
-        (p.audience === 'ROLE' &&
-          Array.isArray(p.roleIds) &&
-          p.roleIds.includes(user.idRole)) ||
-        (p.audience === 'USERS' &&
-          Array.isArray(p.userIds) &&
-          p.userIds.includes(userId)),
+    const directlyEligible = (p: (typeof rows)[number]) =>
+      p.audience === 'ALL' ||
+      (p.audience === 'ROLE' &&
+        Array.isArray(p.roleIds) &&
+        p.roleIds.includes(user.idRole)) ||
+      (p.audience === 'USERS' &&
+        Array.isArray(p.userIds) &&
+        p.userIds.includes(userId));
+    const clientRole =
+      user.role.name === 'dealer'
+        ? await tx.role.findUnique({
+            where: { name: 'client' },
+            select: { id: true, markup: true },
+          })
+        : null;
+    const selectedIds = clientRole
+      ? [
+          ...new Set(
+            rows
+              .filter((p) => p.audience === 'USERS' && !directlyEligible(p))
+              .flatMap((p) => ids(p.userIds)),
+          ),
+        ]
+      : [];
+    const selectedUsers = selectedIds.length
+      ? await tx.user.findMany({
+          where: { id: { in: selectedIds }, deletedAt: null },
+          select: { id: true, idRole: true, markupOverride: true },
+        })
+      : [];
+    const candidates = rows.flatMap(
+      (p): { promotion: typeof p; clientReferenceMarkup?: string }[] => {
+        if (directlyEligible(p)) return [{ promotion: p }];
+        if (!clientRole) return [];
+        if (
+          p.audience === 'ROLE' &&
+          ids(p.roleIds).includes(clientRole.id) &&
+          !ids(p.roleIds).includes(user.idRole)
+        ) {
+          return [
+            {
+              promotion: p,
+              clientReferenceMarkup: clientRole.markup.toString(),
+            },
+          ];
+        }
+        if (p.audience === 'USERS') {
+          const targets = ids(p.userIds);
+          const clients = selectedUsers.filter((u) => targets.includes(u.id));
+          // Una oferta privada solo origina el ajuste si todos sus destinatarios son clients.
+          if (
+            targets.length &&
+            clients.length === targets.length &&
+            clients.every((u) => u.idRole === clientRole.id)
+          ) {
+            return [
+              {
+                promotion: p,
+                clientReferenceMarkup: Decimal.min(
+                  ...clients.map((u) =>
+                    (u.markupOverride ?? clientRole.markup).toString(),
+                  ),
+                ).toString(),
+              },
+            ];
+          }
+        }
+        return [];
+      },
     );
+    const eligible = candidates.map((c) => c.promotion);
     const [brands, products, systems] = await Promise.all([
       tx.brand.findMany({
         where: {
@@ -42,19 +109,27 @@ export class PromotionsService {
       tx.product.findMany({
         where: {
           id: {
-            in: eligible.flatMap((p) => (p.productId ? [p.productId] : [])),
+            in: eligible.flatMap((p) => [
+              ...(p.productId ? [p.productId] : []),
+              ...ids(p.excludedProductIds),
+            ]),
           },
         },
         select: { id: true, name: true },
       }),
       tx.system.findMany({
         where: {
-          id: { in: eligible.flatMap((p) => (p.systemId ? [p.systemId] : [])) },
+          id: {
+            in: eligible.flatMap((p) => [
+              ...(p.systemId ? [p.systemId] : []),
+              ...ids(p.excludedSystemIds),
+            ]),
+          },
         },
         select: { id: true, name: true },
       }),
     ]);
-    return eligible.map((p) => ({
+    return candidates.map(({ promotion: p, clientReferenceMarkup }) => ({
       id: p.id,
       version: p.version,
       name: p.name,
@@ -67,6 +142,17 @@ export class PromotionsService {
       brandName: brands.find((b) => b.id === p.brandId)?.name ?? null,
       productName: products.find((b) => b.id === p.productId)?.name ?? null,
       systemName: systems.find((b) => b.id === p.systemId)?.name ?? null,
+      excludedProductIds: ids(p.excludedProductIds),
+      excludedSystemIds: ids(p.excludedSystemIds),
+      excludedProductNames: ids(p.excludedProductIds).map(
+        (id) => products.find((v) => v.id === id)?.name ?? `Product #${id}`,
+      ),
+      excludedSystemNames: ids(p.excludedSystemIds).map(
+        (id) => systems.find((v) => v.id === id)?.name ?? `System #${id}`,
+      ),
+      ...(clientReferenceMarkup !== undefined
+        ? { automaticDealerAdjustment: true, clientReferenceMarkup }
+        : {}),
     }));
   }
   async available(
@@ -74,9 +160,22 @@ export class PromotionsService {
     estimateId?: number,
   ) {
     let owner = actor.id;
+    let ownerMarkup: string | undefined;
+    let applied: PromotionTerms[] = [];
     if (estimateId) {
       const estimate = await this.prisma.estimate.findUnique({
         where: { id: estimateId },
+        select: {
+          idUser: true,
+          ownerMarkupSnapshot: true,
+          pieces: {
+            select: {
+              regularPrice: true,
+              price: true,
+              promotionSnapshot: true,
+            },
+          },
+        },
       });
       if (
         !estimate ||
@@ -85,10 +184,53 @@ export class PromotionsService {
       )
         throw new NotFoundException('Estimate not found.');
       owner = estimate.idUser;
+      ownerMarkup = estimate.ownerMarkupSnapshot.toString();
+      applied = estimate.pieces.flatMap((piece) =>
+        piece.regularPrice && piece.regularPrice.gt(piece.price)
+          ? promotionTerms([piece.promotionSnapshot])
+          : [],
+      );
     }
+    const eligible = await this.eligible(owner);
+    if (
+      ownerMarkup === undefined &&
+      eligible.some((p) => p.automaticDealerAdjustment)
+    ) {
+      const user = await this.prisma.user.findUniqueOrThrow({
+        where: { id: owner },
+        select: {
+          markupOverride: true,
+          role: { select: { markup: true } },
+        },
+      });
+      ownerMarkup = (user.markupOverride ?? user.role.markup).toString();
+    }
+    const visible = eligible.filter((p) => {
+      if (!p.automaticDealerAdjustment) return true;
+      // Conserva el aviso de una pieza con ahorro real ya aplicado.
+      if (
+        applied.some(
+          (saved) => saved.id === p.id && saved.version === p.version,
+        )
+      )
+        return true;
+      const dealerFactor = new Decimal(1).add(ownerMarkup!);
+      const clientPromotionFactor = new Decimal(1)
+        .add(p.clientReferenceMarkup!)
+        .mul(new Decimal(1).sub(new Decimal(p.percent).div(100)));
+      // Ya no se exige un descuento entero: también puede haber ahorro < 1%.
+      // El importe definitivo se compara en centavos al cotizar la pieza.
+      return dealerFactor.gt(0) && dealerFactor.gt(clientPromotionFactor);
+    });
     return {
       serverNow: new Date().toISOString(),
-      promotions: await this.eligible(owner),
+      promotions: visible.map(
+        ({ clientReferenceMarkup: _reference, ...p }) => ({
+          ...p,
+          // El porcentaje del client no es el descuento que recibirá el dealer.
+          percent: p.automaticDealerAdjustment ? null : p.percent,
+        }),
+      ),
     };
   }
   list() {
@@ -163,12 +305,30 @@ export class PromotionsService {
             'System does not match the selected filters.',
           );
       }
+      const excludedProductIds = dto.excludedProductIds ?? [];
+      const excludedSystemIds = dto.excludedSystemIds ?? [];
+      if (
+        excludedProductIds.length &&
+        (await tx.product.count({
+          where: { id: { in: excludedProductIds } },
+        })) !== excludedProductIds.length
+      )
+        throw new BadRequestException('Select valid excluded products.');
+      if (
+        excludedSystemIds.length &&
+        (await tx.system.count({
+          where: { id: { in: excludedSystemIds } },
+        })) !== excludedSystemIds.length
+      )
+        throw new BadRequestException('Select valid excluded systems.');
       const data = {
         name: dto.name.trim(),
         percent: new Prisma.Decimal(dto.percent),
         audience: dto.audience,
         roleIds: dto.audience === 'ROLE' ? dto.roleIds! : [],
         userIds: dto.audience === 'USERS' ? dto.userIds : [],
+        excludedProductIds,
+        excludedSystemIds,
         brandId: dto.brandId ?? null,
         productId: dto.productId ?? null,
         systemId: dto.systemId ?? null,

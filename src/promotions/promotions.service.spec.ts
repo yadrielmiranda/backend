@@ -45,21 +45,45 @@ describe('Promotion audiences', () => {
     product: { findMany: jest.fn().mockResolvedValue([]) },
     system: { findMany: jest.fn().mockResolvedValue([]) },
     user: {
+      findMany: jest
+        .fn()
+        .mockResolvedValue([{ id: 3, idRole: 2, markupOverride: null }]),
       findUniqueOrThrow: jest.fn(({ where }) =>
         Promise.resolve({
           idRole:
             where.id === 1 ? 1 : where.id === 4 ? 3 : where.id === 5 ? 4 : 2,
+          role: {
+            name:
+              where.id === 1
+                ? 'client'
+                : where.id === 4
+                  ? 'admin'
+                  : where.id === 5
+                    ? 'operator'
+                    : 'dealer',
+          },
         }),
       ),
     },
+    role: {
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ id: 1, markup: new Decimal('.5') }),
+    },
     promotion: { findMany: jest.fn().mockResolvedValue(promotionRows) },
-    estimate: { findUnique: jest.fn().mockResolvedValue({ idUser: 2 }) },
+    estimate: {
+      findUnique: jest.fn().mockResolvedValue({
+        idUser: 2,
+        ownerMarkupSnapshot: new Decimal(0),
+        pieces: [],
+      }),
+    },
   });
   it('filters the quote owner before comparing the same piece discounts', async () => {
     const service = new PromotionsService(db() as any);
     expect((await service.eligible(1)).map((p) => p.id)).toEqual([1]);
-    expect((await service.eligible(2)).map((p) => p.id)).toEqual([2]);
-    expect((await service.eligible(3)).map((p) => p.id)).toEqual([2, 3]);
+    expect((await service.eligible(2)).map((p) => p.id)).toEqual([1, 2]);
+    expect((await service.eligible(3)).map((p) => p.id)).toEqual([1, 2, 3]);
   });
   it('uses the owner audience even when an admin opens the quote', async () => {
     const service = new PromotionsService(db() as any);
@@ -67,7 +91,7 @@ describe('Promotion audiences', () => {
       (
         await service.available({ id: 1, role: { name: 'admin' } }, 10)
       ).promotions.map((p) => p.id),
-    ).toEqual([2]);
+    ).toEqual([1, 2]);
   });
   it('does not expose promotions on another owners quote', async () => {
     const service = new PromotionsService(db() as any);
@@ -85,10 +109,10 @@ describe('Promotion audiences', () => {
     };
     const service = new PromotionsService(db([...rows, combined]) as any);
     expect((await service.eligible(1)).map((p) => p.id)).toEqual([1, 4]);
-    expect((await service.eligible(2)).map((p) => p.id)).toEqual([2, 4]);
+    expect((await service.eligible(2)).map((p) => p.id)).toEqual([1, 2, 4]);
     expect((await service.eligible(4)).map((p) => p.id)).toEqual([]);
     expect((await service.eligible(5)).map((p) => p.id)).toEqual([]);
-    expect((await service.eligible(70)).map((p) => p.id)).toEqual([2, 4]);
+    expect((await service.eligible(70)).map((p) => p.id)).toEqual([1, 2, 4]);
   });
 
   it('filters roles before choosing the highest matching discount', async () => {
@@ -132,7 +156,7 @@ describe('Promotion audiences', () => {
     const service = new PromotionsService(
       db([...rows, all, emptyRoles]) as any,
     );
-    expect((await service.eligible(3)).map((p) => p.id)).toEqual([2, 3, 4]);
+    expect((await service.eligible(3)).map((p) => p.id)).toEqual([1, 2, 3, 4]);
     expect((await service.eligible(4)).map((p) => p.id)).toEqual([4]);
   });
 
@@ -143,7 +167,7 @@ describe('Promotion audiences', () => {
       (
         await service.available({ id: 4, role: { name: 'admin' } }, 10)
       ).promotions.map((p) => p.id),
-    ).toEqual([2, 4]);
+    ).toEqual([1, 2, 4]);
   });
 });
 
@@ -252,13 +276,10 @@ describe('Saving promotions with multiple roles', () => {
     { roleIds: [1.5] },
     { roleIds: ['1'] },
     { roleIds: '1,2' },
-  ])(
-    'rejects invalid role array input %j',
-    ({ roleIds }) => {
-      const errors = validateSync(
-        Object.assign(new PromotionDto(), valid, { roleIds }),
-      );
-      expect(errors.some((e) => e.property === 'roleIds')).toBe(true);
-    },
-  );
+  ])('rejects invalid role array input %j', ({ roleIds }) => {
+    const errors = validateSync(
+      Object.assign(new PromotionDto(), valid, { roleIds }),
+    );
+    expect(errors.some((e) => e.property === 'roleIds')).toBe(true);
+  });
 });

@@ -223,6 +223,44 @@ describe('Current promotions for new estimate pieces', () => {
     expect(f.quote.promotionExpiresAt).toBeNull();
   });
 
+  it('matches client promotional pricing on Calculate and Submit without repricing saved pieces', async () => {
+    const automatic = {
+      ...offer,
+      percent: '50',
+      automaticDealerAdjustment: true,
+      clientReferenceMarkup: '1.161',
+    };
+    const f = fixture([automatic], 7, 'dealer');
+    const original = JSON.stringify(f.quote.pieces[0]);
+    const preview = await f.service.calculateAndReturnPieceMetrics(dto, 7, 16);
+    expect(preview.price.toString()).toBe('86.44');
+    expect(preview.promotionSnapshot.percent).toBe('13.56');
+    expect(preview.promotionSnapshot).not.toHaveProperty(
+      'clientReferenceMarkup',
+    );
+    await f.service.addPieceToEstimate(16, dto, 7);
+    expect(f.quote.pieces[1].price.toString()).toBe('86.44');
+    expect(f.quote.priceT.toString()).toBe('272.88');
+    expect(f.quote.promotionContext[0].percent).toBe('13.56');
+    expect(f.quote.promotionContext[0].dealerPriceBasis).toEqual({
+      regularPrice: '100',
+      promotionalPrice: '86.44',
+    });
+    expect(f.quote.promotionContext[0]).not.toHaveProperty(
+      'clientReferenceMarkup',
+    );
+    expect(JSON.stringify(f.quote.pieces[0])).toBe(original);
+  });
+
+  it('honors current product exclusions on preview and save', async () => {
+    const f = fixture([{ ...offer, excludedProductIds: [2] }]);
+    const preview = await f.service.calculateAndReturnPieceMetrics(dto, 7, 16);
+    await f.service.addPieceToEstimate(16, dto, 7);
+    expect(preview.price.toString()).toBe('100');
+    expect(f.quote.pieces[1].price.toString()).toBe('100');
+    expect(f.quote.promotionExpiresAt).toBeNull();
+  });
+
   it('chooses the largest matching current offer without stacking', async () => {
     const f = fixture([
       offer,

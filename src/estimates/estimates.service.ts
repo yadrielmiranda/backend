@@ -1,3 +1,6 @@
+import { calculateEstimateDiscount, estimateDiscountConfig, hasDiscountableInstallation, type EstimateDiscountSummary } from './discounts/estimate-discount';
+import { UpdateEstimateDiscountDto } from './dto/estimate-discount.dto';
+import { ForbiddenException } from '@nestjs/common';
 import { PromotionsService } from '@/promotions/promotions.service';
 import { savedPromotions, promotionDeadline, effectiveExpiry, promotionExpired, expiredPromotionMessage } from '@/promotions/promotion-pricing';
 // @/estimates/estimates.service.ts
@@ -108,6 +111,7 @@ type PieceWithRelations = Piece & {
 
 // incluyo order para que el front sepa si ya fue ordenado
 export type EstimateWithRelations = Estimate & {
+  manualDiscountSummary?: EstimateDiscountSummary | null;
   user: Prisma.UserGetPayload<{
     include: { role: true };
   }>;
@@ -390,6 +394,7 @@ export class EstimatesService {
       throw new NotFoundException(`Estimate #${estimateId} not found/denied.`);
     }
 
+    if (estimateDiscountConfig((estimate as any).manualDiscount)?.lockedAt) throw new BadRequestException('This estimate preserves a paid additional discount. Use the measured revision workflow for material changes.');
     if (estimate.promotionLockedAt) throw new BadRequestException('This estimate preserves paid promotion terms. Material changes must use the measured Estimate revision workflow.');
     if (!recalculating && promotionExpired(estimate)) throw new BadRequestException(expiredPromotionMessage);
 
@@ -488,6 +493,7 @@ export class EstimatesService {
       where: { id: estimateId },
       data: {
         promotionExpiresAt,
+        promotionContext: persistedPieces.flatMap((p) => p.promotionSnapshot ? [p.promotionSnapshot] : []) as Prisma.InputJsonValue,
         expiresAt: effectiveExpiry(header.standardExpiresAt ?? header.expiresAt, promotionExpiresAt),
         ...estimateTotals,
         units: totalUnits,
@@ -899,6 +905,7 @@ export class EstimatesService {
       installationJob,
       installationSummary,
       customerChargesSummary,
+      manualDiscountSummary: calculateEstimateDiscount(estimate),
       branding,
       companyBranding,
     } as EstimateWithRelations;
@@ -955,12 +962,17 @@ export class EstimatesService {
         status: true,
         order: true,
         payments: true,
-        installationJob: { select: { id: true, status: true } },
+        installationJob: { select: estimateInstallationSummarySelect },
       },
       orderBy: { date: 'desc' },
     });
 
-    return estimates;
+    return estimates.map((estimate) => ({
+      ...estimate,
+      manualDiscountSummary: calculateEstimateDiscount(estimate),
+      installationJob: estimate.installationJob
+        ? { id: estimate.installationJob.id, status: estimate.installationJob.status } : null,
+    }));
   }
 
   async findAllForUser(user: AuthUser) {
@@ -1102,7 +1114,7 @@ export class EstimatesService {
           name: dto.name,
           expiresAt,
           standardExpiresAt: expiresAt,
-          promotionContext: await this.promotions.eligible(user.id, tx) as unknown as Prisma.InputJsonValue,
+          promotionContext: [],
 
           customerFirstName: dto.customerFirstName ?? null,
           customerLastName: dto.customerLastName ?? null,
@@ -1184,6 +1196,49 @@ export class EstimatesService {
    * Actualiza únicamente los datos del encabezado.
    * Nunca crea, actualiza ni elimina piezas.
    */
+  async updateManualDiscount(estimateId: number, dto: UpdateEstimateDiscountDto, actor: AuthUser) {
+    if (actor.role?.name !== 'admin') throw new ForbiddenException('Only administrators can change an estimate discount.');
+    if (dto.scope != null && !['MATERIAL', 'INSTALLATION'].includes(dto.scope)) {
+      throw new BadRequestException('Additional discounts can apply only to material or installation totals.');
+    }
+    if (!Number.isFinite(dto.value) || dto.value < 0 ||
+        (dto.value > 0 && !estimateDiscountConfig({ scope: dto.scope, type: dto.type, value: String(dto.value) }))) {
+      throw new BadRequestException('Choose a valid discount scope, type and value. Percentages cannot exceed 100%.');
+    }
+    await this.prisma.$transaction(async (tx) => {
+      const estimate = await this.getEstimateWithRelationsInTransaction(tx, estimateId);
+      await this.assertEstimateCanBeEdited(estimate, estimateId, actor.id, tx);
+      if (estimate!.payments.some((p) => ['PENDING', 'PAID', 'REFUNDED'].includes(p.status))) {
+        throw new BadRequestException('The discount cannot change after payment or while checkout is pending. Cancel the unpaid checkout first.');
+      }
+      const config = dto.value === 0 ? null : {
+        scope: dto.scope!, type: dto.type!, value: String(dto.value),
+        ...(dto.scope === 'MATERIAL' ? { materialDiscountBasis: 'BEFORE_TAX' as const } : {}),
+        updatedById: actor.id, updatedAt: new Date().toISOString(),
+      };
+      if (config) {
+        const job = await tx.installationJob.findUnique({
+          where: { estimateId },
+          include: { quotes: { orderBy: { version: 'desc' }, take: 1 }, permit: true },
+        });
+        if (config.scope === 'INSTALLATION' && !hasDiscountableInstallation(job)) {
+          throw new BadRequestException('Include installation with a positive calculated total before applying an installation discount.');
+        }
+        const summary = calculateEstimateDiscount({ ...estimate!, manualDiscount: config }, job);
+        if (!summary || Number(summary.base) <= 0) throw new BadRequestException('The selected total has no amount to discount.');
+        if (dto.type === 'AMOUNT' && dto.value > Number(summary.base)) throw new BadRequestException('The discount cannot exceed the selected total.');
+      }
+      await tx.estimate.update({ where: { id: estimateId }, data: {
+        manualDiscount: config ?? Prisma.DbNull,
+      } });
+      await tx.eventLog.create({ data: {
+        action: 'UPDATE', entityType: 'Estimate', entityId: estimateId, userId: actor.id,
+        message: config ? `Additional discount: ${config.value} ${config.type} on ${config.scope}.` : 'Additional discount removed.',
+      } });
+    });
+    return this.findOneForUser(estimateId, actor);
+  }
+
   async updateEstimateHeader(
     estimateId: number,
     dto: UpdateEstimateHeaderDto,
@@ -2037,7 +2092,7 @@ export class EstimatesService {
       const beforeEstimate = await tx.estimate.findUnique({
         where: { id: estimateId },
         include: {
-          user: true,
+          user: { include: { role: true } },
           status: true,
           order: true,
           payments: true,
@@ -2066,14 +2121,11 @@ export class EstimatesService {
         throw new NotFoundException(`Estimate #${estimateId} not found.`);
       }
 
-      const effectiveMarkupDecimal = new Decimal(
-        beforeEstimate.ownerMarkupSnapshot.toString(),
-      );
-
       if (!isPrivileged(user) && beforeEstimate.idUser !== user.id) {
         throw new NotFoundException(`Estimate #${estimateId} not found.`);
       }
 
+      if (estimateDiscountConfig(beforeEstimate.manualDiscount)?.lockedAt) throw new BadRequestException('Paid additional discount terms cannot be recalculated.');
       if (beforeEstimate.promotionLockedAt) throw new BadRequestException('Paid promotion terms cannot be recalculated.');
       const statusName = beforeEstimate.status?.name ?? 'UNKNOWN';
 
@@ -2110,6 +2162,12 @@ export class EstimatesService {
           `Only active or expired estimates can be recalculated. Current status: ${statusName}.`,
         );
       }
+
+      // Recalculate renueva el precio con el markup vigente del dueño,
+      // también cuando lo ejecuta un administrador u operador.
+      const effectiveMarkupDecimal = this.resolveBaseMarkupForUser(
+        beforeEstimate.user,
+      );
 
       const activeStatus = await tx.estimateStatus.findUnique({
         where: { name: 'Active' },
@@ -2353,11 +2411,14 @@ export class EstimatesService {
         where: { id: estimateId },
         data: {
           ...estimateTotals,
+          ownerMarkupSnapshot: new Prisma.Decimal(
+            effectiveMarkupDecimal.toFixed(18),
+          ),
           units: totalUnits,
           standardExpiresAt: expiresAt,
           promotionExpiresAt: promotionDeadline(calculatedPieces),
           expiresAt: effectiveExpiry(expiresAt, promotionDeadline(calculatedPieces)),
-          promotionContext: cache.promotions as unknown as Prisma.InputJsonValue,
+          promotionContext: calculatedPieces.flatMap((p) => p.promotionSnapshot ? [p.promotionSnapshot] : []) as unknown as Prisma.InputJsonValue,
           status: {
             connect: { id: activeStatus.id },
           },

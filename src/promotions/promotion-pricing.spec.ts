@@ -9,6 +9,7 @@ import {
   PromotionTerms,
 } from './promotion-pricing';
 import { EstimatePieceCalculatorService } from '@/estimates/calculation/estimate-piece-calculator.service';
+import { calculateEstimateDiscount } from '@/estimates/discounts/estimate-discount';
 const offer = (
   percent = '20',
   fields: Partial<PromotionTerms> = {},
@@ -84,6 +85,36 @@ describe('Material promotions', () => {
     expect(t.discountAmount.toString()).toBe('60');
     expect(t.customerDiscountAmount.toString()).toBe('72');
     expect(t.netProfitD.toString()).toBe('48');
+  });
+  it('applies promotion, then the additional discount, then tax to the remaining materials', () => {
+    const p = {
+      ...piece(),
+      qty: 1,
+      price: new Decimal('154.36'),
+      subtotal: new Decimal('154.36'),
+    };
+    const promoted = applyPromotion(p, [offer('35')]);
+    const calc = new EstimatePieceCalculatorService({} as any, {} as any);
+    const totals = calc.calculateEstimateTotals(
+      [promoted as any],
+      new Decimal('.07'),
+      new Decimal('.07'),
+    );
+    expect(totals.priceT.toFixed(2)).toBe('100.33');
+    expect(totals.discountAmount.toFixed(2)).toBe('54.03');
+    expect(totals.taxAmount.toFixed(2)).toBe('7.02');
+    const final = calculateEstimateDiscount({
+      ...totals,
+      taxRate: '.07',
+      dealerModeSnapshot: 'EXTERNAL',
+      manualDiscount: { scope: 'MATERIAL', type: 'AMOUNT', value: '20' },
+    });
+    expect(final).toMatchObject({
+      base: '100.33',
+      discount: '20.00',
+      projectTotal: '85.95',
+      material: { subtotal: '80.33', netDiscount: '20.00', tax: '5.62' },
+    });
   });
   it('rounds unit prices before multiplying quantity', () => {
     const p = piece();

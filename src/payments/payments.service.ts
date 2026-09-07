@@ -1,3 +1,4 @@
+import { calculateEstimateDiscount, estimateDiscountConfig } from '@/estimates/discounts/estimate-discount';
 import { checkoutPromotionExpiry, promotionExpired, promotionTerms } from '@/promotions/promotion-pricing';
 import {
   BadRequestException,
@@ -147,7 +148,10 @@ export class PaymentsService {
     if (!orderedStatus)
       throw new Error('Estimate status "Ordered" not seeded.');
 
-    const saleSubtotal = resolveMaterialSaleSubtotal({
+    const manualDiscount = calculateEstimateDiscount(estimate);
+    const saleSubtotal = manualDiscount
+      ? new Prisma.Decimal(manualDiscount.material.subtotal)
+      : resolveMaterialSaleSubtotal({
       dealerMode: estimate.dealerModeSnapshot,
       priceT: estimate.priceT.toString(),
       customerPriceT: estimate.customerPriceT.toString(),
@@ -206,6 +210,20 @@ export class PaymentsService {
     payment: PaymentWithEstimate,
   ): Promise<boolean> {
     let changed = false;
+    const discount = estimateDiscountConfig(payment.estimate.manualDiscount);
+    if (discount && !discount.lockedAt) {
+      if (!discount.checkoutAllocations) throw new Error('Missing estimate discount checkout allocation.');
+      if (discount.materialDiscountBasis === 'BEFORE_TAX' && discount.checkoutMaterialNetDiscount == null) throw new Error('Missing pre-tax material discount checkout amount.');
+      const lockedDiscount = {
+        ...discount,
+        lockedAt: (payment.paidAt ?? new Date()).toISOString(),
+        allocations: discount.checkoutAllocations,
+        ...(discount.checkoutMaterialNetDiscount != null ? { materialNetDiscount: discount.checkoutMaterialNetDiscount } : {}),
+      };
+      await tx.estimate.update({ where: { id: payment.idEst }, data: { manualDiscount: lockedDiscount } });
+      payment.estimate.manualDiscount = lockedDiscount;
+      changed = true;
+    }
     if ((payment.type === PaymentType.MATERIAL || payment.type === PaymentType.INSTALLATION_DEPOSIT) && payment.estimate.promotionExpiresAt && !payment.estimate.promotionLockedAt) {
       const pieces = await tx.piece.findMany({where:{idEst:payment.idEst},select:{promotionSnapshot:true}});
       const terms = [...new Map(promotionTerms(pieces.map(p => p.promotionSnapshot)).map(p => [`${p.id}:${p.version}`, p])).values()];

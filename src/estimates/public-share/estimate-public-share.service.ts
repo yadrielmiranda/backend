@@ -1,3 +1,4 @@
+import { calculateEstimateDiscount, estimateDiscountConfig } from '../discounts/estimate-discount';
 import {
   BadRequestException,
   Injectable,
@@ -14,7 +15,10 @@ import {
   estimateInstallationSummarySelect,
 } from '../reporting/estimate-installation-summary';
 import type { CustomerReportPricingMode } from '../dto/create-estimate-public-token.dto';
-import { EstimateCustomerChargesService } from '../estimate-customer-charges.service';
+import {
+  EstimateCustomerChargesService,
+  isExternalDealerEstimate,
+} from '../estimate-customer-charges.service';
 import { attachEstimatePieceDiagramMetadata } from '../reporting/estimate-piece-diagram-metadata';
 
 function numberValue(value: unknown) {
@@ -211,6 +215,7 @@ export class EstimatePublicShareService {
         ],
       },
       include: {
+        payments: { select: { status: true } },
         user: {
           include: {
             role: true,
@@ -261,6 +266,10 @@ export class EstimatePublicShareService {
 
     const pricingMode: CustomerReportPricingMode =
       estimate.publicTotalToken === normalizedToken ? 'total' : 'detailed';
+    // La promoción del dealer externo es privada; el cliente recibe su cotización final.
+    const hideDealerPromotions = isExternalDealerEstimate(estimate);
+    const discount = hideDealerPromotions ? null : calculateEstimateDiscount(estimate);
+    const customerDiscount = discount?.payer === 'CUSTOMER' ? discount : null;
 
     await this.notifyDealerPublicEstimateViewed(estimate);
 
@@ -295,7 +304,10 @@ export class EstimatePublicShareService {
                 fullInstallationSummary.cityFee == null)),
         );
     const publicProjectTotal = roundMoney(
-      numberValue(estimate.customerTotalPayable) + customerServiceTotal,
+      numberValue(customerDiscount?.material.total ?? estimate.customerTotalPayable) + customerServiceTotal
+        - numberValue(customerDiscount?.installation.discount)
+        - numberValue(customerDiscount?.permit.discount)
+        - numberValue(customerDiscount?.city.discount),
     );
     // An external dealer's customer must never receive the company's
     // installation prices, even though the customer-facing report renders a
@@ -372,12 +384,19 @@ export class EstimatePublicShareService {
       customerState: estimate.customerState,
       customerPostalCode: estimate.customerPostalCode,
 
-      promotionExpiresAt: estimate.promotionExpiresAt,
-      promotionLockedAt: estimate.promotionLockedAt,
-      customerDiscountAmount:
-        pricingMode === 'total' ? 0 : estimate.customerDiscountAmount,
-      originalCustomerPriceT:
-        pricingMode === 'total' ? 0 : estimate.originalCustomerPriceT,
+      manualDiscountSummary: pricingMode === 'total' ? undefined : customerDiscount ?? undefined,
+      customerPromotionsVisible: !hideDealerPromotions,
+      termsPreservedAfterPayment: Boolean(estimate.promotionLockedAt || estimateDiscountConfig(estimate.manualDiscount)?.lockedAt),
+      promotionExpiresAt:
+        hideDealerPromotions ? undefined : estimate.promotionExpiresAt,
+      promotionLockedAt:
+        hideDealerPromotions ? undefined : estimate.promotionLockedAt,
+      customerDiscountAmount: hideDealerPromotions
+        ? undefined
+        : pricingMode === 'total' ? 0 : estimate.customerDiscountAmount,
+      originalCustomerPriceT: hideDealerPromotions
+        ? undefined
+        : pricingMode === 'total' ? 0 : estimate.originalCustomerPriceT,
       customerPriceT: pricingMode === 'total' ? 0 : estimate.customerPriceT,
       customerTaxRate: pricingMode === 'total' ? 0 : estimate.customerTaxRate,
       customerTaxAmount:
@@ -436,9 +455,9 @@ export class EstimatePublicShareService {
 
         customerPrice: pricingMode === 'total' ? 0 : p.customerPrice,
         customerSubtotal: pricingMode === 'total' ? 0 : p.customerSubtotal,
-        // Solo el precio original del cliente; el costo del dealer sigue privado.
+        // El cliente de un dealer externo nunca recibe el precio previo a la promoción.
         regularCustomerPrice:
-          pricingMode === 'total' || !p.promotionSnapshot
+          hideDealerPromotions || pricingMode === 'total' || !p.promotionSnapshot
             ? undefined
             : p.regularCustomerPrice,
 

@@ -155,8 +155,53 @@ function buildService(estimate = sharedEstimateFixture()) {
 }
 
 describe('EstimatePublicShareService customer pricing modes', () => {
-  it('shares only the original customer price and hides it in total-only mode', async () => {
+  it('uses the discounted taxable subtotal in both detailed and total-only public quotes', async () => {
     const estimate = sharedEstimateFixture();
+    estimate.dealerModeSnapshot = estimate.user.dealerMode = 'INTERNAL';
+    Object.assign(estimate, {
+      customerPriceT: '100.33', customerTaxAmount: '7.02', customerTotalPayable: '107.35',
+      installationJob: null, manualDiscount: { scope: 'MATERIAL', type: 'AMOUNT', value: '20' },
+    });
+    const { service } = buildService(estimate);
+    const detailed: any = await service.findPublicEstimateByToken('detailed-token');
+    expect(detailed.manualDiscountSummary).toMatchObject({
+      discount: '20.00', material: { subtotal: '80.33', tax: '5.62', total: '85.95' },
+    });
+    const total: any = await service.findPublicEstimateByToken('total-token');
+    expect(total.publicProjectTotal).toBe(85.95);
+    expect(total.manualDiscountSummary).toBeUndefined();
+  });
+  it('shares internal-dealer net project totals and hides the breakdown in total-only mode', async () => {
+    const estimate = sharedEstimateFixture();
+    estimate.dealerModeSnapshot = estimate.user.dealerMode = 'INTERNAL';
+    Object.assign(estimate, { manualDiscount: { scope: 'PROJECT', type: 'PERCENTAGE', value: '10' } });
+    const { service } = buildService(estimate);
+    const detailed: any = await service.findPublicEstimateByToken('detailed-token');
+    expect(detailed.manualDiscountSummary.discount).toBe('180.53');
+    expect(detailed.manualDiscountSummary.projectTotal).toBe('1624.76');
+    expect(detailed.manualDiscountSummary.material.total).toBe('252.26');
+    const total: any = await service.findPublicEstimateByToken('total-token');
+    expect(total.manualDiscountSummary).toBeUndefined();
+    expect(total.publicProjectTotal).toBe(1624.76);
+  });
+  it('never exposes an external dealer manual discount in public responses', async () => {
+    const estimate = sharedEstimateFixture();
+    Object.assign(estimate, { manualDiscount: { scope: 'MATERIAL', type: 'PERCENTAGE', value: '10', lockedAt: '2026-09-07T12:00:00Z' } });
+    const { service } = buildService(estimate);
+    for (const token of ['detailed-token', 'total-token']) {
+      const response = JSON.parse(JSON.stringify(await service.findPublicEstimateByToken(token)));
+      expect(response).not.toHaveProperty('manualDiscount');
+      expect(response).not.toHaveProperty('manualDiscountSummary');
+      expect(response.termsPreservedAfterPayment).toBe(true);
+      if (token === 'detailed-token') expect(response.customerTotalPayable).toBe('280.29');
+      else expect(response.publicProjectTotal).toBe(1805.29);
+    }
+  });
+
+  it('keeps customer promotion details for an internal dealer and hides item prices in total-only mode', async () => {
+    const estimate = sharedEstimateFixture();
+    estimate.dealerModeSnapshot = 'INTERNAL';
+    estimate.user.dealerMode = 'INTERNAL';
     Object.assign(estimate.pieces[0], {
       regularPrice: '200.00',
       regularCustomerPrice: '300.00',
@@ -179,6 +224,65 @@ describe('EstimatePublicShareService customer pricing modes', () => {
     const ordinary = await service.findPublicEstimateByToken('detailed-token');
     expect(ordinary.pieces[0].regularCustomerPrice).toBeUndefined();
   });
+
+  it.each([false, true])(
+    'keeps an external dealer promotion private in both public links (paid: %s)',
+    async (paid) => {
+      const estimate = sharedEstimateFixture();
+      const expiresAt = new Date('2026-09-13T23:19:00.000Z');
+      Object.assign(estimate, {
+        expiresAt,
+        promotionExpiresAt: expiresAt,
+        promotionLockedAt: paid ? new Date('2026-09-07T12:00:00.000Z') : null,
+        originalCustomerPriceT: '300.00',
+        customerDiscountAmount: '38.05',
+        originalPriceT: '200.00',
+        discountAmount: '50.00',
+      });
+      Object.assign(estimate.pieces[0], {
+        regularPrice: '200.00',
+        regularCustomerPrice: '300.00',
+        rate: '118.74',
+        markup: '0.15',
+        dealerMarkup: '0.50',
+        promotionSnapshot: {
+          id: 1, percent: '26.07', name: 'Private dealer offer',
+          automaticDealerAdjustment: true,
+          dealerPriceBasis: { regularPrice: '200.00', promotionalPrice: '150.00' },
+        },
+      });
+      const before = JSON.stringify(estimate);
+      const { service } = buildService(estimate);
+
+      for (const token of ['detailed-token', 'total-token']) {
+        const response = await service.findPublicEstimateByToken(token);
+        const json = JSON.parse(JSON.stringify(response));
+        expect(json.customerPromotionsVisible).toBe(false);
+        expect(json.termsPreservedAfterPayment).toBe(paid);
+        expect(json.expiresAt).toBe(expiresAt.toISOString());
+        for (const field of [
+          'promotionExpiresAt', 'promotionLockedAt', 'customerDiscountAmount',
+          'originalCustomerPriceT', 'discountAmount', 'originalPriceT',
+        ]) expect(json).not.toHaveProperty(field);
+        for (const field of [
+          'regularPrice', 'regularCustomerPrice', 'promotionSnapshot',
+          'rate', 'markup', 'dealerMarkup',
+        ]) expect(json.pieces[0]).not.toHaveProperty(field);
+        expect(JSON.stringify(json)).not.toContain('Private dealer offer');
+        if (token === 'detailed-token') {
+          expect(json.pieces[0].customerPrice).toBe('261.95');
+          expect(json.pieces[0].customerSubtotal).toBe('261.95');
+          expect(json.customerPriceT).toBe('261.95');
+          expect(json.customerTaxAmount).toBe('18.34');
+          expect(json.customerTotalPayable).toBe('280.29');
+        } else {
+          expect(json.pieces[0].customerPrice).toBe(0);
+          expect(json.publicProjectTotal).toBeGreaterThanOrEqual(280.29);
+        }
+      }
+      expect(JSON.stringify(estimate)).toBe(before);
+    },
+  );
 
   it('returns the detailed customer token with customer prices intact', async () => {
     const { service } = buildService();

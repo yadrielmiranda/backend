@@ -658,7 +658,7 @@ export class EstimatePieceCalculatorService {
         dpNegPsf: new Decimal(0),
       };
 
-      return applyPromotion(result, cache.promotions);
+      return applyPromotion(result, cache.promotions, rate);
     }
 
     if (!pieceDto.idCryst) {
@@ -1634,7 +1634,7 @@ export class EstimatePieceCalculatorService {
       dpNegPsf,
     };
 
-    return applyPromotion(result, cache.promotions);
+    return applyPromotion(result, cache.promotions, rate);
   }
 
   calculateEstimateTotals(

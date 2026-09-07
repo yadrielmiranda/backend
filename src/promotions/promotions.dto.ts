@@ -31,6 +31,20 @@ export class PromotionDto {
   @IsInt({ each: true })
   @Min(1, { each: true })
   userIds?: number[];
+  @IsOptional()
+  @IsArray()
+  @ArrayUnique()
+  @ArrayMaxSize(1000)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  excludedProductIds?: number[];
+  @IsOptional()
+  @IsArray()
+  @ArrayUnique()
+  @ArrayMaxSize(1000)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  excludedSystemIds?: number[];
   @IsOptional() @IsInt() @Min(1) brandId?: number;
   @IsOptional() @IsInt() @Min(1) productId?: number;
   @IsOptional() @IsInt() @Min(1) systemId?: number;
