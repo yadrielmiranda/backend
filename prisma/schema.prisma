@@ -90,6 +90,7 @@ model User {
   notifications                     Notification[]
   smsConsent                        SmsConsent?
   smsConsentEvents                  SmsConsentEvent[]
+  registrationConsent               RegistrationConsent?
   sessions                          Session[]
   passwordResetTokens               PasswordResetToken[]
   branding                          Branding?
@@ -113,6 +114,23 @@ model User {
   @@index([deletedAt])
   @@index([installationPriceProfileId])
   @@index([dealerMode])
+}
+
+// Copia inmutable de las dos elecciones hechas al crear la cuenta.
+// Las bajas posteriores se gestionan aparte; este registro conserva la evidencia inicial.
+model RegistrationConsent {
+  id                       Int      @id @default(autoincrement())
+  userId                   Int?     @unique
+  phone                    String   @db.VarChar(20)
+  email                    String   @db.VarChar(150)
+  serviceSmsAccepted       Boolean
+  serviceEmailAccepted     Boolean
+  promotionalSmsAccepted   Boolean  @default(false)
+  promotionalEmailAccepted Boolean  @default(false)
+  consentVersion           String   @db.VarChar(64)
+  consentText              String   @db.Text
+  createdAt                DateTime @default(now())
+  user                     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 }
 
 // La autorización pertenece al usuario y al teléfono que aceptó el programa.

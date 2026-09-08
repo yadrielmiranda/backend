@@ -10,12 +10,14 @@ import { PrismaModule } from '@/prisma/prisma.module';
 import { JwtStrategy } from './guards/auth/jwt.strategy';
 import { LogsModule } from '@/logs/logs.module';
 import { MailModule } from '@/mail/mail.module';
+import { SmsConsentModule } from '@/sms/sms-consent.module';
 
 @Module({
   imports: [
     ConfigModule,
     UsersModule,
     MailModule,
+    SmsConsentModule,
     PrismaModule,
     PassportModule,
     LogsModule, 

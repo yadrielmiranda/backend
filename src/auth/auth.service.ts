@@ -5,6 +5,7 @@ import {
   ConflictException,
   InternalServerErrorException,
   BadRequestException,
+  HttpException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '@/prisma/prisma.service';
@@ -19,6 +20,7 @@ import { addDays } from 'date-fns';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { LogsService } from '@/logs/logs.service';
 import { MailService } from '@/mail/mail.service';
+import { SmsConsentService } from '@/sms/sms-consent.service';
 
 type JwtRolePayload = string | undefined;
 
@@ -37,6 +39,7 @@ export class AuthService {
     private jwtService: JwtService,
     private logs: LogsService,
     private mail: MailService,
+    private smsConsent: SmsConsentService,
   ) { }
 
   private accessTtl = process.env.JWT_ACCESS_TTL || '15m';
@@ -142,7 +145,22 @@ export class AuthService {
   }
 
   async registerUser(registerUserDto: RegisterUserDto) {
-    const { password, ...userData } = registerUserDto;
+    const { password, serviceConsent, promotionsConsent, consentVersion, ...userData } = registerUserDto;
+    // También se valida aquí para no depender exclusivamente del formulario o del DTO.
+    if (serviceConsent !== true) {
+      throw new BadRequestException('You must agree to service notifications by SMS and email to create an account.');
+    }
+    if (promotionsConsent !== undefined && typeof promotionsConsent !== 'boolean') {
+      throw new BadRequestException('promotionsConsent must be a boolean.');
+    }
+    const program = await this.smsConsent.getProgram();
+    if (consentVersion !== program.version) {
+      throw new ConflictException({
+        code: 'CONSENT_VERSION_CHANGED',
+        message: 'The messaging terms changed. Review them and select your preferences again.',
+      });
+    }
+    const promotionalConsent = promotionsConsent === true;
     const hashedPassword = await bcrypt.hash(password, this.bcryptRounds);
 
     const clientRole = await this.prisma.role.findUnique({
@@ -157,30 +175,68 @@ export class AuthService {
     }
 
     try {
-      return await this.prisma.user.create({
-        data: {
-          ...userData,
-          password: hashedPassword,
-          role: { connect: { id: clientRole.id } },
-        },
-        select: {
-          id: true,
-          username: true,
-          firstName: true,
-          lastName: true,
-          email: true,
-          phone: true,
-          street: true,
-          city: true,
-          state: true,
-          postalCode: true,
-          markupOverride: true,
-          isTaxExempt: true,
-          idRole: true,
-          role: { select: { id: true, name: true, markup: true } },
-        },
+      return await this.prisma.$transaction(async (tx) => {
+        const block = await tx.smsPhoneBlock.findUnique({ where: { phone: userData.phone } });
+        if (block) {
+          throw new ConflictException('SMS is blocked for this phone number after a STOP request. Reply START to the same sending number before registering.');
+        }
+        const user = await tx.user.create({
+          data: {
+            ...userData,
+            password: hashedPassword,
+            role: { connect: { id: clientRole.id } },
+          },
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            street: true,
+            city: true,
+            state: true,
+            postalCode: true,
+            markupOverride: true,
+            isTaxExempt: true,
+            idRole: true,
+            role: { select: { id: true, name: true, markup: true } },
+          },
+        });
+        const now = new Date();
+        const consentText = JSON.stringify({
+          source: 'REGISTRATION',
+          serviceConsent: true,
+          promotionsConsent: promotionalConsent,
+          program,
+        });
+        // Cuenta y autorizaciones se confirman juntas o se revierte toda la operación.
+        await tx.registrationConsent.create({
+          data: {
+            userId: user.id, phone: user.phone, email: user.email,
+            serviceSmsAccepted: true, serviceEmailAccepted: true,
+            promotionalSmsAccepted: promotionalConsent,
+            promotionalEmailAccepted: promotionalConsent,
+            consentVersion: program.version, consentText, createdAt: now,
+          },
+        });
+        await tx.smsConsent.create({
+          data: {
+            userId: user.id, phone: user.phone, enabled: true,
+            consentVersion: program.version, consentText,
+            consentedAt: now, revokedAt: null,
+          },
+        });
+        await tx.smsConsentEvent.create({
+          data: {
+            userId: user.id, phone: user.phone, action: 'OPT_IN',
+            consentVersion: program.version, consentText, createdAt: now,
+          },
+        });
+        return user;
       });
     } catch (error: any) {
+      if (error instanceof HttpException) throw error;
       if (error?.code === 'P2002') {
         throw new ConflictException('El nombre de usuario o el email ya existen.');
       }

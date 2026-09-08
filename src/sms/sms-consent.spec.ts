@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { types } from 'node:util';
 import { createHmac } from 'node:crypto';
 import { SmsConsentService } from './sms-consent.service';
 import { SmsConsentController } from './sms-consent.controller';
@@ -93,7 +94,7 @@ describe('SMS consent', () => {
     assert.equal(f.state.events[0].userId, 1);
     assert.equal(f.state.events[0].phone, result.phone);
     assert.deepEqual(JSON.parse(f.state.events[0].consentText), result.program);
-    assert(f.state.events[0].createdAt instanceof Date);
+    assert(types.isDate(f.state.events[0].createdAt));
     assert.equal((await f.service.getPreferences(2)).enabled, false);
   });
 
