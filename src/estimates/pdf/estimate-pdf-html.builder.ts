@@ -352,16 +352,6 @@ const reportLabelFor = (kind: ReportKind) => {
   return 'Customer Report';
 };
 
-const installationStatus = (summary: EstimateInstallationReportSummary) => {
-  if (summary.status === 'DEPOSIT_PAYMENT_PENDING') {
-    return { label: 'Proposed', className: 'badge-proposed' };
-  }
-  if (summary.quoteStatus === 'APPROVED') {
-    return { label: 'Included', className: 'badge-included' };
-  }
-  return { label: 'Preliminary', className: 'badge-preliminary' };
-};
-
 const originalPrice = (amount: number) =>
   `<s class="price-original">${formatMoney(amount)}</s>`;
 
@@ -533,6 +523,12 @@ export class EstimatePdfHtmlBuilder {
       ? numberValue(externalDealerCharges.customerTotal)
       : sharedCharges - (manualDiscount?.payer === "CUSTOMER" ? serviceDiscount : 0);
     const internalCharges = sharedCharges - (manualDiscount?.payer === "ACCOUNT_OWNER" ? serviceDiscount : 0);
+    const dealerMaterialProfit = roundMoney(
+      customerMaterial.subtotal - (customerMaterial.manualNetDiscount ?? 0) -
+        (internalMaterial.subtotal - (internalMaterial.manualNetDiscount ?? 0)),
+    );
+    const dealerServiceProfit = roundMoney(customerServiceCharges - internalCharges);
+    const dealerProjectProfit = roundMoney(dealerMaterialProfit + dealerServiceProfit);
     const internalProjectTotal = roundMoney(
       internalMaterial.total + internalCharges,
     );
@@ -664,15 +660,19 @@ export class EstimatePdfHtmlBuilder {
           </div>
         </div>`;
 
+    const notIncludedInstallation = (title = 'Installation &amp; services') => `
+      <div class="card keep-together">
+        <div class="card-title">${title}</div>
+        <div class="card-body">${summaryRow('Installation', 'Not included')}</div>
+      </div>`;
+
     const installationSummaryHtml = (() => {
       if (externalDealerCharges) {
         const displayedLines = comparisonView
           ? externalDealerCharges.lines
           : customerVisibleServiceLines;
 
-        if (displayedLines.length === 0) {
-          return '';
-        }
+        const hasCharges = displayedLines.length > 0;
 
         if (comparisonView) {
           const rows = displayedLines
@@ -689,8 +689,8 @@ export class EstimatePdfHtmlBuilder {
           return `
             <div class="card keep-together">
               <table class="comparison-table">
-                <thead><tr><th>Installation &amp; services</th><th class="right">Dealer Cost</th><th class="right">Customer Price</th></tr></thead>
-                <tbody>${rows}<tr class="table-total"><td>Services total</td><td class="right">${formatMoney(externalDealerCharges.systemTotal)}</td><td class="right">${formatMoney(externalDealerCharges.customerTotal)}</td></tr></tbody>
+                <thead><tr><th>Installation &amp; services</th><th class="right">Your Cost</th><th class="right">Customer Price</th></tr></thead>
+                <tbody>${!hasCharges ? '<tr><td>Installation</td><td class="right">Not included</td><td class="right">Not included</td></tr>' : ''}${rows}${manualDiscount?.payer === 'ACCOUNT_OWNER' && serviceDiscount > 0 ? `<tr><td>Additional discount</td><td class="right">−${formatMoney(serviceDiscount)}</td><td class="right">&mdash;</td></tr>` : ''}${hasCharges ? `<tr class="table-total"><td>Services total</td><td class="right">${formatMoney(numberValue(externalDealerCharges.systemTotal) - (manualDiscount?.payer === 'ACCOUNT_OWNER' ? serviceDiscount : 0))}</td><td class="right">${formatMoney(externalDealerCharges.customerTotal)}</td></tr>` : ''}</tbody>
               </table>
             </div>`;
         }
@@ -698,7 +698,7 @@ export class EstimatePdfHtmlBuilder {
         return `
           <div class="card keep-together">
             <div class="card-title">Installation &amp; services</div>
-            <div class="card-body">${displayedLines
+            <div class="card-body">${!hasCharges ? summaryRow('Installation', 'Not included') : ''}${displayedLines
               .map((line) =>
                 summaryRow(
                   line.description,
@@ -712,10 +712,9 @@ export class EstimatePdfHtmlBuilder {
       }
 
       if (!installationSummary) {
-        return '';
+        return notIncludedInstallation();
       }
 
-      const status = installationStatus(installationSummary);
       const installationValue =
         installationSummary.installationAmount == null
           ? 'Pending'
@@ -725,7 +724,7 @@ export class EstimatePdfHtmlBuilder {
       const rows = [
         summaryRow(
           'Installation',
-          `<span class="value-with-badge"><span class="badge ${status.className}">${status.label}</span><span>${installationValue}</span></span>`,
+          installationValue,
         ),
       ];
 
@@ -736,6 +735,13 @@ export class EstimatePdfHtmlBuilder {
           }
         } else {
           rows.push(summaryRow('Additional services', 'None included'));
+        }
+
+        if (numberValue(manualDiscount?.installation.discount) > 0) {
+          rows.push(
+            summaryRow('Additional discount · Installation', '−' + formatMoney(manualDiscount!.installation.discount)),
+            summaryRow('Installation total', formatMoney(numberValue(installationSummary.installationTotal) - numberValue(manualDiscount!.installation.discount)), { strong: true }),
+          );
         }
 
         if (installationSummary.permitIncluded) {
@@ -753,8 +759,7 @@ export class EstimatePdfHtmlBuilder {
           );
         } else {
           rows.push(
-            summaryRow('Permit service', 'Not included'),
-            summaryRow('City Fee', 'Not applicable'),
+            summaryRow('Permit management', 'Not included'),
           );
         }
       }
@@ -768,7 +773,7 @@ export class EstimatePdfHtmlBuilder {
 
     const projectScopeHtml = (() => {
       if (externalDealerCharges) {
-        if (customerVisibleServiceLines.length === 0) return '';
+        const hasCharges = customerVisibleServiceLines.length > 0;
         const rows = customerVisibleServiceLines
           .map((line) =>
             summaryRow(
@@ -781,19 +786,18 @@ export class EstimatePdfHtmlBuilder {
         return `
           <div class="card keep-together">
             <div class="card-title">Project scope</div>
-            <div class="card-body">${rows}</div>
+            <div class="card-body">${!hasCharges ? summaryRow('Installation', 'Not included') : ''}${rows}</div>
           </div>`;
       }
 
       if (!installationSummary) {
-        return '';
+        return notIncludedInstallation('Project scope');
       }
 
-      const status = installationStatus(installationSummary);
       const rows = [
         summaryRow(
           'Installation',
-          `<span class="badge ${status.className}">${status.label}</span>`,
+          '',
         ),
       ];
 
@@ -832,37 +836,14 @@ export class EstimatePdfHtmlBuilder {
 
     const notices = `
       ${!externalDealerCharges && installationAmountPending ? '<p class="notice warning">Installation amount is pending.</p>' : ''}
-      ${!externalDealerCharges && cityFeePending ? '<p class="notice warning">Final total is pending the City Fee.</p>' : ''}
+      ${(!externalDealerCharges || comparisonView) && cityFeePending ? '<p class="notice warning">Final total is pending the City Fee.</p>' : ''}
       ${!externalDealerCharges && preliminaryInstallation && !installationAmountPending ? '<p class="notice">Installation is proposed and is not yet confirmed.</p>' : ''}
       ${externalDealerCharges?.customerTotalIncomplete && customerFacing ? '<p class="notice warning">Customer service pricing is incomplete.</p>' : ''}`;
     const projectTotalHtml = comparisonView
       ? `
         <div class="project-total keep-together">
-          ${summaryRow(
-            reportKind === 'dealer'
-              ? incompleteTotal
-                ? 'Your Current Project Cost'
-                : 'Your Project Cost'
-              : incompleteTotal
-                ? 'Current Dealer Project Total'
-                : 'Dealer Project Total',
-            formatMoney(internalProjectTotal),
-            { strong: true },
-          )}
-          ${summaryRow(incompleteTotal ? 'Current Customer Project Total' : 'Customer Project Total', formatMoney(customerProjectTotal), { strong: true })}
-          ${
-            reportKind === 'dealer'
-              ? summaryRow(
-                  'Dealer Profit - materials only, pre-tax',
-                  formatMoney(
-                    roundMoney(
-                      (customerMaterial.subtotal - (customerMaterial.manualNetDiscount ?? 0)) - (internalMaterial.subtotal - (internalMaterial.manualNetDiscount ?? 0)),
-                    ),
-                  ),
-                  { extraClass: 'profit-row' },
-                )
-              : ''
-          }
+          ${summaryRow('Customer Project Total', formatMoney(customerProjectTotal), { strong: true })}
+          ${summaryRow('Your Project Cost', formatMoney(internalProjectTotal), { strong: true })}
           ${notices}
         </div>`
       : `
@@ -870,6 +851,21 @@ export class EstimatePdfHtmlBuilder {
           ${summaryRow(incompleteTotal ? 'Current Project Total' : 'Project Total', formatMoney(selectedProjectTotal), { strong: true })}
           ${notices}
         </div>`;
+    const dealerProfitHtml = comparisonView
+      ? `
+        <section class="dealer-profit keep-together" aria-label="Dealer Profit">
+          <div class="dealer-profit-heading">
+            <strong>Dealer Profit</strong>
+            <span class="dealer-profit-total${dealerProjectProfit < 0 ? ' loss' : ''}">${formatMoney(dealerProjectProfit)}</span>
+          </div>
+          <div class="dealer-profit-breakdown">
+            <span>Material: <strong${dealerMaterialProfit < 0 ? ' class="loss"' : ''}>${formatMoney(dealerMaterialProfit)}</strong></span>
+            <span aria-hidden="true">+</span>
+            <span>Installation &amp; services: <strong${dealerServiceProfit < 0 ? ' class="loss"' : ''}>${formatMoney(dealerServiceProfit)}</strong></span>
+          </div>
+          <p>Sales tax excluded.</p>
+        </section>`
+      : '';
 
     const profitability = estimatedMaterialProfitability(
       manualDiscount ? { ...estimate, ...(manualDiscount.payer === 'CUSTOMER' ? { customerPriceT: manualDiscount.material.subtotal } : { priceT: manualDiscount.material.subtotal }) } as unknown as EstimateWithRelations : estimate,
@@ -889,13 +885,13 @@ export class EstimatePdfHtmlBuilder {
           </div>`
         : '';
     const summaryGridClass =
-      comparisonView || !installationSummaryHtml
+      !installationSummaryHtml
         ? 'summary-grid single-column'
         : 'summary-grid';
     const manualDiscountHtml = manualDiscount ? `<div class="card keep-together"><div class="card-body">${summaryRow('Additional discount · ' + ({ PROJECT: 'Project total', MATERIAL: 'Material', INSTALLATION: 'Installation' }[manualDiscount.scope]), '−' + formatMoney(manualDiscount.discount), { strong: true })}${serviceDiscount ? summaryRow('Included installation & services discount', '−' + formatMoney(serviceDiscount)) : ''}</div></div>` : '';
     const projectSummaryHtml = projectTotalOnly
       ? `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div>${projectScopeHtml}${projectTotalHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`
-      : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${manualDiscountHtml}${projectTotalHtml}${adminProfitability}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
+      : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${manualDiscountHtml}${projectTotalHtml}${dealerProfitHtml}${adminProfitability}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
 
     const statusBadge = estimate.status?.name
       ? `<span class="status-badge ${estimateStatusBadgeClassName(estimate.status.name)}">${escapeHtml(estimate.status.name)}</span>`
@@ -976,9 +972,9 @@ export class EstimatePdfHtmlBuilder {
     .empty { padding: 28px; border: 1px dashed #cbd5e1; border-radius: 9px; color: var(--report-text-color); text-align: center; }
     .summary-section { margin-top: 22px; break-inside: avoid-page; page-break-inside: avoid; }
     .summary-start { break-inside: avoid; page-break-inside: avoid; }
-    .summary-grid { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 10px; }
+    .summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 10px; }
     .summary-grid.single-column { grid-template-columns: 1fr; }
-    .card, .project-total { margin-top: 0; overflow: hidden; border: 1px solid #dbe3ee; border-radius: 9px; background: #fff; }
+    .card, .project-total { min-width: 0; margin-top: 0; overflow: hidden; border: 1px solid #dbe3ee; border-radius: 9px; background: #fff; }
     .keep-together { break-inside: avoid; page-break-inside: avoid; }
     .card-title { padding: 10px 13px; background: #f8fafc; color: #172033; font-size: 12px; font-weight: 700; }
     .card-title small { display: block; margin-top: 2px; color: var(--report-text-color); font-size: 8px; font-weight: 400; }
@@ -996,9 +992,13 @@ export class EstimatePdfHtmlBuilder {
     .comparison-table .right { text-align: right; color: #172033; font-weight: 600; }
     .summary-row.promotion-discount > span:last-child, .comparison-table .promotion-discount td { color: #dc2626; }
     .summary-row.promotion-subtotal > span:last-child { color: #07883f; }
+    .summary-grid:not(.single-column) .comparison-table { table-layout: fixed; font-size: 10px; }
+    .summary-grid:not(.single-column) .comparison-table th, .summary-grid:not(.single-column) .comparison-table td { padding: 8px; vertical-align: top; }
+    .summary-grid:not(.single-column) .comparison-table th:first-child { width: 44%; }
+    .comparison-table td.right { white-space: nowrap; }
     .comparison-table small { display: block; margin-top: 2px; color: var(--report-text-color); font-size: 8px; font-weight: 400; }
     .comparison-table .table-total td { background: #f8fafc; color: #172033; font-weight: 700; }
-    .project-total { margin-top: 10px; padding: 6px 14px; border-color: #cbd5e1; background: #f1f5f9; }
+    .project-total { margin-top: 10px; padding: 6px 14px; border-color: #bfdbfe; background: #eff6ff; }
     .project-total .summary-row.strong { font-size: 13px; }
     .project-total .summary-row.strong > span:last-child { font-size: 17px; }
     .project-total-success { padding: 16px 18px; border-color: #86efac; background: #ecfdf5; }
@@ -1007,6 +1007,13 @@ export class EstimatePdfHtmlBuilder {
     .profit-row > span:last-child { color: #047857; }
     .notice { margin: 0 0 7px; color: #1e40af; font-size: 9px; }
     .notice.warning { color: #92400e; font-weight: 600; }
+    .dealer-profit { margin-top: 12px; padding: 14px; border: 1px solid #a7f3d0; border-radius: 9px; background: #ecfdf5; color: #064e3b; }
+    .dealer-profit-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+    .dealer-profit-heading > strong { font-size: 12px; }
+    .dealer-profit-total { color: #065f46; font-size: 20px; font-weight: 800; }
+    .dealer-profit-breakdown { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-top: 10px; font-size: 11px; }
+    .dealer-profit p { margin: 6px 0 0; color: #065f46; font-size: 9px; }
+    .dealer-profit .loss { color: #b91c1c; }
     .profitability { margin-top: 14px; }
     .profit-heading { padding: 13px; }
     .profit-heading strong { display: block; color: #172033; font-size: 11px; }
