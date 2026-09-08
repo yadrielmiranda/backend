@@ -42,6 +42,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { InstallationModule } from './installation/installation.module';
 import { PrivacyModule } from './privacy/privacy.module';
 import { DeliveriesModule } from './deliveries/deliveries.module';
+import { SmsConsentModule } from './sms/sms-consent.module';
 
 @Module({
   imports: [
@@ -85,6 +86,7 @@ import { DeliveriesModule } from './deliveries/deliveries.module';
     LinearPricingRulesModule,
     InstallationModule,
     DeliveriesModule,
+    SmsConsentModule,
   ],
   controllers: [AppController],
   providers: [

@@ -11,6 +11,7 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { LogsService } from '@/logs/logs.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { getRoleName } from '@/auth/utils/get-role-name';
+import { revokeSmsConsent } from '@/sms/sms-consent.helpers';
 
 export type UserSafe = Omit<User, 'password'> & {
   role: Prisma.RoleGetPayload<{
@@ -339,10 +340,19 @@ export class UsersService {
         this.normalizeMarkupOverride(markupOverride);
     }
 
-    const updated = await this.prisma.user.update({
-      where,
-      data: dataForPrisma,
-      select: this.safeSelect,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM User WHERE id = ${existing.id} FOR UPDATE`;
+      const current = await tx.user.findUniqueOrThrow({
+        where: { id: existing.id },
+        select: { phone: true },
+      });
+      const saved = await tx.user.update({ where, data: dataForPrisma, select: this.safeSelect });
+      if (rest.isActive === false) {
+        await revokeSmsConsent(tx, existing.id, 'ACCOUNT_DISABLED');
+      } else if (rest.phone !== undefined && rest.phone !== current.phone) {
+        await revokeSmsConsent(tx, existing.id, 'PHONE_CHANGED');
+      }
+      return saved;
     });
 
     return updated as UserSafe;
@@ -394,6 +404,8 @@ export class UsersService {
         },
         select: this.safeSelect,
       });
+
+      await revokeSmsConsent(tx, userId, 'ACCOUNT_DISABLED');
 
       return deleted as UserSafe;
     });
