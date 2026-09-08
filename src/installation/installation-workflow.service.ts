@@ -2666,9 +2666,9 @@ export class InstallationWorkflowService {
           ? requestedLineForEstimateOwner(dto, job.estimate.user.role.name)
           : dto;
       await this.addLineInTransaction(quote.id, lineInput, origin, tx);
-      if (job.status === InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) {
-        await this.recalculateQuoteTotals(quote.id, tx);
-      } else {
+      // Actualiza los totales sin sustituir el recálculo final de la remedición.
+      await this.recalculateQuoteTotals(quote.id, tx);
+      if (job.status !== InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) {
         await this.markQuoteForRecalculation(quote.id, tx);
       }
       await tx.installationJob.update({
@@ -2712,9 +2712,8 @@ export class InstallationWorkflowService {
         );
       }
       await tx.installationQuoteLine.delete({ where: { id: lineId } });
-      if (job.status === InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) {
-        await this.recalculateQuoteTotals(quote.id, tx);
-      } else {
+      await this.recalculateQuoteTotals(quote.id, tx);
+      if (job.status !== InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) {
         await this.markQuoteForRecalculation(quote.id, tx);
       }
     });
