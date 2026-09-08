@@ -105,11 +105,11 @@ export class SmsConsentService {
     return this.getPreferences(userId);
   }
 
-  async recordProviderChoice(phone: string, messageSid: string, action: 'STOP' | 'START') {
+  async recordProviderChoice(phone: string, messageSid: string | null, action: 'STOP' | 'START') {
     // El SID único hace que los reintentos de Twilio sean idempotentes.
     try {
       await this.prisma.$transaction(async (tx) => {
-        if (await tx.smsConsentEvent.findUnique({ where: { providerMessageSid: messageSid } })) return;
+        if (messageSid && await tx.smsConsentEvent.findUnique({ where: { providerMessageSid: messageSid } })) return;
         const users = await tx.$queryRaw<Array<{ id: number }>>`SELECT id FROM User WHERE phone = ${phone} FOR UPDATE`;
         const userId = users[0]?.id ?? null;
         const now = new Date();
@@ -129,7 +129,7 @@ export class SmsConsentService {
         }
       });
     } catch (error: unknown) {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
+      if (messageSid && error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
         const receipt = await this.prisma.smsConsentEvent.findUnique({ where: { providerMessageSid: messageSid } });
         if (receipt) return;
       }

@@ -191,6 +191,18 @@ describe('SMS consent', () => {
     await assert.rejects(f.subscribe(), /STOP request/);
   });
 
+  it('records a provider opt-out rejection without a MessageSid and keeps the account active', async () => {
+    const f = fixture(); await f.subscribe();
+    await f.service.recordProviderChoice('+13055551234', null, 'STOP');
+    const prefs = await f.service.getPreferences(1);
+    assert.equal(prefs.enabled, false);
+    assert.equal(prefs.blockedBySms, true);
+    assert.equal(f.state.events.at(-1).action, 'PROVIDER_STOP');
+    assert.equal(f.state.events.at(-1).providerMessageSid, null);
+    assert.equal(f.state.users[0].isActive, true);
+    await assert.rejects(f.subscribe(), /STOP request/);
+  });
+
   it('retains the number and policy in phone-change audit records', async () => {
     const f = fixture(); await f.subscribe();
     await revokeSmsConsent(f.db, 1, 'PHONE_CHANGED');

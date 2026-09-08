@@ -1341,12 +1341,40 @@ model Notification {
   isRead      Boolean  @default(false)
   createdAt   DateTime @default(now())
 
-  // La única relación necesaria es con el usuario que recibe la notificación
-  recipient   User @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  // Usuario que recibe la notificación.
+  recipient   User             @relation(fields: [recipientId], references: [id], onDelete: Cascade)
   recipientId Int
+  smsDelivery NotificationSms?
 
   @@unique([recipientId, dedupeKey], map: "uq_notification_recipient_dedupe")
   @@index([recipientId])
+}
+
+enum NotificationSmsStatus {
+  PENDING
+  SENDING
+  ACCEPTED
+  SKIPPED
+  FAILED
+  UNKNOWN
+}
+
+// Solo se crea junto a notificaciones nuevas; nunca se rellena con el historial.
+model NotificationSms {
+  notificationId     Int                   @id
+  phone              String                @db.VarChar(20)
+  consentedAt        DateTime
+  status             NotificationSmsStatus @default(PENDING)
+  attempts           Int                   @default(0)
+  nextAttemptAt      DateTime              @default(now())
+  attemptedAt        DateTime?
+  providerMessageSid String?               @unique @db.VarChar(34)
+  errorCode          String?               @db.VarChar(60)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  notification       Notification          @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
 }
 
 enum DimensionSizeBasis {

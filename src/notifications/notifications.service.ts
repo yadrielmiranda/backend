@@ -3,6 +3,7 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { NotificationsGateway } from './notifications.gateway';
 import { Notification, Prisma } from '@prisma/client';
 import { CreateNotificationDto } from './dto/create-notification.dto';
+import { NotificationSmsService } from './notification-sms.service';
 
 type NotificationDb = PrismaService | Prisma.TransactionClient;
 type NotificationPayload = Omit<CreateNotificationDto, 'recipientId'>;
@@ -12,6 +13,7 @@ export class NotificationsService {
   constructor(
     private prisma: PrismaService,
     private gateway: NotificationsGateway,
+    private sms: NotificationSmsService,
   ) {}
 
   async createAndSend(
@@ -26,31 +28,42 @@ export class NotificationsService {
       dedupeKey: data.dedupeKey,
     };
 
-    if (data.dedupeKey) {
-      const result = await db.notification.createMany({
-        data: [notificationData],
-        skipDuplicates: true,
-      });
+    const persist = async (tx: Prisma.TransactionClient) => {
+      if (data.dedupeKey) {
+        const result = await tx.notification.createMany({
+          data: [notificationData],
+          skipDuplicates: true,
+        });
 
-      const notification = await db.notification.findFirstOrThrow({
-        where: {
-          recipientId: data.recipientId,
-          dedupeKey: data.dedupeKey,
-        },
-      });
+        const notification = await tx.notification.findFirstOrThrow({
+          where: {
+            recipientId: data.recipientId,
+            dedupeKey: data.dedupeKey,
+          },
+        });
 
-      if (result.count > 0) {
-        this.gateway.sendNotificationToUser(data.recipientId, notification);
+        if (result.count > 0) {
+          await this.sms.enqueue(notification, tx);
+        }
+
+        return { notification, created: result.count > 0 };
       }
 
-      return notification;
-    }
+      const notification = await tx.notification.create({
+        data: notificationData,
+      });
+      await this.sms.enqueue(notification, tx);
+      return { notification, created: true };
+    };
 
-    const notification = await db.notification.create({
-      data: notificationData,
-    });
-
-    this.gateway.sendNotificationToUser(data.recipientId, notification);
+    // Notificación y envío pendiente se confirman o revierten juntos.
+    // El worker solo ve filas confirmadas y nunca llama a Twilio dentro de esta transacción.
+    const { notification, created } =
+      db === this.prisma
+        ? await this.prisma.$transaction(persist)
+        : await persist(db);
+    if (created)
+      this.gateway.sendNotificationToUser(data.recipientId, notification);
     return notification;
   }
 
