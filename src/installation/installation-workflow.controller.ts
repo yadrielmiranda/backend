@@ -9,6 +9,7 @@ import {
   Post,
   Query,
   Req,
+  UseInterceptors,
 } from '@nestjs/common';
 import { Request } from 'express';
 import type { AuthUser } from '@/auth/types/auth-user.type';
@@ -30,6 +31,9 @@ import {
 } from './dto/installation-workflow.dto';
 import { FindInstallationJobsQueryDto } from './dto/find-installation-jobs-query.dto';
 
+import { InstallationPricingInterceptor } from './installation-pricing.interceptor';
+
+@UseInterceptors(InstallationPricingInterceptor)
 @Controller()
 export class InstallationWorkflowController {
   constructor(private readonly workflow: InstallationWorkflowService) {}

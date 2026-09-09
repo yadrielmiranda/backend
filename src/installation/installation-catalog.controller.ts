@@ -11,6 +11,7 @@ import {
   Put,
   Query,
   Req,
+  UseInterceptors,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { Roles } from '@/auth/roles.decorator';
@@ -27,6 +28,9 @@ import {
   UpdateInstallationPriceProfileDto,
 } from './dto/installation-profile.dto';
 
+import { InstallationPricingInterceptor } from './installation-pricing.interceptor';
+
+@UseInterceptors(InstallationPricingInterceptor)
 @Controller()
 export class InstallationCatalogController {
   constructor(private readonly catalog: InstallationCatalogService) {}
@@ -127,7 +131,7 @@ export class InstallationCatalogController {
     );
   }
 
-  @Roles('admin', 'operator')
+  @Roles('admin')
   @Get('installation-price-profiles')
   findProfiles(
     @Query('includeInactive', new ParseBoolPipe({ optional: true }))
@@ -136,7 +140,7 @@ export class InstallationCatalogController {
     return this.catalog.findProfiles(includeInactive ?? true);
   }
 
-  @Roles('admin', 'operator')
+  @Roles('admin')
   @Get('installation-price-profiles/:id')
   findProfile(@Param('id', ParseIntPipe) id: number) {
     return this.catalog.findProfile(id);
