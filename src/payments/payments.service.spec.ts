@@ -137,6 +137,18 @@ describe('PaymentsService reconciliation', () => {
       data: { statusId: 2 },
     });
     expect(installationWorkflow.markPaymentPaid).toHaveBeenCalledTimes(1);
+    expect(notifications.createAndSend).toHaveBeenCalledTimes(1);
+    expect(notifications.createAndSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientId: 7,
+        actorId: 7,
+        notifyActor: true,
+        message: 'Your order #ORD-1011 has been created from Estimate #EST-1009.',
+        actionUrl: '/orders/11',
+        dedupeKey: 'order:11:created:owner',
+      }),
+      tx,
+    );
     expect(notifications.createAndSendToRoles).toHaveBeenCalledWith(
       ['admin'],
       expect.objectContaining({
@@ -203,6 +215,7 @@ describe('PaymentsService reconciliation', () => {
     expect(tx.order.create).not.toHaveBeenCalled();
     expect(tx.estimate.update).not.toHaveBeenCalled();
     expect(installationWorkflow.markPaymentPaid).toHaveBeenCalledTimes(1);
+    expect(notifications.createAndSend).not.toHaveBeenCalled();
   });
 
   it('repairs an active estimate when its paid order already exists', async () => {
@@ -255,6 +268,42 @@ describe('PaymentsService reconciliation', () => {
       where: { id: payment.estimate.id },
       data: { statusId: 2 },
     });
+    expect(notifications.createAndSend).not.toHaveBeenCalled();
+  });
+
+  it.each(Object.values(PaymentType))('notifies only admins about a confirmed %s payment', async (type) => {
+    const payment = materialPayment({
+      type,
+      estimate: {
+        ...materialPayment().estimate,
+        status: { id: 2, name: 'Ordered' },
+        order: { id: 11, number: 'ORD-1011', paymentId: 41 },
+      },
+    });
+    const tx = {
+      payment: { findUnique: jest.fn().mockResolvedValue(payment) },
+      order: { findUnique: jest.fn().mockResolvedValue({ id: 11 }) },
+    };
+    const workflow = { markPaymentPaid: jest.fn().mockResolvedValue(false) };
+    const service = new PaymentsService({} as never, config, workflow as never, notifications as never);
+    await (service as any).processPaidCheckoutSession(tx, {
+      id: payment.stripeSessionId, payment_status: 'paid',
+    });
+    expect(notifications.createAndSend).not.toHaveBeenCalled();
+    expect(notifications.createAndSendToRoles).toHaveBeenCalledWith(
+      ['admin'], expect.objectContaining({ dedupeKey: 'payment:41:paid:admin' }), { db: tx },
+    );
+  });
+
+  it('keeps manual payment confirmations with admins as well', async () => {
+    const payment = materialPayment({ recordedById: 1 });
+    const tx = { order: { findUnique: jest.fn().mockResolvedValue({ id: 11 }) } };
+    const service = new PaymentsService({} as never, config, {} as never, notifications as never);
+    await (service as any).notifyPaymentConfirmed(tx, payment);
+    expect(notifications.createAndSend).not.toHaveBeenCalled();
+    expect(notifications.createAndSendToRoles).toHaveBeenCalledWith(
+      ['admin'], expect.objectContaining({ dedupeKey: 'payment:41:paid:admin' }), { db: tx },
+    );
   });
 
   it('requires an internal dealer charge to use the final-customer public link', async () => {

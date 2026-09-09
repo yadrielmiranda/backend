@@ -382,6 +382,7 @@ export class DeliveriesService {
     });
     await this.notifications.createAndSend({
       recipientId: order.userId,
+      actorId: actor.id,
       message: `Pickup was completed for Order #${order.number}.`,
       actionUrl: `/orders/${order.id}`,
       actionLabel: 'Open order',
@@ -608,6 +609,7 @@ export class DeliveriesService {
     if (isStaff(role)) {
       await this.notifications.createAndSend({
         recipientId: order.userId,
+        actorId: actor.id,
         message: `${deliveryLabel(type)} for Order #${order.number} is ready for payment.`,
         actionUrl: `/orders/${order.id}`,
         actionLabel: 'Open payment',
@@ -669,6 +671,7 @@ export class DeliveriesService {
     });
     await this.notifications.createAndSend({
       recipientId: delivery.order.userId,
+      actorId: actor.id,
       message: `${deliveryLabel(delivery.type)} for Order #${delivery.order.number} was scheduled.`,
       actionUrl: `/orders/${delivery.orderId}`,
       actionLabel: 'View schedule',
@@ -744,6 +747,7 @@ export class DeliveriesService {
     });
     await this.notifications.createAndSend({
       recipientId: order.userId,
+      actorId: actor.id,
       message: `${deliveryLabel(delivery.type)} was completed for Order #${order.number}.`,
       actionUrl: `/orders/${order.id}`,
       actionLabel: 'Open order',

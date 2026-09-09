@@ -354,6 +354,7 @@ export class OrdersService {
     if (statusWillChange) {
       await this.notificationsService.createAndSend({
         recipientId: updated.estimate.idUser,
+        actorId: actor.id,
         message: `The status of your order #${updated.number} has changed to "${updated.status.name}".`,
         actionUrl: `/orders/${updated.id}`,
         actionLabel: 'Open order',
@@ -375,6 +376,7 @@ export class OrdersService {
       ) {
         await this.notificationsService.createAndSend({
           recipientId: updated.estimate.idUser,
+          actorId: actor.id,
           message: `Installation balance is due for Order #${updated.number}.`,
           actionUrl: `/orders/${updated.id}`,
           actionLabel: 'Open payment',
@@ -551,6 +553,7 @@ export class OrdersService {
     });
     await this.notificationsService.createAndSend({
       recipientId: order.userId,
+      actorId: actor.id,
       message: `Extra charge #${created.sequence} for Order #${order.number} needs your approval.`,
       actionUrl: `/orders/${orderId}`,
       actionLabel: 'Review charge',
@@ -607,6 +610,7 @@ export class OrdersService {
     const dedupeKey = `order:${charge.orderId}:extra:${updated.id}:response:${updated.status}`;
     await this.notificationsService.createAndSend({
       recipientId: charge.createdById,
+      actorId: actor.id,
       message: responseMessage,
       actionUrl: `/orders/${charge.orderId}`,
       actionLabel: 'Review response',

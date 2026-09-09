@@ -7,10 +7,16 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule } from '@nestjs/config';
 import { SmsConsentModule } from '@/sms/sms-consent.module';
 import { NotificationSmsService } from './notification-sms.service';
+import { NotificationEmailService } from './notification-email.service';
 
 @Module({
   imports: [PrismaModule, JwtModule, ConfigModule, SmsConsentModule],
-  providers: [NotificationsGateway, NotificationsService, NotificationSmsService],
+  providers: [
+    NotificationsGateway,
+    NotificationsService,
+    NotificationSmsService,
+    NotificationEmailService,
+  ],
   controllers: [NotificationsController],
   exports: [NotificationsService],
 })

@@ -198,6 +198,19 @@ export class PaymentsService {
         message: `Order #${order.number} created from paid material checkout.`,
       },
     });
+    // La orden creada sí se avisa al dueño, aunque él haya iniciado el pago.
+    await this.notifications.createAndSend(
+      {
+        recipientId: estimate.idUser,
+        actorId: payment.recordedById ?? estimate.idUser,
+        notifyActor: true,
+        message: `Your order #${order.number} has been created from Estimate #${estimate.number}.`,
+        actionUrl: `/orders/${order.id}`,
+        actionLabel: 'Open order',
+        dedupeKey: `order:${order.id}:created:owner`,
+      },
+      tx,
+    );
     return true;
   }
 
@@ -306,21 +319,7 @@ export class PaymentsService {
       },
     );
 
-    if (
-      payment.recordedById !== payment.estimate.idUser &&
-      payment.estimate.user.role.name !== 'admin'
-    ) {
-      await this.notifications.createAndSend(
-        {
-          recipientId: payment.estimate.idUser,
-          message: `${copy.label} was confirmed for Estimate #${payment.estimate.number}.`,
-          actionUrl,
-          actionLabel: order ? 'Open order' : 'View project',
-          dedupeKey: `payment:${payment.id}:paid:owner`,
-        },
-        tx,
-      );
-    }
+    // El pago se comunica a administración; el dueño recibe solo el aviso de orden creada.
   }
 
   private async processPaidCheckoutSession(

@@ -276,6 +276,7 @@ export class InstallationWorkflowService {
 
   private notifyInstallationOwner(params: {
     ownerId: number;
+    actorId: number;
     jobId: number;
     message: string;
     actionLabel: string;
@@ -284,6 +285,7 @@ export class InstallationWorkflowService {
   }) {
     return this.notifications.createAndSend({
       recipientId: params.ownerId,
+      actorId: params.actorId,
       message: params.message,
       actionUrl: params.actionUrl ?? `/installations/${params.jobId}`,
       actionLabel: params.actionLabel,
@@ -1838,6 +1840,7 @@ export class InstallationWorkflowService {
       }),
       this.notifyInstallationOwner({
         ownerId: result.estimate.idUser,
+        actorId: user.id,
         jobId: result.id,
         message: `Installation deposit is due for Estimate #${result.estimate.number}.`,
         actionLabel: 'Open payment',
@@ -2143,6 +2146,7 @@ export class InstallationWorkflowService {
     const result = await this.findJob(jobId, user);
     await this.notifyInstallationOwner({
       ownerId: result.estimate.idUser,
+      actorId: user.id,
       jobId,
       message: `Installation was canceled for Estimate #${result.estimate.number}.`,
       actionLabel: 'View project',
@@ -2961,6 +2965,7 @@ export class InstallationWorkflowService {
     const approved = dto.decision === InstallationApprovalDecision.APPROVED;
     await this.notifyInstallationOwner({
       ownerId: result.estimate.idUser,
+      actorId: user.id,
       jobId,
       message: approved
         ? `Installation quote for Estimate #${result.estimate.number} was approved by admin and needs your response.`
@@ -3632,6 +3637,7 @@ export class InstallationWorkflowService {
     const permit = result.permit;
     await this.notifyInstallationOwner({
       ownerId: result.estimate.idUser,
+      actorId: user.id,
       jobId,
       message: `Permit status for Estimate #${result.estimate.number} changed to ${dto.status.toLowerCase().replaceAll('_', ' ')}.`,
       actionLabel:
@@ -3770,6 +3776,7 @@ export class InstallationWorkflowService {
         : 'Installation';
     await this.notifyInstallationOwner({
       ownerId: result.estimate.idUser,
+      actorId: user.id,
       jobId,
       message: `${appointmentLabel} date proposed for Estimate #${result.estimate.number}.`,
       actionLabel: 'Respond to schedule',
@@ -3825,6 +3832,7 @@ export class InstallationWorkflowService {
     const result = await this.findJob(appointment.jobId, user);
     await this.notifications.createAndSend({
       recipientId: appointment.proposedById,
+      actorId: user.id,
       message: `The project owner ${dto.response === InstallationAppointmentResponse.ACCEPT ? 'accepted' : 'requested a new date for'} the ${appointment.type === InstallationAppointmentType.REMEASUREMENT ? 'remeasurement' : 'installation'} appointment for Estimate #${result.estimate.number}.`,
       actionUrl: `/installations/${appointment.jobId}`,
       actionLabel: 'Review response',
@@ -3949,6 +3957,7 @@ export class InstallationWorkflowService {
     const result = await this.findJob(jobId, user);
     await this.notifyInstallationOwner({
       ownerId: result.estimate.idUser,
+      actorId: user.id,
       jobId,
       message: `Installation started for Order #${result.estimate.order?.number}.`,
       actionLabel: 'Open order',
@@ -4012,6 +4021,7 @@ export class InstallationWorkflowService {
     const result = await this.findJob(jobId, user);
     await this.notifyInstallationOwner({
       ownerId: result.estimate.idUser,
+      actorId: user.id,
       jobId,
       message: `Installation completed for Order #${result.estimate.order?.number}.`,
       actionLabel: 'Open order',

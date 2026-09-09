@@ -1342,9 +1342,10 @@ model Notification {
   createdAt   DateTime @default(now())
 
   // Usuario que recibe la notificación.
-  recipient   User             @relation(fields: [recipientId], references: [id], onDelete: Cascade)
-  recipientId Int
-  smsDelivery NotificationSms?
+  recipient     User               @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  recipientId   Int
+  smsDelivery   NotificationSms?
+  emailDelivery NotificationEmail?
 
   @@unique([recipientId, dedupeKey], map: "uq_notification_recipient_dedupe")
   @@index([recipientId])
@@ -1373,6 +1374,32 @@ model NotificationSms {
   createdAt          DateTime              @default(now())
   updatedAt          DateTime              @updatedAt
   notification       Notification          @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+}
+
+enum NotificationEmailStatus {
+  PENDING
+  SENDING
+  ACCEPTED
+  SKIPPED
+  FAILED
+  UNKNOWN
+}
+
+// Cola de correo independiente del SMS y de la recuperación de contraseñas.
+model NotificationEmail {
+  notificationId    Int                     @id
+  email             String                  @db.VarChar(254)
+  status            NotificationEmailStatus @default(PENDING)
+  attempts          Int                     @default(0)
+  nextAttemptAt     DateTime                @default(now())
+  attemptedAt       DateTime?
+  providerMessageId String?                 @db.VarChar(320)
+  errorCode         String?                 @db.VarChar(60)
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  notification      Notification            @relation(fields: [notificationId], references: [id], onDelete: Cascade)
 
   @@index([status, nextAttemptAt])
 }
