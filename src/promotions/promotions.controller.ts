@@ -1,7 +1,9 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
   Param,
   ParseIntPipe,
   Post,
@@ -31,6 +33,12 @@ export class PromotionsController {
   }
   @Post() @Roles('admin') create(@Body() dto: PromotionDto) {
     return this.service.save(dto);
+  }
+  @Delete(':id')
+  @HttpCode(204)
+  @Roles('admin')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.service.remove(id);
   }
   @Put(':id') @Roles('admin') update(
     @Param('id', ParseIntPipe) id: number,

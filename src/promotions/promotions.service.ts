@@ -236,6 +236,12 @@ export class PromotionsService {
   list() {
     return this.prisma.promotion.findMany({ orderBy: { id: 'desc' } });
   }
+  async remove(id: number): Promise<void> {
+    // Los descuentos historicos viven en los snapshots del estimado y las piezas.
+    // Solo elimina la oferta del catalogo, sin recalcular operaciones existentes.
+    const { count } = await this.prisma.promotion.deleteMany({ where: { id } });
+    if (!count) throw new NotFoundException('Promotion not found.');
+  }
   async options() {
     const [roles, users, brands, products, systems] = await Promise.all([
       this.prisma.role.findMany({ select: { id: true, name: true } }),
