@@ -175,7 +175,6 @@ describe('NotificationSmsService', () => {
     'TWILIO_API_KEY_SID',
     'TWILIO_API_KEY_SECRET',
     'TWILIO_MESSAGING_SERVICE_SID',
-    'PUBLIC_FRONTEND_URL',
   ])('keeps SMS disabled without %s', async (name) => {
     const f = fixture();
     delete f.values[name];
@@ -210,7 +209,7 @@ describe('NotificationSmsService', () => {
     expect(params.get('MessagingServiceSid')).toBe(messagingService);
     expect(params.get('From')).toBeNull();
     expect(params.get('Body')).toBe(
-      'Example Company: Your order #190974 is ready.\nhttps://portal.example.test/orders/20\nReply STOP to unsubscribe.',
+      'Example Company: Your order #190974 is ready.\nReply STOP to unsubscribe.',
     );
     expect(options?.auth).toEqual({
       username: key,
@@ -428,11 +427,12 @@ describe('NotificationSmsService', () => {
   });
 
   it.each([
+    '/orders/20',
     '//outside.example/phish',
     '/\\outside.example/phish',
     'https://outside.example/phish',
   ])(
-    'keeps notification links inside the configured portal: %s',
+    'omits action links from the SMS: %s',
     async (actionUrl) => {
       const f = fixture();
       f.notification.actionUrl = actionUrl;
@@ -441,11 +441,13 @@ describe('NotificationSmsService', () => {
         'Body',
       );
       expect(body).not.toContain('outside.example');
-      expect(body).toContain('https://portal.example.test/');
+      expect(body).not.toContain('https://');
+      expect(body).not.toContain('/orders/');
+      expect(body).not.toContain('Open order');
     },
   );
 
-  it('keeps the portal link and STOP instruction when shortening long text', async () => {
+  it('keeps the STOP instruction when shortening long text', async () => {
     const f = fixture();
     f.notification.message = 'a'.repeat(1000);
     await f.service.processPending();
@@ -453,7 +455,7 @@ describe('NotificationSmsService', () => {
       'Body',
     );
     expect(body).toContain(
-      '...\nhttps://portal.example.test/orders/20\nReply STOP to unsubscribe.',
+      '...\nReply STOP to unsubscribe.',
     );
     expect(body!.length).toBeLessThan(450);
   });

@@ -25,7 +25,6 @@ type SmsSettings = {
   key: string;
   secret: string;
   service: string;
-  origin: string;
 };
 type TwilioResponse = {
   sid?: string;
@@ -63,15 +62,7 @@ export class NotificationSmsService {
       !/^MG[\da-f]{32}$/i.test(service)
     )
       return null;
-    try {
-      // Se reutiliza la URL pública que ya usa el backend para sus correos.
-      const url = new URL(this.config.get<string>('PUBLIC_FRONTEND_URL') ?? '');
-      if (url.protocol !== 'https:' || url.username || url.password)
-        return null;
-      return { account, key, secret, service, origin: url.origin };
-    } catch {
-      return null;
-    }
+    return { account, key, secret, service };
   }
 
   private isEligible(user: Recipient | null): user is Recipient {
@@ -117,22 +108,7 @@ export class NotificationSmsService {
   private messageBody(
     notification: Notification,
     companyName: string,
-    origin: string,
   ): string {
-    let link = `${origin}/`;
-    try {
-      if (notification.actionUrl?.startsWith('/')) {
-        const candidate = new URL(notification.actionUrl, origin);
-        if (
-          candidate.origin === origin &&
-          !candidate.username &&
-          !candidate.password
-        )
-          link = candidate.href;
-      }
-    } catch {
-      /* Se conserva el enlace al portal si la acción no es válida. */
-    }
     const clean = (value: string) =>
       value
         .replace(/[\r\n\t]+/g, ' ')
@@ -140,12 +116,12 @@ export class NotificationSmsService {
         .trim();
     const name = Array.from(clean(companyName)).slice(0, 80).join('');
     const message = clean(notification.message);
-    // Los detalles completos quedan en el portal; siempre se conserva el enlace y STOP.
+    // El SMS informa del evento sin enlaces; conserva la compañía y la instrucción STOP.
     const shortMessage =
       Array.from(message).length > 320
         ? `${Array.from(message).slice(0, 317).join('')}...`
         : message;
-    return `${name}: ${shortMessage}\n${link}\nReply STOP to unsubscribe.`;
+    return `${name}: ${shortMessage}\nReply STOP to unsubscribe.`;
   }
 
   @Interval(10_000)
@@ -264,7 +240,7 @@ export class NotificationSmsService {
     const body = new URLSearchParams({
       To: entry.phone,
       MessagingServiceSid: settings.service,
-      Body: this.messageBody(notification, companyName, settings.origin),
+      Body: this.messageBody(notification, companyName),
     });
     let response: AxiosResponse<TwilioResponse>;
     try {

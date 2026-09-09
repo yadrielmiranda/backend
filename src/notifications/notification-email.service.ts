@@ -138,6 +138,84 @@ export class NotificationEmailService {
     });
   }
 
+  private heading(notification: Notification) {
+    // La clave existente identifica el evento sin cambiar la notificación de la app.
+    const [entity, , event, , detail, decision] =
+      notification.dedupeKey?.split(':') ?? [];
+    const message = cleanText(notification.message);
+    let title = 'Project update';
+    if (entity === 'order') {
+      const titles: Record<string, string> = {
+        created: 'Order created',
+        status: 'Order status updated',
+        'installation-balance-due': 'Installation balance due',
+        pickup: 'Pickup completed',
+      };
+      title = titles[event] ?? 'Order update';
+      if (event === 'delivery') {
+        const deliveryTitles: Record<string, string> = {
+          payment: 'Delivery payment due',
+          scheduled: 'Delivery scheduled',
+          completed: 'Delivery completed',
+        };
+        title = deliveryTitles[detail] ?? 'Delivery update';
+      } else if (event === 'extra') {
+        title =
+          detail === 'approval'
+            ? 'Extra charge approval requested'
+            : 'Extra charge response received';
+      }
+    } else if (entity === 'installation') {
+      const titles: Record<string, string> = {
+        'deposit-due': 'Installation deposit due',
+        canceled: 'Installation canceled',
+        permit: 'Permit status updated',
+        started: 'Installation started',
+        completed: 'Installation completed',
+      };
+      title = titles[event] ?? 'Installation update';
+      if (event === 'quote') {
+        title =
+          detail === 'admin' && decision === 'APPROVED'
+            ? 'Installation quote ready for review'
+            : detail === 'admin' && decision === 'REJECTED'
+              ? 'Installation quote returned for revision'
+              : 'Installation quote updated';
+      } else if (event === 'appointment') {
+        title =
+          detail === 'proposed'
+            ? `${message.startsWith('Remeasurement ') ? 'Remeasurement' : 'Installation'} date proposed`
+            : 'Appointment response received';
+      }
+    } else if (notification.actionLabel === 'Open customer view') {
+      title = 'Estimate viewed';
+    } else if (notification.actionUrl?.startsWith('/orders/')) {
+      title = 'Order update';
+    } else if (notification.actionUrl?.startsWith('/installations/')) {
+      title = 'Installation update';
+    } else if (notification.actionUrl?.startsWith('/estimates/')) {
+      title = 'Estimate update';
+    }
+
+    // Se toma el número visible del mensaje, nunca el ID interno de la URL.
+    const order =
+      title !== 'Estimate viewed'
+        ? message.match(/\border #([a-z0-9]+(?:-[a-z0-9]+)*)\b/i)?.[1]
+        : undefined;
+    const estimate = Array.from(
+      message.matchAll(/\bestimate #([a-z0-9]+(?:-[a-z0-9]+)*)\b/gi),
+    ).at(-1)?.[1];
+    const kind = order ? 'Order' : 'Estimate';
+    const number = order ?? estimate;
+    const reference = number ? `${kind} #${number}` : '';
+    const subject = reference
+      ? title.startsWith(`${kind} `)
+        ? `${reference} ${title.slice(kind.length + 1)}`
+        : `${title} - ${reference}`
+      : title;
+    return { title, subject: Array.from(subject).slice(0, 100).join('') };
+  }
+
   private message(notification: Notification, settings: EmailSettings) {
     let link = `${settings.origin}/`;
     try {
@@ -155,21 +233,19 @@ export class NotificationEmailService {
     }
     const message = notification.message;
     const label = notification.actionLabel?.trim() || 'Open portal';
-    const subject = Array.from(`${settings.name}: ${cleanText(message)}`)
-      .slice(0, 150)
-      .join('');
+    const { title, subject } = this.heading(notification);
     return {
       from: { name: settings.name, address: settings.from },
       ...(settings.replyTo ? { replyTo: settings.replyTo } : {}),
       subject,
-      text: `${settings.name}\n\n${message}\n\n${label}: ${link}`,
+      text: `${settings.name}\n\n${title}\n\n${message}\n\n${label}: ${link}`,
       html: `<!doctype html>
 <html lang="en"><body style="margin:0;background:#f6f7fb;font-family:Arial,sans-serif;color:#111827">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="24"><tr><td align="center">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#fff;border:1px solid #e5e7eb;border-radius:12px">
       <tr><td style="padding:24px;background:#101322;color:#fff;border-radius:12px 12px 0 0">
         <p style="margin:0 0 8px;font-size:14px">${escapeHtml(settings.name)}</p>
-        <h1 style="margin:0;font-size:24px">Project update</h1>
+        <h1 style="margin:0;font-size:24px">${escapeHtml(title)}</h1>
       </td></tr>
       <tr><td style="padding:28px">
         <p style="margin:0 0 24px;line-height:1.6;white-space:pre-line">${escapeHtml(message)}</p>
