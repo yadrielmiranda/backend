@@ -1275,6 +1275,11 @@ enum OrderFulfillmentMethod {
   INSTALLATION_DELIVERY
 }
 
+model OrderSequence {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now())
+}
+
 model Order {
   id     Int      @id @default(autoincrement())
   number String   @unique

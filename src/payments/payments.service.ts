@@ -142,10 +142,9 @@ export class PaymentsService {
       );
     }
 
-    const [pendingStatus, orderedStatus, lastOrder] = await Promise.all([
+    const [pendingStatus, orderedStatus] = await Promise.all([
       tx.orderStatus.findUnique({ where: { name: 'Pending' } }),
       tx.estimateStatus.findUnique({ where: { name: 'Ordered' } }),
-      tx.order.findFirst({ orderBy: { id: 'desc' }, select: { id: true } }),
     ]);
     if (!pendingStatus) throw new Error('Order status "Pending" not seeded.');
     if (!orderedStatus)
@@ -164,9 +163,12 @@ export class PaymentsService {
       factoryRate: estimate.rateT.toString(),
     });
 
+    // Reserva un número único dentro de la misma transacción que crea la orden.
+    const sequence = await tx.orderSequence.create({ data: {} });
+
     const order = await tx.order.create({
       data: {
-        number: `ORD-${(lastOrder?.id ?? 0) + 1001}`,
+        number: `ORD-${1000 + sequence.id}`,
         units: estimate.units,
         amount: payment.baseAmount,
         price: new Prisma.Decimal(saleSubtotal.toFixed(2)),

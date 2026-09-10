@@ -95,8 +95,10 @@ describe('PaymentsService reconciliation', () => {
       estimateStatus: {
         findUnique: jest.fn().mockResolvedValue({ id: 2, name: 'Ordered' }),
       },
+      orderSequence: {
+        create: jest.fn().mockResolvedValue({ id: 11 }),
+      },
       order: {
-        findFirst: jest.fn().mockResolvedValue({ id: 10 }),
         findUnique: jest.fn().mockResolvedValue({ id: 11 }),
         create: jest.fn().mockResolvedValue({
           id: 11,
@@ -131,7 +133,14 @@ describe('PaymentsService reconciliation', () => {
 
     await service.reconcilePendingCheckoutSessions();
 
+    expect(tx.orderSequence.create).toHaveBeenCalledTimes(1);
+    expect(tx.orderSequence.create).toHaveBeenCalledWith({ data: {} });
     expect(tx.order.create).toHaveBeenCalledTimes(1);
+    expect(tx.order.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ number: 'ORD-1011' }),
+      }),
+    );
     expect(tx.estimate.update).toHaveBeenCalledWith({
       where: { id: payment.estimate.id },
       data: { statusId: 2 },
@@ -168,6 +177,156 @@ describe('PaymentsService reconciliation', () => {
     });
   });
 
+  it('uses the reserved sequence rather than the internal order id', async () => {
+    const payment = materialPayment();
+    const tx = {
+      orderStatus: {
+        findUnique: jest.fn().mockResolvedValue({ id: 1, name: 'Pending' }),
+      },
+      estimateStatus: {
+        findUnique: jest.fn().mockResolvedValue({ id: 2, name: 'Ordered' }),
+      },
+      orderSequence: { create: jest.fn().mockResolvedValue({ id: 1 }) },
+      order: {
+        create: jest.fn().mockImplementation(async ({ data }) => ({
+          id: 93,
+          ...data,
+        })),
+      },
+      estimate: { update: jest.fn().mockResolvedValue({}) },
+      eventLog: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const service = new PaymentsService(
+      {} as never,
+      config,
+      {} as never,
+      notifications as never,
+    );
+
+    await (service as any).ensureOrderForMaterialPayment(tx, payment);
+
+    expect(tx.orderSequence.create).toHaveBeenCalledWith({ data: {} });
+    expect(tx.order.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ number: 'ORD-1001' }),
+      }),
+    );
+    expect(tx.eventLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        entityId: 93,
+        message: 'Order #ORD-1001 created from paid material checkout.',
+      }),
+    });
+    expect(notifications.createAndSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Your order #ORD-1001 has been created from Estimate #EST-1009.',
+        actionUrl: '/orders/93',
+        dedupeKey: 'order:93:created:owner',
+      }),
+      tx,
+    );
+  });
+
+  it('uses each transaction reservation when different paid checkouts overlap', async () => {
+    // Simula respuestas de la BD fuera de orden; no prueba los locks de MySQL.
+    let releaseFirst!: () => void;
+    const secondReservation = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const allocateSequence = jest
+      .fn()
+      .mockImplementationOnce(async () => {
+        await secondReservation;
+        return { id: 24 };
+      })
+      .mockImplementationOnce(async () => {
+        releaseFirst();
+        return { id: 25 };
+      });
+    const payments = [0, 1].map((index) =>
+      materialPayment({
+        id: 41 + index,
+        idEst: 9 + index,
+        stripeSessionId: `cs_parallel_${index}`,
+        estimate: { ...materialPayment().estimate, id: 9 + index },
+      }),
+    );
+    const transactions = payments.map((payment, index) => ({
+      payment: { findUnique: jest.fn().mockResolvedValue(payment) },
+      orderStatus: {
+        findUnique: jest.fn().mockResolvedValue({ id: 1, name: 'Pending' }),
+      },
+      estimateStatus: {
+        findUnique: jest.fn().mockResolvedValue({ id: 2, name: 'Ordered' }),
+      },
+      orderSequence: { create: allocateSequence },
+      order: {
+        create: jest.fn().mockImplementation(async ({ data }) => ({
+          id: 301 + index,
+          ...data,
+        })),
+        findUnique: jest.fn().mockResolvedValue({ id: 301 + index }),
+      },
+      estimate: { update: jest.fn().mockResolvedValue({}) },
+      eventLog: { create: jest.fn().mockResolvedValue({}) },
+    }));
+    const installationWorkflow = {
+      markPaymentPaid: jest.fn().mockResolvedValue(false),
+    };
+    const service = new PaymentsService(
+      {} as never,
+      config,
+      installationWorkflow as never,
+      notifications as never,
+    );
+
+    await Promise.all(
+      transactions.map((tx, index) =>
+        (service as any).processPaidCheckoutSession(tx, {
+          id: payments[index].stripeSessionId,
+          payment_status: 'paid',
+        }),
+      ),
+    );
+
+    expect(allocateSequence).toHaveBeenCalledTimes(2);
+    const numbers = transactions.map((tx) => {
+      expect(tx.order.create).toHaveBeenCalledTimes(1);
+      return tx.order.create.mock.calls[0][0].data.number;
+    });
+    expect(numbers).toEqual(['ORD-1024', 'ORD-1025']);
+    expect(new Set(numbers).size).toBe(2);
+    expect(installationWorkflow.markPaymentPaid).toHaveBeenCalledTimes(2);
+    expect(notifications.createAndSend).toHaveBeenCalledTimes(2);
+    expect(notifications.createAndSendToRoles).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not reserve a number when the estimate cannot create an order', async () => {
+    const tx = {
+      orderSequence: { create: jest.fn() },
+      order: { create: jest.fn() },
+    };
+    const payment = materialPayment({
+      estimate: {
+        ...materialPayment().estimate,
+        status: { id: 3, name: 'Expired' },
+      },
+    });
+    const service = new PaymentsService(
+      {} as never,
+      config,
+      {} as never,
+      notifications as never,
+    );
+
+    await expect(
+      (service as any).ensureOrderForMaterialPayment(tx, payment),
+    ).rejects.toThrow('cannot create its paid material order');
+    expect(tx.orderSequence.create).not.toHaveBeenCalled();
+    expect(tx.order.create).not.toHaveBeenCalled();
+    expect(notifications.createAndSend).not.toHaveBeenCalled();
+  });
+
   it('reprocessing an already consistent paid session creates nothing twice', async () => {
     const payment = materialPayment({
       estimate: {
@@ -182,6 +341,7 @@ describe('PaymentsService reconciliation', () => {
     });
     const tx = {
       payment: { findUnique: jest.fn().mockResolvedValue(payment) },
+      orderSequence: { create: jest.fn() },
       order: {
         create: jest.fn(),
         findUnique: jest.fn().mockResolvedValue({ id: 11 }),
@@ -212,6 +372,7 @@ describe('PaymentsService reconciliation', () => {
     ).processPaidCheckoutSession(tx, session);
 
     expect(processed).toBe(true);
+    expect(tx.orderSequence.create).not.toHaveBeenCalled();
     expect(tx.order.create).not.toHaveBeenCalled();
     expect(tx.estimate.update).not.toHaveBeenCalled();
     expect(installationWorkflow.markPaymentPaid).toHaveBeenCalledTimes(1);
@@ -235,6 +396,7 @@ describe('PaymentsService reconciliation', () => {
         findUnique: jest.fn().mockResolvedValue({ id: 2, name: 'Ordered' }),
       },
       estimate: { update: jest.fn().mockResolvedValue({}) },
+      orderSequence: { create: jest.fn() },
       order: {
         create: jest.fn(),
         findUnique: jest.fn().mockResolvedValue({ id: 11 }),
@@ -263,6 +425,7 @@ describe('PaymentsService reconciliation', () => {
       }
     ).processPaidCheckoutSession(tx, session);
 
+    expect(tx.orderSequence.create).not.toHaveBeenCalled();
     expect(tx.order.create).not.toHaveBeenCalled();
     expect(tx.estimate.update).toHaveBeenCalledWith({
       where: { id: payment.estimate.id },
@@ -430,8 +593,10 @@ describe('PaymentsService reconciliation', () => {
       estimateStatus: {
         findUnique: jest.fn().mockResolvedValue({ id: 2, name: 'Ordered' }),
       },
+      orderSequence: {
+        create: jest.fn().mockResolvedValue({ id: 11 }),
+      },
       order: {
-        findFirst: jest.fn().mockResolvedValue({ id: 10 }),
         findUnique: jest.fn().mockResolvedValue({ id: 11 }),
         create: jest.fn().mockResolvedValue({
           id: 11,
@@ -487,9 +652,12 @@ describe('PaymentsService reconciliation', () => {
         }),
       }),
     );
+    expect(tx.orderSequence.create).toHaveBeenCalledTimes(1);
+    expect(tx.orderSequence.create).toHaveBeenCalledWith({ data: {} });
     expect(tx.order.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
+          number: 'ORD-1011',
           saleSubtotal: new Prisma.Decimal(1380),
           netProfit: new Prisma.Decimal(380),
         }),
