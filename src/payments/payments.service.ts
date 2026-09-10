@@ -22,7 +22,8 @@ import {
   PaymentType,
   Prisma,
 } from '@prisma/client';
-import Stripe from 'stripe';
+// Importación compatible con CommonJS y Stripe Node 22.
+import Stripe = require('stripe');
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
@@ -59,7 +60,9 @@ export class PaymentsService {
   ) {
     const key = this.config.get<string>('STRIPE_SECRET_KEY');
     if (!key) throw new Error('STRIPE_SECRET_KEY is not set in .env');
-    this.stripe = new Stripe(key);
+    this.stripe = new Stripe(key, {
+      apiVersion: '2026-08-26.dahlia',
+    });
   }
 
   private getFrontendUrl(): string {
@@ -976,6 +979,7 @@ export class PaymentsService {
 
       const session = await this.stripe.checkout.sessions.create({
         mode: 'payment',
+        ui_mode: 'hosted_page',
         expires_at: checkoutPromotionExpiry(context.estimate),
         success_url: successUrl,
         cancel_url: cancelUrl,
