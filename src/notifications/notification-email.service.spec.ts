@@ -139,7 +139,7 @@ describe('NotificationEmailService', () => {
     },
   );
 
-  it.each(['inactive', 'deleted', 'invalid-email', 'declined'])(
+  it.each(['inactive', 'deleted', 'invalid-email'])(
     'does not enqueue %s recipients',
     async (reason) => {
       const f = fixture();
@@ -147,8 +147,6 @@ describe('NotificationEmailService', () => {
       if (reason === 'deleted') f.user.deletedAt = new Date();
       if (reason === 'invalid-email')
         f.user.email = 'bad\r\nBcc: someone@example.com';
-      if (reason === 'declined')
-        f.user.registrationConsent!.serviceEmailAccepted = false;
       await f.service.enqueue(f.notification as never, f.db as never);
       expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
     },
@@ -162,6 +160,17 @@ describe('NotificationEmailService', () => {
       data: { notificationId: 10, email },
     });
     expect(createTransport).not.toHaveBeenCalled();
+  });
+
+  it('queues and sends operational email with SMS and historical email consent off', async () => {
+    const f = fixture();
+    f.user.registrationConsent!.serviceEmailAccepted = false;
+    Object.assign(f.user, { smsConsent: { enabled: false, promotionsEnabled: false } });
+    await f.service.enqueue(f.notification as never, f.db as never);
+    expect(f.db.notificationEmail.create).toHaveBeenCalledWith({ data: { notificationId: 10, email } });
+    await f.service.processPending();
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(f.row.status).toBe('ACCEPTED');
   });
 
   it.each(['PASS', 'HOST', 'FROM_EMAIL'])(
@@ -228,7 +237,7 @@ describe('NotificationEmailService', () => {
     expect(sendMail.mock.calls[0][0].html).not.toContain('evil.test');
   });
 
-  it.each(['email', 'role', 'inactive', 'consent'])(
+  it.each(['email', 'role', 'inactive'])(
     'rechecks the recipient before sending when %s changed',
     async (change) => {
       const f = fixture();
@@ -238,8 +247,6 @@ describe('NotificationEmailService', () => {
         f.user.dealerMode = 'INTERNAL';
       }
       if (change === 'inactive') f.user.isActive = false;
-      if (change === 'consent')
-        f.user.registrationConsent!.serviceEmailAccepted = false;
       await f.service.processPending();
       expect(f.row.status).toBe('SKIPPED');
       expect(sendMail).not.toHaveBeenCalled();

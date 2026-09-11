@@ -1,6 +1,6 @@
 import { OmitType } from '@nestjs/mapped-types';
 import { CreateUserDto } from '@/users/dto/create-user.dto';
-import { Equals, IsBoolean, IsString, Matches, ValidateIf } from 'class-validator';
+import { IsBoolean, IsString, Matches, ValidateIf } from 'class-validator';
 
 // Este DTO hereda todas las validaciones de CreateUserDto
 // pero omite el campo 'idRole' para que no se pueda inyectar en el registro público.
@@ -9,15 +9,17 @@ export class RegisterUserDto extends OmitType(CreateUserDto, [
   'installationPriceProfileId',
 ] as const) {
   // unknown evita que la conversión implícita acepte cadenas como "false".
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
-  @Equals(true, { message: 'You must agree to service notifications by SMS and email to create an account.' })
-  serviceConsent!: unknown;
+  serviceConsent?: unknown;
 
   @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   promotionsConsent?: unknown;
 
+  // Sin SMS no se exige aceptar ni cargar una versión de las condiciones SMS.
+  @ValidateIf((object) => object.serviceConsent === true || object.promotionsConsent === true)
   @IsString()
-  @Matches(/^[a-f0-9]{64}$/, { message: 'Review the current messaging terms before creating an account.' })
-  consentVersion!: string;
+  @Matches(/^[a-f0-9]{64}$/, { message: 'Review the current SMS terms before subscribing.' })
+  consentVersion?: string;
 }

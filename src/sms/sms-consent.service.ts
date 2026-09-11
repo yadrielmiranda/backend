@@ -32,11 +32,16 @@ export class SmsConsentService {
       where: { phone: user.phone },
     });
     const consent = user.smsConsent;
+    const samePhone = consent?.phone === user.phone;
     return {
-      enabled: Boolean(consent?.enabled && consent.phone === user.phone && !block),
+      // Cambiar el texto del programa no invalida ni reescribe elecciones existentes.
+      enabled: Boolean(consent?.enabled && samePhone && !consent.revokedAt && !block),
+      promotionsEnabled: Boolean(consent?.promotionsEnabled && samePhone && !consent.promotionsRevokedAt && !block),
       phone: user.phone,
-      consentedAt: consent?.phone === user.phone ? consent.consentedAt : null,
+      consentedAt: samePhone ? consent.consentedAt : null,
       revokedAt: consent?.revokedAt ?? null,
+      promotionsConsentedAt: samePhone ? consent.promotionsConsentedAt : null,
+      promotionsRevokedAt: consent?.promotionsRevokedAt ?? null,
       blockedBySms: Boolean(block),
       program: await this.getProgram(),
     };
@@ -46,11 +51,14 @@ export class SmsConsentService {
     if (typeof dto.enabled !== 'boolean') {
       throw new BadRequestException('enabled must be a boolean.');
     }
+    if (dto.promotionsEnabled !== undefined && typeof dto.promotionsEnabled !== 'boolean') {
+      throw new BadRequestException('promotionsEnabled must be a boolean.');
+    }
     const program = await this.getProgram();
     const enabled = dto.enabled;
 
     await this.prisma.$transaction(async (tx) => {
-      // Coordina la aceptación con cambios de teléfono y bajas simultáneas.
+      // Coordina las dos preferencias con cambios de teléfono y bajas simultáneas.
       await tx.$queryRaw`SELECT id FROM User WHERE id = ${userId} FOR UPDATE`;
       const user = await tx.user.findUnique({
         where: { id: userId },
@@ -60,47 +68,69 @@ export class SmsConsentService {
         throw new UnauthorizedException('This user account is inactive.');
       }
       const previous = user.smsConsent;
+      const samePhone = previous?.phone === user.phone;
+      const wasEnabled = Boolean(previous?.enabled && samePhone && !previous.revokedAt);
+      const wasPromotionsEnabled = Boolean(previous?.promotionsEnabled && samePhone && !previous.promotionsRevokedAt);
+      const promotionsEnabled = dto.promotionsEnabled === undefined
+        ? wasPromotionsEnabled
+        : dto.promotionsEnabled === true;
+      const serviceChanged = enabled !== wasEnabled;
+      const promotionsChanged = promotionsEnabled !== wasPromotionsEnabled;
+      // Un guardado sin cambios no vuelve a fechar ni a aceptar condiciones antiguas.
+      if (!serviceChanged && !promotionsChanged) return;
+
+      const hasNewOptIn = (serviceChanged && enabled) || (promotionsChanged && promotionsEnabled);
+      if (hasNewOptIn) {
+        if (dto.phone !== user.phone || !/^\+1[2-9]\d{2}[2-9]\d{6}$/.test(user.phone)) {
+          throw new ConflictException('Your phone number changed or is invalid. Reload your SMS preferences and confirm the correct number.');
+        }
+        if (dto.version !== program.version) {
+          throw new ConflictException('The SMS terms changed. Reload and review them before subscribing.');
+        }
+        const block = await tx.smsPhoneBlock.findUnique({ where: { phone: user.phone } });
+        if (block) {
+          throw new ConflictException('SMS is blocked after a STOP request. Reply START to the same sending number, then enable SMS here.');
+        }
+      }
+
       const now = new Date();
-
-      if (!enabled) {
-        if (!previous?.enabled) return;
-        await tx.smsConsent.update({
-          where: { userId },
-          data: { enabled: false, revokedAt: now },
-        });
-        await tx.smsConsentEvent.create({
-          data: {
-            userId, phone: previous.phone, action: 'OPT_OUT',
-            consentVersion: previous.consentVersion,
-            consentText: previous.consentText, createdAt: now,
-          },
-        });
-        return;
-      }
-
-      if (dto.phone !== user.phone || !/^\+1[2-9]\d{2}[2-9]\d{6}$/.test(user.phone)) {
-        throw new ConflictException('Your phone number changed or is invalid. Reload your SMS preferences and confirm the correct number.');
-      }
-      if (dto.version !== program.version) {
-        throw new ConflictException('The SMS terms changed. Reload and review them before subscribing.');
-      }
-      const block = await tx.smsPhoneBlock.findUnique({ where: { phone: user.phone } });
-      if (block) {
-        throw new ConflictException('SMS is blocked after a STOP request. Reply START to the same sending number, then enable SMS here.');
-      }
-      if (previous?.enabled && previous.phone === user.phone && previous.consentVersion === program.version) return;
-
-      // Conserva la copia exacta del texto y las condiciones mostradas.
-      const consentText = JSON.stringify(program);
+      const consentText = JSON.stringify({ source: 'PROFILE', channel: 'SMS', program });
+      const phone = hasNewOptIn ? user.phone : previous?.phone ?? user.phone;
       const data = {
-        phone: user.phone, enabled: true,
-        consentVersion: program.version, consentText,
-        consentedAt: now, revokedAt: null,
+        phone,
+        enabled,
+        promotionsEnabled,
+        ...(serviceChanged ? enabled ? {
+          consentVersion: program.version, consentText, consentedAt: now, revokedAt: null,
+        } : { revokedAt: now } : {}),
+        ...(promotionsChanged ? promotionsEnabled ? {
+          promotionsConsentVersion: program.version,
+          promotionsConsentText: consentText,
+          promotionsConsentedAt: now,
+          promotionsRevokedAt: null,
+        } : { promotionsRevokedAt: now } : {}),
       };
       await tx.smsConsent.upsert({ where: { userId }, create: { userId, ...data }, update: data });
-      await tx.smsConsentEvent.create({
-        data: { userId, phone: user.phone, action: 'OPT_IN', consentVersion: program.version, consentText, createdAt: now },
-      });
+      if (serviceChanged) {
+        await tx.smsConsentEvent.create({
+          data: {
+            userId, phone, action: enabled ? 'OPT_IN' : 'OPT_OUT', category: 'SERVICE',
+            consentVersion: enabled ? program.version : previous?.consentVersion,
+            consentText: enabled ? consentText : previous?.consentText,
+            createdAt: now,
+          },
+        });
+      }
+      if (promotionsChanged) {
+        await tx.smsConsentEvent.create({
+          data: {
+            userId, phone, action: promotionsEnabled ? 'OPT_IN' : 'OPT_OUT', category: 'PROMOTIONAL',
+            consentVersion: promotionsEnabled ? program.version : previous?.promotionsConsentVersion,
+            consentText: promotionsEnabled ? consentText : previous?.promotionsConsentText,
+            createdAt: now,
+          },
+        });
+      }
     });
     return this.getPreferences(userId);
   }
@@ -114,7 +144,7 @@ export class SmsConsentService {
         const userId = users[0]?.id ?? null;
         const now = new Date();
         await tx.smsConsentEvent.create({
-          data: { userId, phone, action: action === 'STOP' ? 'PROVIDER_STOP' : 'PROVIDER_START', providerMessageSid: messageSid, createdAt: now },
+          data: { userId, phone, action: action === 'STOP' ? 'PROVIDER_STOP' : 'PROVIDER_START', category: 'ALL', providerMessageSid: messageSid, createdAt: now },
         });
 
         if (action === 'STOP') {
@@ -123,8 +153,12 @@ export class SmsConsentService {
             where: { phone, enabled: true },
             data: { enabled: false, revokedAt: now },
           });
+          await tx.smsConsent.updateMany({
+            where: { phone, promotionsEnabled: true },
+            data: { promotionsEnabled: false, promotionsRevokedAt: now },
+          });
         } else {
-          // START quita el bloqueo del proveedor; la suscripción se confirma en Profile.
+          // START quita el bloqueo del proveedor; cada categoría se activa en Profile.
           await tx.smsPhoneBlock.deleteMany({ where: { phone } });
         }
       });

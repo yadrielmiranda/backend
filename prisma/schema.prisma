@@ -135,15 +135,21 @@ model RegistrationConsent {
 
 // La autorización pertenece al usuario y al teléfono que aceptó el programa.
 model SmsConsent {
-  userId         Int       @id
-  phone          String    @db.VarChar(20)
-  enabled        Boolean   @default(false)
-  consentVersion String?   @db.VarChar(64)
-  consentText    String?   @db.Text
-  consentedAt    DateTime?
-  revokedAt      DateTime?
-  updatedAt      DateTime  @updatedAt
-  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                   Int       @id
+  phone                    String    @db.VarChar(20)
+  enabled                  Boolean   @default(false)
+  consentVersion           String?   @db.VarChar(64)
+  consentText              String?   @db.Text
+  consentedAt              DateTime?
+  revokedAt                DateTime?
+  // Preferencia promocional independiente; no modifica el consentimiento de servicio.
+  promotionsEnabled        Boolean   @default(false)
+  promotionsConsentVersion String?   @db.VarChar(64)
+  promotionsConsentText    String?   @db.Text
+  promotionsConsentedAt    DateTime?
+  promotionsRevokedAt      DateTime?
+  updatedAt                DateTime  @updatedAt
+  user                     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([phone])
 }
@@ -163,6 +169,8 @@ model SmsConsentEvent {
   userId             Int?
   phone              String           @db.VarChar(20)
   action             SmsConsentAction
+  // NULL conserva intacto el historial anterior; los eventos nuevos indican su categoría.
+  category           String?          @db.VarChar(16)
   consentVersion     String?          @db.VarChar(64)
   consentText        String?          @db.Text
   providerMessageSid String?          @unique @db.VarChar(34)

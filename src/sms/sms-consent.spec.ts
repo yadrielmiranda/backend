@@ -93,7 +93,8 @@ describe('SMS consent', () => {
     assert.equal(result.enabled, true);
     assert.equal(f.state.events[0].userId, 1);
     assert.equal(f.state.events[0].phone, result.phone);
-    assert.deepEqual(JSON.parse(f.state.events[0].consentText), result.program);
+    assert.deepEqual(JSON.parse(f.state.events[0].consentText).program, result.program);
+    assert.equal(f.state.events[0].category, 'SERVICE');
     assert(types.isDate(f.state.events[0].createdAt));
     assert.equal((await f.service.getPreferences(2)).enabled, false);
   });
@@ -201,6 +202,86 @@ describe('SMS consent', () => {
     assert.equal(f.state.events.at(-1).providerMessageSid, null);
     assert.equal(f.state.users[0].isActive, true);
     await assert.rejects(f.subscribe(), /STOP request/);
+  });
+
+  it('preserves an existing service acceptance and date after program text changes', async () => {
+    const f = fixture(); await f.subscribe();
+    f.state.consents[0].consentVersion = 'legacy-version';
+    f.state.consents[0].consentText = 'legacy-proof';
+    const before = structuredClone(f.state.consents[0]);
+    const eventCount = f.state.events.length;
+    assert.equal((await f.service.getPreferences(1)).enabled, true);
+    await f.service.updatePreferences(1, { enabled: true });
+    assert.deepEqual(f.state.consents[0], before);
+    assert.equal(f.state.events.length, eventCount);
+  });
+
+  it('edits promotions without changing existing service consent or its historical version', async () => {
+    const f = fixture(); await f.subscribe();
+    f.state.consents[0].consentVersion = 'legacy-version';
+    const original = structuredClone(f.state.consents[0]);
+    const prefs = await f.service.getPreferences(1);
+    await f.service.updatePreferences(1, { enabled: true, promotionsEnabled: true, phone: prefs.phone, version: prefs.program.version });
+    for (const field of ['enabled', 'phone', 'consentVersion', 'consentText', 'consentedAt', 'revokedAt']) {
+      assert.deepEqual(f.state.consents[0][field], original[field]);
+    }
+    assert.equal((await f.service.getPreferences(1)).promotionsEnabled, true);
+    assert.equal(f.state.events.at(-1).category, 'PROMOTIONAL');
+  });
+
+  it('keeps promotions enabled when service SMS is turned off, and vice versa', async () => {
+    const f = fixture(); const prefs = await f.service.getPreferences(1);
+    const proof = { phone: prefs.phone, version: prefs.program.version };
+    await f.service.updatePreferences(1, { enabled: false, promotionsEnabled: true, ...proof });
+    assert.equal((await f.service.getPreferences(1)).enabled, false);
+    assert.equal((await f.service.getPreferences(1)).promotionsEnabled, true);
+    await f.service.updatePreferences(1, { enabled: true, ...proof });
+    await f.service.updatePreferences(1, { enabled: false });
+    assert.equal((await f.service.getPreferences(1)).promotionsEnabled, true);
+    await f.service.updatePreferences(1, { enabled: true, promotionsEnabled: false, ...proof });
+    assert.equal((await f.service.getPreferences(1)).enabled, true);
+    assert.equal((await f.service.getPreferences(1)).promotionsEnabled, false);
+  });
+
+  it('allows either opt-out without forcing acceptance of new terms', async () => {
+    const f = fixture(); const prefs = await f.service.getPreferences(1);
+    await f.service.updatePreferences(1, { enabled: true, promotionsEnabled: true, phone: prefs.phone, version: prefs.program.version });
+    await f.service.updatePreferences(1, { enabled: false, promotionsEnabled: false, version: 'old' });
+    assert.equal((await f.service.getPreferences(1)).enabled, false);
+    assert.equal((await f.service.getPreferences(1)).promotionsEnabled, false);
+  });
+
+  it('rejects non-boolean promotional preferences and stale promotions-only opt-ins', async () => {
+    const f = fixture(); const prefs = await f.service.getPreferences(1);
+    for (const value of [null, 'false', 'true', 0, 1, [], {}]) {
+      await assert.rejects(f.service.updatePreferences(1, { enabled: false, promotionsEnabled: value }), /boolean/);
+    }
+    await assert.rejects(f.service.updatePreferences(1, { enabled: false, promotionsEnabled: true, phone: prefs.phone, version: 'old' }), /terms changed/);
+    assert.equal(f.state.events.length, 0);
+  });
+
+  it('STOP disables both categories and START does not silently resubscribe either', async () => {
+    const f = fixture(); const prefs = await f.service.getPreferences(1);
+    await f.service.updatePreferences(1, { enabled: true, promotionsEnabled: true, phone: prefs.phone, version: prefs.program.version });
+    await f.service.recordProviderChoice(prefs.phone, 'SM' + '4'.repeat(32), 'STOP');
+    assert.equal((await f.service.getPreferences(1)).enabled, false);
+    assert.equal((await f.service.getPreferences(1)).promotionsEnabled, false);
+    assert.equal(f.state.events.at(-1).category, 'ALL');
+    await f.service.recordProviderChoice(prefs.phone, 'SM' + '5'.repeat(32), 'START');
+    assert.equal((await f.service.getPreferences(1)).promotionsEnabled, false);
+    await f.service.updatePreferences(1, { enabled: false, promotionsEnabled: true, phone: prefs.phone, version: prefs.program.version });
+    assert.equal((await f.service.getPreferences(1)).enabled, false);
+  });
+
+  it('revokes promotional-only consent on a phone change or account deactivation', async () => {
+    for (const action of ['PHONE_CHANGED', 'ACCOUNT_DISABLED'] as const) {
+      const f = fixture(); const prefs = await f.service.getPreferences(1);
+      await f.service.updatePreferences(1, { enabled: false, promotionsEnabled: true, phone: prefs.phone, version: prefs.program.version });
+      await revokeSmsConsent(f.db, 1, action);
+      assert.equal((await f.service.getPreferences(1)).promotionsEnabled, false);
+      assert.equal(f.state.events.at(-1).category, 'PROMOTIONAL');
+      assert.equal(f.state.events.at(-1).action, action);
+    }
   });
 
   it('retains the number and policy in phone-change audit records', async () => {

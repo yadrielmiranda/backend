@@ -18,7 +18,6 @@ const recipientSelect = {
   deletedAt: true,
   dealerMode: true,
   role: { select: { name: true } },
-  registrationConsent: { select: { serviceEmailAccepted: true } },
 } satisfies Prisma.UserSelect;
 type Recipient = Prisma.UserGetPayload<{ select: typeof recipientSelect }>;
 type EmailSettings = {
@@ -112,10 +111,9 @@ export class NotificationEmailService {
       !(role === 'dealer' && (user.dealerMode ?? 'EXTERNAL') === 'EXTERNAL')
     )
       return false;
-    // Son avisos del proyecto, no promociones. Se respeta una negativa registrada.
-    // Las cuentas anteriores al registro de consentimiento conservan sus correos de servicio.
+    // Son avisos operativos del proyecto, no promociones ni una suscripción SMS.
+    // Las dos preferencias SMS no controlan el correo de servicio.
     return (
-      user.registrationConsent?.serviceEmailAccepted !== false &&
       typeof user.email === 'string' &&
       user.email.trim().length <= 254 &&
       isEmail(user.email.trim())

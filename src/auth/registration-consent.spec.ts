@@ -37,7 +37,7 @@ function fixture() {
         state.sms.push(clone(data)); return clone(data);
       },
       updateMany: async ({ where, data }: any) => {
-        state.sms.filter((s: any) => s.phone === where.phone && s.enabled === where.enabled).forEach((s: any) => Object.assign(s, data));
+        state.sms.filter((s: any) => Object.entries(where).every(([key, value]) => s[key] === value)).forEach((s: any) => Object.assign(s, data));
       },
     },
     smsConsentEvent: {
@@ -79,7 +79,7 @@ describe('Registration messaging consent', () => {
     const accepted = await pipe.transform(await f.payload(), metadata);
     assert.equal(accepted.serviceConsent, true);
     assert.equal(accepted.promotionsConsent, false);
-    for (const serviceConsent of [undefined, null, false, 'true', 'false', 1]) {
+    for (const serviceConsent of [null, 'true', 'false', 1]) {
       await assert.rejects(pipe.transform(await f.payload({ serviceConsent }), metadata));
     }
     for (const promotionsConsent of [null, 'true', 'false', 1]) {
@@ -87,24 +87,52 @@ describe('Registration messaging consent', () => {
     }
     const optional = await pipe.transform(await f.payload({ promotionsConsent: undefined }), metadata);
     assert.equal(optional.promotionsConsent, undefined);
+    for (const serviceConsent of [false, undefined]) {
+      const result = await pipe.transform(await f.payload({ serviceConsent, promotionsConsent: false, consentVersion: undefined }), metadata);
+      assert.equal(result.serviceConsent, serviceConsent);
+    }
   });
 
-  it('rejects absent, false, or non-boolean service consent before creating an account', async () => {
-    for (const serviceConsent of [undefined, null, false, 'true', 'false', 1, 0, [], {}]) {
+  it('rejects non-boolean service consent instead of coercing an acceptance', async () => {
+    for (const serviceConsent of [null, 'true', 'false', 1, 0, [], {}]) {
       const f = fixture();
-      await assert.rejects(f.register({ serviceConsent }), /must agree to service notifications/);
+      await assert.rejects(f.register({ serviceConsent }), /must be a boolean/);
       assert.equal(f.state.users.length, 0);
       assert.equal(f.state.registration.length, 0);
     }
   });
 
-  it('does not let promotional consent replace required service consent', async () => {
-    const f = fixture();
-    await assert.rejects(f.register({ serviceConsent: false, promotionsConsent: true }), /must agree/);
-    assert.equal(f.state.sms.length, 0);
+  it('accepts either SMS category, both, or neither independently', async () => {
+    for (const serviceConsent of [false, true]) {
+      for (const promotionsConsent of [false, true]) {
+        const f = fixture();
+        const user = await f.register({ serviceConsent, promotionsConsent });
+        const prefs = await f.sms.getPreferences(user.id);
+        assert.equal(prefs.enabled, serviceConsent);
+        assert.equal(prefs.promotionsEnabled, promotionsConsent);
+        assert.equal(f.state.events.length, Number(serviceConsent) + Number(promotionsConsent));
+        assert.equal(f.state.registration[0].serviceEmailAccepted, false);
+        assert.equal(f.state.registration[0].promotionalEmailAccepted, false);
+        if (!serviceConsent) assert.equal(f.state.sms[0].consentedAt, null);
+        if (!promotionsConsent) assert.equal(f.state.sms[0].promotionsConsentedAt, null);
+      }
+    }
   });
 
-  it('creates a client account with both service channels and promotions off', async () => {
+  it('creates an account with no SMS and no current SMS policy version', async () => {
+    for (const serviceConsent of [false, undefined]) {
+      for (const consentVersion of [undefined, 'outdated']) {
+        const f = fixture();
+        await f.register({ serviceConsent, promotionsConsent: undefined, consentVersion });
+        assert.equal(f.state.users.length, 1);
+        assert.equal(f.state.events.length, 0);
+        assert.equal(f.state.sms[0].enabled, false);
+        assert.equal(f.state.sms[0].promotionsEnabled, false);
+      }
+    }
+  });
+
+  it('creates a client account with service SMS only and no bundled email acceptance', async () => {
     const f = fixture(); const user = await f.register();
     assert.equal(user.idRole, 3);
     assert.equal('password' in user, false);
@@ -114,7 +142,7 @@ describe('Registration messaging consent', () => {
     assert.equal(proof.phone, user.phone);
     assert.equal(proof.email, user.email);
     assert.equal(proof.serviceSmsAccepted, true);
-    assert.equal(proof.serviceEmailAccepted, true);
+    assert.equal(proof.serviceEmailAccepted, false);
     assert.equal(proof.promotionalSmsAccepted, false);
     assert.equal(proof.promotionalEmailAccepted, false);
     assert(types.isDate(proof.createdAt));
@@ -137,7 +165,9 @@ describe('Registration messaging consent', () => {
   it('records promotions only when explicitly accepted', async () => {
     const f = fixture(); await f.register({ promotionsConsent: true });
     assert.equal(f.state.registration[0].promotionalSmsAccepted, true);
-    assert.equal(f.state.registration[0].promotionalEmailAccepted, true);
+    assert.equal(f.state.registration[0].promotionalEmailAccepted, false);
+    assert.equal(f.state.sms[0].promotionsEnabled, true);
+    assert.equal(f.state.events[1].category, 'PROMOTIONAL');
     assert.equal(JSON.parse(f.state.registration[0].consentText).promotionsConsent, true);
   });
 
@@ -149,12 +179,18 @@ describe('Registration messaging consent', () => {
     }
   });
 
-  it('requires the exact current disclosure version', async () => {
+  it('requires the exact current disclosure version only when opting into SMS', async () => {
     for (const consentVersion of [undefined, null, '', 'old', '0'.repeat(64)]) {
       const f = fixture();
       await assert.rejects(f.register({ consentVersion }), /messaging terms changed/);
       assert.equal(f.state.users.length, 0);
     }
+  });
+
+  it('requires current terms for promotions-only opt-in too', async () => {
+    const f = fixture();
+    await assert.rejects(f.register({ serviceConsent: false, promotionsConsent: true, consentVersion: 'old' }), /messaging terms changed/);
+    assert.equal(f.state.users.length, 0);
   });
 
   it('does not create a partial account if any consent write fails', async () => {
@@ -178,6 +214,14 @@ describe('Registration messaging consent', () => {
     assert.equal(f.state.blocks.length, 1);
   });
 
+  it('allows account creation without SMS even when the phone has a STOP block', async () => {
+    const f = fixture(); f.state.blocks.push({ phone: '+13055551234' });
+    await f.register({ serviceConsent: false, promotionsConsent: false, consentVersion: undefined });
+    assert.equal(f.state.users.length, 1);
+    assert.equal(f.state.events.length, 0);
+    assert.equal(f.state.blocks.length, 1);
+  });
+
   it('honors later STOP and START without rewriting the original acceptance', async () => {
     const f = fixture(); const user = await f.register({ promotionsConsent: true });
     const proof = structuredClone(f.state.registration[0]);
@@ -185,6 +229,7 @@ describe('Registration messaging consent', () => {
     assert.equal((await f.sms.getPreferences(user.id)).enabled, false);
     await f.sms.recordProviderChoice(user.phone, 'SM' + '2'.repeat(32), 'START');
     assert.equal((await f.sms.getPreferences(user.id)).enabled, false);
+    assert.equal((await f.sms.getPreferences(user.id)).promotionsEnabled, false);
     assert.deepEqual(f.state.registration[0], proof);
   });
 

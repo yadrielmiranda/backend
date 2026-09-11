@@ -147,20 +147,22 @@ export class AuthService {
   async registerUser(registerUserDto: RegisterUserDto) {
     const { password, serviceConsent, promotionsConsent, consentVersion, ...userData } = registerUserDto;
     // También se valida aquí para no depender exclusivamente del formulario o del DTO.
-    if (serviceConsent !== true) {
-      throw new BadRequestException('You must agree to service notifications by SMS and email to create an account.');
+    if (serviceConsent !== undefined && typeof serviceConsent !== 'boolean') {
+      throw new BadRequestException('serviceConsent must be a boolean.');
     }
     if (promotionsConsent !== undefined && typeof promotionsConsent !== 'boolean') {
       throw new BadRequestException('promotionsConsent must be a boolean.');
     }
+    const serviceSmsConsent = serviceConsent === true;
+    const promotionalConsent = promotionsConsent === true;
+    const wantsSms = serviceSmsConsent || promotionalConsent;
     const program = await this.smsConsent.getProgram();
-    if (consentVersion !== program.version) {
+    if (wantsSms && consentVersion !== program.version) {
       throw new ConflictException({
         code: 'CONSENT_VERSION_CHANGED',
         message: 'The messaging terms changed. Review them and select your preferences again.',
       });
     }
-    const promotionalConsent = promotionsConsent === true;
     const hashedPassword = await bcrypt.hash(password, this.bcryptRounds);
 
     const clientRole = await this.prisma.role.findUnique({
@@ -176,9 +178,11 @@ export class AuthService {
 
     try {
       return await this.prisma.$transaction(async (tx) => {
-        const block = await tx.smsPhoneBlock.findUnique({ where: { phone: userData.phone } });
-        if (block) {
-          throw new ConflictException('SMS is blocked for this phone number after a STOP request. Reply START to the same sending number before registering.');
+        if (wantsSms) {
+          const block = await tx.smsPhoneBlock.findUnique({ where: { phone: userData.phone } });
+          if (block) {
+            throw new ConflictException('SMS is blocked after a STOP request. Leave both SMS options unchecked to create your account, or reply START to the same sending number before subscribing.');
+          }
         }
         const user = await tx.user.create({
           data: {
@@ -206,7 +210,8 @@ export class AuthService {
         const now = new Date();
         const consentText = JSON.stringify({
           source: 'REGISTRATION',
-          serviceConsent: true,
+          channel: 'SMS',
+          serviceConsent: serviceSmsConsent,
           promotionsConsent: promotionalConsent,
           program,
         });
@@ -214,25 +219,40 @@ export class AuthService {
         await tx.registrationConsent.create({
           data: {
             userId: user.id, phone: user.phone, email: user.email,
-            serviceSmsAccepted: true, serviceEmailAccepted: true,
+            serviceSmsAccepted: serviceSmsConsent,
+            // Son campos históricos: no se registra una aceptación de email inexistente.
+            // El correo operativo ya no depende de estas banderas.
+            serviceEmailAccepted: false,
             promotionalSmsAccepted: promotionalConsent,
-            promotionalEmailAccepted: promotionalConsent,
+            promotionalEmailAccepted: false,
             consentVersion: program.version, consentText, createdAt: now,
           },
         });
         await tx.smsConsent.create({
           data: {
-            userId: user.id, phone: user.phone, enabled: true,
-            consentVersion: program.version, consentText,
-            consentedAt: now, revokedAt: null,
+            userId: user.id, phone: user.phone, enabled: serviceSmsConsent,
+            consentVersion: serviceSmsConsent ? program.version : null,
+            consentText: serviceSmsConsent ? consentText : null,
+            consentedAt: serviceSmsConsent ? now : null, revokedAt: null,
+            promotionsEnabled: promotionalConsent,
+            promotionsConsentVersion: promotionalConsent ? program.version : null,
+            promotionsConsentText: promotionalConsent ? consentText : null,
+            promotionsConsentedAt: promotionalConsent ? now : null,
+            promotionsRevokedAt: null,
           },
         });
-        await tx.smsConsentEvent.create({
-          data: {
-            userId: user.id, phone: user.phone, action: 'OPT_IN',
-            consentVersion: program.version, consentText, createdAt: now,
-          },
-        });
+        // Ninguna casilla marcada significa ninguna alta SMS, no una aceptación implícita.
+        for (const category of [
+          ...(serviceSmsConsent ? ['SERVICE'] : []),
+          ...(promotionalConsent ? ['PROMOTIONAL'] : []),
+        ]) {
+          await tx.smsConsentEvent.create({
+            data: {
+              userId: user.id, phone: user.phone, action: 'OPT_IN', category,
+              consentVersion: program.version, consentText, createdAt: now,
+            },
+          });
+        }
         return user;
       });
     } catch (error: any) {
