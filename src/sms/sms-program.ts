@@ -19,7 +19,7 @@ export function buildSmsProgram(company: {
     supportPhone,
     effectiveDate: 'September 10, 2026',
     consentText: `I agree to receive automated service SMS from ${companyName} about my estimates, installation appointments, orders, payments, and account activity at the phone number shown above.`,
-    disclosure: 'Both SMS options are optional. Consent is not a condition of creating an account, using the service, or making a purchase. Message frequency varies. Message and data rates may apply. Reply STOP to unsubscribe from SMS or HELP for help.',
+    disclosure: 'Both SMS options are optional. Consent is not a condition of creating an account, using the service, or making a purchase. Message frequency varies. Message and data rates may apply. You can turn off either SMS category in Profile and select Save preferences. Reply STOP to unsubscribe from all SMS or HELP for help.',
     registration: {
       serviceConsentText: `I agree to receive automated service SMS from ${companyName} about my estimates, installation appointments, orders, payments, and account activity at the phone number I provide.`,
       serviceRequirement: 'Optional. You can create an account and use the service without receiving SMS.',
