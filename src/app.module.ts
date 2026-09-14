@@ -1,3 +1,4 @@
+import { ContractsModule } from './contracts/contracts.module';
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
@@ -52,6 +53,7 @@ import { SmsConsentModule } from './sms/sms-consent.module';
     ScheduleModule.forRoot(),
 
     PrismaModule,
+    ContractsModule,
     ProductsModule,
     SystemsModule,
     UsersModule,

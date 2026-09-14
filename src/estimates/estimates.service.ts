@@ -1,3 +1,5 @@
+import { ContractStorageService } from '@/contracts/contract-storage.service';
+import { withAgreementTransaction } from '@/contracts/agreement-content';
 import { calculateEstimateDiscount, estimateDiscountConfig, hasDiscountableInstallation, type EstimateDiscountSummary } from './discounts/estimate-discount';
 import { UpdateEstimateDiscountDto } from './dto/estimate-discount.dto';
 import { ForbiddenException } from '@nestjs/common';
@@ -1205,7 +1207,7 @@ export class EstimatesService {
         (dto.value > 0 && !estimateDiscountConfig({ scope: dto.scope, type: dto.type, value: String(dto.value) }))) {
       throw new BadRequestException('Choose a valid discount scope, type and value. Percentages cannot exceed 100%.');
     }
-    await this.prisma.$transaction(async (tx) => {
+    await withAgreementTransaction(this.prisma, estimateId, async (tx) => {
       const estimate = await this.getEstimateWithRelationsInTransaction(tx, estimateId);
       await this.assertEstimateCanBeEdited(estimate, estimateId, actor.id, tx);
       if (estimate!.payments.some((p) => ['PENDING', 'PAID', 'REFUNDED'].includes(p.status))) {
@@ -1244,7 +1246,7 @@ export class EstimatesService {
     dto: UpdateEstimateHeaderDto,
     userId: number,
   ): Promise<EstimateWithRelations> {
-    return this.prisma.$transaction(async (tx) => {
+    return withAgreementTransaction(this.prisma, estimateId, async (tx) => {
       const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
         estimateId,
@@ -1386,7 +1388,7 @@ export class EstimatesService {
       throw new NotFoundException('User not found');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    return withAgreementTransaction(this.prisma, estimateId, async (tx) => {
       const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
         estimateId,
@@ -1500,7 +1502,7 @@ export class EstimatesService {
       throw new NotFoundException('User not found');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    return withAgreementTransaction(this.prisma, estimateId, async (tx) => {
       const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
         estimateId,
@@ -1693,7 +1695,7 @@ export class EstimatesService {
       throw new NotFoundException('User not found');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    return withAgreementTransaction(this.prisma, estimateId, async (tx) => {
       const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
         estimateId,
@@ -1858,7 +1860,7 @@ export class EstimatesService {
       throw new NotFoundException('User not found');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    return withAgreementTransaction(this.prisma, estimateId, async (tx) => {
       const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
         estimateId,
@@ -2004,7 +2006,7 @@ export class EstimatesService {
     pieceId: number,
     userId: number,
   ): Promise<EstimateWithRelations> {
-    return this.prisma.$transaction(async (tx) => {
+    return withAgreementTransaction(this.prisma, estimateId, async (tx) => {
       const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
         estimateId,
@@ -2087,7 +2089,7 @@ export class EstimatesService {
 
     if (!dbUser) throw new NotFoundException('User not found');
 
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await withAgreementTransaction(this.prisma, estimateId, async (tx) => {
       await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
       const beforeEstimate = await tx.estimate.findUnique({
         where: { id: estimateId },
@@ -2493,7 +2495,8 @@ export class EstimatesService {
     where: Prisma.EstimateWhereUniqueInput,
     userId: number,
   ): Promise<Estimate> {
-    return this.prisma.$transaction(async (tx) => {
+    const discardedFiles: string[] = [];
+    const deleted = await this.prisma.$transaction(async (tx) => {
       const estimate = await tx.estimate.findUnique({
         where,
         include: {
@@ -2536,6 +2539,13 @@ export class EstimatesService {
         );
       }
 
+      if (await tx.estimateAgreement.count({ where: { estimateId: estimate.id, signedAt: { not: null } } })) {
+        throw new BadRequestException('This estimate has a signed agreement and must be kept for reference.');
+      }
+      const unsigned = await tx.estimateAgreement.findMany({ where: { estimateId: estimate.id, signedAt: null }, select: { quoteFileKey: true } });
+      discardedFiles.push(...unsigned.map((item) => item.quoteFileKey).filter((key): key is string => Boolean(key)));
+      await tx.estimateAgreement.deleteMany({ where: { estimateId: estimate.id, signedAt: null } });
+
       const beforeSnapshot = EstimateAuditSnapshotBuilder.build(estimate);
 
       await tx.piece.deleteMany({ where: { idEst: where.id } });
@@ -2555,6 +2565,9 @@ export class EstimatesService {
 
       return estimate as unknown as Estimate;
     });
+    const storage = new ContractStorageService();
+    for (const key of discardedFiles) await storage.removeUnsignedFile(key);
+    return deleted;
   }
 
   async previewDimensionValidation(input: {

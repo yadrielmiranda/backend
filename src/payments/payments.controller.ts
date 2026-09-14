@@ -37,6 +37,7 @@ export class PaymentsController {
     return this.payments.createCheckoutSessionForPublicToken({
       token,
       installationDepositTermsAccepted: dto.installationDepositTermsAccepted,
+      agreementId: dto.agreementId,
     });
   }
 
@@ -78,6 +79,7 @@ export class PaymentsController {
       type: dto.type,
       sequence: dto.sequence,
       installationDepositTermsAccepted: dto.installationDepositTermsAccepted,
+      materialAccepted: dto.materialAccepted,
       user,
     });
   }

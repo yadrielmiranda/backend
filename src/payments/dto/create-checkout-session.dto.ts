@@ -19,4 +19,8 @@ export class CreateCheckoutSessionDto {
   @IsOptional()
   @IsBoolean()
   installationDepositTermsAccepted?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  materialAccepted?: boolean;
 }

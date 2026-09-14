@@ -93,6 +93,7 @@ model User {
   registrationConsent               RegistrationConsent?
   sessions                          Session[]
   passwordResetTokens               PasswordResetToken[]
+  dealerContracts                   DealerContract[]
   branding                          Branding?
   eventLogs                         EventLog[]
   installationRequests              InstallationJob[]           @relation("InstallationRequestedBy")
@@ -1117,12 +1118,14 @@ model Estimate {
   status   EstimateStatus @relation(fields: [statusId], references: [id])
   statusId Int
 
-  pieces          Piece[]
-  order           Order?
-  payments        Payment[]
-  installationJob InstallationJob?
-  revisions       EstimateRevision[]
-  customerCharges EstimateCustomerCharge[]
+  pieces            Piece[]
+  order             Order?
+  payments          Payment[]
+  installationJob   InstallationJob?
+  agreements        EstimateAgreement[]
+  agreementRevision Int                      @default(0)
+  revisions         EstimateRevision[]
+  customerCharges   EstimateCustomerCharge[]
 
   // --- CUSTOMER (dealer fills; not a relation) ---
   customerFirstName  String?  @db.VarChar(100)
@@ -2217,6 +2220,10 @@ model Payment {
   payerEmail String?          @db.VarChar(150)
   payerPhone String?          @db.VarChar(30)
 
+  // Aceptación del cliente al iniciar el checkout de materiales.
+  materialAcceptanceText String?   @db.VarChar(255)
+  materialAcceptedAt     DateTime?
+
   // Monto cobrado (normalmente estimate.totalPayable)
   baseAmount       Decimal @default(0) @db.Decimal(12, 2)
   surchargePercent Decimal @default(0) @db.Decimal(10, 4)
@@ -2292,4 +2299,57 @@ model TempLog {
 
   @@index([createdAt])
   @@map("temp_logs")
+}
+
+// Contratos inmutables: cada versión del dealer se almacena una sola vez.
+model DealerContract {
+  id         String              @id @db.VarChar(36)
+  dealerId   Int
+  version    Int
+  name       String              @db.VarChar(150)
+  fileKey    String              @db.VarChar(100)
+  sha256     String              @db.Char(64)
+  sizeBytes  Int
+  isCurrent  Boolean             @default(true)
+  createdAt  DateTime            @default(now())
+  dealer     User                @relation(fields: [dealerId], references: [id], onDelete: Restrict)
+  agreements EstimateAgreement[]
+
+  @@unique([dealerId, version])
+  @@index([dealerId, isCurrent])
+  @@index([dealerId, sha256])
+}
+
+model EstimateAgreement {
+  id                String              @id @db.VarChar(36)
+  estimateId        Int
+  revision          Int
+  contractId        String              @db.VarChar(36)
+  pricingMode       String              @db.VarChar(8)
+  contentHash       String              @db.Char(64)
+  materialHash      String?             @db.Char(64)
+  chargesSnapshot   Json?
+  baseAgreementId   String?             @db.VarChar(36)
+  changeOrderNumber Int?
+  snapshot          Json
+  quoteFileKey      String?             @db.VarChar(100)
+  quoteHash         String?             @db.Char(64)
+  receiptFileKey    String?             @db.VarChar(100)
+  receiptHash       String?             @db.Char(64)
+  signerName        String?             @db.VarChar(150)
+  signature         Json?
+  consentText       String?             @db.Text
+  signedAt          DateTime?
+  invalidatedAt     DateTime?
+  ipAddress         String?             @db.VarChar(45)
+  userAgent         String?             @db.VarChar(512)
+  createdAt         DateTime            @default(now())
+  estimate          Estimate            @relation(fields: [estimateId], references: [id], onDelete: Restrict)
+  contract          DealerContract      @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  baseAgreement     EstimateAgreement?  @relation("AgreementChanges", fields: [baseAgreementId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  changeOrders      EstimateAgreement[] @relation("AgreementChanges")
+
+  @@unique([estimateId, revision])
+  @@index([estimateId, pricingMode, invalidatedAt])
+  @@index([baseAgreementId])
 }

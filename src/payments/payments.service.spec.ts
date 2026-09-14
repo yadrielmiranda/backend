@@ -30,6 +30,173 @@ describe('PaymentsService reconciliation', () => {
     jest.clearAllMocks();
   });
 
+  describe('material acceptance at checkout', () => {
+    const acceptanceText =
+      'I have reviewed and accept the products, dimensions, configurations and prices in this estimate.';
+    const client = { id: 7, role: { name: 'client' } } as const;
+
+    function checkoutHarness(options: {
+      role?: string;
+      existing?: Record<string, unknown>;
+      internal?: boolean;
+    } = {}) {
+      const estimate = materialPayment().estimate;
+      const context = {
+        estimate: {
+          ...estimate,
+          dealerModeSnapshot: options.internal ? DealerMode.INTERNAL : null,
+          user: { ...estimate.user, role: { name: options.role ?? 'client' } },
+        },
+        job: null,
+        paymentSequence: 1,
+        baseAmount: new Prisma.Decimal('330.78'),
+        surchargePercent: new Prisma.Decimal(0),
+        surchargeAmount: new Prisma.Decimal(0),
+        totalAmount: new Prisma.Decimal('330.78'),
+        description: 'Material payment',
+      };
+      const tx = {
+        estimate: { findFirst: jest.fn().mockResolvedValue({ id: 9 }) },
+        payment: {
+          findUnique: jest.fn().mockResolvedValue(options.existing ?? null),
+          upsert: jest.fn().mockResolvedValue({ id: 41 }),
+          update: jest.fn().mockResolvedValue({ id: 41 }),
+        },
+      };
+      const prisma = {
+        $transaction: jest.fn(async (callback: (db: typeof tx) => Promise<unknown>) => callback(tx)),
+      };
+      const workflow = { getPaymentContext: jest.fn().mockResolvedValue(context) };
+      const service = new PaymentsService(prisma as never, config, workflow as never, notifications as never);
+      const stripe = (service as unknown as { stripe: Stripe }).stripe;
+      const createSession = jest.spyOn(stripe.checkout.sessions, 'create').mockResolvedValue({
+        id: 'cs_new', url: 'https://checkout.stripe.com/new',
+      } as Stripe.Response<Stripe.Checkout.Session>);
+      const retrieveSession = jest.spyOn(stripe.checkout.sessions, 'retrieve').mockResolvedValue({
+        id: 'cs_open', status: 'open', payment_status: 'unpaid',
+        url: 'https://checkout.stripe.com/open',
+      } as Stripe.Response<Stripe.Checkout.Session>);
+      return { service, tx, workflow, createSession, retrieveSession };
+    }
+
+    it.each([undefined, false, 'true'])('rejects a client material checkout without explicit acceptance (%s)', async (accepted) => {
+      const { service, tx, createSession, retrieveSession } = checkoutHarness();
+      await expect(service.createCheckoutSessionForEstimate({
+        estimateId: 9,
+        user: client,
+        materialAccepted: accepted as boolean | undefined,
+      })).rejects.toBeInstanceOf(BadRequestException);
+      expect(tx.payment.upsert).not.toHaveBeenCalled();
+      expect(tx.payment.update).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+      expect(retrieveSession).not.toHaveBeenCalled();
+    });
+
+    it('stores the displayed text and acceptance time with the pending payment', async () => {
+      const { service, tx } = checkoutHarness();
+      const startedAt = Date.now();
+      await service.createCheckoutSessionForEstimate({
+        estimateId: 9, user: client, materialAccepted: true,
+      });
+      const { create } = tx.payment.upsert.mock.calls[0][0];
+      expect(create).toMatchObject({
+        idEst: 9, userId: 7, type: PaymentType.MATERIAL,
+        status: PaymentStatus.PENDING,
+        materialAcceptanceText: acceptanceText,
+      });
+      expect(create.materialAcceptedAt).toBeInstanceOf(Date);
+      expect(create.materialAcceptedAt.getTime()).toBeGreaterThanOrEqual(startedAt);
+      expect(create.paidAt).toBeUndefined();
+    });
+
+    it('preserves the original acceptance when resuming the same checkout', async () => {
+      const { service, tx, createSession } = checkoutHarness({ existing: {
+        id: 41, stripeSessionId: 'cs_open', status: PaymentStatus.PENDING,
+        materialAcceptanceText: acceptanceText,
+        materialAcceptedAt: new Date('2026-09-13T18:00:00Z'),
+      } });
+      const result = await service.createCheckoutSessionForEstimate({
+        estimateId: 9, user: client, materialAccepted: true,
+      });
+      expect(result.url).toBe('https://checkout.stripe.com/open');
+      expect(tx.payment.update).not.toHaveBeenCalled();
+      expect(tx.payment.upsert).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+    });
+
+    it('records an explicit acceptance when resuming a legacy checkout', async () => {
+      const { service, tx } = checkoutHarness({ existing: {
+        id: 41, stripeSessionId: 'cs_open', status: PaymentStatus.PENDING,
+        materialAcceptanceText: null, materialAcceptedAt: null,
+      } });
+      await service.createCheckoutSessionForEstimate({
+        estimateId: 9, user: client, materialAccepted: true,
+      });
+      expect(tx.payment.update).toHaveBeenCalledWith({
+        where: { id: 41 },
+        data: { materialAcceptanceText: acceptanceText, materialAcceptedAt: expect.any(Date) },
+      });
+    });
+
+    it('does not reuse a canceled acceptance to authorize another checkout', async () => {
+      const { service, tx, createSession } = checkoutHarness({ existing: {
+        id: 41, status: PaymentStatus.CANCELED,
+        materialAcceptanceText: acceptanceText,
+        materialAcceptedAt: new Date('2026-09-13T18:00:00Z'),
+      } });
+      await expect(service.createCheckoutSessionForEstimate({
+        estimateId: 9, user: client,
+      })).rejects.toBeInstanceOf(BadRequestException);
+      expect(tx.payment.upsert).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+    });
+
+    it('refreshes acceptance for a new checkout after canceling', async () => {
+      const previousDate = new Date('2020-01-01T00:00:00Z');
+      const { service, tx } = checkoutHarness({ existing: {
+        id: 41, status: PaymentStatus.CANCELED,
+        materialAcceptanceText: acceptanceText, materialAcceptedAt: previousDate,
+      } });
+      await service.createCheckoutSessionForEstimate({
+        estimateId: 9, user: client, materialAccepted: true,
+      });
+      const { update } = tx.payment.upsert.mock.calls[0][0];
+      expect(update.materialAcceptanceText).toBe(acceptanceText);
+      expect(update.materialAcceptedAt.getTime()).toBeGreaterThan(previousDate.getTime());
+      expect(update.paidAt).toBeNull();
+    });
+
+    it.each([false, true])('does not add material acceptance to a dealer checkout (internal: %s)', async (internal) => {
+      const { service, tx } = checkoutHarness({ role: 'dealer', internal });
+      await service.createCheckoutSessionForEstimate({
+        estimateId: 9, user: { id: 7, role: { name: 'dealer' } },
+        ...(internal ? { publicToken: 'customer-link' } : {}),
+      });
+      const { create, update } = tx.payment.upsert.mock.calls[0][0];
+      expect(create.materialAcceptanceText).toBeUndefined();
+      expect(update.materialAcceptedAt).toBeUndefined();
+    });
+
+    it('uses the estimate owner role from the DB to require acceptance', async () => {
+      const { service } = checkoutHarness();
+      await expect(service.createCheckoutSessionForEstimate({
+        estimateId: 9, user: { id: 7, role: { name: 'dealer' } },
+      })).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('keeps the deposit acceptance separate', async () => {
+      const { service, tx, workflow } = checkoutHarness();
+      await service.createCheckoutSessionForEstimate({
+        estimateId: 9, user: client, type: PaymentType.INSTALLATION_DEPOSIT,
+        installationDepositTermsAccepted: true,
+      });
+      expect(workflow.getPaymentContext).toHaveBeenCalledWith(
+        9, PaymentType.INSTALLATION_DEPOSIT, undefined, true, client, tx,
+      );
+      expect(tx.payment.upsert.mock.calls[0][0].create.materialAcceptanceText).toBeUndefined();
+    });
+  });
+
   function materialPayment(overrides: Record<string, unknown> = {}) {
     return {
       id: 41,

@@ -10,6 +10,14 @@ import { isAxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import type { DeliveryRouteAddress } from './google-routes.service';
 
+type GoogleApiErrorResponse = {
+  error?: {
+    status?: string;
+    message?: string;
+    details?: Array<{ reason?: string }>;
+  };
+};
+
 type GoogleAddressValidationResponse = {
   result?: {
     verdict?: {
@@ -104,9 +112,27 @@ export class GoogleAddressValidationService {
       );
       data = response.data;
     } catch (error) {
-      const status = isAxiosError(error) ? error.response?.status : undefined;
+      const response = isAxiosError<GoogleApiErrorResponse>(error)
+        ? error.response
+        : undefined;
+      const status = response?.status;
+      const providerError = response?.data?.error;
+      const reasons = Array.isArray(providerError?.details)
+        ? providerError.details.map((detail) => detail?.reason)
+        : [];
+      const description =
+        [providerError?.status, ...reasons, providerError?.message]
+          .filter((value) => typeof value === 'string' && value.trim())
+          .join(' | ') ||
+        (error instanceof Error ? error.message : String(error));
+      // Registrar el motivo de Google sin exponer la clave ni la solicitud.
+      const safeDescription = description
+        .split(apiKey)
+        .join('[REDACTED]')
+        .replace(/[\r\n]+/g, ' ')
+        .slice(0, 3_000);
       this.logger.error(
-        `Google Address Validation request failed${status ? ` with status ${status}` : ''}: ${error instanceof Error ? error.message : String(error)}`,
+        `Google Address Validation request failed${status ? ` with status ${status}` : ''}: ${safeDescription}`,
       );
       throw new ServiceUnavailableException(
         'Delivery address verification is temporarily unavailable. Please try again or contact support.',

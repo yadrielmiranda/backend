@@ -17,6 +17,17 @@ function fixture() {
     priceT: '1000',
     totalPayable: '1070',
     taxRate: '.07',
+    user: {
+      role: { name: 'client' },
+      firstName: 'Jane',
+      lastName: 'Rivera',
+      email: 'jane@example.test',
+      phone: '+13055550111',
+      street: '123 Example Street',
+      city: 'Miami',
+      state: 'FL',
+      postalCode: '33101',
+    },
     dealerModeSnapshot: 'EXTERNAL',
     manualDiscount: { scope: 'PROJECT', type: 'PERCENTAGE', value: '10' },
     installationJob: {

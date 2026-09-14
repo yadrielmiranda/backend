@@ -1,5 +1,6 @@
 import { calculateEstimateDiscount, estimateDiscountConfig } from '@/estimates/discounts/estimate-discount';
 import { checkoutPromotionExpiry, promotionExpired, promotionTerms } from '@/promotions/promotion-pricing';
+import { requireSignedAgreementForPayment } from '@/contracts/agreement-payment';
 import {
   BadRequestException,
   ConflictException,
@@ -33,6 +34,9 @@ import {
   resolveMaterialSaleSubtotal,
 } from '@/orders/order-material-financials';
 import { NotificationsService } from '@/notifications/notifications.service';
+
+const MATERIAL_ACCEPTANCE_TEXT =
+  'I have reviewed and accept the products, dimensions, configurations and prices in this estimate.';
 
 type PaymentWithEstimate = Prisma.PaymentGetPayload<{
   include: {
@@ -776,6 +780,7 @@ export class PaymentsService {
   async createCheckoutSessionForPublicToken(params: {
     token: string;
     installationDepositTermsAccepted?: boolean;
+    agreementId?: string;
   }) {
     const publicContext = await this.getPublicPaymentContext(params.token);
     if (!publicContext.enabled || !publicContext.payment) {
@@ -801,6 +806,7 @@ export class PaymentsService {
       installationDepositTermsAccepted: params.installationDepositTermsAccepted,
       user: { id: owner.idUser, role: { name: 'dealer' } },
       publicToken: params.token,
+      publicAgreementId: params.agreementId,
     });
   }
 
@@ -809,8 +815,10 @@ export class PaymentsService {
     type?: PaymentType;
     sequence?: number;
     installationDepositTermsAccepted?: boolean;
+    materialAccepted?: boolean;
     user: AuthUser;
     publicToken?: string;
+    publicAgreementId?: string;
   }) {
     const type = params.type ?? PaymentType.MATERIAL;
 
@@ -849,9 +857,28 @@ export class PaymentsService {
           'Internal dealer charges must be paid by the final customer from the public share link.',
         );
       }
+      const requiresMaterialAcceptance =
+        type === PaymentType.MATERIAL &&
+        context.estimate.user.role.name === 'client';
+      if (requiresMaterialAcceptance && params.materialAccepted !== true) {
+        throw new BadRequestException(
+          'Review and accept the material details in your estimate before payment.',
+        );
+      }
+      const materialAcceptance = requiresMaterialAcceptance
+        ? {
+            materialAcceptanceText: MATERIAL_ACCEPTANCE_TEXT,
+            materialAcceptedAt: new Date(),
+          }
+        : {};
+      if (params.publicAgreementId) {
+        await requireSignedAgreementForPayment(
+          tx, params.estimateId, params.publicToken, params.publicAgreementId,
+        );
+      }
       const frontendUrl = this.getFrontendUrl();
       const query = params.publicToken
-        ? `token=${encodeURIComponent(params.publicToken)}&type=${type}&sequence=${context.paymentSequence}`
+        ? `token=${encodeURIComponent(params.publicToken)}&type=${type}&sequence=${context.paymentSequence}${params.publicAgreementId ? `&agreementId=${encodeURIComponent(params.publicAgreementId)}` : ''}`
         : `estimateId=${params.estimateId}&type=${type}&sequence=${context.paymentSequence}`;
       const successUrl = params.publicToken
         ? `${frontendUrl}/public/checkout/success?${query}`
@@ -897,6 +924,17 @@ export class PaymentsService {
                 'Stripe session has no checkout URL.',
               );
             }
+            // Conserva la fecha original al reanudar la misma sesión aceptada.
+            if (
+              requiresMaterialAcceptance &&
+              (!existingPayment.materialAcceptedAt ||
+                existingPayment.materialAcceptanceText !== MATERIAL_ACCEPTANCE_TEXT)
+            ) {
+              await tx.payment.update({
+                where: { id: existingPayment.id },
+                data: materialAcceptance,
+              });
+            }
             return { url: existingSession.url };
           }
           if (existingSession.status === 'complete') {
@@ -934,6 +972,7 @@ export class PaymentsService {
           deliveryId: context.delivery?.id ?? null,
           userId: context.estimate.idUser,
           ...payer,
+          ...materialAcceptance,
           baseAmount: new Prisma.Decimal(context.baseAmount.toFixed(2)),
           surchargePercent: new Prisma.Decimal(
             context.surchargePercent.toFixed(4),
@@ -952,6 +991,7 @@ export class PaymentsService {
           deliveryId: context.delivery?.id ?? null,
           userId: context.estimate.idUser,
           ...payer,
+          ...materialAcceptance,
           baseAmount: new Prisma.Decimal(context.baseAmount.toFixed(2)),
           surchargePercent: new Prisma.Decimal(
             context.surchargePercent.toFixed(4),
@@ -1376,6 +1416,9 @@ export class PaymentsService {
           stripeSessionId: null,
           stripePaymentIntentId: null,
           stripeCustomerId: null,
+          // Un cobro manual no debe heredar la aceptación de otro checkout.
+          materialAcceptanceText: null,
+          materialAcceptedAt: null,
         },
       });
       const paymentWithEstimate = await tx.payment.findUniqueOrThrow({

@@ -1,3 +1,5 @@
+import { withAgreementTransaction } from '@/contracts/agreement-content';
+import { assertCompleteEstimateCustomer } from '@/estimates/estimate-customer-details';
 import { calculateEstimateDiscount, discountedInstallationTotal, discountAllocations, estimateDiscountConfig } from '@/estimates/discounts/estimate-discount';
 import { savedPromotions, promotionExpired, expiredPromotionMessage } from '@/promotions/promotion-pricing';
 import {
@@ -325,6 +327,12 @@ export class InstallationWorkflowService {
     ) {
       throw new NotFoundException('Installation job not found.');
     }
+  }
+
+  private async withAgreementJobTransaction<T>(jobId: number, work: (db: Prisma.TransactionClient) => Promise<T>, options?: { maxWait?: number; timeout?: number }) {
+    const job = await this.prisma.installationJob.findUnique({ where: { id: jobId }, select: { estimateId: true } });
+    if (!job) throw new NotFoundException('Installation job not found.');
+    return withAgreementTransaction(this.prisma, job.estimateId, work, options);
   }
 
   private async getJobRecord(
@@ -1623,7 +1631,7 @@ export class InstallationWorkflowService {
     dto: RequestInstallationDto,
     user: AuthUser,
   ) {
-    const createdJob = await this.prisma.$transaction(async (tx) => {
+    const createdJob = await withAgreementTransaction(this.prisma, estimateId, async (tx) => {
       const estimate = await tx.estimate.findUnique({
         where: { id: estimateId },
         include: {
@@ -1670,45 +1678,6 @@ export class InstallationWorkflowService {
       if (estimate.pieces.length === 0) {
         throw new BadRequestException(
           'Add at least one piece before requesting installation.',
-        );
-      }
-
-      const useEstimateCustomer = estimate.user.role.name === 'dealer';
-      const contactFirstName = useEstimateCustomer
-        ? estimate.customerFirstName
-        : estimate.user.firstName;
-      const contactLastName = useEstimateCustomer
-        ? estimate.customerLastName
-        : estimate.user.lastName;
-      const contactEmail = useEstimateCustomer
-        ? estimate.customerEmail
-        : estimate.user.email;
-      const contactPhone = useEstimateCustomer
-        ? estimate.customerPhone
-        : estimate.user.phone;
-      const street = useEstimateCustomer
-        ? estimate.customerStreet
-        : estimate.user.street;
-      const city = useEstimateCustomer
-        ? estimate.customerCity
-        : estimate.user.city;
-      const state = useEstimateCustomer
-        ? estimate.customerState
-        : estimate.user.state;
-      const postalCode = useEstimateCustomer
-        ? estimate.customerPostalCode
-        : estimate.user.postalCode;
-      if (
-        !contactFirstName ||
-        !contactLastName ||
-        (!contactEmail && !contactPhone) ||
-        !street ||
-        !city ||
-        !state ||
-        !postalCode
-      ) {
-        throw new BadRequestException(
-          'Complete the installation contact and address before requesting installation pricing.',
         );
       }
 
@@ -1862,7 +1831,7 @@ export class InstallationWorkflowService {
         .filter((line) => line.origin === InstallationLineOrigin.USER_SELECTED)
         .map((line) => line.serviceId) ?? [];
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.withAgreementJobTransaction(jobId, async (tx) => {
       const job = await tx.installationJob.findUnique({
         where: { id: jobId },
         include: {
@@ -2045,7 +2014,7 @@ export class InstallationWorkflowService {
       if (!isPrivileged(user) && job.estimate.idUser !== user.id) {
         throw new NotFoundException('Installation job not found.');
       }
-      await this.prisma.$transaction(async (tx) => {
+      await this.withAgreementJobTransaction(jobId, async (tx) => {
         // Serializa la eliminación con los descuentos y los nuevos pagos.
         await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${job.estimateId} FOR UPDATE`;
         const current = await tx.installationJob.findUnique({
@@ -2107,7 +2076,7 @@ export class InstallationWorkflowService {
       );
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.withAgreementJobTransaction(jobId, async (tx) => {
       await tx.installationAppointment.updateMany({
         where: {
           jobId,
@@ -2246,7 +2215,7 @@ export class InstallationWorkflowService {
       );
     }
 
-    const remeasurementCompleted = await this.prisma.$transaction(
+    const remeasurementCompleted = await this.withAgreementJobTransaction(jobId, 
       async (tx) => {
         await this.assertRemeasurementCanBeRecorded(jobId, tx);
         await this.ensureDraftQuote(jobId, user.id, tx);
@@ -2311,7 +2280,7 @@ export class InstallationWorkflowService {
       );
     }
 
-    const remeasurementCompleted = await this.prisma.$transaction(
+    const remeasurementCompleted = await this.withAgreementJobTransaction(jobId, 
       async (tx) => {
         await this.assertRemeasurementCanBeRecorded(jobId, tx);
         const existing = await tx.installationMeasurement.findFirst({
@@ -2477,7 +2446,7 @@ export class InstallationWorkflowService {
       );
     }
 
-    const remeasurementCompleted = await this.prisma.$transaction(
+    const remeasurementCompleted = await this.withAgreementJobTransaction(jobId, 
       async (tx) => {
         await this.assertRemeasurementCanBeRecorded(jobId, tx);
         const measurement = await tx.installationMeasurement.findFirst({
@@ -2663,7 +2632,7 @@ export class InstallationWorkflowService {
         : InstallationLineOrigin.FIELD_ADDED
       : InstallationLineOrigin.USER_SELECTED;
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.withAgreementJobTransaction(jobId, async (tx) => {
       const quote = await this.ensureDraftQuote(jobId, user.id, tx);
       const lineInput =
         origin === InstallationLineOrigin.USER_SELECTED
@@ -2695,7 +2664,7 @@ export class InstallationWorkflowService {
         'Requested services can only be changed before the installation deposit is paid.',
       );
     }
-    await this.prisma.$transaction(async (tx) => {
+    await this.withAgreementJobTransaction(jobId, async (tx) => {
       const quote = await this.ensureDraftQuote(jobId, user.id, tx);
       const line = await tx.installationQuoteLine.findFirst({
         where: { id: lineId, quoteId: quote.id },
@@ -2730,7 +2699,7 @@ export class InstallationWorkflowService {
       throw new BadRequestException(
         'Only company staff can recalculate a quote.',
       );
-    await this.prisma.$transaction(async (tx) => {
+    await this.withAgreementJobTransaction(jobId, async (tx) => {
       const quote = await this.ensureDraftQuote(jobId, user.id, tx);
       await this.rebuildAutomaticLines(jobId, quote.id, tx);
       await this.rebuildManualLines(quote.id, tx);
@@ -2779,7 +2748,7 @@ export class InstallationWorkflowService {
       }
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.withAgreementJobTransaction(jobId, async (tx) => {
       const pendingMeasurements = await tx.installationMeasurement.count({
         where: { jobId, status: InstallationMeasurementStatus.PENDING },
       });
@@ -2906,7 +2875,7 @@ export class InstallationWorkflowService {
     }
     await this.findJob(jobId, user);
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.withAgreementJobTransaction(jobId, async (tx) => {
       const quote = await tx.installationQuote.findFirst({
         where: { jobId },
         orderBy: { version: 'desc' },
@@ -3330,7 +3299,7 @@ export class InstallationWorkflowService {
       );
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.withAgreementJobTransaction(jobId, async (tx) => {
       const quote = await tx.installationQuote.findFirst({
         where: { jobId },
         orderBy: { version: 'desc' },
@@ -3520,7 +3489,7 @@ export class InstallationWorkflowService {
     }
     await this.findJob(jobId, user);
 
-    await this.prisma.$transaction(async (tx) => {
+    const changed = await this.withAgreementJobTransaction(jobId, async (tx) => {
       const permit = await tx.installationPermit.findUnique({
         where: { jobId },
       });
@@ -3592,27 +3561,50 @@ export class InstallationWorkflowService {
         );
       }
       if (
-        dto.status === InstallationPermitStatus.APPROVED &&
-        dto.cityFee === undefined &&
-        permit.cityFee == null
+        dto.cityFee !== undefined &&
+        dto.status !== InstallationPermitStatus.APPROVED
       ) {
         throw new BadRequestException(
-          'City Fee is required when the permit is approved.',
+          'City Fee can only be entered when the permit is approved.',
         );
       }
+      const cityFee = dto.cityFee === undefined ? permit.cityFee : dto.cityFee;
+      if (
+        dto.status === InstallationPermitStatus.APPROVED &&
+        (cityFee == null ||
+          !Number.isFinite(Number(cityFee)) ||
+          Number(cityFee) < 0)
+      ) {
+        throw new BadRequestException(
+          'A valid City Fee is required when the permit is approved.',
+        );
+      }
+
+      const statusChanged = dto.status !== permit.status;
+      const notes =
+        dto.notes === undefined ? permit.notes : dto.notes?.trim() || null;
+      const cityFeeChanged =
+        dto.cityFee !== undefined &&
+        (permit.cityFee == null ||
+          !new Decimal(permit.cityFee.toString()).equals(dto.cityFee));
+      // Un reintento idéntico no cambia fechas, estado del trabajo ni notificaciones.
+      if (
+        !statusChanged &&
+        !cityFeeChanged &&
+        (notes ?? '') === (permit.notes ?? '')
+      )
+        return false;
 
       const updated = await tx.installationPermit.update({
         where: { jobId },
         data: {
           status: dto.status,
           ...(dto.cityFee !== undefined ? { cityFee: dto.cityFee } : {}),
-          ...(dto.notes !== undefined
-            ? { notes: dto.notes?.trim() || null }
-            : {}),
-          ...(dto.status === InstallationPermitStatus.SUBMITTED
+          ...(dto.notes !== undefined ? { notes } : {}),
+          ...(statusChanged && dto.status === InstallationPermitStatus.SUBMITTED
             ? { submittedAt: new Date() }
             : {}),
-          ...(dto.status === InstallationPermitStatus.APPROVED
+          ...(statusChanged && dto.status === InstallationPermitStatus.APPROVED
             ? { approvedAt: new Date() }
             : {}),
         },
@@ -3632,8 +3624,10 @@ export class InstallationWorkflowService {
         where: { id: jobId },
         data: { status: nextJobStatus },
       });
+      return true;
     });
     const result = await this.findJob(jobId, user);
+    if (!changed) return result;
     const permit = result.permit;
     await this.notifyInstallationOwner({
       ownerId: result.estimate.idUser,
@@ -3915,7 +3909,7 @@ export class InstallationWorkflowService {
       );
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.withAgreementJobTransaction(jobId, async (tx) => {
       const inProgress = await tx.orderStatus.findUnique({
         where: { name: 'Installation in progress' },
       });
@@ -3982,7 +3976,7 @@ export class InstallationWorkflowService {
         'Only an installation in progress can be marked Installed.',
       );
     }
-    await this.prisma.$transaction(async (tx) => {
+    await this.withAgreementJobTransaction(jobId, async (tx) => {
       const installed = await tx.orderStatus.findUnique({
         where: { name: 'Installed' },
       });
@@ -4043,7 +4037,7 @@ export class InstallationWorkflowService {
       return;
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    await withAgreementTransaction(this.prisma, estimateId, async (tx) => {
       const estimate = await tx.estimate.findUnique({
         where: { id: estimateId },
         include: {
@@ -4173,6 +4167,10 @@ export class InstallationWorkflowService {
             lastName: true,
             email: true,
             phone: true,
+            street: true,
+            city: true,
+            state: true,
+            postalCode: true,
             role: { select: { name: true } },
           },
         },
@@ -4236,6 +4234,9 @@ export class InstallationWorkflowService {
         throw new BadRequestException(
           'A preliminary installation quote is required before deposit payment.',
         );
+      }
+      if (!options.preview) {
+        assertCompleteEstimateCustomer(estimate, 'deposit');
       }
       if (
         !options.preview &&

@@ -21,6 +21,7 @@ function fixture() {
   };
   const tx: any = {
     $queryRaw: jest.fn(),
+    estimateAgreement: { findMany: jest.fn().mockResolvedValue([]) },
     user: {
       findUnique: jest
         .fn()
@@ -33,7 +34,7 @@ function fixture() {
     installationJob: { findUnique: jest.fn().mockResolvedValue(null) },
     eventLog: { create: jest.fn() },
   };
-  const prisma: any = { $transaction: jest.fn((callback) => callback(tx)) };
+  const prisma: any = { installationJob: tx.installationJob, $transaction: jest.fn((callback) => callback(tx)) };
   const workflow = { assertEstimateEditAllowed: jest.fn() };
   const service = new EstimatesService(
     prisma,
@@ -235,6 +236,7 @@ describe('Removing installation and its additional discount', () => {
     const config = { scope, type: 'AMOUNT', value: '20', lockedAt };
     const tx: any = {
       $queryRaw: jest.fn(),
+    estimateAgreement: { findMany: jest.fn().mockResolvedValue([]) },
       installationJob: {
         findUnique: jest.fn().mockResolvedValue(job),
         delete: jest.fn(),
@@ -245,7 +247,7 @@ describe('Removing installation and its additional discount', () => {
       },
       eventLog: { create: jest.fn() },
     };
-    const prisma: any = { $transaction: jest.fn((callback) => callback(tx)) };
+    const prisma: any = { installationJob: tx.installationJob, $transaction: jest.fn((callback) => callback(tx)) };
     const service: any = new InstallationWorkflowService(
       prisma,
       {} as any,
