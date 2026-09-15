@@ -112,4 +112,8 @@ export class CreateUserDto {
   @IsOptional()
   @IsEnum(DealerMode)
   dealerMode?: DealerMode;
+
+  @IsOptional()
+  @IsBoolean()
+  noInstallationDeposit?: boolean;
 }

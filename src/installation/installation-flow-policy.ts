@@ -1,6 +1,8 @@
 import {
   InstallationJobStatus,
   InstallationPermitStatus,
+  InstallationQuoteReason,
+  InstallationQuoteStatus,
 } from "@prisma/client";
 import Decimal from "decimal.js";
 
@@ -186,6 +188,33 @@ export function canOwnerEditInstallationEstimate(
     (status === InstallationJobStatus.DEPOSIT_PAYMENT_PENDING &&
       !depositCheckoutStarted)
   );
+}
+
+export function hasStartedInstallationPayment(payments: Array<{
+  status: string;
+  paidAt?: Date | null;
+  stripeSessionId?: string | null;
+}>): boolean {
+  return payments.some((payment) =>
+    payment.status === 'PAID' || payment.status === 'REFUNDED' ||
+    payment.paidAt != null || Boolean(payment.stripeSessionId));
+}
+
+export function canEditUnpaidWaivedInstallation(job: {
+  status: InstallationJobStatus;
+  dealerMeasurementsAcceptedAt: Date | null;
+  estimate: { status: { name: string }; order?: unknown; payments: Parameters<typeof hasStartedInstallationPayment>[0] };
+  quotes: Array<{ status: InstallationQuoteStatus; approvalReason: InstallationQuoteReason; submittedAt?: Date | null }>;
+}): boolean {
+  const quote = job.quotes[0];
+  return Boolean(job.dealerMeasurementsAcceptedAt &&
+    job.estimate.status.name === 'Active' && !job.estimate.order &&
+    !hasStartedInstallationPayment(job.estimate.payments) &&
+    (job.status === InstallationJobStatus.MATERIAL_PAYMENT_PENDING ||
+      job.status === InstallationJobStatus.PERMIT_PAYMENT_PENDING) &&
+    quote?.status === InstallationQuoteStatus.APPROVED &&
+    quote.approvalReason === InstallationQuoteReason.DEALER_MEASUREMENTS &&
+    !quote.submittedAt);
 }
 
 export function resolveApprovedPreOrderStage(

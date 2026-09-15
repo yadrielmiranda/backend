@@ -56,6 +56,7 @@ describe('PaymentsService reconciliation', () => {
         description: 'Material payment',
       };
       const tx = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: 9 }]),
         estimate: { findFirst: jest.fn().mockResolvedValue({ id: 9 }) },
         payment: {
           findUnique: jest.fn().mockResolvedValue(options.existing ?? null),

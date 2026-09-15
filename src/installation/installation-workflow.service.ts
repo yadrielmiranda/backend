@@ -5,6 +5,7 @@ import { savedPromotions, promotionExpired, expiredPromotionMessage } from '@/pr
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -14,6 +15,7 @@ import {
   EstimateRevisionStatus,
   DeliveryStatus,
   DeliveryType,
+  DealerMode,
   GlobalParameterKey,
   InstallationApprovalDecision,
   InstallationApprovalStage,
@@ -52,6 +54,8 @@ import { pieceMarkWithSuffix } from '@/pieces/piece.constants';
 import {
   calculateInstallationBalance,
   canOwnerEditInstallationEstimate,
+  canEditUnpaidWaivedInstallation,
+  hasStartedInstallationPayment,
   createEstimateRevisionPieceFingerprint,
   didInstallationMeasurementPricingInputChange,
   canViewAllInstallations,
@@ -213,6 +217,9 @@ const jobInclude = {
   },
   requestedBy: {
     select: { id: true, firstName: true, lastName: true, email: true },
+  },
+  dealerMeasurementsAcceptedBy: {
+    select: { id: true, firstName: true, lastName: true },
   },
   measurements: {
     orderBy: [
@@ -1198,6 +1205,7 @@ export class InstallationWorkflowService {
     const context = await tx.installationJob.findUnique({
       where: { id: jobId },
       select: {
+        dealerMeasurementsAcceptedAt: true,
         permit: { select: { status: true } },
         estimate: { select: { order: { select: { id: true } } } },
       },
@@ -1206,6 +1214,8 @@ export class InstallationWorkflowService {
       ? InstallationQuoteReason.FIELD_CHANGE
       : context?.permit?.status === InstallationPermitStatus.CHANGES_REQUIRED
         ? InstallationQuoteReason.PERMIT_REVISION
+        : context?.dealerMeasurementsAcceptedAt
+          ? InstallationQuoteReason.DEALER_MEASUREMENTS
         : InstallationQuoteReason.REMEASUREMENT;
 
     return tx.installationQuote.create({
@@ -1681,6 +1691,8 @@ export class InstallationWorkflowService {
         );
       }
 
+      const noDeposit = estimate.user.role.name === 'dealer' &&
+        estimate.user.noInstallationDeposit === true;
       const profile = await this.pricing.resolveProfileForUser(
         estimate.idUser,
         tx,
@@ -1691,7 +1703,7 @@ export class InstallationWorkflowService {
       const depositAmount = new Decimal(
         depositParameter?.value.toString() ?? 0,
       );
-      if (depositAmount.lte(0)) {
+      if (!noDeposit && depositAmount.lte(0)) {
         throw new BadRequestException(
           'Configure a positive Installation Deposit before accepting installation requests.',
         );
@@ -1778,10 +1790,15 @@ export class InstallationWorkflowService {
           'No installation price could be calculated for this estimate. Review the installation-service mappings.',
         );
       }
-      if (depositAmount.gt(preliminaryQuote.total.toString())) {
+      if (!noDeposit && depositAmount.gt(preliminaryQuote.total.toString())) {
         throw new BadRequestException(
           'The Installation Deposit cannot exceed the preliminary installation total.',
         );
+      }
+      if (noDeposit) {
+        const current = await this.getJobRecord(job.id, tx);
+        if (!current) throw new NotFoundException('Installation job not found.');
+        await this.finalizeDealerMeasurements(current, user.id, tx, true);
       }
       return job;
     });
@@ -1811,12 +1828,192 @@ export class InstallationWorkflowService {
         ownerId: result.estimate.idUser,
         actorId: user.id,
         jobId: result.id,
-        message: `Installation deposit is due for Estimate #${result.estimate.number}.`,
-        actionLabel: 'Open payment',
-        dedupeKey: `installation:${result.id}:deposit-due:owner`,
+        message: result.dealerMeasurementsAcceptedAt
+          ? `Installation for Estimate #${result.estimate.number} is ready to continue with the current measurements and price. No installation deposit or remeasurement is required.`
+          : `Installation deposit is due for Estimate #${result.estimate.number}.`,
+        actionLabel: result.dealerMeasurementsAcceptedAt ? 'Open estimate' : 'Open payment',
+        dedupeKey: `installation:${result.id}:${result.dealerMeasurementsAcceptedAt ? 'no-deposit' : 'deposit-due'}:owner`,
         actionUrl: `/estimates/${result.estimateId}/edit`,
       }),
     ]);
+    return result;
+  }
+
+  assertDealerMeasurementsCanBeAccepted(
+    job: Prisma.InstallationJobGetPayload<{ include: typeof jobInclude }>,
+    user: AuthUser,
+  ): void {
+    const internalOwner = user.role?.name === 'dealer' &&
+      job.estimate.idUser === user.id &&
+      job.estimate.user.role.name === 'dealer' &&
+      job.estimate.user.dealerMode === DealerMode.INTERNAL;
+    if (user.role?.name !== 'admin' && !internalOwner) {
+      throw new ForbiddenException(
+        'Only administrators or the internal dealer who owns the estimate can waive the deposit.',
+      );
+    }
+    if (job.dealerMeasurementsAcceptedAt) return;
+    if (job.estimate.user.role.name !== 'dealer') {
+      throw new BadRequestException(
+        'This exception is only available for dealer estimates.',
+      );
+    }
+    if (
+      job.estimate.payments.some(
+        (payment) =>
+          payment.status === PaymentStatus.PAID ||
+          payment.status === PaymentStatus.REFUNDED ||
+          payment.paidAt != null,
+      )
+    ) {
+      throw new ConflictException(
+        'Dealer measurements must be accepted before any project payment is made.',
+      );
+    }
+    if (
+      job.status !== InstallationJobStatus.DEPOSIT_PAYMENT_PENDING ||
+      job.estimate.status.name !== 'Active' ||
+      job.estimate.order ||
+      job.quotes[0]?.status !== InstallationQuoteStatus.DRAFT
+    ) {
+      throw new ConflictException(
+        'Dealer measurements can only be accepted while the installation deposit is pending.',
+      );
+    }
+    this.assertUnchangedDealerQuote(job);
+  }
+
+  private assertUnchangedDealerQuote(
+    job: Prisma.InstallationJobGetPayload<{ include: typeof jobInclude }>,
+  ) {
+    const quote = job.quotes[0];
+    if (!quote || quote.status !== InstallationQuoteStatus.DRAFT ||
+      quote.needsRecalculation || !quote.lines.length ||
+      new Decimal(quote.total.toString()).lte(0)) {
+      throw new BadRequestException('A current installation calculation is required before waiving the deposit.');
+    }
+    if (
+      !job.estimate.pieces.length ||
+      job.measurements.some((measurement) => measurement.isManual)
+    ) {
+      throw new BadRequestException(
+        'This exception requires installation measurements from the estimate pieces only.',
+      );
+    }
+    const expected = job.estimate.pieces.flatMap((piece) =>
+      Array.from({ length: piece.qty }, (_, i) => this.measurementCreateFromPiece(piece, i + 1)),
+    );
+    // No recalcula tarifas al omitir el paso. Comprueba que el precio guardado
+    // corresponde a las mismas piezas y medidas, incluso ante ediciones simultáneas.
+    const dimensions = [
+      'widthIn', 'heightIn', 'heightLeftIn', 'heightRightIn', 'legHeightIn',
+      'sashHeightIn', 'windowHeightIn', 'doorWidthIn', 'doorHeightIn',
+      'leftSideliteWidthIn', 'rightSideliteWidthIn', 'leftPanels', 'rightPanels',
+      'panelCount', 'lengthIn',
+    ] as const;
+    const materialKeys = ['idProd', 'idBrand', 'idSyst', 'idConf', 'idFC',
+      'idCryst', 'idTint', 'idCoat', 'idPrivacy'] as const;
+    const numeric = (value: unknown) => value == null ? null : new Decimal(String(value)).toString();
+    const heights = (value: unknown) => JSON.stringify(Array.isArray(value) ? value.map(numeric) : null);
+    const matches = expected.length === job.measurements.length && expected.every((data) => {
+      const saved = job.measurements.find((m) => m.pieceId === data.pieceId && m.unitIndex === data.unitIndex);
+      if (!saved) return false;
+      const source = saved.sourceSnapshot as Prisma.JsonObject | null;
+      const current = data.sourceSnapshot as Prisma.InputJsonObject;
+      return materialKeys.every((key) => (source?.[key] ?? null) === (current[key] ?? null)) &&
+        dimensions.every((key) => numeric(saved[key]) === numeric(data[key])) &&
+        heights(saved.horizontalHeights) === heights(data.horizontalHeights);
+    });
+    if (!matches) {
+      throw new ConflictException('The estimate changed. Refresh its installation calculation before waiving the deposit.');
+    }
+  }
+
+  private async finalizeDealerMeasurements(
+    job: Prisma.InstallationJobGetPayload<{ include: typeof jobInclude }>,
+    actorId: number,
+    tx: PrismaTransactionClient,
+    fromProfile = false,
+  ) {
+    this.assertUnchangedDealerQuote(job);
+    const acceptedAt = new Date();
+    await tx.installationMeasurement.updateMany({
+      where: { jobId: job.id },
+      data: {
+        status: InstallationMeasurementStatus.COMPLETED,
+        measuredById: null,
+        measuredAt: null,
+      },
+    });
+    // APPROVED indica que el precio ya está listo. No se crea una aprobación
+    // atribuida al admin o al cliente, ni una revisión de materiales inexistente.
+    await tx.installationQuote.update({
+      where: { id: job.quotes[0].id },
+      data: {
+        status: InstallationQuoteStatus.APPROVED,
+        approvalReason: InstallationQuoteReason.DEALER_MEASUREMENTS,
+        approvedAt: acceptedAt,
+      },
+    });
+    await tx.payment.updateMany({
+      where: {
+        idEst: job.estimateId,
+        type: PaymentType.INSTALLATION_DEPOSIT,
+        status: PaymentStatus.PENDING,
+        stripeSessionId: null,
+      },
+      data: { status: PaymentStatus.CANCELED },
+    });
+    await tx.installationJob.update({
+      where: { id: job.id },
+      data: {
+        status: resolveApprovedPreOrderStage(job.permit),
+        dealerMeasurementsAcceptedAt: acceptedAt,
+        dealerMeasurementsAcceptedById: fromProfile ? null : actorId,
+      },
+    });
+    await tx.eventLog.create({
+      data: {
+        action: 'UPDATE', entityType: 'InstallationJob', entityId: job.id, userId: actorId,
+        message: fromProfile
+          ? 'No installation deposit: dealer profile exemption applied. Current measurements and price retained; remeasurement and quote approvals skipped.'
+          : 'Installation deposit waived. Current dealer measurements and price retained; remeasurement and quote approvals skipped.',
+      },
+    });
+  }
+
+  async acceptDealerMeasurements(jobId: number, user: AuthUser) {
+    const changed = await this.withAgreementJobTransaction(
+      jobId,
+      async (tx) => {
+        const job = await this.getJobRecord(jobId, tx);
+        if (!job) throw new NotFoundException('Installation job not found.');
+        this.assertDealerMeasurementsCanBeAccepted(job, user);
+        if (job.dealerMeasurementsAcceptedAt) return false;
+
+        // El checkout se cierra en PaymentsService. Se vuelve a comprobar bajo
+        // el mismo bloqueo de Estimate que utiliza la creación de pagos.
+        if (job.estimate.payments.some((payment) => payment.stripeSessionId)) {
+          throw new ConflictException(
+            'A checkout was opened while accepting the measurements. Try again after closing it.',
+          );
+        }
+        await this.finalizeDealerMeasurements(job, user.id, tx);
+        return true;
+      },
+    );
+    const result = await this.findJob(jobId, user);
+    if (changed) {
+      await this.notifyInstallationOwner({
+        ownerId: result.estimate.idUser,
+        actorId: user.id,
+        jobId,
+        message: `Installation for Estimate #${result.estimate.number} is ready to continue with the current measurements and price. No installation deposit, remeasurement or quote approval is required.`,
+        actionLabel: 'Open estimate',
+        actionUrl: `/estimates/${result.estimateId}/edit`,
+        dedupeKey: `installation:${jobId}:dealer-measurements-accepted`,
+      });
+    }
     return result;
   }
 
@@ -1839,6 +2036,7 @@ export class InstallationWorkflowService {
             include: {
               status: true,
               order: true,
+              payments: true,
               user: { include: { role: true } },
             },
           },
@@ -1867,12 +2065,13 @@ export class InstallationWorkflowService {
       if (!job) {
         throw new NotFoundException(`Installation job #${jobId} not found.`);
       }
+      const editableWaiver = canEditUnpaidWaivedInstallation(job);
       if (
-        job.status !== InstallationJobStatus.DEPOSIT_PAYMENT_PENDING ||
-        job.payments.length > 0
+        (!editableWaiver && job.status !== InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) ||
+        hasStartedInstallationPayment(job.estimate.payments)
       ) {
         throw new BadRequestException(
-          'Installation details can only be changed before the installation deposit is paid.',
+          'Installation details can only be changed before payment starts.',
         );
       }
       if (job.estimate.status.name !== 'Active' || job.estimate.order) {
@@ -1882,10 +2081,16 @@ export class InstallationWorkflowService {
       }
 
       const quote = job.quotes[0];
-      if (!quote || quote.status !== InstallationQuoteStatus.DRAFT) {
+      if (!quote || (!editableWaiver && quote.status !== InstallationQuoteStatus.DRAFT)) {
         throw new BadRequestException(
           'Only the preliminary installation quote can be changed.',
         );
+      }
+
+      if (editableWaiver) {
+        await tx.installationQuote.update({
+          where: { id: quote.id }, data: { status: InstallationQuoteStatus.DRAFT },
+        });
       }
 
       if (dto.permitRequested && !job.permit) {
@@ -1936,7 +2141,7 @@ export class InstallationWorkflowService {
         );
       }
       if (
-        new Decimal(job.depositAmountSnapshot.toString()).gt(
+        !editableWaiver && new Decimal(job.depositAmountSnapshot.toString()).gt(
           recalculatedQuote.total.toString(),
         )
       ) {
@@ -1945,9 +2150,16 @@ export class InstallationWorkflowService {
         );
       }
 
+      if (editableWaiver) {
+        await tx.installationQuote.update({
+          where: { id: quote.id }, data: { status: InstallationQuoteStatus.APPROVED },
+        });
+      }
       await tx.installationJob.update({
         where: { id: jobId },
-        data: { status: InstallationJobStatus.DEPOSIT_PAYMENT_PENDING },
+        data: { status: editableWaiver
+          ? resolveApprovedPreOrderStage(await tx.installationPermit.findUnique({ where: { jobId } }))
+          : InstallationJobStatus.DEPOSIT_PAYMENT_PENDING },
       });
     });
 
@@ -2019,7 +2231,11 @@ export class InstallationWorkflowService {
         await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${job.estimateId} FOR UPDATE`;
         const current = await tx.installationJob.findUnique({
           where: { id: jobId },
-          include: { payments: true },
+          include: {
+            payments: true,
+            estimate: { include: { status: true, order: true, payments: true } },
+            quotes: { orderBy: { version: 'desc' }, take: 1 },
+          },
         });
         if (!current || current.status !== job.status || current.payments.some(
           (payment) =>
@@ -2028,6 +2244,9 @@ export class InstallationWorkflowService {
               (payment.status === PaymentStatus.PAID || payment.status === PaymentStatus.REFUNDED),
         )) {
           throw new BadRequestException('Installation or its payments changed. Reload the estimate before canceling installation.');
+        }
+        if (current.dealerMeasurementsAcceptedAt && !canEditUnpaidWaivedInstallation(current)) {
+          throw new BadRequestException('Installation can only be removed before payment starts and before later revisions.');
         }
         const estimate = await tx.estimate.findUnique({
           where: { id: job.estimateId },
@@ -2051,7 +2270,7 @@ export class InstallationWorkflowService {
         entityType: 'InstallationJob',
         entityId: jobId,
         userId: user.id,
-        message: `Installation request removed from Estimate #${job.estimate.number} before deposit payment.`,
+        message: `Installation request removed from Estimate #${job.estimate.number} before payment.`,
         before: { estimateId: job.estimateId, status: job.status },
       });
       await this.notifyInstallationAdmins({
@@ -2135,6 +2354,7 @@ export class InstallationWorkflowService {
       where: { id: jobId },
       select: {
         depositAmountSnapshot: true,
+        dealerMeasurementsAcceptedAt: true,
         payments: {
           where: {
             type: PaymentType.INSTALLATION_DEPOSIT,
@@ -2160,8 +2380,9 @@ export class InstallationWorkflowService {
     });
     if (!job) throw new NotFoundException('Installation job not found.');
 
-    // Jobs created before deposits existed keep their original workflow.
-    if (new Decimal(job.depositAmountSnapshot.toString()).eq(0)) return;
+    // Las autorizaciones del administrador y los casos anteriores al depósito
+    // continúan sin exigir una visita de remedición.
+    if (job.dealerMeasurementsAcceptedAt || new Decimal(job.depositAmountSnapshot.toString()).eq(0)) return;
     if (job.payments.length === 0) {
       throw new BadRequestException(
         'The non-refundable installation deposit must be paid before remeasurement.',
@@ -2730,7 +2951,11 @@ export class InstallationWorkflowService {
     if (!isPrivileged(user))
       throw new BadRequestException('Only company staff can submit a quote.');
 
-    if (new Decimal(job.depositAmountSnapshot.toString()).gt(0)) {
+    if (job.dealerMeasurementsAcceptedAt && job.quotes[0]?.status === InstallationQuoteStatus.APPROVED) {
+      throw new BadRequestException('The current installation quote is already ready. Only a changed draft requires submission.');
+    }
+
+    if (!job.dealerMeasurementsAcceptedAt && new Decimal(job.depositAmountSnapshot.toString()).gt(0)) {
       const depositPaid = job.payments.some(
         (payment) =>
           payment.type === PaymentType.INSTALLATION_DEPOSIT &&
@@ -2756,6 +2981,11 @@ export class InstallationWorkflowService {
         throw new BadRequestException(
           `${pendingMeasurements} opening(s) still require field measurement.`,
         );
+      }
+
+      const current = await this.getJobRecord(jobId, tx);
+      if (current?.dealerMeasurementsAcceptedAt && current.quotes[0]?.status === InstallationQuoteStatus.APPROVED) {
+        throw new BadRequestException('The current installation quote is already ready. Only a changed draft requires submission.');
       }
 
       const quote = await this.ensureDraftQuote(jobId, user.id, tx);
@@ -4025,15 +4255,71 @@ export class InstallationWorkflowService {
     return result;
   }
 
+  async refreshUnpaidDealerMeasurements(
+    estimateId: number,
+    tx: PrismaTransactionClient,
+  ): Promise<void> {
+    const job = await tx.installationJob.findUnique({
+      where: { estimateId },
+      include: jobInclude,
+    });
+    if (!job?.dealerMeasurementsAcceptedAt || job.status === InstallationJobStatus.CANCELED) return;
+    if (!canEditUnpaidWaivedInstallation(job)) {
+      throw new BadRequestException('This installation is locked for estimate changes.');
+    }
+    if (!job.estimate.pieces.length) {
+      throw new BadRequestException('Remove installation before deleting every estimate piece.');
+    }
+
+    const retainedIds: number[] = [];
+    for (const piece of job.estimate.pieces) {
+      for (let unitIndex = 1; unitIndex <= piece.qty; unitIndex += 1) {
+        const data = {
+          ...this.measurementCreateFromPiece(piece, unitIndex),
+          status: InstallationMeasurementStatus.COMPLETED,
+          measuredById: null,
+          measuredAt: null,
+        };
+        const measurement = await tx.installationMeasurement.upsert({
+          where: { jobId_pieceId_unitIndex: { jobId: job.id, pieceId: piece.id, unitIndex } },
+          create: { jobId: job.id, ...data },
+          update: data,
+        });
+        retainedIds.push(measurement.id);
+      }
+    }
+    await tx.installationMeasurement.deleteMany({
+      where: { jobId: job.id, id: { notIn: retainedIds } },
+    });
+
+    // El precio todavía no se ha pagado. Actualiza la propuesta sin atribuir
+    // una aprobación nueva ni volver a exigir depósito o visita de remedición.
+    const quoteId = job.quotes[0].id;
+    await tx.installationQuote.update({
+      where: { id: quoteId }, data: { status: InstallationQuoteStatus.DRAFT },
+    });
+    await this.rebuildAutomaticLines(job.id, quoteId, tx);
+    const quote = await this.recalculateQuoteTotals(quoteId, tx);
+    const lineCount = await tx.installationQuoteLine.count({ where: { quoteId } });
+    if (!lineCount || new Decimal(quote.total.toString()).lte(0)) {
+      throw new BadRequestException('No installation price could be calculated. Review the installation-service mappings.');
+    }
+    await tx.installationQuote.update({
+      where: { id: quoteId },
+      data: { status: InstallationQuoteStatus.APPROVED, needsRecalculation: false },
+    });
+  }
+
   async refreshAfterEstimateChange(
     estimateId: number,
     actor: AuthUser,
   ): Promise<void> {
     const existingJob = await this.prisma.installationJob.findUnique({
       where: { estimateId },
-      select: { id: true, status: true },
+      select: { id: true, status: true, dealerMeasurementsAcceptedAt: true },
     });
-    if (!existingJob || existingJob.status === InstallationJobStatus.CANCELED) {
+    if (!existingJob || existingJob.status === InstallationJobStatus.CANCELED ||
+      existingJob.dealerMeasurementsAcceptedAt) {
       return;
     }
 
@@ -4199,6 +4485,9 @@ export class InstallationWorkflowService {
       estimate.installationJob?.status === InstallationJobStatus.CANCELED
         ? null
         : estimate.installationJob;
+    if (job?.dealerMeasurementsAcceptedAt && !options.preview && type !== PaymentType.INSTALLATION_DEPOSIT) {
+      assertCompleteEstimateCustomer(estimate, 'installation-payment');
+    }
     const manualDiscount = calculateEstimateDiscount(estimate, job);
     if (manualDiscount && !options.preview) {
       const config = estimateDiscountConfig(estimate.manualDiscount)!;
@@ -4223,6 +4512,7 @@ export class InstallationWorkflowService {
     if (type === PaymentType.INSTALLATION_DEPOSIT) {
       if (
         !job ||
+        job.dealerMeasurementsAcceptedAt ||
         job.status !== InstallationJobStatus.DEPOSIT_PAYMENT_PENDING
       ) {
         throw new BadRequestException(
@@ -4373,6 +4663,8 @@ export class InstallationWorkflowService {
       paymentSequence = quote.version;
       description = paidBalanceBase.gt(0)
         ? `Installation change order — Estimate #${estimate.number}`
+        : job.dealerMeasurementsAcceptedAt
+          ? `Installation balance — Estimate #${estimate.number}`
         : `Installation balance after deposit — Estimate #${estimate.number}`;
     } else if (type === PaymentType.DELIVERY) {
       if (!estimate.order) {
@@ -4796,11 +5088,20 @@ export class InstallationWorkflowService {
   async assertEstimateEditAllowed(
     estimateId: number,
     user: AuthUser,
+    customerDetailsOnly = false,
+    tx: PrismaTransactionClient = this.prisma,
   ): Promise<void> {
-    const job = await this.prisma.installationJob.findUnique({
+    const job = await tx.installationJob.findUnique({
       where: { estimateId },
       select: {
         status: true,
+        dealerMeasurementsAcceptedAt: true,
+        estimate: { select: {
+          status: { select: { name: true } }, order: { select: { id: true } },
+          payments: { select: { status: true, paidAt: true, stripeSessionId: true } },
+        } },
+        quotes: { orderBy: { version: 'desc' }, take: 1,
+          select: { status: true, approvalReason: true, submittedAt: true } },
         payments: {
           where: { type: PaymentType.INSTALLATION_DEPOSIT },
           select: { status: true, stripeSessionId: true },
@@ -4808,6 +5109,9 @@ export class InstallationWorkflowService {
       },
     });
     if (!job) return;
+    if (canEditUnpaidWaivedInstallation(job)) {
+      return;
+    }
     const depositCheckoutStarted = job.payments.some(
       (payment) =>
         payment.status === PaymentStatus.PAID ||
@@ -4817,7 +5121,7 @@ export class InstallationWorkflowService {
       return;
     }
     throw new BadRequestException(
-      'This estimate is locked after installation-deposit checkout begins. Material changes must use the measured Estimate revision workflow.',
+      'This estimate is locked after payment starts or while an installation revision is in progress. Material changes must use the Estimate revision workflow.',
     );
   }
 }

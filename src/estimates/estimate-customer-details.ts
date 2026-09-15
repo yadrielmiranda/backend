@@ -21,10 +21,10 @@ type EstimateWithCustomer = Pick<
   };
 };
 
-// Cotizar no requiere contacto. Se exige al compartir un contrato o iniciar el depósito.
+// Cotizar no requiere contacto. Se exige antes de comprometer el proyecto.
 export function assertCompleteEstimateCustomer(
   estimate: EstimateWithCustomer,
-  purpose: 'contract' | 'deposit',
+  purpose: 'contract' | 'deposit' | 'dealer-measurements' | 'installation-payment',
 ) {
   const useEstimateCustomer = estimate.user.role.name === 'dealer';
   const missing = customerFields
@@ -43,7 +43,11 @@ export function assertCompleteEstimateCustomer(
   const action =
     purpose === 'contract'
       ? 'sharing with a contract'
-      : 'paying the installation deposit';
+      : purpose === 'dealer-measurements'
+        ? 'accepting dealer measurements'
+        : purpose === 'installation-payment'
+          ? 'paying for this installation project'
+        : 'paying the installation deposit';
   throw new BadRequestException(
     `Complete ${source} before ${action}. Missing: ${missing.join(', ')}.`,
   );

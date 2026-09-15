@@ -380,6 +380,7 @@ export class EstimatesService {
     userId: number,
     tx: PrismaTransactionClient,
     recalculating = false,
+    customerDetailsOnly = false,
   ): Promise<void> {
     const actor = await tx.user.findUnique({
       where: { id: userId },
@@ -430,6 +431,8 @@ export class EstimatesService {
     await this.installationWorkflow.assertEstimateEditAllowed(
       estimateId,
       actorUser,
+      customerDetailsOnly,
+      tx,
     );
   }
 
@@ -1257,6 +1260,9 @@ export class EstimatesService {
         estimateId,
         userId,
         tx as PrismaTransactionClient,
+        false,
+        dto.customerTaxRate === undefined ||
+          Boolean(beforeEstimate && new Decimal(dto.customerTaxRate).eq(beforeEstimate.customerTaxRate.toString())),
       );
 
       const headerData: Prisma.EstimateUpdateInput = {
@@ -1450,6 +1456,8 @@ export class EstimatesService {
         customerTaxRate,
       );
 
+      await this.installationWorkflow.refreshUnpaidDealerMeasurements(estimateId, tx as PrismaTransactionClient);
+
       const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
         estimateId,
@@ -1570,6 +1578,8 @@ export class EstimatesService {
         factoryTaxRate,
         customerTaxRate,
       );
+
+      await this.installationWorkflow.refreshUnpaidDealerMeasurements(estimateId, tx as PrismaTransactionClient);
 
       const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
@@ -1785,6 +1795,8 @@ export class EstimatesService {
         customerTaxRate,
       );
 
+      await this.installationWorkflow.refreshUnpaidDealerMeasurements(estimateId, tx as PrismaTransactionClient);
+
       const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
         estimateId,
@@ -1967,6 +1979,8 @@ export class EstimatesService {
         customerTaxRate,
       );
 
+      await this.installationWorkflow.refreshUnpaidDealerMeasurements(estimateId, tx as PrismaTransactionClient);
+
       const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
         estimateId,
@@ -2047,6 +2061,8 @@ export class EstimatesService {
         factoryTaxRate,
         customerTaxRate,
       );
+
+      await this.installationWorkflow.refreshUnpaidDealerMeasurements(estimateId, tx as PrismaTransactionClient);
 
       const updatedEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
@@ -2426,6 +2442,8 @@ export class EstimatesService {
           },
         },
       });
+
+      await this.installationWorkflow.refreshUnpaidDealerMeasurements(estimateId, tx as PrismaTransactionClient);
 
       const refreshedEstimate = await tx.estimate.findUnique({
         where: { id: estimateId },

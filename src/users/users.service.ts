@@ -69,6 +69,7 @@ export class UsersService {
     markupOverride: true,
     isTaxExempt: true,
     dealerMode: true,
+    noInstallationDeposit: true,
     isActive: true,
     deletedAt: true,
     idRole: true,
@@ -99,6 +100,7 @@ export class UsersService {
       markupOverride: u.markupOverride ?? null,
       isTaxExempt: u.isTaxExempt ?? null,
       dealerMode: u.dealerMode ?? null,
+      noInstallationDeposit: u.noInstallationDeposit,
       isActive: u.isActive ?? null,
       deletedAt: u.deletedAt ?? null,
       passwordUpdatedAt: u.passwordUpdatedAt ?? null,
@@ -150,6 +152,10 @@ export class UsersService {
 
     if ('dealerMode' in dto && cmp(before.dealerMode, after.dealerMode)) {
       changed.push('dealerMode');
+    }
+
+    if (cmp(before.noInstallationDeposit, after.noInstallationDeposit)) {
+      changed.push('noInstallationDeposit');
     }
 
     if ('isActive' in dto && cmp(before.isActive, after.isActive)) {
@@ -208,7 +214,7 @@ export class UsersService {
   }
 
   async createUser(userData: CreateUserDto): Promise<UserSafe> {
-    const { idRole, installationPriceProfileId, dealerMode, ...rest } =
+    const { idRole, installationPriceProfileId, dealerMode, noInstallationDeposit, ...rest } =
       userData;
     const hashedPassword = await bcrypt.hash(rest.password, 10);
 
@@ -242,6 +248,7 @@ export class UsersService {
         ...rest,
         password: hashedPassword,
         dealerMode: resolvedDealerMode,
+        noInstallationDeposit: role.name === 'dealer' && noInstallationDeposit === true,
         role: { connect: { id: idRole } },
         ...(installationPriceProfileId
           ? {
@@ -267,6 +274,7 @@ export class UsersService {
       installationPriceProfileId,
       markupOverride,
       dealerMode,
+      noInstallationDeposit,
       ...rest
     } = userData;
 
@@ -315,6 +323,11 @@ export class UsersService {
       dealerMode,
       fallbackMode: existing.dealerMode,
     });
+    if (nextRoleName !== 'dealer') {
+      dataForPrisma.noInstallationDeposit = false;
+    } else if (noInstallationDeposit !== undefined) {
+      dataForPrisma.noInstallationDeposit = noInstallationDeposit === true;
+    }
 
     if (installationPriceProfileId != null) {
       const profile = await this.prisma.installationPriceProfile.findFirst({

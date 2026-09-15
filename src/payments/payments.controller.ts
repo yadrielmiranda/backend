@@ -5,9 +5,11 @@ import {
   Get,
   Headers,
   Param,
+  ParseIntPipe,
   Post,
   Req,
   Res,
+  UseInterceptors,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { PaymentsService } from './payments.service';
@@ -17,10 +19,21 @@ import { Public } from '@/auth/public.decorator';
 import { Roles } from '@/auth/roles.decorator';
 import { CreatePublicCheckoutSessionDto } from './dto/create-public-checkout-session.dto';
 import { RecordManualPaymentDto } from './dto/record-manual-payment.dto';
+import { InstallationPricingInterceptor } from '@/installation/installation-pricing.interceptor';
 
 @Controller('payments')
 export class PaymentsController {
   constructor(private readonly payments: PaymentsService) {}
+
+  @Roles('admin', 'dealer')
+  @UseInterceptors(InstallationPricingInterceptor)
+  @Post('installations/:jobId/accept-dealer-measurements')
+  acceptDealerMeasurements(
+    @Param('jobId', ParseIntPipe) jobId: number,
+    @Req() req: Request,
+  ) {
+    return this.payments.acceptDealerMeasurements(jobId, req.user as AuthUser);
+  }
 
   @Public()
   @Get('public/:token/context')

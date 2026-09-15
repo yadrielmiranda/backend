@@ -7,6 +7,8 @@ import { IsBoolean, IsString, Matches, ValidateIf } from 'class-validator';
 export class RegisterUserDto extends OmitType(CreateUserDto, [
   'idRole',
   'installationPriceProfileId',
+  'noInstallationDeposit',
+  'dealerMode',
 ] as const) {
   // unknown evita que la conversión implícita acepte cadenas como "false".
   @ValidateIf((_object, value) => value !== undefined)

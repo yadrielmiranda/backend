@@ -23,7 +23,16 @@ function fixture(role: 'dealer' | 'client' = 'dealer') {
     payments: [],
     installationJob: null,
     manualDiscount: null,
-    pieces: [{ id: 2, qty: 1 }],
+    pieces: [
+      {
+        id: 2,
+        qty: 1,
+        mark: 'A',
+        width: new Prisma.Decimal(48),
+        height: new Prisma.Decimal(60),
+        prod: { kind: 'GLAZED_UNIT' },
+      },
+    ],
     ...Object.fromEntries(Object.keys(customer).map((key) => [key, null])),
     user: {
       id: 7,
@@ -39,14 +48,26 @@ function fixture(role: 'dealer' | 'client' = 'dealer') {
       postalCode: '33175',
     },
   };
-  const job = {
+  const job: any = {
     id: 3,
     estimateId: 1,
     estimate,
     status: 'DEPOSIT_PAYMENT_PENDING',
     depositAmountSnapshot: new Prisma.Decimal(250),
     depositTermsAcceptedAt: null,
-    quotes: [{ id: 4, status: 'DRAFT', total: new Prisma.Decimal(1000) }],
+    dealerMeasurementsAcceptedAt: null,
+    dealerMeasurementsAcceptedById: null,
+    permit: null,
+    quotes: [
+      {
+        id: 4,
+        version: 1,
+        status: 'DRAFT',
+        total: new Prisma.Decimal(1000),
+        needsRecalculation: false,
+        lines: [{ id: 10 }],
+      },
+    ],
     measurements: [],
   };
   const tx: any = {
@@ -61,10 +82,30 @@ function fixture(role: 'dealer' | 'client' = 'dealer') {
       })),
     },
     installationJob: {
-      create: jest.fn().mockResolvedValue(job),
-      update: jest.fn().mockResolvedValue(job),
+      create: jest.fn(async ({ data }) => {
+        job.measurements = data.measurements.create.map((m, i) => ({
+          ...m,
+          id: 20 + i,
+          jobId: job.id,
+        }));
+        job.depositAmountSnapshot = data.depositAmountSnapshot;
+        if (data.permit) job.permit = data.permit.create;
+        return job;
+      }),
+      findUnique: jest.fn(async () => job),
+      update: jest.fn(async ({ data }) => Object.assign(job, data)),
     },
     installationQuoteLine: { count: jest.fn().mockResolvedValue(1) },
+    installationQuote: {
+      update: jest.fn(async ({ data }) => Object.assign(job.quotes[0], data)),
+    },
+    installationMeasurement: {
+      updateMany: jest.fn(async ({ data }) =>
+        job.measurements.forEach((m) => Object.assign(m, data)),
+      ),
+    },
+    payment: { updateMany: jest.fn() },
+    eventLog: { create: jest.fn() },
   };
   const prisma = {
     $transaction: jest.fn(async (work) => work(tx)),
@@ -86,7 +127,6 @@ function fixture(role: 'dealer' | 'client' = 'dealer') {
     {} as never,
   );
   // Se aísla el cálculo de piezas; la solicitud y la validación del pago son reales.
-  jest.spyOn(workflow as any, 'measurementCreateFromPiece').mockReturnValue({});
   jest.spyOn(workflow as any, 'rebuildAutomaticLines').mockResolvedValue(null);
   jest
     .spyOn(workflow as any, 'recalculateQuoteTotals')
@@ -134,6 +174,73 @@ describe('Customer details at installation commitment', () => {
       expect(f.tx.installationJob.update).not.toHaveBeenCalled();
     },
   );
+
+  it.each(['INTERNAL', 'EXTERNAL'])(
+    'automatically advances new %s requests with No installation deposit and no customer data',
+    async (mode) => {
+      const f = fixture();
+      f.estimate.user.dealerMode = mode;
+      (f.estimate.user as any).noInstallationDeposit = true;
+      await f.workflow.requestInstallation(
+        1,
+        { permitRequested: false },
+        f.actor,
+      );
+      expect(f.job.status).toBe('MATERIAL_PAYMENT_PENDING');
+      expect(f.job.quotes[0].status).toBe('APPROVED');
+      expect(f.job.quotes[0].total.toString()).toBe('1000');
+      expect(f.job.dealerMeasurementsAcceptedAt).toBeInstanceOf(Date);
+      expect(f.job.dealerMeasurementsAcceptedById).toBeNull();
+      expect(f.job.measurements[0]).toMatchObject({
+        status: 'COMPLETED',
+        measuredAt: null,
+        measuredById: null,
+      });
+      expect((f.workflow as any).notifyInstallationOwner).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringContaining(
+            'No installation deposit or remeasurement',
+          ),
+        }),
+      );
+    },
+  );
+
+  it('allows exempt requests when the unused deposit is larger than the installation total', async () => {
+    const f = fixture();
+    (f.estimate.user as any).noInstallationDeposit = true;
+    f.job.quotes[0].total = new Prisma.Decimal(100);
+    await f.workflow.requestInstallation(
+      1,
+      { permitRequested: false },
+      f.actor,
+    );
+    expect(f.job.status).toBe('MATERIAL_PAYMENT_PENDING');
+    expect(f.job.quotes[0].total.toString()).toBe('100');
+  });
+
+  it('moves an exempt request directly to its permit payment', async () => {
+    const f = fixture();
+    (f.estimate.user as any).noInstallationDeposit = true;
+    f.tx.globalParameter.findUnique.mockResolvedValue({
+      value: new Prisma.Decimal(250),
+    });
+    await f.workflow.requestInstallation(1, { permitRequested: true }, f.actor);
+    expect(f.job.status).toBe('PERMIT_PAYMENT_PENDING');
+    expect(f.job.permit.status).toBe('PAYMENT_PENDING');
+  });
+
+  it('does not apply an exemption to a direct client even if old data contains the flag', async () => {
+    const f = fixture('client');
+    (f.estimate.user as any).noInstallationDeposit = true;
+    await f.workflow.requestInstallation(
+      1,
+      { permitRequested: false },
+      f.actor,
+    );
+    expect(f.job.status).toBe('DEPOSIT_PAYMENT_PENDING');
+    expect(f.job.dealerMeasurementsAcceptedAt).toBeNull();
+  });
 
   it('lets a client request pricing before completing the profile address', async () => {
     const f = fixture('client');

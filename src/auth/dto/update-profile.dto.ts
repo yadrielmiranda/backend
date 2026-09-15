@@ -1,5 +1,7 @@
 import { OmitType } from '@nestjs/mapped-types';
 import { UpdateUserDto } from '@/users/dto/update-user.dto';
 
-// Este DTO hereda todo de UpdateUserDto, pero omite 'idRole'.
-export class UpdateProfileDto extends OmitType(UpdateUserDto, ['idRole'] as const) {}
+// El usuario no puede cambiar permisos de dealer desde su perfil personal.
+export class UpdateProfileDto extends OmitType(UpdateUserDto, [
+  'idRole', 'dealerMode', 'noInstallationDeposit',
+] as const) {}

@@ -75,6 +75,9 @@ model User {
   // Only dealer accounts use this commercial classification.
   dealerMode DealerMode?
 
+  // Omite depósito y remedición en nuevas solicitudes del dealer.
+  noInstallationDeposit Boolean @default(false)
+
   isActive  Boolean   @default(true)
   deletedAt DateTime?
 
@@ -97,6 +100,7 @@ model User {
   branding                          Branding?
   eventLogs                         EventLog[]
   installationRequests              InstallationJob[]           @relation("InstallationRequestedBy")
+  acceptedDealerMeasurements        InstallationJob[]           @relation("DealerMeasurementsAcceptedBy")
   installationMeasurements          InstallationMeasurement[]   @relation("InstallationMeasuredBy")
   installationQuotesCreated         InstallationQuote[]         @relation("InstallationQuoteCreatedBy")
   installationQuoteApprovals        InstallationQuoteApproval[]
@@ -1598,6 +1602,7 @@ enum InstallationQuoteReason {
   REMEASUREMENT
   PERMIT_REVISION
   FIELD_CHANGE
+  DEALER_MEASUREMENTS
 }
 
 enum InstallationApprovalStage {
@@ -1726,6 +1731,11 @@ model InstallationJob {
   depositTermsAcceptedAt DateTime?
   cancellationReason     String?   @db.VarChar(1000)
 
+  // Esta autorización exime el depósito y la visita; no representa un pago.
+  dealerMeasurementsAcceptedAt   DateTime?
+  dealerMeasurementsAcceptedById Int?
+  dealerMeasurementsAcceptedBy   User?     @relation("DealerMeasurementsAcceptedBy", fields: [dealerMeasurementsAcceptedById], references: [id], onDelete: Restrict)
+
   estimate      Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
   requestedBy   User     @relation("InstallationRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
   requestedById Int
@@ -1744,6 +1754,7 @@ model InstallationJob {
   updatedAt   DateTime  @updatedAt
 
   @@index([requestedById])
+  @@index([dealerMeasurementsAcceptedById])
   @@index([status])
   @@map("installation_jobs")
 }

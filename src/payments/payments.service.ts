@@ -824,6 +824,8 @@ export class PaymentsService {
 
     return this.prisma.$transaction(async (tx) => {
       if (params.publicToken) {
+        // Evita leer un estado anterior a la exención antes de bloquear Estimate.
+        await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${params.estimateId} FOR UPDATE`;
         const publicEstimate = await tx.estimate.findFirst({
           where: {
             id: params.estimateId,
@@ -1195,11 +1197,14 @@ export class PaymentsService {
     return { status: result.status };
   }
 
-  private async closeStripeCheckoutBeforeManualPayment(payment: {
-    id: number;
-    status: PaymentStatus;
-    stripeSessionId: string | null;
-  }) {
+  private async closeStripeCheckoutBeforePaymentChange(
+    payment: {
+      id: number;
+      status: PaymentStatus;
+      stripeSessionId: string | null;
+    },
+    requireConfirmedClosure = false,
+  ) {
     if (payment.status === PaymentStatus.PAID) {
       throw new ConflictException('This charge is already paid.');
     }
@@ -1215,7 +1220,8 @@ export class PaymentsService {
         typeof error === 'object' && error !== null
           ? (error as { code?: string })
           : null;
-      if (stripeError?.code === 'resource_missing') return;
+      if (stripeError?.code === 'resource_missing' && !requireConfirmedClosure)
+        return;
       throw error;
     }
 
@@ -1230,6 +1236,15 @@ export class PaymentsService {
     if (session.status === 'complete') {
       throw new ConflictException(
         'Stripe checkout completed and confirmation is still pending.',
+      );
+    }
+    if (
+      requireConfirmedClosure &&
+      session.status !== 'open' &&
+      session.status !== 'expired'
+    ) {
+      throw new ConflictException(
+        'The deposit checkout status could not be confirmed. Try again before waiving it.',
       );
     }
     if (session.status === 'open') {
@@ -1248,6 +1263,34 @@ export class PaymentsService {
         if (latest.status !== 'expired') throw error;
       }
     }
+  }
+
+  async acceptDealerMeasurements(jobId: number, actor: AuthUser) {
+    if (!['admin', 'dealer'].includes(actor.role?.name ?? '')) {
+      throw new ForbiddenException(
+        'Only administrators or the internal dealer who owns the estimate can waive the deposit.',
+      );
+    }
+    const job = await this.installationWorkflow.findJob(jobId, actor);
+    this.installationWorkflow.assertDealerMeasurementsCanBeAccepted(job, actor);
+    if (job.dealerMeasurementsAcceptedAt) return job;
+
+    for (const payment of job.estimate.payments) {
+      if (
+        payment.type !== PaymentType.INSTALLATION_DEPOSIT ||
+        !payment.stripeSessionId
+      )
+        continue;
+      // Reutiliza el cierre seguro: un pago confirmado o en procesamiento
+      // impide continuar. No se elimina ni se modifica un pago realizado.
+      await this.closeStripeCheckoutBeforePaymentChange(payment, true);
+      await this.closeUnpaidCheckoutSession(
+        payment.id,
+        payment.stripeSessionId,
+        PaymentStatus.CANCELED,
+      );
+    }
+    return this.installationWorkflow.acceptDealerMeasurements(jobId, actor);
   }
 
   async recordManualPayment(params: {
@@ -1339,7 +1382,7 @@ export class PaymentsService {
       select: { id: true, status: true, stripeSessionId: true },
     });
     if (existingPayment) {
-      await this.closeStripeCheckoutBeforeManualPayment(existingPayment);
+      await this.closeStripeCheckoutBeforePaymentChange(existingPayment);
     }
 
     return this.prisma.$transaction(async (tx) => {
