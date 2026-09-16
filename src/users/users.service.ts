@@ -1,3 +1,4 @@
+import { assertPaymentPlanAvailable } from '@/payment-plans/payment-plans.module';
 import {
   BadRequestException,
   Injectable,
@@ -73,6 +74,8 @@ export class UsersService {
     isActive: true,
     deletedAt: true,
     idRole: true,
+    paymentPlanId: true,
+    paymentPlan: true,
     installationPriceProfileId: true,
     installationPriceProfile: true,
     passwordUpdatedAt: true,
@@ -95,6 +98,7 @@ export class UsersService {
       postalCode: u.postalCode,
       idRole: u.idRole,
       roleName: u.role?.name ?? null,
+      paymentPlanId: u.paymentPlanId,
       installationPriceProfileId: u.installationPriceProfileId ?? null,
       installationPriceProfileName: u.installationPriceProfile?.name ?? null,
       markupOverride: u.markupOverride ?? null,
@@ -129,6 +133,7 @@ export class UsersService {
     if ('state' in dto && cmp(before.state, after.state)) changed.push('state');
     if ('postalCode' in dto && cmp(before.postalCode, after.postalCode))
       changed.push('postalCode');
+    if ('paymentPlanId' in dto && cmp(before.paymentPlanId, after.paymentPlanId)) changed.push('paymentPlanId');
     if ('idRole' in dto && cmp(before.idRole, after.idRole))
       changed.push('idRole');
     if (
@@ -214,7 +219,7 @@ export class UsersService {
   }
 
   async createUser(userData: CreateUserDto): Promise<UserSafe> {
-    const { idRole, installationPriceProfileId, dealerMode, noInstallationDeposit, ...rest } =
+    const { idRole, installationPriceProfileId, paymentPlanId, dealerMode, noInstallationDeposit, ...rest } =
       userData;
     const hashedPassword = await bcrypt.hash(rest.password, 10);
 
@@ -243,10 +248,12 @@ export class UsersService {
       }
     }
 
+    await assertPaymentPlanAvailable(this.prisma, paymentPlanId);
     const created = await this.prisma.user.create({
       data: {
         ...rest,
         password: hashedPassword,
+        ...(paymentPlanId ? { paymentPlan: { connect: { id: paymentPlanId } } } : {}),
         dealerMode: resolvedDealerMode,
         noInstallationDeposit: role.name === 'dealer' && noInstallationDeposit === true,
         role: { connect: { id: idRole } },
@@ -272,6 +279,7 @@ export class UsersService {
     const {
       idRole,
       installationPriceProfileId,
+      paymentPlanId,
       markupOverride,
       dealerMode,
       noInstallationDeposit,
@@ -299,6 +307,8 @@ export class UsersService {
       ...rest,
     };
 
+    await assertPaymentPlanAvailable(this.prisma, paymentPlanId);
+    if (paymentPlanId !== undefined) dataForPrisma.paymentPlan = paymentPlanId === null ? { disconnect: true } : { connect: { id: paymentPlanId } };
     let nextRoleName = existing.role.name;
 
     if (rest.password) {

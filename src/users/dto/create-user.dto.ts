@@ -110,6 +110,12 @@ export class CreateUserDto {
   installationPriceProfileId?: number | null;
 
   @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  paymentPlanId?: number | null;
+
+  @IsOptional()
   @IsEnum(DealerMode)
   dealerMode?: DealerMode;
 

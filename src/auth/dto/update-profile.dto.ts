@@ -3,5 +3,5 @@ import { UpdateUserDto } from '@/users/dto/update-user.dto';
 
 // El usuario no puede cambiar permisos de dealer desde su perfil personal.
 export class UpdateProfileDto extends OmitType(UpdateUserDto, [
-  'idRole', 'dealerMode', 'noInstallationDeposit',
+  'paymentPlanId', 'idRole', 'dealerMode', 'noInstallationDeposit',
 ] as const) {}

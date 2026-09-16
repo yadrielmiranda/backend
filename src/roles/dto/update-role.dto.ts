@@ -12,4 +12,10 @@ export class UpdateRoleDto {
   @Min(1)
   @Type(() => Number)
   installationPriceProfileId?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  paymentPlanId?: number | null;
 }

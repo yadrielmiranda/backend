@@ -1,3 +1,5 @@
+import { buildPaymentSchedule } from '@/payment-plans/payment-schedule';
+import { planSnapshot } from '@/payment-plans/payment-plan';
 import {
   calculateEstimateDiscount,
   estimateDiscountConfig,
@@ -118,7 +120,12 @@ export function buildPublicEstimateData(
       }
     : null;
 
+  const paymentPlan = planSnapshot(estimate.paymentPlanSnapshot);
   return {
+    ...(paymentPlan && !hideDealerPromotions ? {
+      paymentPlanTerms: { name: paymentPlan.name, definition: paymentPlan.definition },
+      paymentSchedule: buildPaymentSchedule(estimate),
+    } : {}),
     id: estimate.id,
     number: estimate.number,
     name: estimate.name,

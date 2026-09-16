@@ -1,3 +1,4 @@
+import { PaymentPlansModule } from './payment-plans/payment-plans.module';
 import { ContractsModule } from './contracts/contracts.module';
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
@@ -77,6 +78,7 @@ import { SmsConsentModule } from './sms/sms-consent.module';
     GeoModule,
     BrandingsModule,
     PaymentsModule,
+    PaymentPlansModule,
     LogsModule,
     MuntinPatternsModule,
     MuntinTypesModule,

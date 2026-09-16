@@ -1,3 +1,4 @@
+import { assertScheduleMilestone, getPaymentSchedule } from '@/payment-plans/payment-schedule';
 // @/orders/orders.service.ts
 import {
   Injectable,
@@ -36,7 +37,7 @@ import { calculateMaterialFinancials } from './order-material-financials';
 import { calculateEstimateDiscount, discountedInstallationTotal } from '@/estimates/discounts/estimate-discount';
 
 const orderDetailsInclude = {
-  estimate: { include: { installationJob: { include: { quotes: { orderBy: { version: 'desc' as const }, take: 1 }, permit: true } } } },
+  estimate: { include: { payments: true, installationJob: { include: { quotes: { orderBy: { version: 'desc' as const }, take: 1 }, permit: true } } } },
   status: true,
   user: { include: { role: true } },
   payment: true,
@@ -76,7 +77,7 @@ export class OrdersService {
     });
 
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
-    return { ...order, estimate: { ...order.estimate, manualDiscountSummary: calculateEstimateDiscount(order.estimate) } };
+    return { ...order, paymentSchedule: await getPaymentSchedule(this.prisma, order.idEst), estimate: { ...order.estimate, manualDiscountSummary: calculateEstimateDiscount(order.estimate) } };
   }
 
   async findAllStatuses(): Promise<OrderStatus[]> {
@@ -197,7 +198,8 @@ export class OrdersService {
           (sum, payment) => sum.add(payment.baseAmount.toString()),
           new Decimal(0),
         );
-        if (paidInstallation.lt(discountedInstallationTotal(current.estimate, installation))) {
+        const schedule = await assertScheduleMilestone(this.prisma, current.idEst, 'RELEASE');
+        if (!schedule && paidInstallation.lt(discountedInstallationTotal(current.estimate, installation))) {
           throw new BadRequestException(
             'Installation must be paid before an installation order can be marked Delivered.',
           );
@@ -377,7 +379,9 @@ export class OrdersService {
         await this.notificationsService.createAndSend({
           recipientId: updated.estimate.idUser,
           actorId: actor.id,
-          message: `Installation balance is due for Order #${updated.number}.`,
+          message: updated.estimate.paymentPlanSnapshot
+            ? `The next project installment is due for Order #${updated.number}.`
+            : `Installation balance is due for Order #${updated.number}.`,
           actionUrl: `/orders/${updated.id}`,
           actionLabel: 'Open payment',
           dedupeKey: `order:${updated.id}:installation-balance-due`,
@@ -454,7 +458,7 @@ export class OrdersService {
         (sum, payment) => sum.add(payment.baseAmount.toString()),
         new Decimal(0),
       );
-      if (installationPaid.lt(discountedInstallationTotal(order.estimate, installation))) {
+      if (!order.estimate.paymentPlanSnapshot && installationPaid.lt(discountedInstallationTotal(order.estimate, installation))) {
         throw new BadRequestException(
           'Installation must be paid before creating extra charges.',
         );
@@ -660,8 +664,9 @@ export class OrdersService {
 
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
 
+    const paymentSchedule = await getPaymentSchedule(this.prisma, order.idEst);
     const estimate = { ...order.estimate, manualDiscountSummary: calculateEstimateDiscount(order.estimate) };
-    if (roleName === 'admin' || roleName === 'operator') return { ...order, estimate };
+    if (roleName === 'admin' || roleName === 'operator') return { ...order, estimate, paymentSchedule };
 
     if (order.userId !== user.id) {
       throw new NotFoundException(`Order with ID #${id} not found.`);
@@ -670,6 +675,7 @@ export class OrdersService {
     return {
       ...order,
       estimate,
+      paymentSchedule,
       deliveries: order.deliveries.map((delivery) => ({
         ...delivery,
         internalReason: null,

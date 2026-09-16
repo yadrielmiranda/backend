@@ -256,6 +256,7 @@ describe('PaymentsService reconciliation', () => {
   it('repairs a paid material payment that has no order', async () => {
     const payment = materialPayment();
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       payment: { findUnique: jest.fn().mockResolvedValue(payment) },
       orderStatus: {
         findUnique: jest.fn().mockResolvedValue({ id: 1, name: 'Pending' }),
@@ -348,6 +349,7 @@ describe('PaymentsService reconciliation', () => {
   it('uses the reserved sequence rather than the internal order id', async () => {
     const payment = materialPayment();
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       orderStatus: {
         findUnique: jest.fn().mockResolvedValue({ id: 1, name: 'Pending' }),
       },
@@ -371,7 +373,7 @@ describe('PaymentsService reconciliation', () => {
       notifications as never,
     );
 
-    await (service as any).ensureOrderForMaterialPayment(tx, payment);
+    await (service as any).ensureOrderForInitialPayment(tx, payment);
 
     expect(tx.orderSequence.create).toHaveBeenCalledWith({ data: {} });
     expect(tx.order.create).toHaveBeenCalledWith(
@@ -420,6 +422,7 @@ describe('PaymentsService reconciliation', () => {
       }),
     );
     const transactions = payments.map((payment, index) => ({
+      $queryRaw: jest.fn().mockResolvedValue([]),
       payment: { findUnique: jest.fn().mockResolvedValue(payment) },
       orderStatus: {
         findUnique: jest.fn().mockResolvedValue({ id: 1, name: 'Pending' }),
@@ -471,6 +474,7 @@ describe('PaymentsService reconciliation', () => {
 
   it('does not reserve a number when the estimate cannot create an order', async () => {
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       orderSequence: { create: jest.fn() },
       order: { create: jest.fn() },
     };
@@ -488,7 +492,7 @@ describe('PaymentsService reconciliation', () => {
     );
 
     await expect(
-      (service as any).ensureOrderForMaterialPayment(tx, payment),
+      (service as any).ensureOrderForInitialPayment(tx, payment),
     ).rejects.toThrow('cannot create its paid material order');
     expect(tx.orderSequence.create).not.toHaveBeenCalled();
     expect(tx.order.create).not.toHaveBeenCalled();
@@ -508,6 +512,7 @@ describe('PaymentsService reconciliation', () => {
       },
     });
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       payment: { findUnique: jest.fn().mockResolvedValue(payment) },
       orderSequence: { create: jest.fn() },
       order: {
@@ -559,6 +564,7 @@ describe('PaymentsService reconciliation', () => {
       },
     });
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       payment: { findUnique: jest.fn().mockResolvedValue(payment) },
       estimateStatus: {
         findUnique: jest.fn().mockResolvedValue({ id: 2, name: 'Ordered' }),
@@ -612,6 +618,8 @@ describe('PaymentsService reconciliation', () => {
       },
     });
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      estimate: { findUnique: jest.fn().mockResolvedValue(null) },
       payment: { findUnique: jest.fn().mockResolvedValue(payment) },
       order: { findUnique: jest.fn().mockResolvedValue({ id: 11 }) },
     };
@@ -747,6 +755,7 @@ describe('PaymentsService reconciliation', () => {
       baseAmount: new Prisma.Decimal(1380),
     };
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       payment: {
         findUnique: jest.fn().mockResolvedValue(null),
         upsert: jest.fn().mockResolvedValue({ id: paidPayment.id }),

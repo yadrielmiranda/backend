@@ -1,3 +1,4 @@
+import { resolveNewPlan, getPaymentSchedule } from '@/payment-plans/payment-schedule';
 import { ContractStorageService } from '@/contracts/contract-storage.service';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
 import { calculateEstimateDiscount, estimateDiscountConfig, hasDiscountableInstallation, type EstimateDiscountSummary } from './discounts/estimate-discount';
@@ -114,6 +115,7 @@ type PieceWithRelations = Piece & {
 // incluyo order para que el front sepa si ya fue ordenado
 export type EstimateWithRelations = Estimate & {
   manualDiscountSummary?: EstimateDiscountSummary | null;
+  paymentSchedule?: Awaited<ReturnType<typeof getPaymentSchedule>>;
   user: Prisma.UserGetPayload<{
     include: { role: true };
   }>;
@@ -304,7 +306,7 @@ export class EstimatesService {
     estimateId: number,
   ) {
     await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
-    return tx.estimate.findUnique({
+    const estimate = await tx.estimate.findUnique({
       where: { id: estimateId },
       include: {
         user: {
@@ -351,6 +353,7 @@ export class EstimatesService {
         },
       },
     });
+    return estimate ? { ...estimate, paymentSchedule: await getPaymentSchedule(tx, estimateId) } : null;
   }
 
   /**
@@ -418,7 +421,7 @@ export class EstimatesService {
     if (
       estimate.payments?.some(
         (payment) =>
-          payment.type === PaymentType.MATERIAL &&
+          (payment.type === PaymentType.MATERIAL || payment.type === PaymentType.INSTALLMENT) &&
           (payment.status === PaymentStatus.PAID ||
             Boolean(payment.stripeSessionId)),
       )
@@ -906,6 +909,7 @@ export class EstimatesService {
 
     return {
       ...(estimateResult as any),
+      paymentSchedule: await getPaymentSchedule(this.prisma, estimate.id),
       pieces,
       installationJob,
       installationSummary,
@@ -1113,8 +1117,10 @@ export class EstimatesService {
 
       const nextNumber = String(190909 + sequence.id);
 
+      const paymentPlanSnapshot = await resolveNewPlan(tx, userId);
       const createdBase = await tx.estimate.create({
         data: {
+          paymentPlanSnapshot: paymentPlanSnapshot as unknown as Prisma.InputJsonValue,
           number: nextNumber,
           name: dto.name,
           expiresAt,

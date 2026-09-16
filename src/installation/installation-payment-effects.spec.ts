@@ -57,7 +57,10 @@ describe('Installation payment effects', () => {
       false,
     );
 
-    expect(tx.installationQuote.create).toHaveBeenCalledTimes(1);
+    expect(tx.installationQuote.create).not.toHaveBeenCalled();
+    expect(tx.installationQuote.update).toHaveBeenCalledWith({
+      where: { id: 20 }, data: { status: InstallationQuoteStatus.SUPERSEDED },
+    });
     expect(tx.installationJob.update).toHaveBeenCalledTimes(1);
   });
 

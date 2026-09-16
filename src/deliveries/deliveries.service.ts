@@ -1,3 +1,4 @@
+import { assertScheduleMilestone } from '@/payment-plans/payment-schedule';
 import {
   BadRequestException,
   ForbiddenException,
@@ -184,7 +185,8 @@ export class DeliveriesService {
     }
   }
 
-  private assertInstallationPaid(order: DeliveryOrder) {
+  private async assertInstallationPaid(order: DeliveryOrder) {
+    if (await assertScheduleMilestone(this.prisma, order.idEst, 'RELEASE')) return;
     const installation = order.estimate.installationJob;
     if (
       !installation ||
@@ -362,7 +364,10 @@ export class DeliveriesService {
     if (!pickedUp) throw new Error('Order status "Picked up" is not seeded.');
 
     const completedAt = new Date();
-    const updated = await this.prisma.order.update({
+    const updated = await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${order.idEst} FOR UPDATE`;
+      await assertScheduleMilestone(tx, order.idEst, 'RELEASE');
+      return tx.order.update({
       where: { id: orderId },
       data: {
         statusId: pickedUp.id,
@@ -370,6 +375,7 @@ export class DeliveriesService {
         pickupCompletedAt: completedAt,
       },
       include: { status: true },
+      });
     });
     await this.logs.log({
       action: 'UPDATE',
@@ -655,10 +661,14 @@ export class DeliveriesService {
       throw new BadRequestException('Delivery date cannot be in the past.');
     }
 
-    const updated = await this.prisma.orderDelivery.update({
-      where: { id: deliveryId },
-      data: { status: DeliveryStatus.SCHEDULED, scheduledFor },
-      include: deliveryInclude,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${delivery.order.idEst} FOR UPDATE`;
+      await assertScheduleMilestone(tx, delivery.order.idEst, 'RELEASE');
+      return tx.orderDelivery.update({
+        where: { id: deliveryId },
+        data: { status: DeliveryStatus.SCHEDULED, scheduledFor },
+        include: deliveryInclude,
+      });
     });
     await this.logs.log({
       action: 'UPDATE',
@@ -706,7 +716,7 @@ export class DeliveriesService {
 
     const order = delivery.order;
     const shouldFulfillOrder = order.status.name === 'Ready to pick up';
-    if (shouldFulfillOrder) this.assertInstallationPaid(order);
+    if (shouldFulfillOrder) await this.assertInstallationPaid(order);
     const deliveredStatus = shouldFulfillOrder
       ? await this.prisma.orderStatus.findUnique({
           where: { name: 'Delivered' },
@@ -718,6 +728,8 @@ export class DeliveriesService {
 
     const completedAt = new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${order.idEst} FOR UPDATE`;
+      if (shouldFulfillOrder) await assertScheduleMilestone(tx, order.idEst, 'RELEASE');
       const completed = await tx.orderDelivery.update({
         where: { id: deliveryId },
         data: { status: DeliveryStatus.COMPLETED, completedAt },

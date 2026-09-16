@@ -1,3 +1,4 @@
+import { synchronizeScheduleChanges, refreshScheduledInstallation } from '@/payment-plans/payment-schedule';
 import { createHash } from 'crypto';
 import Decimal from 'decimal.js';
 import { BrandingType, Prisma } from '@prisma/client';
@@ -107,6 +108,7 @@ export function agreementContent(publicEstimate: any) {
   const charges = publicEstimate.customerChargesSummary;
   return {
     schema: 1,
+    ...(publicEstimate.paymentPlanTerms ? { paymentPlan: publicEstimate.paymentPlanTerms } : {}),
     header: pick(publicEstimate, [
       'id',
       'number',
@@ -253,6 +255,7 @@ export function agreementScopes(snapshot: any): AgreementScopes {
   )!;
   const materialHash = sha256(
     canonicalJson({
+      ...(original.paymentPlan ? { paymentPlan: original.paymentPlan } : {}),
       header: original.header,
       totals: original.totals,
       materialDiscount: money(discount?.material?.discount ?? 0),
@@ -492,8 +495,12 @@ export function withAgreementTransaction<T>(
   },
 ): Promise<T> {
   return prisma.$transaction(async (db: Prisma.TransactionClient) => {
-    await db.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
+    const locked = await db.$queryRaw<Array<{ id: number; paymentPlanSnapshot: unknown }>>`SELECT id, paymentPlanSnapshot FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
     const result = await work(db);
+    if (locked?.[0]?.paymentPlanSnapshot) {
+      await synchronizeScheduleChanges(db, estimateId);
+      await refreshScheduledInstallation(db, estimateId);
+    }
     await invalidateChangedAgreements(db, estimateId);
     return result;
   }, options);

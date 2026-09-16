@@ -51,7 +51,11 @@ export class EstimatesController {
   @Get(':id/discount')
   async getDiscount(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     const estimate = await this.estimatesService.findOneForUser(id, req.user as AuthUser);
-    return { config: estimate.manualDiscount ?? null, summary: estimate.manualDiscountSummary ?? null };
+    return {
+      config: estimate.manualDiscount ?? null,
+      summary: estimate.manualDiscountSummary ?? null,
+      paymentSchedule: estimate.paymentSchedule ?? null,
+    };
   }
 
   @Patch(':id/discount')

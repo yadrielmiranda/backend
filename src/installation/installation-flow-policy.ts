@@ -43,6 +43,15 @@ type InstallationMeasurementPricingInput = {
   heightLeftIn?: unknown;
   heightRightIn?: unknown;
   legHeightIn?: unknown;
+  sashHeightIn?: unknown;
+  windowHeightIn?: unknown;
+  doorWidthIn?: unknown;
+  doorHeightIn?: unknown;
+  leftSideliteWidthIn?: unknown;
+  rightSideliteWidthIn?: unknown;
+  leftPanels?: unknown;
+  rightPanels?: unknown;
+  horizontalHeights?: unknown;
   panelCount?: unknown;
   lengthIn?: unknown;
 };
@@ -57,6 +66,12 @@ export function didInstallationMeasurementPricingInputChange(
     "heightLeftIn",
     "heightRightIn",
     "legHeightIn",
+    "sashHeightIn",
+    "windowHeightIn",
+    "doorWidthIn",
+    "doorHeightIn",
+    "leftSideliteWidthIn",
+    "rightSideliteWidthIn",
     "lengthIn",
   ] as const;
 
@@ -70,10 +85,12 @@ export function didInstallationMeasurementPricingInputChange(
     return true;
   }
 
-  return (
-    updates.panelCount !== undefined &&
-    integerOrNull(updates.panelCount) !== integerOrNull(current.panelCount)
-  );
+  if ((["panelCount", "leftPanels", "rightPanels"] as const).some((field) =>
+    updates[field] !== undefined && integerOrNull(updates[field]) !== integerOrNull(current[field]),
+  )) return true;
+  const heights = (value: unknown) => Array.isArray(value) ? value.map(decimalOrNull) : [];
+  return updates.horizontalHeights !== undefined &&
+    JSON.stringify(heights(updates.horizontalHeights)) !== JSON.stringify(heights(current.horizontalHeights));
 }
 
 function canonicalMuntin(value: unknown) {

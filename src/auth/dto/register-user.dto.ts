@@ -6,6 +6,7 @@ import { IsBoolean, IsString, Matches, ValidateIf } from 'class-validator';
 // pero omite el campo 'idRole' para que no se pueda inyectar en el registro público.
 export class RegisterUserDto extends OmitType(CreateUserDto, [
   'idRole',
+  'paymentPlanId',
   'installationPriceProfileId',
   'noInstallationDeposit',
   'dealerMode',

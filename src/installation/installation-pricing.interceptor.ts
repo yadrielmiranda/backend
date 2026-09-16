@@ -73,7 +73,7 @@ function publicQuote(quote: RecordValue, user: AuthUser | undefined) {
         .toFixed(6),
       isRequestedService: requested,
       canRemove:
-        quote.status === 'DRAFT' &&
+        (quote.status === 'DRAFT' || (quote.status === 'SUPERSEDED' && !quote.submittedAt && user?.role?.name === 'operator')) &&
         (requested ||
           (user?.role?.name === 'operator' && line.origin === 'FIELD_ADDED')),
     };

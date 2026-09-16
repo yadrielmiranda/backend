@@ -1,6 +1,8 @@
+import { assertScheduleMilestone, getPaymentSchedule, installmentContext, refreshScheduledInstallation } from '@/payment-plans/payment-schedule';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
 import { assertCompleteEstimateCustomer } from '@/estimates/estimate-customer-details';
 import { calculateEstimateDiscount, discountedInstallationTotal, discountAllocations, estimateDiscountConfig } from '@/estimates/discounts/estimate-discount';
+import { buildInstallationRevisionComparison } from './installation-revision-comparison';
 import { savedPromotions, promotionExpired, expiredPromotionMessage } from '@/promotions/promotion-pricing';
 import {
   BadRequestException,
@@ -41,6 +43,7 @@ import { LogsService } from '@/logs/logs.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { isPrivileged } from '@/auth/utils/is-privileged';
 import { resolvePieceComponents } from '@/pricing/piece-component-resolver';
+import { installationQuoteContent } from './installation-quote-comparison';
 import { InstallationPricingService } from './installation-pricing.service';
 import type { InstallationProfileSnapshot } from './installation-pricing.service';
 import {
@@ -82,6 +85,9 @@ import {
   additionalServiceInputFromStoredLine,
   additionalServicePricingDimensions,
 } from './installation-additional-service';
+
+export const SCHEDULE_DEPOSIT_TERMS =
+  'Once paid, this installation deposit is non-refundable. It is credited toward the first order installment. Any remaining credit is applied to subsequent installments. If the installation is canceled, the deposit is not refunded.';
 
 export const INSTALLATION_DEPOSIT_TERMS =
   'Once paid, this installation deposit is non-refundable. If the installation proceeds, the full deposit is credited toward the installation balance. If the installation is canceled, the deposit is not refunded.';
@@ -356,7 +362,7 @@ export class InstallationWorkflowService {
     const job = await this.getJobRecord(id);
     if (!job) throw new NotFoundException(`Installation job #${id} not found.`);
     this.assertAccess(job, user);
-    return { ...job, manualDiscountSummary: calculateEstimateDiscount(job.estimate, job) };
+    return { ...job, paymentSchedule: await getPaymentSchedule(this.prisma, job.estimateId), manualDiscountSummary: calculateEstimateDiscount(job.estimate, job), revisionComparison: buildInstallationRevisionComparison(job) };
   }
 
   async findJobByEstimate(estimateId: number, user: AuthUser) {
@@ -366,7 +372,7 @@ export class InstallationWorkflowService {
     });
     if (!job) return null;
     this.assertAccess(job, user);
-    return { ...job, manualDiscountSummary: calculateEstimateDiscount(job.estimate, job) };
+    return { ...job, paymentSchedule: await getPaymentSchedule(this.prisma, job.estimateId), manualDiscountSummary: calculateEstimateDiscount(job.estimate, job), revisionComparison: buildInstallationRevisionComparison(job) };
   }
 
   async findJobs(query: FindInstallationJobsQueryDto, user: AuthUser) {
@@ -574,10 +580,7 @@ export class InstallationWorkflowService {
     return {
       pieceId: piece.id,
       unitIndex,
-      label:
-        piece.qty > 1
-          ? `${piece.mark} (${unitIndex}/${piece.qty})`
-          : piece.mark,
+      label: piece.mark?.trim() || '',
       isManual: false,
       status: InstallationMeasurementStatus.PENDING,
       sourceSnapshot: this.sourceSnapshot(piece),
@@ -631,7 +634,7 @@ export class InstallationWorkflowService {
       rightSideliteWidth: piece.rightSideliteWidth?.toString(),
       leftPanels: piece.leftPanels,
       rightPanels: piece.rightPanels,
-      panelCount: piece.panelCount,
+      panelCount: this.panelCountFromPiece(piece),
       horizontalHeights: Array.isArray(piece.horizontalHeights)
         ? piece.horizontalHeights.map((value) => Number(value))
         : undefined,
@@ -1084,27 +1087,26 @@ export class InstallationWorkflowService {
     }
 
     const revision = await this.ensureDraftRevision(jobId, quote, actorId, tx);
-    const effectiveMarkup = await this.resolveEstimateOwnerMarkup(
-      revision.estimateId,
-      tx,
-    );
     const originalInput = this.pieceInputFromPersisted(measurement.piece, 1);
-    const proposedInput = this.pieceInputFromMeasurement(
-      measurement.piece,
-      measurement,
-    );
-    const calculated = await this.pieceCalculator.calculatePieceMetrics(
-      proposedInput,
-      effectiveMarkup,
-      tx,
-      await this.promotionRevisionCache(revision.estimateId, tx, measurement.piece),
-    );
-    const pricing = await this.calculatedRevisionSnapshot(calculated, tx);
+    const proposedInput = this.pieceInputFromMeasurement(measurement.piece, measurement);
     const action =
       createEstimateRevisionPieceFingerprint(originalInput) ===
       createEstimateRevisionPieceFingerprint(proposedInput)
         ? EstimateRevisionItemAction.UNCHANGED
         : EstimateRevisionItemAction.UPDATE;
+    const originalSnapshot = this.originalRevisionSnapshot(measurement.piece) as Prisma.InputJsonObject;
+    let pricing: Prisma.InputJsonValue;
+    if (action === EstimateRevisionItemAction.UNCHANGED) {
+      pricing = originalSnapshot.pricing!;
+    } else {
+      const calculated = await this.pieceCalculator.calculatePieceMetrics(
+        proposedInput,
+        await this.resolveEstimateOwnerMarkup(revision.estimateId, tx),
+        tx,
+        await this.promotionRevisionCache(revision.estimateId, tx, measurement.piece),
+      );
+      pricing = this.jsonValue(await this.calculatedRevisionSnapshot(calculated, tx));
+    }
 
     await tx.estimateRevisionItem.upsert({
       where: {
@@ -1165,6 +1167,7 @@ export class InstallationWorkflowService {
           in: [
             PaymentType.INSTALLATION_DEPOSIT,
             PaymentType.MATERIAL,
+            PaymentType.INSTALLMENT,
             PaymentType.INSTALLATION,
           ],
         },
@@ -1728,7 +1731,7 @@ export class InstallationWorkflowService {
           requestedById: user.id,
           status: InstallationJobStatus.DEPOSIT_PAYMENT_PENDING,
           depositAmountSnapshot: new Prisma.Decimal(depositAmount.toFixed(2)),
-          depositTermsSnapshot: INSTALLATION_DEPOSIT_TERMS,
+          depositTermsSnapshot: estimate.paymentPlanSnapshot ? SCHEDULE_DEPOSIT_TERMS : INSTALLATION_DEPOSIT_TERMS,
           measurements: {
             create: estimate.pieces.flatMap((piece) =>
               Array.from({ length: piece.qty }, (_, index) =>
@@ -2211,6 +2214,7 @@ export class InstallationWorkflowService {
       );
     }
 
+    if (job.estimate.paymentPlanSnapshot && job.estimate.order) throw new BadRequestException('A placed order must keep its agreed installation scope. Use an approved change instead of removing installation.');
     const depositPaid = job.payments.some(
       (payment) =>
         payment.type === PaymentType.INSTALLATION_DEPOSIT &&
@@ -2479,8 +2483,8 @@ export class InstallationWorkflowService {
     if (remeasurementCompleted) {
       await this.notifyInstallationAdmins({
         jobId,
-        message: `Remeasurement completed for Estimate #${result.estimate.number}. The final quote is ready for review.`,
-        actionLabel: 'Review measurements',
+        message: `Remeasurement completed for Estimate #${result.estimate.number}. Measurements are recorded. Submit Quote will check whether review is needed.`,
+        actionLabel: 'Open measurements',
         dedupeKey: `installation:${jobId}:remeasurement-completed:admin`,
         actorId: user.id,
       });
@@ -2494,7 +2498,7 @@ export class InstallationWorkflowService {
     dto: UpdateInstallationMeasurementDto,
     user: AuthUser,
   ) {
-    await this.findJob(jobId, user);
+    const job = await this.findJob(jobId, user);
     if (!isPrivileged(user)) {
       throw new BadRequestException(
         'Only company staff can record field measurements.',
@@ -2529,11 +2533,12 @@ export class InstallationWorkflowService {
           );
         }
 
-        const quote = await this.ensureDraftQuote(jobId, user.id, tx);
         await tx.installationMeasurement.update({
           where: { id: measurementId },
           data: {
-            ...(dto.label !== undefined ? { label: dto.label.trim() } : {}),
+            ...(dto.label !== undefined
+              ? { label: dto.label.trim() || existing.piece?.mark?.trim() || existing.label }
+              : {}),
             ...(dto.unitIndex !== undefined
               ? { unitIndex: dto.unitIndex }
               : {}),
@@ -2590,27 +2595,20 @@ export class InstallationWorkflowService {
           },
         });
 
-        if (!existing.isManual) {
-          const revisionResult = await this.upsertMeasuredPieceRevision(
-            jobId,
-            measurementId,
-            quote,
-            user.id,
-            tx,
-          );
-          if (revisionResult.action !== EstimateRevisionItemAction.UNCHANGED) {
-            await this.markQuoteForRecalculation(quote.id, tx);
+        const dimensionsChanged = didInstallationMeasurementPricingInputChange(existing, {
+          ...dto,
+          ...(fixedPanelCount !== null ? { panelCount: fixedPanelCount } : {}),
+        });
+        if (dimensionsChanged) {
+          const quote = await this.ensureDraftQuote(jobId, user.id, tx);
+          if (!existing.isManual) {
+            await this.upsertMeasuredPieceRevision(jobId, measurementId, quote, user.id, tx);
           }
-        } else if (
-          didInstallationMeasurementPricingInputChange(existing, dto)
-        ) {
-          const linkedLine = await tx.installationQuoteLine.findFirst({
-            where: { quoteId: quote.id, measurementId },
-            select: { id: true },
-          });
-          if (linkedLine) {
-            await this.markQuoteForRecalculation(quote.id, tx);
-          }
+          // También se recalcula al deshacer un cambio de medidas.
+          await this.markQuoteForRecalculation(quote.id, tx);
+        } else if (![InstallationJobStatus.QUOTE_DRAFT, ...REMEASUREMENT_IN_PROGRESS_STATUSES].includes(job.status)) {
+          // Un cambio de etiqueta no reabre una cotización que ya está lista.
+          return false;
         }
         return this.updateRemeasurementProgress(jobId, tx);
       },
@@ -2619,8 +2617,8 @@ export class InstallationWorkflowService {
     if (remeasurementCompleted) {
       await this.notifyInstallationAdmins({
         jobId,
-        message: `Remeasurement completed for Estimate #${result.estimate.number}. The final quote is ready for review.`,
-        actionLabel: 'Review measurements',
+        message: `Remeasurement completed for Estimate #${result.estimate.number}. Measurements are recorded. Submit Quote will check whether review is needed.`,
+        actionLabel: 'Open measurements',
         dedupeKey: `installation:${jobId}:remeasurement-completed:admin`,
         actorId: user.id,
       });
@@ -2828,8 +2826,8 @@ export class InstallationWorkflowService {
     if (remeasurementCompleted) {
       await this.notifyInstallationAdmins({
         jobId,
-        message: `Remeasurement completed for Estimate #${result.estimate.number}. The final quote is ready for review.`,
-        actionLabel: 'Review measurements',
+        message: `Remeasurement completed for Estimate #${result.estimate.number}. Measurements are recorded. Submit Quote will check whether review is needed.`,
+        actionLabel: 'Open measurements',
         dedupeKey: `installation:${jobId}:remeasurement-completed:admin`,
         actorId: user.id,
       });
@@ -2886,10 +2884,23 @@ export class InstallationWorkflowService {
       );
     }
     await this.withAgreementJobTransaction(jobId, async (tx) => {
+      const current = await this.getJobRecord(jobId, tx);
+      const source = current?.quotes[0];
       const quote = await this.ensureDraftQuote(jobId, user.id, tx);
-      const line = await tx.installationQuoteLine.findFirst({
+      let line = await tx.installationQuoteLine.findFirst({
         where: { id: lineId, quoteId: quote.id },
       });
+      if (!line && source && source.id !== quote.id) {
+        // El primer cambio crea un borrador: resolver la copia de la línea
+        // elegida, conservando intacta la cotización inicial congelada.
+        const index = [...source.lines].sort((a, b) => a.id - b.id).findIndex((item) => item.id === lineId);
+        if (index >= 0) {
+          const copied = await tx.installationQuoteLine.findMany({
+            where: { quoteId: quote.id }, orderBy: { id: 'asc' },
+          });
+          line = copied[index] ?? null;
+        }
+      }
       if (!line)
         throw new NotFoundException('Installation quote line not found.');
       if (line.origin === InstallationLineOrigin.AUTO) {
@@ -2905,7 +2916,7 @@ export class InstallationWorkflowService {
           'This field-added line can only be removed by company staff.',
         );
       }
-      await tx.installationQuoteLine.delete({ where: { id: lineId } });
+      await tx.installationQuoteLine.delete({ where: { id: line.id } });
       await this.recalculateQuoteTotals(quote.id, tx);
       if (job.status !== InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) {
         await this.markQuoteForRecalculation(quote.id, tx);
@@ -2942,38 +2953,124 @@ export class InstallationWorkflowService {
     return this.findJob(jobId, user);
   }
 
+  private hasRemeasurementMaterialChanges(
+    job: Prisma.InstallationJobGetPayload<{ include: typeof jobInclude }>,
+  ): boolean {
+    const linked = job.measurements.filter((measurement) => !measurement.isManual);
+    if (linked.length !== job.estimate.pieces.reduce((sum, piece) => sum + piece.qty, 0)) return true;
+    const revision = job.revisions.find((item) => item.quoteId === job.quotes[0]?.id);
+    const items = new Map((revision?.items ?? []).map((item) => [item.measurementId, item]));
+    for (const piece of job.estimate.pieces) {
+      const measurements = linked.filter((measurement) => measurement.pieceId === piece.id);
+      if (measurements.length !== piece.qty ||
+          new Set(measurements.map((measurement) => measurement.unitIndex)).size !== piece.qty) return true;
+      const original = this.pieceInputFromPersisted(piece);
+      const originalPricing = (this.originalRevisionSnapshot(piece) as Prisma.JsonObject).pricing as Prisma.JsonObject;
+      for (const measurement of measurements) {
+        if (measurement.unitIndex < 1 || measurement.unitIndex > piece.qty) return true;
+        if (createEstimateRevisionPieceFingerprint(original) !==
+            createEstimateRevisionPieceFingerprint(this.pieceInputFromMeasurement(piece, measurement))) return true;
+        const item = items.get(measurement.id);
+        if (item?.action === EstimateRevisionItemAction.REMOVE) return true;
+        if (item && createEstimateRevisionPieceFingerprint(original, originalPricing) !==
+            createEstimateRevisionPieceFingerprint(
+              (item.proposedPieceInput as Prisma.JsonObject) ?? original,
+              (item.calculatedSnapshot as Prisma.JsonObject) ?? originalPricing,
+            )) return true;
+      }
+    }
+    if (revision) {
+      const before = revision.originalTotals as Prisma.JsonObject;
+      const after = revision.revisedTotals as Prisma.JsonObject;
+      if (['units', 'rateT', 'priceT', 'taxRate', 'taxAmount', 'totalPayable',
+        'customerPriceT', 'customerTaxRate', 'customerTaxAmount', 'customerTotalPayable']
+        .some((field) => before[field] != null && after[field] != null &&
+          !new Decimal(String(before[field])).eq(String(after[field])))) return true;
+    }
+    return false;
+  }
+
+  private async finishUnchangedRemeasurement(
+    job: Prisma.InstallationJobGetPayload<{ include: typeof jobInclude }>,
+    notes: string | undefined,
+    actorId: number,
+    tx: PrismaTransactionClient,
+  ): Promise<boolean> {
+    const quote = job.quotes[0];
+    // Solo la primera remedición puede conservar la cotización preliminar.
+    // Las revisiones ya enviadas, rechazadas o aprobadas conservan su historial.
+    if (!quote || job.estimate.order || job.dealerMeasurementsAcceptedAt ||
+        quote.approvalReason !== InstallationQuoteReason.REMEASUREMENT ||
+        job.quotes.some((item) => item.submittedAt || item.approvedAt || item.approvals.length) ||
+        job.measurements.some((measurement) => measurement.isManual) ||
+        this.hasRemeasurementMaterialChanges(job)) return false;
+    const baseline = [...job.quotes].reverse().find((item) =>
+      item.status === InstallationQuoteStatus.SUPERSEDED && !item.needsRecalculation);
+    if (!baseline || quote.needsRecalculation || quote.lines.length === 0 ||
+        installationQuoteContent(quote) !== installationQuoteContent(baseline)) return false;
+
+    // Elimina únicamente borradores nunca enviados, incluidos los creados por
+    // versiones anteriores al pagar el depósito. La cotización original se conserva.
+    for (const draft of job.quotes) {
+      if (draft.id === baseline.id) continue;
+      if (draft.status !== InstallationQuoteStatus.DRAFT) return false;
+    }
+    for (const draft of job.quotes) {
+      if (draft.id !== baseline.id) await tx.installationQuote.delete({ where: { id: draft.id } });
+    }
+    const now = new Date();
+    await tx.installationQuote.update({
+      where: { id: baseline.id },
+      data: {
+        status: InstallationQuoteStatus.APPROVED,
+        submittedAt: now,
+        approvedAt: now,
+        notes: notes?.trim() || quote.notes,
+      },
+    });
+    await tx.installationJob.update({
+      where: { id: job.id },
+      data: { status: resolveApprovedPreOrderStage(job.permit) },
+    });
+    await tx.eventLog.create({
+      data: {
+        action: 'UPDATE', entityType: 'InstallationJob', entityId: job.id, userId: actorId,
+        message: 'Remeasurement submitted without changes. Original quote retained; no new version or approvals required.',
+      },
+    });
+    return true;
+  }
+
   async submitQuote(
     jobId: number,
     dto: SubmitInstallationQuoteDto,
     user: AuthUser,
   ) {
-    const job = await this.findJob(jobId, user);
+    await this.findJob(jobId, user);
     if (!isPrivileged(user))
       throw new BadRequestException('Only company staff can submit a quote.');
 
-    if (job.dealerMeasurementsAcceptedAt && job.quotes[0]?.status === InstallationQuoteStatus.APPROVED) {
-      throw new BadRequestException('The current installation quote is already ready. Only a changed draft requires submission.');
-    }
-
-    if (!job.dealerMeasurementsAcceptedAt && new Decimal(job.depositAmountSnapshot.toString()).gt(0)) {
-      const depositPaid = job.payments.some(
-        (payment) =>
-          payment.type === PaymentType.INSTALLATION_DEPOSIT &&
-          payment.status === PaymentStatus.PAID,
-      );
-      const remeasurementCompleted = job.appointments.some(
-        (appointment) =>
-          appointment.type === InstallationAppointmentType.REMEASUREMENT &&
-          appointment.status === InstallationAppointmentStatus.COMPLETED,
-      );
-      if (!depositPaid || !remeasurementCompleted) {
-        throw new BadRequestException(
-          'Deposit payment and completed remeasurement are required before submitting the final quote.',
-        );
+    const unchanged = await this.withAgreementJobTransaction(jobId, async (tx) => {
+      let current = await this.getJobRecord(jobId, tx);
+      if (!current) throw new NotFoundException('Installation job not found.');
+      const status = current.quotes[0]?.status;
+      if (status === InstallationQuoteStatus.APPROVED) {
+        throw new BadRequestException('The current installation quote is already ready. Only a changed draft requires submission.');
       }
-    }
-
-    await this.withAgreementJobTransaction(jobId, async (tx) => {
+      if ((status !== InstallationQuoteStatus.DRAFT && status !== InstallationQuoteStatus.SUPERSEDED) ||
+          current.status === InstallationJobStatus.CANCELED || current.status === InstallationJobStatus.COMPLETED) {
+        throw new BadRequestException('This quote is not awaiting submission.');
+      }
+      if (!current.dealerMeasurementsAcceptedAt && new Decimal(current.depositAmountSnapshot.toString()).gt(0)) {
+        const depositPaid = current.payments.some((payment) =>
+          payment.type === PaymentType.INSTALLATION_DEPOSIT && payment.status === PaymentStatus.PAID);
+        const visitCompleted = current.appointments.some((appointment) =>
+          appointment.type === InstallationAppointmentType.REMEASUREMENT &&
+          appointment.status === InstallationAppointmentStatus.COMPLETED);
+        if (!depositPaid || !visitCompleted) {
+          throw new BadRequestException('Deposit payment and completed remeasurement are required before submitting the final quote.');
+        }
+      }
       const pendingMeasurements = await tx.installationMeasurement.count({
         where: { jobId, status: InstallationMeasurementStatus.PENDING },
       });
@@ -2983,18 +3080,18 @@ export class InstallationWorkflowService {
         );
       }
 
-      const current = await this.getJobRecord(jobId, tx);
-      if (current?.dealerMeasurementsAcceptedAt && current.quotes[0]?.status === InstallationQuoteStatus.APPROVED) {
-        throw new BadRequestException('The current installation quote is already ready. Only a changed draft requires submission.');
+      if (current.quotes[0]?.needsRecalculation) {
+        const draft = await this.ensureDraftQuote(jobId, user.id, tx);
+        await this.rebuildAutomaticLines(jobId, draft.id, tx);
+        await this.rebuildManualLines(draft.id, tx);
+        await this.recalculateQuoteTotals(draft.id, tx);
+        await tx.installationQuote.update({ where: { id: draft.id }, data: { needsRecalculation: false } });
+        current = (await this.getJobRecord(jobId, tx))!;
       }
+      if (await this.finishUnchangedRemeasurement(current, dto.notes, user.id, tx)) return true;
 
       const quote = await this.ensureDraftQuote(jobId, user.id, tx);
-      if (quote.needsRecalculation) {
-        throw new BadRequestException(
-          'Recalculate the installation quote before submitting it.',
-        );
-      }
-      if (!job.estimate.order) {
+      if (!current.estimate.order) {
         const linkedMeasurements = await tx.installationMeasurement.findMany({
           where: { jobId, isManual: false, pieceId: { not: null } },
           select: { id: true },
@@ -3080,8 +3177,21 @@ export class InstallationWorkflowService {
         where: { id: jobId },
         data: { status: InstallationJobStatus.ADMIN_APPROVAL_PENDING },
       });
+      return false;
     });
     const result = await this.findJob(jobId, user);
+    if (unchanged) {
+      await this.notifyInstallationOwner({
+        jobId,
+        ownerId: result.estimate.idUser,
+        message: `Remeasurement for Estimate #${result.estimate.number} is complete. Measurements and prices are unchanged; no approval is required.`,
+        actionLabel: 'Open estimate',
+        actionUrl: `/estimates/${result.estimateId}/edit`,
+        dedupeKey: `installation:${jobId}:remeasurement-unchanged:owner`,
+        actorId: user.id,
+      });
+      return result;
+    }
     const submittedQuote = result.quotes[0];
     await this.notifyInstallationAdmins({
       jobId,
@@ -3260,27 +3370,48 @@ export class InstallationWorkflowService {
     };
   }
 
-  private async createRevisionPiece(
+  private async saveRevisionPiece(
     estimateId: number,
     input: Record<string, any>,
     pricing: RevisionPiecePricingSnapshot,
     qty: number,
     mark: string,
     tx: PrismaTransactionClient,
+    existingPiece?: RevisionPieceRecord,
   ) {
-    const created = await tx.piece.create({
-      data: {
-        idEst: estimateId,
-        ...this.revisionPieceData(input, pricing, qty, mark),
-      },
-      select: { id: true },
-    });
+    const data = this.revisionPieceData(input, pricing, qty, mark);
+    const saved = existingPiece
+      ? await tx.piece.update({
+          where: { id: existingPiece.id },
+          data,
+          select: { id: true },
+        })
+      : await tx.piece.create({
+          data: { idEst: estimateId, ...data },
+          select: { id: true },
+        });
     const muntin = input.muntin as CreatePieceDto['muntin'];
+    // Una remedición de dimensiones conserva también el muntin existente.
+    const sameMuntin =
+      existingPiece &&
+      createEstimateRevisionPieceFingerprint({ muntin }) ===
+        createEstimateRevisionPieceFingerprint({
+          muntin: this.pieceInputFromPersisted(existingPiece, 1).muntin,
+        });
+    if (sameMuntin) {
+      return tx.piece.findUniqueOrThrow({
+        where: { id: saved.id },
+        include: revisionPieceInclude,
+      });
+    }
+    if (existingPiece) {
+      await tx.pieceMuntin.deleteMany({ where: { pieceId: saved.id } });
+    }
     const muntinCreate = this.muntinService.buildPieceMuntinCreateInput(muntin);
     if (muntin && muntinCreate) {
       await tx.pieceMuntin.create({
         data: {
-          piece: { connect: { id: created.id } },
+          piece: { connect: { id: saved.id } },
           pattern: { connect: { id: muntin.idPattern } },
           ...(muntin.idType
             ? { type: { connect: { id: muntin.idType } } }
@@ -3303,7 +3434,7 @@ export class InstallationWorkflowService {
       });
     }
     return tx.piece.findUniqueOrThrow({
-      where: { id: created.id },
+      where: { id: saved.id },
       include: revisionPieceInclude,
     });
   }
@@ -3318,11 +3449,12 @@ export class InstallationWorkflowService {
       include: {
         items: {
           orderBy: [{ originalPieceId: 'asc' }, { sourceUnitIndex: 'asc' }],
+          include: { measurement: { select: { label: true } } },
         },
         estimate: {
           include: {
             order: true,
-            pieces: { include: revisionPieceInclude },
+            pieces: { orderBy: { id: 'asc' }, include: revisionPieceInclude },
           },
         },
       },
@@ -3350,14 +3482,6 @@ export class InstallationWorkflowService {
       itemsByPiece.set(item.originalPieceId, current);
     }
 
-    const measurementIds = revision.items.map((item) => item.measurementId);
-    if (measurementIds.length > 0) {
-      await tx.installationMeasurement.updateMany({
-        where: { id: { in: measurementIds } },
-        data: { pieceId: null },
-      });
-    }
-
     for (const [originalPieceId, items] of itemsByPiece) {
       const originalPiece = originalPieceById.get(originalPieceId);
       if (!originalPiece) {
@@ -3375,16 +3499,6 @@ export class InstallationWorkflowService {
         (item) => item.action === EstimateRevisionItemAction.UNCHANGED,
       );
       if (unchanged) {
-        for (const item of items) {
-          await tx.installationMeasurement.update({
-            where: { id: item.measurementId },
-            data: {
-              pieceId: originalPiece.id,
-              unitIndex: item.sourceUnitIndex,
-              sourceSnapshot: this.sourceSnapshot(originalPiece),
-            },
-          });
-        }
         continue;
       }
 
@@ -3420,45 +3534,71 @@ export class InstallationWorkflowService {
         groups.set(fingerprint, group);
       }
 
-      const createdGroups = [...groups.values()].sort(
+      const resultingGroups = [...groups.values()].sort(
         (left, right) =>
           left.items[0].sourceUnitIndex - right.items[0].sourceUnitIndex,
       );
-      for (const group of createdGroups) {
+      // Conserva el registro original para las unidades sin cambios; si todas
+      // cambiaron, lo reutiliza para el primer grupo en el orden original.
+      const retainedGroup =
+        resultingGroups.find((group) =>
+          group.items.some(
+            (item) => item.action === EstimateRevisionItemAction.UNCHANGED,
+          ),
+        ) ?? resultingGroups[0];
+      const originalDefaultLabel =
+        originalPiece.mark.trim() ||
+        `#${revision.estimate.pieces.findIndex((piece) => piece.id === originalPieceId) + 1}`;
+
+      // Evita colisiones de unitIndex al separar o retirar unidades del grupo.
+      await tx.installationMeasurement.updateMany({
+        where: {
+          jobId: revision.installationJobId,
+          id: { in: items.map((item) => item.measurementId) },
+        },
+        data: { pieceId: null },
+      });
+      for (const group of resultingGroups) {
         const requestedMark = String(group.input.mark ?? '').trim();
         const baseMark = requestedMark || originalPiece.mark;
         const mark =
-          createdGroups.length === 1 && group.items.length === originalPiece.qty
+          group === retainedGroup
             ? pieceMarkWithSuffix(baseMark, '')
             : pieceMarkWithSuffix(
-                baseMark,
+                baseMark || originalDefaultLabel,
                 `-${group.items[0].sourceUnitIndex}`,
               );
-        const createdPiece = await this.createRevisionPiece(
+        const savedPiece = await this.saveRevisionPiece(
           revision.estimateId,
           group.input,
           group.pricing,
           group.items.length,
           mark,
           tx,
+          group === retainedGroup ? originalPiece : undefined,
         );
         for (const [index, item] of group.items.entries()) {
+          const automaticLabel = [
+            '',
+            originalPiece.mark.trim(),
+            originalDefaultLabel,
+            `${originalPiece.mark.trim()} (${item.sourceUnitIndex}/${originalPiece.qty})`.trim(),
+          ].includes(item.measurement.label.trim());
           await tx.installationMeasurement.update({
             where: { id: item.measurementId },
             data: {
-              pieceId: createdPiece.id,
+              pieceId: savedPiece.id,
               unitIndex: index + 1,
-              label:
-                group.items.length > 1
-                  ? `${mark} (${index + 1}/${group.items.length})`
-                  : mark,
-              sourceSnapshot: this.sourceSnapshot(createdPiece),
+              ...(automaticLabel ? { label: mark || originalDefaultLabel } : {}),
+              sourceSnapshot: this.sourceSnapshot(savedPiece),
             },
           });
         }
       }
 
-      await tx.piece.delete({ where: { id: originalPieceId } });
+      if (resultingGroups.length === 0) {
+        await tx.piece.delete({ where: { id: originalPieceId } });
+      }
     }
 
     const persistedPieces = await tx.piece.findMany({
@@ -3730,7 +3870,7 @@ export class InstallationWorkflowService {
       const materialPayment = await tx.payment.findFirst({
         where: {
           installationJobId: jobId,
-          type: PaymentType.MATERIAL,
+          type: { in: [PaymentType.MATERIAL, PaymentType.INSTALLMENT] },
           OR: [
             { status: PaymentStatus.PAID },
             { stripeSessionId: { not: null } },
@@ -3914,6 +4054,7 @@ export class InstallationWorkflowService {
       );
     }
     if (dto.type === InstallationAppointmentType.INSTALLATION) {
+      if (job.estimate.paymentPlanSnapshot) await assertScheduleMilestone(this.prisma, job.estimateId, 'INSTALL');
       const unpaidDeliveryOverride = job.estimate.order?.deliveries.find(
         (delivery) =>
           delivery.type === DeliveryType.INSTALLATION_OVERRIDE &&
@@ -3935,6 +4076,10 @@ export class InstallationWorkflowService {
     }
 
     const appointment = await this.prisma.$transaction(async (tx) => {
+      if (dto.type === InstallationAppointmentType.INSTALLATION && job.estimate.paymentPlanSnapshot) {
+        await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${job.estimateId} FOR UPDATE`;
+        await assertScheduleMilestone(tx, job.estimateId, 'INSTALL');
+      }
       const activeAppointments = await tx.installationAppointment.findMany({
         where: {
           jobId,
@@ -4133,13 +4278,15 @@ export class InstallationWorkflowService {
         (sum, payment) => sum.add(payment.baseAmount.toString()),
         new Decimal(0),
       );
-    if (paidInstallation.lt(discountedInstallationTotal(job.estimate, { ...job, quotes: [approvedQuote] }))) {
+    const paymentSchedule = job.estimate.paymentPlanSnapshot ? await assertScheduleMilestone(this.prisma, job.estimateId, 'INSTALL') : null;
+    if (!paymentSchedule && paidInstallation.lt(discountedInstallationTotal(job.estimate, { ...job, quotes: [approvedQuote] }))) {
       throw new BadRequestException(
         'Installation must be fully paid before work can start.',
       );
     }
 
     await this.withAgreementJobTransaction(jobId, async (tx) => {
+      if (job.estimate.paymentPlanSnapshot) await assertScheduleMilestone(tx, job.estimateId, 'INSTALL');
       const inProgress = await tx.orderStatus.findUnique({
         where: { name: 'Installation in progress' },
       });
@@ -4247,7 +4394,7 @@ export class InstallationWorkflowService {
       ownerId: result.estimate.idUser,
       actorId: user.id,
       jobId,
-      message: `Installation completed for Order #${result.estimate.order?.number}.`,
+      message: `Installation completed for Order #${result.estimate.order?.number}.${result.paymentSchedule?.next?.milestone === 'COMPLETE' ? ' The final project installment is now due.' : ''}`,
       actionLabel: 'Open order',
       actionUrl: `/orders/${result.estimate.order?.id}`,
       dedupeKey: `installation:${jobId}:completed:owner`,
@@ -4488,6 +4635,7 @@ export class InstallationWorkflowService {
     if (job?.dealerMeasurementsAcceptedAt && !options.preview && type !== PaymentType.INSTALLATION_DEPOSIT) {
       assertCompleteEstimateCustomer(estimate, 'installation-payment');
     }
+    if (estimate.paymentPlanSnapshot && [PaymentType.MATERIAL, PaymentType.INSTALLATION].includes(type as any)) throw new BadRequestException('Use the payment schedule for this estimate.');
     const manualDiscount = calculateEstimateDiscount(estimate, job);
     if (manualDiscount && !options.preview) {
       const config = estimateDiscountConfig(estimate.manualDiscount)!;
@@ -4569,6 +4717,12 @@ export class InstallationWorkflowService {
       }
       baseAmount = new Decimal(manualDiscount?.permit.total ?? job.permit.permitFeeSnapshot.toString());
       description = `Permit Fee — Estimate #${estimate.number}`;
+    } else if (type === PaymentType.INSTALLMENT) {
+      const installment = await installmentContext(tx, estimateId, sequence, Boolean(options.preview));
+      if (job && !options.preview) assertCompleteEstimateCustomer(estimate, 'installation-payment');
+      baseAmount = new Decimal(installment.row.balance);
+      paymentSequence = installment.row.sequence;
+      description = `${installment.row.title} — Estimate #${estimate.number}`;
     } else if (type === PaymentType.MATERIAL) {
       if (estimate.order)
         throw new ConflictException('This estimate already has an order.');
@@ -4732,7 +4886,7 @@ export class InstallationWorkflowService {
       const paidInstallationTotal = new Decimal(
         paidInstallation._sum.baseAmount?.toString() ?? 0,
       );
-      if (paidInstallationTotal.lt(manualDiscount?.installation.total ?? quote.total.toString())) {
+      if (!estimate.paymentPlanSnapshot && paidInstallationTotal.lt(manualDiscount?.installation.total ?? quote.total.toString())) {
         throw new BadRequestException(
           'Installation must be paid before extra charges.',
         );
@@ -4745,9 +4899,10 @@ export class InstallationWorkflowService {
       throw new BadRequestException(`Unsupported payment type: ${type}.`);
     }
 
+    const scheduledNoCharge = type === PaymentType.INSTALLMENT && baseAmount.eq(0);
     const discountedNoCharge = baseAmount.eq(0) && Number(manualDiscount?.discount) > 0 &&
       [PaymentType.MATERIAL, PaymentType.INSTALLATION_DEPOSIT, PaymentType.PERMIT, PaymentType.INSTALLATION].includes(type as any);
-    if (baseAmount.lte(0) && !discountedNoCharge && !(type === PaymentType.MATERIAL && baseAmount.eq(0) && estimate.units > 0 && Number(estimate.discountAmount) > 0))
+    if (baseAmount.lte(0) && !scheduledNoCharge && !discountedNoCharge && !(type === PaymentType.MATERIAL && baseAmount.eq(0) && estimate.units > 0 && Number(estimate.discountAmount) > 0))
       throw new BadRequestException(
         'Payment amount must be greater than zero.',
       );
@@ -4806,38 +4961,8 @@ export class InstallationWorkflowService {
       where: { id: preliminary.id },
       data: { status: InstallationQuoteStatus.SUPERSEDED },
     });
-    await tx.installationQuote.create({
-      data: {
-        jobId,
-        version: preliminary.version + 1,
-        status: InstallationQuoteStatus.DRAFT,
-        approvalReason: InstallationQuoteReason.REMEASUREMENT,
-        profileId: preliminary.profileId,
-        profileNameSnapshot: preliminary.profileNameSnapshot,
-        profileAdjustmentPercent: preliminary.profileAdjustmentPercent,
-        profileMinimumSnapshot: preliminary.profileMinimumSnapshot,
-        baseSubtotal: preliminary.baseSubtotal,
-        adjustedSubtotal: preliminary.adjustedSubtotal,
-        serviceMinimumAdjustment: preliminary.serviceMinimumAdjustment,
-        serviceMinimumsSnapshot:
-          preliminary.serviceMinimumsSnapshot === null
-            ? Prisma.JsonNull
-            : (preliminary.serviceMinimumsSnapshot as Prisma.InputJsonValue),
-        minimumAdjustment: preliminary.minimumAdjustment,
-        total: preliminary.total,
-        notes: preliminary.notes,
-        createdById: preliminary.createdById,
-        lines: {
-          create: preliminary.lines.map((line) => ({
-            ...line,
-            ruleSnapshot:
-              line.ruleSnapshot === null
-                ? Prisma.JsonNull
-                : (line.ruleSnapshot as Prisma.InputJsonValue),
-          })),
-        },
-      },
-    });
+    // La cotización inicial queda congelada como referencia. El borrador se
+    // crea solamente cuando se modifica una medida, pieza o servicio.
     await tx.installationJob.update({
       where: { id: jobId },
       data: { status: InstallationJobStatus.MEASUREMENT_SCHEDULING },
@@ -5047,6 +5172,7 @@ export class InstallationWorkflowService {
   }
 
   async markOrderReady(tx: PrismaTransactionClient, estimateId: number) {
+    if (await getPaymentSchedule(tx, estimateId)) { await refreshScheduledInstallation(tx, estimateId); return; }
     const job = await tx.installationJob.findUnique({
       where: { estimateId },
       include: {

@@ -1,3 +1,4 @@
+import { assertPaymentPlanAvailable } from '@/payment-plans/payment-plans.module';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
 import { Role } from '@prisma/client';
@@ -15,7 +16,7 @@ export class RolesService {
 
   async findAll() {
     return this.prisma.role.findMany({
-      include: { installationPriceProfile: true },
+      include: { installationPriceProfile: true, paymentPlan: true },
       orderBy: { id: 'asc' },
     });
   }
@@ -38,10 +39,12 @@ export class RolesService {
       }
     }
 
+    await assertPaymentPlanAvailable(this.prisma, dto.paymentPlanId);
     const updated = await this.prisma.role.update({
       where: { id },
       data: {
         markup: dto.markup,
+        ...(dto.paymentPlanId !== undefined ? { paymentPlan: dto.paymentPlanId === null ? { disconnect: true } : { connect: { id: dto.paymentPlanId } } } : {}),
         ...(dto.installationPriceProfileId !== undefined
           ? {
               installationPriceProfile:
@@ -51,11 +54,12 @@ export class RolesService {
             }
           : {}),
       },
-      include: { installationPriceProfile: true },
+      include: { installationPriceProfile: true, paymentPlan: true },
     });
 
     // comentario en espanol: auditoria simple (por ahora solo markup)
     const changedFields: string[] = [];
+    if (dto.paymentPlanId !== undefined && before.paymentPlanId !== updated.paymentPlanId) changedFields.push("paymentPlanId");
     if (
       dto.markup !== undefined &&
       before.markup?.toString() !== updated.markup?.toString()
@@ -76,12 +80,14 @@ export class RolesService {
       userId: actor.id, // ✅ quien lo hizo
       message: `Role updated (#${updated.id})`,
       before: {
+        paymentPlanId: before.paymentPlanId,
         id: before.id,
         name: before.name,
         markup: before.markup,
         installationPriceProfileId: before.installationPriceProfileId,
       },
       after: {
+        paymentPlanId: updated.paymentPlanId,
         id: updated.id,
         name: updated.name,
         markup: updated.markup,

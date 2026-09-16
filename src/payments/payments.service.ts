@@ -1,3 +1,4 @@
+import { getPaymentSchedule, refreshScheduledInstallation } from '@/payment-plans/payment-schedule';
 import { calculateEstimateDiscount, estimateDiscountConfig } from '@/estimates/discounts/estimate-discount';
 import { checkoutPromotionExpiry, promotionExpired, promotionTerms } from '@/promotions/promotion-pricing';
 import { requireSignedAgreementForPayment } from '@/contracts/agreement-payment';
@@ -108,11 +109,15 @@ export class PaymentsService {
     };
   }
 
-  private async ensureOrderForMaterialPayment(
+  private async ensureOrderForInitialPayment(
     tx: Prisma.TransactionClient,
     payment: PaymentWithEstimate,
   ): Promise<boolean> {
     const estimate = payment.estimate;
+    if (payment.type === PaymentType.INSTALLMENT) {
+      const schedule = await getPaymentSchedule(tx, payment.idEst);
+      if (!schedule || schedule.initialSequence !== payment.sequence) return false;
+    }
 
     if (estimate.order) {
       if (estimate.order.paymentId !== payment.id) {
@@ -246,21 +251,22 @@ export class PaymentsService {
       payment.estimate.manualDiscount = lockedDiscount;
       changed = true;
     }
-    if ((payment.type === PaymentType.MATERIAL || payment.type === PaymentType.INSTALLATION_DEPOSIT) && payment.estimate.promotionExpiresAt && !payment.estimate.promotionLockedAt) {
+    if ((payment.type === PaymentType.MATERIAL || payment.type === PaymentType.INSTALLMENT || payment.type === PaymentType.INSTALLATION_DEPOSIT) && payment.estimate.promotionExpiresAt && !payment.estimate.promotionLockedAt) {
       const pieces = await tx.piece.findMany({where:{idEst:payment.idEst},select:{promotionSnapshot:true}});
       const terms = [...new Map(promotionTerms(pieces.map(p => p.promotionSnapshot)).map(p => [`${p.id}:${p.version}`, p])).values()];
       await tx.estimate.update({where:{id:payment.idEst},data:{promotionLockedAt:payment.paidAt ?? new Date(),promotionContext:terms as unknown as Prisma.InputJsonValue}});
       changed = true;
     }
 
-    if (payment.type === PaymentType.MATERIAL) {
+    if (payment.type === PaymentType.MATERIAL || payment.type === PaymentType.INSTALLMENT) {
       changed =
-        (await this.ensureOrderForMaterialPayment(tx, payment)) || changed;
+        (await this.ensureOrderForInitialPayment(tx, payment)) || changed;
     }
 
     changed =
       (await this.installationWorkflow.markPaymentPaid(tx, payment)) || changed;
 
+    if (payment.type === PaymentType.INSTALLMENT) changed = (await refreshScheduledInstallation(tx, payment.idEst)) || changed;
     await this.notifyPaymentConfirmed(tx, payment);
 
     return changed;
@@ -268,6 +274,8 @@ export class PaymentsService {
 
   private paymentNotificationCopy(type: PaymentType, sequence: number) {
     switch (type) {
+      case PaymentType.INSTALLMENT:
+        return { label: `Project installment #${sequence}`, adminNextStep: 'Open payment schedule' };
       case PaymentType.INSTALLATION_DEPOSIT:
         return {
           label: 'Installation deposit',
@@ -341,6 +349,9 @@ export class PaymentsService {
       typeof session.payment_intent === 'string'
         ? session.payment_intent
         : null;
+    // El bloqueo precede a la primera lectura: evita reutilizar una orden anterior
+    // cuando dos webhooks llegan al mismo tiempo con aislamiento Repeatable Read.
+    await tx.$queryRaw`SELECT id FROM Estimate WHERE id = (SELECT idEst FROM payments WHERE stripeSessionId = ${session.id}) FOR UPDATE`;
     const payment = await tx.payment.findUnique({
       where: { stripeSessionId: session.id },
       include: {
@@ -354,6 +365,7 @@ export class PaymentsService {
       },
     });
     if (!payment) return false;
+    if (payment.type === PaymentType.INSTALLMENT && payment.status === PaymentStatus.REFUNDED) return false;
 
     if (payment.status === PaymentStatus.PAID) {
       await this.ensurePaidPaymentEffects(tx, payment);
@@ -400,6 +412,7 @@ export class PaymentsService {
       where: {
         status: PaymentStatus.PAID,
         OR: [
+          { type: PaymentType.INSTALLMENT, sequence: 1, estimate: { order: null } },
           {
             type: PaymentType.MATERIAL,
             order: { is: null },
@@ -473,6 +486,7 @@ export class PaymentsService {
     for (const candidate of candidates) {
       try {
         const repaired = await this.prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT id FROM Estimate WHERE id = (SELECT idEst FROM payments WHERE id = ${candidate.id}) FOR UPDATE`;
           const payment = await tx.payment.findUnique({
             where: { id: candidate.id },
             include: {
@@ -710,11 +724,18 @@ export class PaymentsService {
       }
 
       if (promotionExpired(estimate)) return { enabled:true as const, status:'expired' as const, payment:null };
-      const request = this.resolveNextPaymentRequest(estimate);
+      const schedule = await getPaymentSchedule(tx, estimate.id);
+      const advanceDue = ['DEPOSIT_PAYMENT_PENDING', 'PERMIT_PAYMENT_PENDING'].includes(estimate.installationJob?.status ?? '');
+      const request = schedule && !advanceDue
+        ? schedule.next ? { type: PaymentType.INSTALLMENT, sequence: schedule.next.sequence }
+          : estimate.order?.deliveries[0] ? { type: PaymentType.DELIVERY, sequence: estimate.order.deliveries[0].sequence }
+          : estimate.order?.extraCharges[0] ? { type: PaymentType.EXTRA, sequence: estimate.order.extraCharges[0].sequence } : null
+        : this.resolveNextPaymentRequest(estimate);
       if (!request) {
         return {
           enabled: true as const,
           status: 'complete' as const,
+          schedule,
           payment: null,
         };
       }
@@ -751,11 +772,12 @@ export class PaymentsService {
       return {
         enabled: true as const,
         status: 'due' as const,
+        schedule,
         promotionExpiresAt: estimate.promotionExpiresAt, expiresAt: estimate.expiresAt, promotionLockedAt: estimate.promotionLockedAt,
         payment: {
           type: request.type,
           sequence: context.paymentSequence,
-          title: this.publicPaymentTitle(request.type, context.paymentSequence),
+          title: request.type === PaymentType.INSTALLMENT ? schedule!.next!.title : this.publicPaymentTitle(request.type, context.paymentSequence),
           description: context.description,
           baseAmount: context.baseAmount.toFixed(2),
           surchargePercent: context.surchargePercent.toFixed(4),
@@ -860,7 +882,7 @@ export class PaymentsService {
         );
       }
       const requiresMaterialAcceptance =
-        type === PaymentType.MATERIAL &&
+        (type === PaymentType.MATERIAL || (type === PaymentType.INSTALLMENT && context.paymentSequence === 1)) &&
         context.estimate.user.role.name === 'client';
       if (requiresMaterialAcceptance && params.materialAccepted !== true) {
         throw new BadRequestException(
@@ -900,6 +922,9 @@ export class PaymentsService {
         },
       });
 
+      if (type === PaymentType.INSTALLMENT && existingPayment?.status === PaymentStatus.REFUNDED) {
+        throw new ConflictException('This installment was refunded. Contact administration to review the balance.');
+      }
       if (existingPayment?.stripeSessionId) {
         try {
           const existingSession = await this.stripe.checkout.sessions.retrieve(
@@ -1406,6 +1431,9 @@ export class PaymentsService {
       });
       if (current?.status === PaymentStatus.PAID) {
         throw new ConflictException('This charge is already paid.');
+      }
+      if (params.type === PaymentType.INSTALLMENT && current?.status === PaymentStatus.REFUNDED) {
+        throw new ConflictException('This installment was refunded. Review the balance before recording another payment.');
       }
 
       const payer = this.getPayerSnapshot(context.estimate);

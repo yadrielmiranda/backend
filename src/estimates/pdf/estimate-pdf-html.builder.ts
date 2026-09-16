@@ -889,9 +889,16 @@ export class EstimatePdfHtmlBuilder {
         ? 'summary-grid single-column'
         : 'summary-grid';
     const manualDiscountHtml = manualDiscount ? `<div class="card keep-together"><div class="card-body">${summaryRow('Additional discount · ' + ({ PROJECT: 'Project total', MATERIAL: 'Material', INSTALLATION: 'Installation' }[manualDiscount.scope]), '−' + formatMoney(manualDiscount.discount), { strong: true })}${serviceDiscount ? summaryRow('Included installation & services discount', '−' + formatMoney(serviceDiscount)) : ''}</div></div>` : '';
+    const schedule = (estimate as any).paymentSchedule;
+    const scheduleHtml = schedule && !(customerFacing && isExternalDealerEstimate(estimate))
+      ? `<section class="card keep-together" style="margin-top:16px"><div class="card-title">Payment Schedule</div><div class="card-body">
+          ${schedule.provisional ? `<p class="notice warning">${escapeHtml(schedule.provisionalMessage ?? 'Amounts are preliminary until the included charges are finalized.')}</p>` : ''}
+          ${schedule.rows.map((row: any) => `<div style="padding:7px 0;border-bottom:1px solid #e2e8f0">${summaryRow(row.title, formatMoney(row.amount))}<small>${escapeHtml(row.description)}</small></div>`).join('')}
+          <p style="font-size:10px;margin-top:10px">The installation deposit and any permit fee paid in advance are credited toward the first order installment. Remaining credit carries forward and is counted once. Delivery and separate extra charges are excluded.</p>
+        </div></section>` : '';
     const projectSummaryHtml = projectTotalOnly
-      ? `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div>${projectScopeHtml}${projectTotalHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`
-      : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${manualDiscountHtml}${projectTotalHtml}${dealerProfitHtml}${adminProfitability}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
+      ? `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div>${projectScopeHtml}${projectTotalHtml}${scheduleHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`
+      : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${manualDiscountHtml}${projectTotalHtml}${dealerProfitHtml}${adminProfitability}${scheduleHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
 
     const statusBadge = estimate.status?.name
       ? `<span class="status-badge ${estimateStatusBadgeClassName(estimate.status.name)}">${escapeHtml(estimate.status.name)}</span>`

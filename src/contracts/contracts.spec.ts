@@ -18,6 +18,7 @@ import {
   withAgreementTransaction,
 } from './agreement-content';
 import { buildPublicEstimateData } from '@/estimates/public-share/public-estimate-data';
+import { defaultPlan } from '@/payment-plans/payment-plan';
 
 jest.mock('@/estimates/reporting/estimate-piece-diagram-metadata', () => ({
   attachEstimatePieceDiagramMetadata: async (_db: unknown, pieces: unknown[]) =>
@@ -140,6 +141,25 @@ function contentHash(estimate: any) {
 }
 
 describe('Contract content policy', () => {
+  it('shows company payment terms to internal dealer customers without exposing them to external dealer customers', () => {
+    const e = contractEstimateFixture();
+    e.paymentPlanSnapshot = {version:1, planId:1, name:'Material upfront', definition:defaultPlan};
+    const external = buildPublicEstimateData(e, null, e.pieces, 'detailed');
+    expect(external).not.toHaveProperty('paymentSchedule');
+    expect(external).not.toHaveProperty('paymentPlanTerms');
+    e.dealerModeSnapshot = 'INTERNAL';e.user.dealerMode = 'INTERNAL';
+    const internal = buildPublicEstimateData(e, null, e.pieces, 'detailed');
+    expect(internal.paymentSchedule?.total).toBe('1070.00');
+    const html = EstimatePdfHtmlBuilder.build(agreementQuoteReport(internal), 'dealer_public');
+    expect(html).toContain('Payment Schedule');expect(html).toContain('Place order');
+    const signed = contentHash(e);
+    e.payments = [{type:'INSTALLMENT', status:'PAID', sequence:1, baseAmount:'1070.00'}];
+    e.order = {id:20, status:{name:'Ready to pick up'}};
+    expect(contentHash(e)).toBe(signed);
+    e.paymentPlanSnapshot = {...e.paymentPlanSnapshot, definition:{...defaultPlan,withoutInstallation:[{milestone:'ORDER',basis:'MATERIAL',percent:50},{milestone:'RELEASE',basis:'MATERIAL',percent:50}]}};
+    expect(contentHash(e)).not.toBe(signed);
+  });
+
   it.each(['detailed', 'total'] as const)(
     'renders the %s saved quote using only its public snapshot',
     (mode) => {
