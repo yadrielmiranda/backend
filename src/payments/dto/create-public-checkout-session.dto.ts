@@ -1,5 +1,5 @@
-import {
-  IsBoolean,
+import { ArrayMaxSize, ArrayNotEmpty, ArrayUnique, IsArray,
+  IsBoolean, IsNumber,
   IsEnum,
   IsInt,
   IsOptional,
@@ -25,6 +25,32 @@ export class CreatePublicCheckoutSessionDto {
   sequence?: number;
 
   @IsOptional()
+  @IsUUID()
+  checkoutRef?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(50)
+  @ArrayUnique()
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  sequences?: number[];
+
+  @IsOptional()
+  @IsBoolean()
+  payFullBalance?: boolean;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  expectedBalance?: number;
+
+  @IsOptional()
   @IsBoolean()
   installationDepositTermsAccepted?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  cityFeeAccepted?: boolean;
 }

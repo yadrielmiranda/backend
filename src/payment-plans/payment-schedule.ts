@@ -7,6 +7,7 @@ import {
   Milestone,
   money,
   PlanSnapshot,
+  PENDING_ORDER_REVIEW,
   planRows,
   planSnapshot,
   ScheduleAmounts,
@@ -82,21 +83,26 @@ export function buildPaymentSchedule(estimate: any) {
       : estimate.installationJob;
   const quote = job?.quotes?.[0];
   const amounts = scheduleAmounts(estimate);
-  const rows = [
-    ...(snapshot.locked?.rows ?? planRows(snapshot, amounts, Boolean(job))),
-    ...(snapshot.adjustments ?? []),
-  ];
+  const installments = snapshot.locked?.rows ?? planRows(snapshot, amounts, Boolean(job));
+  const rows = [...installments, ...(snapshot.adjustments ?? [])];
+  // La instalación depende del hito del plan, no de los ajustes pendientes.
+  // Los planes cobrados por completo al ordenar no necesitan una cuota nueva.
+  const installationMilestone = installments.some(row => row.milestone === 'INSTALL')
+    ? 'INSTALL'
+    : installments.some(row => row.milestone === 'RELEASE') ? 'RELEASE' : 'ORDER';
+  const installationSequences = new Set(
+    installments.filter(row => row.milestone === installationMilestone).map(row => row.sequence),
+  );
+  if (job && !estimate.order && rows[0]) rows[0] = { ...rows[0], description: 'Payment submits the estimate for administrative order review. An administrator creates the order after reviewing the project.' };
   const orderStatus = estimate.order?.status?.name;
   const available: Milestone[] = [];
   if (
     !estimate.order &&
-    estimate.status?.name === 'Active' &&
+    ['Active', PENDING_ORDER_REVIEW].includes(estimate.status?.name) &&
     estimate.units > 0 &&
     (!job ||
       (quote?.status === 'APPROVED' &&
-        job.status === 'MATERIAL_PAYMENT_PENDING' &&
-        (!job.permit ||
-          (job.permit.status === 'APPROVED' && job.permit.cityFee != null))))
+        ['MATERIAL_PAYMENT_PENDING', 'PERMIT_PAYMENT_PENDING', 'PERMIT_PROCESSING'].includes(job.status)))
   )
     available.push('ORDER');
   if (estimate.order) {
@@ -128,17 +134,42 @@ export function buildPaymentSchedule(estimate: any) {
   );
   const installationPending = Boolean(job && quote?.status !== 'APPROVED');
   const cityFeePending = Boolean(job?.permit && job.permit.cityFee == null);
-  const provisional = !snapshot.locked && (installationPending || cityFeePending);
+  const provisional = cityFeePending || (!snapshot.locked && installationPending);
+  const orderReviewPending = !estimate.order && estimate.status?.name === PENDING_ORDER_REVIEW;
+  // Las fechas de exigibilidad no impiden adelantar voluntariamente el saldo aprobado.
+  const fullBalanceRows = allocation.rows.filter(row =>
+    Number(row.balance) > 0 || row.status === 'DUE' || row.sequence === allocation.next?.sequence,
+  );
+  const fullBalanceAmount = fullBalanceRows.reduce((total, row) => total.add(row.balance), new Prisma.Decimal(0));
+  const fullBalance = fullBalanceAmount.gt(0) && !installationPending &&
+    estimate.units > 0 && (Boolean(estimate.order) || available.includes('ORDER') || orderReviewPending) &&
+    ['Active', PENDING_ORDER_REVIEW, 'Ordered'].includes(estimate.status?.name) &&
+    !['Canceled', 'Cancelled'].includes(orderStatus)
+    ? { amount: fullBalanceAmount.toFixed(2), sequences: fullBalanceRows.map(row => row.sequence) }
+    : null;
+  const orderReviewBlockedReason = !orderReviewPending ? null
+    : estimate.units <= 0 ? 'At least one material unit is required to create an order.'
+    : installationPending ? 'The installation quote must be approved before the order can be created.'
+    : allocation.rows.some(row => row.milestone === 'ORDER' && row.kind !== 'CITY_FEE' && Number(row.balance) > 0)
+      ? 'Pay the outstanding order installment or approved project adjustment before creating the order.'
+      : null;
   const provisionalMessage = !provisional
     ? null
     : installationPending && cityFeePending
       ? 'Amounts are preliminary until the installation quote and City Fee are finalized.'
       : installationPending
         ? 'Amounts are preliminary until the installation quote is finalized.'
-        : 'Amounts are preliminary until the City Fee is finalized.';
+        : snapshot.locked
+          ? 'Project total excludes the pending City Fee. It will be added as a separate adjustment; original installments remain unchanged.'
+          : 'Amounts are preliminary until the City Fee is finalized.';
   return {
     ...allocation,
     name: snapshot.name,
+    requiresOrderReview: Boolean(job && !estimate.order),
+    orderReviewPending,
+    orderReviewBlockedReason,
+    fullBalance,
+    cityFeePending,
     provisional,
     provisionalMessage,
     canRelease:
@@ -146,12 +177,13 @@ export function buildPaymentSchedule(estimate: any) {
       allocation.rows.every(
         (row) =>
           !['ORDER', 'RELEASE'].includes(row.milestone) ||
-          Number(row.balance) === 0,
+          (Number(row.balance) === 0 && (row.kind !== 'CITY_FEE' || Number(row.amount) <= 0 || row.status === 'PAID')),
       ),
     canInstall:
       Boolean(estimate.order) &&
+      installationSequences.size > 0 &&
       allocation.rows.every(
-        (row) => row.milestone === 'COMPLETE' || Number(row.balance) === 0,
+        (row) => !installationSequences.has(row.sequence) || Number(row.balance) === 0,
       ),
     initialSequence: rows[0]?.sequence ?? 1,
   };
@@ -173,6 +205,7 @@ export async function installmentContext(
   estimateId: number,
   sequence?: number,
   preview = false,
+  allowAdvance = false,
 ) {
   const estimate = await db.estimate.findUniqueOrThrow({
     where: { id: estimateId },
@@ -188,9 +221,10 @@ export async function installmentContext(
     sequence == null
       ? schedule.next
       : schedule.rows.find((row) => row.sequence === sequence);
-  if (!row || row.sequence !== schedule.next?.sequence)
+  const advanceAvailable = allowAdvance && schedule.fullBalance?.sequences.includes(row?.sequence ?? -1);
+  if (!row || (!advanceAvailable && row.status !== 'DUE' && row.sequence !== schedule.next?.sequence))
     throw new ConflictException(
-      'This installment is not the next payment due. Refresh the payment schedule.',
+      'This installment is not available for payment. Refresh the payment schedule.',
     );
   if (!preview && !snapshot.locked) {
     snapshot.locked = {
@@ -266,8 +300,12 @@ export async function synchronizeScheduleChanges(
     });
     return;
   }
-  const delta = sumAmounts(current).minus(sumAmounts(previous));
-  const sequence = 101 + (snapshot.adjustments?.length ?? 0);
+  // El City Fee conocido después del primer pago no redistribuye las cuotas.
+  // Se registra por separado incluso si también cambió otro importe del proyecto.
+  const cityDelta = new Prisma.Decimal(current.city).minus(previous.city);
+  const withoutCityChange = { ...current, city: previous.city };
+  const delta = sumAmounts(withoutCityChange).minus(sumAmounts(previous));
+  const adjustments = [...(snapshot.adjustments ?? [])];
   const orderStatus = estimate.order?.status.name;
   const milestone: Milestone = !estimate.order
     ? 'ORDER'
@@ -278,18 +316,24 @@ export async function synchronizeScheduleChanges(
           )
         ? 'INSTALL'
         : 'RELEASE';
-  snapshot.adjustments = [
-    ...(snapshot.adjustments ?? []),
-    {
-      sequence,
-      milestone,
+  if (!delta.eq(0) || cityDelta.eq(0)) {
+    const sequence = 101 + adjustments.length;
+    adjustments.push({
+      sequence, milestone,
       title: `Change order adjustment #${sequence - 100}`,
-      description:
-        'Approved change to the project. Previous payments remain credited.',
-      amount: money(delta),
-      amounts: current,
-    },
-  ];
+      description: 'Approved change to the project. Previous payments remain credited.',
+      amount: money(delta), amounts: withoutCityChange,
+    });
+  }
+  if (!cityDelta.eq(0)) {
+    adjustments.push({
+      sequence: 101 + adjustments.length,
+      kind: 'CITY_FEE', milestone: 'ORDER', title: 'City Fee adjustment',
+      description: cityDelta.lt(0) ? 'City Fee reduced. The difference is credited to the project balance.' : 'City Fee added after the first installment. Review and accept this amount before payment. Original installments remain unchanged.',
+      amount: money(cityDelta.toString()), amounts: current,
+    });
+  }
+  snapshot.adjustments = adjustments;
   await db.estimate.update({
     where: { id: estimateId },
     data: { paymentPlanSnapshot: snapshot as unknown as Prisma.InputJsonValue },
@@ -334,6 +378,8 @@ export async function refreshScheduledInstallation(
   )
     return false;
   const mutable = [
+    'PERMIT_PAYMENT_PENDING',
+    'PERMIT_PROCESSING',
     'MATERIAL_PAYMENT_PENDING',
     'MATERIAL_PAID',
     'INSTALLATION_PAYMENT_PENDING',

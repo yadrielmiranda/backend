@@ -359,6 +359,61 @@ describe('Configurable payment plans', () => {
     expect(buildPaymentSchedule(est)?.balance).toBe('1000.00');
   });
 
+  it.each([
+    { definition: project, required: 'RELEASE', sequence: 2, installment: '4000.00' },
+    { definition: split, required: 'INSTALL', sequence: 3, installment: '1000.00' },
+  ])('uses the plan $required installment even with other due adjustments', ({ definition, sequence, installment }) => {
+    const est = estimate(definition);
+    const originalRows = planRows(snapshot(definition), amounts, true);
+    est.paymentPlanSnapshot.locked = { amounts, rows: originalRows, at: '2026-09-16' };
+    est.paymentPlanSnapshot.adjustments = [
+      { sequence: 101, kind: 'CITY_FEE', milestone: 'ORDER', title: 'City Fee adjustment', description: '', amount: '200.00', amounts },
+      { sequence: 102, milestone: 'INSTALL', title: 'Change order adjustment', description: '', amount: '300.00', amounts },
+    ];
+    est.order = { id: 4, status: { name: 'Ready to pick up' } };
+    est.payments = [paid('INSTALLMENT', originalRows[0].amount)];
+    expect(buildPaymentSchedule(est)?.canInstall).toBe(false);
+    est.payments.push(paid('INSTALLMENT', String(Number(installment) - 0.01), sequence));
+    expect(buildPaymentSchedule(est)?.canInstall).toBe(false);
+    est.payments.push(paid('INSTALLMENT', '0.01', sequence));
+    const schedule = buildPaymentSchedule(est)!;
+    expect(schedule.canInstall).toBe(true);
+    expect(schedule.rows.filter(row => [101, 102].includes(row.sequence)).map(row => row.status)).toEqual(['DUE', 'DUE']);
+    expect(schedule.rows.find(row => row.milestone === 'COMPLETE')?.status).toBe('UPCOMING');
+    // Si existe INSTALL, pagar esa cuota es lo que habilita la instalación.
+    if (definition === split) expect(schedule.rows.find(row => row.sequence === 2)?.balance).toBe('4000.00');
+    expect(est.paymentPlanSnapshot.locked.rows).toEqual(originalRows);
+  });
+
+  it('keeps a City Fee already included in the original plan inside its installment', () => {
+    const est = estimate();
+    est.installationJob.permit = { permitFeeSnapshot: '0.00', cityFee: '200.00' };
+    est.order = { id: 4, status: { name: 'Ready to pick up' } };
+    est.payments = [paid('INSTALLMENT', '5100.00'), paid('INSTALLMENT', '4000.00', 2)];
+    expect(buildPaymentSchedule(est)?.canInstall).toBe(false);
+    expect(buildPaymentSchedule(est)?.rows.find(row => row.sequence === 2)?.balance).toBe('80.00');
+    est.payments.push(paid('INSTALLMENT', '80.00', 2));
+    expect(buildPaymentSchedule(est)?.canInstall).toBe(true);
+  });
+
+  it('supports a plan paid entirely at order placement without inventing a release installment', () => {
+    const definition: PlanDefinition = { ...project, withInstallation: [{ milestone: 'ORDER', basis: 'PROJECT', percent: 100 }] };
+    const est = estimate(definition);
+    est.payments = [paid('INSTALLMENT', '10000.00')];
+    expect(buildPaymentSchedule(est)?.canInstall).toBe(false);
+    est.order = { id: 4, status: { name: 'Ready to pick up' } };
+    expect(buildPaymentSchedule(est)?.canInstall).toBe(true);
+    est.payments[0].status = 'REFUNDED';
+    expect(buildPaymentSchedule(est)?.canInstall).toBe(false);
+  });
+
+  it.each(['PENDING', 'REFUNDED'])('keeps installation blocked when its required installment is %s', status => {
+    const est = estimate(split);
+    est.order = { id: 4, status: { name: 'Ready to pick up' } };
+    est.payments = [paid('INSTALLMENT', '4000.00'), paid('INSTALLMENT', '4000.00', 2), { ...paid('INSTALLMENT', '1000.00', 3), status }];
+    expect(buildPaymentSchedule(est)?.canInstall).toBe(false);
+  });
+
   it('freezes the original installments and adds approved changes separately', async () => {
     const est = estimate();
     const originalRows = planRows(snapshot(), amounts, true);
@@ -436,7 +491,7 @@ describe('Configurable payment plans', () => {
     expect(result.total).toBe('9300.00');
   });
 
-  it('enforces sequence on the server and freezes amounts only at checkout', async () => {
+  it('rejects unavailable installments on the server and freezes amounts only at checkout', async () => {
     const est = estimate();
     const db: any = {
       estimate: {
@@ -444,7 +499,7 @@ describe('Configurable payment plans', () => {
         update: jest.fn(),
       },
     };
-    await expect(installmentContext(db, 1, 2)).rejects.toThrow('next');
+    await expect(installmentContext(db, 1, 2)).rejects.toThrow('not available');
     await installmentContext(db, 1, 1, true);
     expect(db.estimate.update).not.toHaveBeenCalled();
     await installmentContext(db, 1, 1);
@@ -481,4 +536,42 @@ describe('Configurable payment plans', () => {
     expect(
       buildPaymentSchedule({ ...estimate(), paymentPlanSnapshot: null }),
     ).toBeNull());
+});
+
+
+describe('Identified City Fee changes', () => {
+  it('keeps a simultaneous installation change separate from the City Fee and preserves the next comparison baseline', async () => {
+    const est = estimate();
+    est.paymentPlanSnapshot.locked = { amounts, rows: planRows(snapshot(), amounts, true), at: '2026-09-16' };
+    est.order = { id: 4, status: { name: 'In production' } };
+    est.payments = [paid('INSTALLMENT', '5000.00')];
+    est.installationJob.quotes[0].total = '2300.00';
+    est.installationJob.permit = { status: 'APPROVED', permitFeeSnapshot: '0.00', cityFee: '200.00' };
+    const db: any = { estimate: { findUnique: jest.fn(async () => est), update: jest.fn(async ({ data }) => Object.assign(est, data)) } };
+    await synchronizeScheduleChanges(db, est.id);
+    expect(est.paymentPlanSnapshot.adjustments).toHaveLength(2);
+    expect(est.paymentPlanSnapshot.adjustments[0]).toMatchObject({ amount: '300.00', milestone: 'RELEASE' });
+    expect(est.paymentPlanSnapshot.adjustments[1]).toMatchObject({ kind: 'CITY_FEE', amount: '200.00', milestone: 'ORDER' });
+    await synchronizeScheduleChanges(db, est.id);
+    expect(est.paymentPlanSnapshot.adjustments).toHaveLength(2);
+    est.installationJob.permit.cityFee = '180.00';
+    await synchronizeScheduleChanges(db, est.id);
+    expect(est.paymentPlanSnapshot.adjustments[2]).toMatchObject({ kind: 'CITY_FEE', amount: '-20.00' });
+    expect(buildPaymentSchedule(est)?.total).toBe('10480.00');
+    expect(buildPaymentSchedule(est)?.paid).toBe('5000.00');
+  });
+});
+
+
+it('requires City Fee acceptance even when existing credit covers the entire adjustment', () => {
+  const rows: any[] = [{ sequence: 1, milestone: 'ORDER', title: 'Order', amount: '100.00' },
+    { sequence: 101, milestone: 'ORDER', kind: 'CITY_FEE', title: 'City Fee adjustment', amount: '25.00' }];
+  const payments = [paid('INSTALLATION_DEPOSIT', '150.00'), paid('INSTALLMENT', '0.00', 1)];
+  const before = allocateSchedule(rows, payments, ['ORDER'], true);
+  expect(before.next).toMatchObject({ kind: 'CITY_FEE', amount: '25.00', balance: '0.00', status: 'DUE' });
+  expect(before.paid).toBe('150.00');
+  const after = allocateSchedule(rows, [...payments, paid('INSTALLMENT', '0.00', 101)], ['ORDER'], true);
+  expect(after.next).toBeNull();
+  expect(after.rows[1].status).toBe('PAID');
+  expect(after.paid).toBe('150.00');
 });

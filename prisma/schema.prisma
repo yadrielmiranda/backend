@@ -2263,8 +2263,8 @@ model Payment {
   currency         String  @default("usd") @db.VarChar(10)
 
   // Stripe IDs (para reconciliar con webhooks)
-  stripeSessionId       String? @unique @db.VarChar(255)
-  stripePaymentIntentId String? @unique @db.VarChar(255)
+  stripeSessionId       String? @db.VarChar(255)
+  stripePaymentIntentId String? @db.VarChar(255)
   stripeCustomerId      String? @db.VarChar(255)
 
   paymentMethod   PaymentMethod @default(CARD)
@@ -2281,6 +2281,9 @@ model Payment {
   updatedAt DateTime @updatedAt
 
   @@unique([idEst, type, sequence], map: "uq_payment_estimate_type_sequence")
+  // Un checkout puede saldar varias cuotas; cada fila conserva su asignación.
+  @@index([stripeSessionId])
+  @@index([stripePaymentIntentId])
   @@index([userId])
   @@index([status])
   @@index([installationJobId])

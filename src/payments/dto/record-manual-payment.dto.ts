@@ -1,6 +1,6 @@
-import {
+import { ArrayMaxSize, ArrayNotEmpty, ArrayUnique, IsArray,
   Equals,
-  IsBoolean,
+  IsBoolean, IsNumber,
   IsDateString,
   IsEnum,
   IsInt,
@@ -26,6 +26,24 @@ export class RecordManualPaymentDto {
   @Min(1)
   @Type(() => Number)
   sequence?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(50)
+  @ArrayUnique()
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  sequences?: number[];
+
+  @IsOptional()
+  @IsBoolean()
+  payFullBalance?: boolean;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  expectedBalance?: number;
 
   @IsEnum(PaymentMethod)
   method: PaymentMethod;
@@ -54,4 +72,8 @@ export class RecordManualPaymentDto {
   @IsOptional()
   @IsBoolean()
   installationDepositTermsAccepted?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  cityFeeAccepted?: boolean;
 }

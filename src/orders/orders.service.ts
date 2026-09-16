@@ -1,4 +1,4 @@
-import { assertScheduleMilestone, getPaymentSchedule } from '@/payment-plans/payment-schedule';
+import { assertScheduleMilestone, buildPaymentSchedule, getPaymentSchedule } from '@/payment-plans/payment-schedule';
 // @/orders/orders.service.ts
 import {
   Injectable,
@@ -35,6 +35,7 @@ import {
 } from '@/installation/installation-flow-policy';
 import { calculateMaterialFinancials } from './order-material-financials';
 import { calculateEstimateDiscount, discountedInstallationTotal } from '@/estimates/discounts/estimate-discount';
+import { buildEstimateInstallationSummary, estimateInstallationSummarySelect } from '@/estimates/reporting/estimate-installation-summary';
 
 const orderDetailsInclude = {
   estimate: { include: { payments: true, installationJob: { include: { quotes: { orderBy: { version: 'desc' as const }, take: 1 }, permit: true } } } },
@@ -54,6 +55,70 @@ const orderDetailsInclude = {
   },
 } satisfies Prisma.OrderInclude;
 
+const orderListInclude = {
+  ...orderDetailsInclude,
+  estimate: {
+    include: {
+      payments: true,
+      status: true,
+      installationJob: {
+        include: {
+          permit: true,
+          quotes: {
+            orderBy: { version: 'desc' as const },
+            select: estimateInstallationSummarySelect.quotes.select,
+          },
+        },
+      },
+    },
+  },
+} satisfies Prisma.OrderInclude;
+
+function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof orderListInclude }>) {
+  const job = order.estimate.installationJob;
+  const reportQuote = job?.quotes.find(quote => quote.status !== 'REJECTED');
+  const installationSummary = buildEstimateInstallationSummary(job
+    ? { ...job, quotes: reportQuote ? [reportQuote] : [] }
+    : null);
+  // El resumen usa la última cotización vigente, igual que Estimates; el pago
+  // conserva la cotización más reciente para respetar sus reglas de aprobación.
+  const estimate = {
+    ...order.estimate,
+    installationJob: job ? { ...job, quotes: job.quotes.slice(0, 1) } : null,
+  };
+  const schedule = buildPaymentSchedule({ ...estimate, order });
+  const activeInstallation = job && job.status !== 'CANCELED';
+  const unpaid = (charge: { status: string; total: Prisma.Decimal; payment: { status: string } | null }) =>
+    charge.status === 'PAYMENT_DUE' && charge.total.gt(0) &&
+    !['PAID', 'REFUNDED'].includes(charge.payment?.status ?? '');
+  const installationCredit = order.estimate.payments
+    .filter(payment => payment.installationJobId === job?.id && payment.status === PaymentStatus.PAID &&
+      (payment.type === PaymentType.INSTALLATION_DEPOSIT || payment.type === PaymentType.INSTALLATION))
+    .reduce((total, payment) => total.add(payment.baseAmount.toString()), new Decimal(0));
+  const legacyInstallationDue = !schedule && activeInstallation &&
+    job.status === InstallationJobStatus.INSTALLATION_PAYMENT_PENDING &&
+    discountedInstallationTotal(estimate, job).gt(installationCredit);
+  const additionalPaymentDue = legacyInstallationDue || order.deliveries.some(unpaid) ||
+    (activeInstallation && order.extraCharges.some(unpaid));
+  let paymentAnchor: 'estimate-payment' | 'order-additional-payments' | null = null;
+  if (!['Canceled', 'Cancelled'].includes(order.status.name)) {
+    if (schedule?.next?.status === 'DUE') {
+      paymentAnchor = 'estimate-payment';
+    } else if (additionalPaymentDue) {
+      paymentAnchor = 'order-additional-payments';
+    }
+  }
+  return {
+    ...order,
+    paymentAnchor,
+    estimate: {
+      ...estimate,
+      manualDiscountSummary: calculateEstimateDiscount(order.estimate),
+      installationSummary,
+    },
+  };
+}
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -63,11 +128,12 @@ export class OrdersService {
     private installationWorkflow: InstallationWorkflowService,
   ) {}
 
-  async findAll(): Promise<Order[]> {
-    return this.prisma.order.findMany({
-      include: orderDetailsInclude,
+  async findAll() {
+    const orders = await this.prisma.order.findMany({
+      include: orderListInclude,
       orderBy: { date: 'desc' },
     });
+    return orders.map(withOrderListSummary);
   }
 
   async findOne(id: number) {
@@ -642,11 +708,11 @@ export class OrdersService {
 
     const orders = await this.prisma.order.findMany({
       where: { userId: user.id },
-      include: orderDetailsInclude,
+      include: orderListInclude,
       orderBy: { date: 'desc' },
     });
     return orders.map((order) => ({
-      ...order,
+      ...withOrderListSummary(order),
       deliveries: order.deliveries.map((delivery) => ({
         ...delivery,
         internalReason: null,

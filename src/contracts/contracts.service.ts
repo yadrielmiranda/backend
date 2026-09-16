@@ -152,11 +152,11 @@ export class ContractsService {
     )
       throw new NotFoundException('Estimate not found.');
     if (
-      !['Active', 'Ordered'].includes(estimate?.status?.name) ||
+      !['Active', 'Ordered', 'Pending order review'].includes(estimate?.status?.name) ||
       !estimate?.pieces?.length
     )
       throw new BadRequestException(
-        'Only active or ordered estimates with pieces can be signed.',
+        'Only active, pending order review, or ordered estimates with pieces can be signed.',
       );
     if (
       estimate.status.name === 'Active' &&

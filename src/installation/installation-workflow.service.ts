@@ -358,20 +358,37 @@ export class InstallationWorkflowService {
     });
   }
 
+  private async refreshBlockedInstallation(
+    job: Prisma.InstallationJobGetPayload<{ include: typeof jobInclude }>,
+  ) {
+    if (
+      job.status !== InstallationJobStatus.INSTALLATION_PAYMENT_PENDING ||
+      !job.estimate.paymentPlanSnapshot
+    ) return job;
+    // Reevalúa los trabajos bloqueados con la regla anterior sin exigir otro pago.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${job.estimateId} FOR UPDATE`;
+      await refreshScheduledInstallation(tx, job.estimateId);
+    });
+    return (await this.getJobRecord(job.id)) ?? job;
+  }
+
   async findJob(id: number, user: AuthUser) {
-    const job = await this.getJobRecord(id);
+    let job = await this.getJobRecord(id);
     if (!job) throw new NotFoundException(`Installation job #${id} not found.`);
     this.assertAccess(job, user);
+    job = await this.refreshBlockedInstallation(job);
     return { ...job, paymentSchedule: await getPaymentSchedule(this.prisma, job.estimateId), manualDiscountSummary: calculateEstimateDiscount(job.estimate, job), revisionComparison: buildInstallationRevisionComparison(job) };
   }
 
   async findJobByEstimate(estimateId: number, user: AuthUser) {
-    const job = await this.prisma.installationJob.findUnique({
+    let job = await this.prisma.installationJob.findUnique({
       where: { estimateId },
       include: jobInclude,
     });
     if (!job) return null;
     this.assertAccess(job, user);
+    job = await this.refreshBlockedInstallation(job);
     return { ...job, paymentSchedule: await getPaymentSchedule(this.prisma, job.estimateId), manualDiscountSummary: calculateEstimateDiscount(job.estimate, job), revisionComparison: buildInstallationRevisionComparison(job) };
   }
 
@@ -437,6 +454,7 @@ export class InstallationWorkflowService {
         estimate: {
           select: {
             idUser: true,
+            status: { select: { name: true } },
             number: true,
             name: true,
             customerFirstName: true,
@@ -1970,7 +1988,7 @@ export class InstallationWorkflowService {
     await tx.installationJob.update({
       where: { id: job.id },
       data: {
-        status: resolveApprovedPreOrderStage(job.permit),
+        status: resolveApprovedPreOrderStage(job.permit, Boolean(job.estimate.paymentPlanSnapshot)),
         dealerMeasurementsAcceptedAt: acceptedAt,
         dealerMeasurementsAcceptedById: fromProfile ? null : actorId,
       },
@@ -2161,7 +2179,7 @@ export class InstallationWorkflowService {
       await tx.installationJob.update({
         where: { id: jobId },
         data: { status: editableWaiver
-          ? resolveApprovedPreOrderStage(await tx.installationPermit.findUnique({ where: { jobId } }))
+          ? resolveApprovedPreOrderStage(await tx.installationPermit.findUnique({ where: { jobId } }), Boolean(currentJob.estimate.paymentPlanSnapshot))
           : InstallationJobStatus.DEPOSIT_PAYMENT_PENDING },
       });
     });
@@ -3030,7 +3048,7 @@ export class InstallationWorkflowService {
     });
     await tx.installationJob.update({
       where: { id: job.id },
-      data: { status: resolveApprovedPreOrderStage(job.permit) },
+      data: { status: resolveApprovedPreOrderStage(job.permit, Boolean(job.estimate.paymentPlanSnapshot)) },
     });
     await tx.eventLog.create({
       data: {
@@ -3806,7 +3824,7 @@ export class InstallationWorkflowService {
       let nextStatus: InstallationJobStatus = InstallationJobStatus.QUOTE_DRAFT;
       if (approved) {
         if (!estimate?.order) {
-          nextStatus = resolveApprovedPreOrderStage(permit);
+          nextStatus = resolveApprovedPreOrderStage(permit, Boolean(estimate?.paymentPlanSnapshot));
         } else if (
           ['Ready to pick up', 'Delivered'].includes(
             estimate.order.status.name,
@@ -3867,6 +3885,8 @@ export class InstallationWorkflowService {
         throw new BadRequestException(
           'This installation did not request a permit.',
         );
+      const estimate = await tx.estimate.findFirst({ where: { installationJob: { id: jobId } } });
+      const usesPaymentPlan = Boolean(estimate?.paymentPlanSnapshot);
       const materialPayment = await tx.payment.findFirst({
         where: {
           installationJobId: jobId,
@@ -3878,7 +3898,7 @@ export class InstallationWorkflowService {
         },
         select: { id: true },
       });
-      if (materialPayment) {
+      if (materialPayment && !usesPaymentPlan) {
         throw new BadRequestException(
           'Permit status and City Fee are frozen after material checkout starts.',
         );
@@ -3891,7 +3911,7 @@ export class InstallationWorkflowService {
           'Permit payment status is controlled by checkout.',
         );
       }
-      if (permit.status === InstallationPermitStatus.PAYMENT_PENDING) {
+      if (!usesPaymentPlan && permit.status === InstallationPermitStatus.PAYMENT_PENDING) {
         throw new BadRequestException(
           'The Permit Fee must be paid before permit processing begins.',
         );
@@ -3901,7 +3921,7 @@ export class InstallationWorkflowService {
         InstallationPermitStatus,
         InstallationPermitStatus[]
       > = {
-        [InstallationPermitStatus.PAYMENT_PENDING]: [],
+        [InstallationPermitStatus.PAYMENT_PENDING]: usesPaymentPlan ? [InstallationPermitStatus.SUBMITTED] : [],
         [InstallationPermitStatus.PAID]: [
           InstallationPermitStatus.PAID,
           InstallationPermitStatus.SUBMITTED,
@@ -3957,6 +3977,13 @@ export class InstallationWorkflowService {
         dto.cityFee !== undefined &&
         (permit.cityFee == null ||
           !new Decimal(permit.cityFee.toString()).equals(dto.cityFee));
+      if (usesPaymentPlan && cityFeeChanged) {
+        const openCheckout = await tx.payment.findFirst({
+          where: { idEst: estimate!.id, status: PaymentStatus.PENDING, stripeSessionId: { not: null } },
+          select: { id: true },
+        });
+        if (openCheckout) throw new ConflictException('Cancel the open checkout before changing the City Fee.');
+      }
       // Un reintento idéntico no cambia fechas, estado del trabajo ni notificaciones.
       if (
         !statusChanged &&
@@ -3984,32 +4011,31 @@ export class InstallationWorkflowService {
         where: { jobId, status: InstallationQuoteStatus.APPROVED },
         orderBy: { version: 'desc' },
       });
-      const nextJobStatus =
-        updated.status === InstallationPermitStatus.APPROVED &&
-        updated.cityFee != null &&
-        quote
-          ? InstallationJobStatus.MATERIAL_PAYMENT_PENDING
-          : InstallationJobStatus.PERMIT_PROCESSING;
-      await tx.installationJob.update({
-        where: { id: jobId },
-        data: { status: nextJobStatus },
-      });
+      // Con cuotas, el permiso avanza de forma independiente de la orden.
+      if (!usesPaymentPlan) {
+        const nextJobStatus = updated.status === InstallationPermitStatus.APPROVED &&
+          updated.cityFee != null && quote
+            ? InstallationJobStatus.MATERIAL_PAYMENT_PENDING
+            : InstallationJobStatus.PERMIT_PROCESSING;
+        await tx.installationJob.update({ where: { id: jobId }, data: { status: nextJobStatus } });
+      }
       return true;
     });
     const result = await this.findJob(jobId, user);
     if (!changed) return result;
     const permit = result.permit;
+    const cityFeeDue = result.paymentSchedule?.next?.kind === "CITY_FEE";
     await this.notifyInstallationOwner({
       ownerId: result.estimate.idUser,
       actorId: user.id,
       jobId,
-      message: `Permit status for Estimate #${result.estimate.number} changed to ${dto.status.toLowerCase().replaceAll('_', ' ')}.`,
-      actionLabel:
+      message: cityFeeDue ? `City Fee for Estimate #${result.estimate.number} is ready for review and payment.` : `Permit status for Estimate #${result.estimate.number} changed to ${dto.status.toLowerCase().replaceAll('_', ' ')}.`,
+      actionLabel: cityFeeDue ? 'Review City Fee' :
         result.status === InstallationJobStatus.MATERIAL_PAYMENT_PENDING
           ? 'Open payment'
           : 'View permit',
       dedupeKey: `installation:${jobId}:permit:${permit?.updatedAt?.toISOString?.() ?? dto.status}:owner`,
-      actionUrl:
+      actionUrl: cityFeeDue ? (result.estimate.order ? `/orders/${result.estimate.order.id}` : `/estimates/${result.estimateId}/edit`) :
         result.status === InstallationJobStatus.MATERIAL_PAYMENT_PENDING
           ? `/estimates/${result.estimateId}/edit`
           : undefined,
@@ -4286,6 +4312,10 @@ export class InstallationWorkflowService {
     }
 
     await this.withAgreementJobTransaction(jobId, async (tx) => {
+      const currentPermit = await tx.installationPermit.findUnique({ where: { jobId } });
+      if (currentPermit && currentPermit.status !== InstallationPermitStatus.APPROVED) {
+        throw new BadRequestException('The company-managed permit must be approved before installation can start.');
+      }
       if (job.estimate.paymentPlanSnapshot) await assertScheduleMilestone(tx, job.estimateId, 'INSTALL');
       const inProgress = await tx.orderStatus.findUnique({
         where: { name: 'Installation in progress' },
@@ -4586,7 +4616,7 @@ export class InstallationWorkflowService {
     installationDepositTermsAccepted: boolean | undefined,
     user: AuthUser,
     tx: PrismaTransactionClient,
-    options: { preview?: boolean } = {},
+    options: { preview?: boolean; allowAdvance?: boolean } = {},
   ) {
     if (!options.preview) await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
     const estimate = await tx.estimate.findUnique({
@@ -4635,7 +4665,7 @@ export class InstallationWorkflowService {
     if (job?.dealerMeasurementsAcceptedAt && !options.preview && type !== PaymentType.INSTALLATION_DEPOSIT) {
       assertCompleteEstimateCustomer(estimate, 'installation-payment');
     }
-    if (estimate.paymentPlanSnapshot && [PaymentType.MATERIAL, PaymentType.INSTALLATION].includes(type as any)) throw new BadRequestException('Use the payment schedule for this estimate.');
+    if (estimate.paymentPlanSnapshot && [PaymentType.MATERIAL, PaymentType.INSTALLATION, PaymentType.PERMIT].includes(type as any)) throw new BadRequestException('Use the payment schedule for this estimate.');
     const manualDiscount = calculateEstimateDiscount(estimate, job);
     if (manualDiscount && !options.preview) {
       const config = estimateDiscountConfig(estimate.manualDiscount)!;
@@ -4653,6 +4683,8 @@ export class InstallationWorkflowService {
     }
     let baseAmount: Decimal;
     let description: string;
+    let requiresCityFeeAcceptance = false;
+    let cityFeeAmount: string | undefined;
     let paymentSequence = 1;
     let extraCharge: Prisma.OrderExtraChargeGetPayload<{}> | null = null;
     let delivery: Prisma.OrderDeliveryGetPayload<{}> | null = null;
@@ -4718,8 +4750,10 @@ export class InstallationWorkflowService {
       baseAmount = new Decimal(manualDiscount?.permit.total ?? job.permit.permitFeeSnapshot.toString());
       description = `Permit Fee — Estimate #${estimate.number}`;
     } else if (type === PaymentType.INSTALLMENT) {
-      const installment = await installmentContext(tx, estimateId, sequence, Boolean(options.preview));
+      const installment = await installmentContext(tx, estimateId, sequence, Boolean(options.preview), Boolean(options.allowAdvance));
       if (job && !options.preview) assertCompleteEstimateCustomer(estimate, 'installation-payment');
+      requiresCityFeeAcceptance = installment.row.kind === 'CITY_FEE';
+      if (requiresCityFeeAcceptance) cityFeeAmount = installment.row.amount;
       baseAmount = new Decimal(installment.row.balance);
       paymentSequence = installment.row.sequence;
       description = `${installment.row.title} — Estimate #${estimate.number}`;
@@ -4930,6 +4964,8 @@ export class InstallationWorkflowService {
       delivery,
       type,
       description,
+      requiresCityFeeAcceptance,
+      cityFeeAmount,
       baseAmount: baseAmount.toDecimalPlaces(2, Decimal.ROUND_HALF_UP),
       surchargePercent,
       surchargeAmount,

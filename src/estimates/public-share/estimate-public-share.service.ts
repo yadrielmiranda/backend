@@ -116,9 +116,9 @@ export class EstimatePublicShareService {
       );
     }
 
-    if (!['Active', 'Ordered'].includes(estimate.status?.name ?? '')) {
+    if (!['Active', 'Ordered', 'Pending order review'].includes(estimate.status?.name ?? '')) {
       throw new BadRequestException(
-        'Only active or ordered estimates can be shared with customers.',
+        'Only active, pending order review, or ordered estimates can be shared with customers.',
       );
     }
 

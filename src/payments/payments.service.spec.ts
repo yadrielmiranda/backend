@@ -192,7 +192,7 @@ describe('PaymentsService reconciliation', () => {
         installationDepositTermsAccepted: true,
       });
       expect(workflow.getPaymentContext).toHaveBeenCalledWith(
-        9, PaymentType.INSTALLATION_DEPOSIT, undefined, true, client, tx,
+        9, PaymentType.INSTALLATION_DEPOSIT, undefined, true, client, tx, { preview: false },
       );
       expect(tx.payment.upsert.mock.calls[0][0].create.materialAcceptanceText).toBeUndefined();
     });
@@ -257,7 +257,11 @@ describe('PaymentsService reconciliation', () => {
     const payment = materialPayment();
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([]),
-      payment: { findUnique: jest.fn().mockResolvedValue(payment) },
+      payment: {
+        findUnique: jest.fn().mockResolvedValue(payment),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(payment),
+        findMany: jest.fn().mockResolvedValue([payment]),
+      },
       orderStatus: {
         findUnique: jest.fn().mockResolvedValue({ id: 1, name: 'Pending' }),
       },
@@ -423,7 +427,11 @@ describe('PaymentsService reconciliation', () => {
     );
     const transactions = payments.map((payment, index) => ({
       $queryRaw: jest.fn().mockResolvedValue([]),
-      payment: { findUnique: jest.fn().mockResolvedValue(payment) },
+      payment: {
+        findUnique: jest.fn().mockResolvedValue(payment),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(payment),
+        findMany: jest.fn().mockResolvedValue([payment]),
+      },
       orderStatus: {
         findUnique: jest.fn().mockResolvedValue({ id: 1, name: 'Pending' }),
       },
@@ -455,7 +463,7 @@ describe('PaymentsService reconciliation', () => {
       transactions.map((tx, index) =>
         (service as any).processPaidCheckoutSession(tx, {
           id: payments[index].stripeSessionId,
-          payment_status: 'paid',
+          payment_status: 'paid', amount_total: Math.round(Number(payments[index].amount) * 100), currency: 'usd',
         }),
       ),
     );
@@ -513,7 +521,11 @@ describe('PaymentsService reconciliation', () => {
     });
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([]),
-      payment: { findUnique: jest.fn().mockResolvedValue(payment) },
+      payment: {
+        findUnique: jest.fn().mockResolvedValue(payment),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(payment),
+        findMany: jest.fn().mockResolvedValue([payment]),
+      },
       orderSequence: { create: jest.fn() },
       order: {
         create: jest.fn(),
@@ -532,7 +544,7 @@ describe('PaymentsService reconciliation', () => {
     );
     const session = {
       id: payment.stripeSessionId,
-      payment_status: 'paid',
+      payment_status: 'paid', amount_total: Math.round(Number(payment.amount) * 100), currency: 'usd',
     } as Stripe.Checkout.Session;
 
     const processed = await (
@@ -565,7 +577,11 @@ describe('PaymentsService reconciliation', () => {
     });
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([]),
-      payment: { findUnique: jest.fn().mockResolvedValue(payment) },
+      payment: {
+        findUnique: jest.fn().mockResolvedValue(payment),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(payment),
+        findMany: jest.fn().mockResolvedValue([payment]),
+      },
       estimateStatus: {
         findUnique: jest.fn().mockResolvedValue({ id: 2, name: 'Ordered' }),
       },
@@ -587,7 +603,7 @@ describe('PaymentsService reconciliation', () => {
     );
     const session = {
       id: payment.stripeSessionId,
-      payment_status: 'paid',
+      payment_status: 'paid', amount_total: Math.round(Number(payment.amount) * 100), currency: 'usd',
     } as Stripe.Checkout.Session;
 
     await (
@@ -620,13 +636,17 @@ describe('PaymentsService reconciliation', () => {
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([]),
       estimate: { findUnique: jest.fn().mockResolvedValue(null) },
-      payment: { findUnique: jest.fn().mockResolvedValue(payment) },
+      payment: {
+        findUnique: jest.fn().mockResolvedValue(payment),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(payment),
+        findMany: jest.fn().mockResolvedValue([payment]),
+      },
       order: { findUnique: jest.fn().mockResolvedValue({ id: 11 }) },
     };
     const workflow = { markPaymentPaid: jest.fn().mockResolvedValue(false) };
     const service = new PaymentsService({} as never, config, workflow as never, notifications as never);
     await (service as any).processPaidCheckoutSession(tx, {
-      id: payment.stripeSessionId, payment_status: 'paid',
+      id: payment.stripeSessionId, payment_status: 'paid', amount_total: Math.round(Number(payment.amount) * 100), currency: 'usd',
     });
     expect(notifications.createAndSend).not.toHaveBeenCalled();
     expect(notifications.createAndSendToRoles).toHaveBeenCalledWith(

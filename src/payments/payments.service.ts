@@ -1,4 +1,7 @@
-import { getPaymentSchedule, refreshScheduledInstallation } from '@/payment-plans/payment-schedule';
+import Decimal from 'decimal.js';
+import { randomUUID } from 'node:crypto';
+import { PENDING_ORDER_REVIEW } from '@/payment-plans/payment-plan';
+import { getPaymentSchedule, refreshScheduledInstallation, scheduleInclude } from '@/payment-plans/payment-schedule';
 import { calculateEstimateDiscount, estimateDiscountConfig } from '@/estimates/discounts/estimate-discount';
 import { checkoutPromotionExpiry, promotionExpired, promotionTerms } from '@/promotions/promotion-pricing';
 import { requireSignedAgreementForPayment } from '@/contracts/agreement-payment';
@@ -44,6 +47,7 @@ type PaymentWithEstimate = Prisma.PaymentGetPayload<{
     estimate: {
       include: {
         order: true;
+        installationJob: true;
         status: true;
         user: { include: { role: true } };
       };
@@ -112,6 +116,7 @@ export class PaymentsService {
   private async ensureOrderForInitialPayment(
     tx: Prisma.TransactionClient,
     payment: PaymentWithEstimate,
+    approvedBy?: AuthUser,
   ): Promise<boolean> {
     const estimate = payment.estimate;
     if (payment.type === PaymentType.INSTALLMENT) {
@@ -126,7 +131,7 @@ export class PaymentsService {
         );
       }
       if (estimate.status.name === 'Ordered') return false;
-      if (estimate.status.name !== 'Active') {
+      if (!['Active', PENDING_ORDER_REVIEW].includes(estimate.status.name)) {
         throw new Error(
           `Estimate #${estimate.number} has an order but cannot be reconciled from status ${estimate.status.name}.`,
         );
@@ -145,7 +150,30 @@ export class PaymentsService {
       return true;
     }
 
-    if (!['Active', 'Ordered'].includes(estimate.status.name)) {
+    if (estimate.installationJob && estimate.installationJob.status !== InstallationJobStatus.CANCELED && !approvedBy) {
+      if (estimate.status.name === PENDING_ORDER_REVIEW) return false;
+      if (estimate.status.name !== 'Active') throw new ConflictException('This paid estimate requires administrative review.');
+      const reviewStatus = await tx.estimateStatus.upsert({
+        where: { name: PENDING_ORDER_REVIEW }, update: {}, create: { name: PENDING_ORDER_REVIEW },
+      });
+      await tx.estimate.update({ where: { id: estimate.id }, data: { statusId: reviewStatus.id } });
+      estimate.status = reviewStatus;
+      await tx.eventLog.create({ data: {
+        action: 'UPDATE', entityType: 'Estimate', entityId: estimate.id,
+        userId: payment.recordedById ?? estimate.idUser,
+        message: 'First order payment confirmed. Pending order review; no order has been created.',
+      } });
+      await this.notifications.createAndSend({
+        recipientId: estimate.idUser, actorId: payment.recordedById ?? estimate.idUser, notifyActor: true,
+        message: `Payment confirmed for Estimate #${estimate.number}. Pending order review.`,
+        actionUrl: `/estimates/${estimate.id}/edit`, actionLabel: 'View estimate',
+        dedupeKey: `estimate:${estimate.id}:order-review:owner`,
+      }, tx);
+      return true;
+    }
+    // Una revisión pendiente solo puede finalizar desde la acción administrativa.
+    if (estimate.status.name === PENDING_ORDER_REVIEW && !approvedBy) return false;
+    if (!['Active', 'Ordered', PENDING_ORDER_REVIEW].includes(estimate.status.name)) {
       throw new Error(
         `Estimate #${estimate.number} cannot create its paid material order from status ${estimate.status.name}.`,
       );
@@ -208,15 +236,15 @@ export class PaymentsService {
         action: 'CREATE',
         entityType: 'Order',
         entityId: order.id,
-        userId: estimate.idUser,
-        message: `Order #${order.number} created from paid material checkout.`,
+        userId: approvedBy?.id ?? estimate.idUser,
+        message: approvedBy ? `Order #${order.number} created after administrative review of the paid estimate.` : `Order #${order.number} created from paid material checkout.`,
       },
     });
     // La orden creada sí se avisa al dueño, aunque él haya iniciado el pago.
     await this.notifications.createAndSend(
       {
         recipientId: estimate.idUser,
-        actorId: payment.recordedById ?? estimate.idUser,
+        actorId: approvedBy?.id ?? payment.recordedById ?? estimate.idUser,
         notifyActor: true,
         message: `Your order #${order.number} has been created from Estimate #${estimate.number}.`,
         actionUrl: `/orders/${order.id}`,
@@ -226,6 +254,45 @@ export class PaymentsService {
       tx,
     );
     return true;
+  }
+
+  async approveOrder(estimateId: number, actor: AuthUser) {
+    if (actor.role?.name !== 'admin') throw new ForbiddenException('Only administrators can approve an order.');
+    return this.prisma.$transaction(async (tx) => {
+      // Serializa aprobación, cobros y cambios del proyecto; un reintento devuelve la misma orden.
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
+      const estimate = await tx.estimate.findUnique({ where: { id: estimateId }, include: scheduleInclude });
+      if (!estimate) throw new NotFoundException('Estimate not found.');
+      if (estimate.order) return estimate.order;
+      if (estimate.status.name !== PENDING_ORDER_REVIEW) throw new ConflictException('This estimate is not pending order review.');
+      if (estimate.units <= 0) throw new ConflictException('At least one material unit is required to create an order.');
+      const job = estimate.installationJob?.status === InstallationJobStatus.CANCELED ? null : estimate.installationJob;
+      if (job && job.quotes[0]?.status !== 'APPROVED') throw new ConflictException('Approve the installation quote before creating the order.');
+      const schedule = await getPaymentSchedule(tx, estimateId);
+      if (schedule?.orderReviewBlockedReason) throw new ConflictException(schedule.orderReviewBlockedReason);
+      const firstPayment = estimate.payments.find(p => p.status === PaymentStatus.PAID &&
+        (schedule ? p.type === PaymentType.INSTALLMENT && p.sequence === schedule.initialSequence : p.type === PaymentType.MATERIAL));
+      if (!firstPayment) throw new ConflictException('The first order payment must be confirmed before approval.');
+      const payment = await tx.payment.findUniqueOrThrow({ where: { id: firstPayment.id }, include: {
+        estimate: { include: { order: true, status: true, installationJob: true, user: { include: { role: true } } } },
+      } });
+      await this.ensureOrderForInitialPayment(tx, payment, actor);
+      if (schedule) await refreshScheduledInstallation(tx, estimateId);
+      return tx.order.findUniqueOrThrow({ where: { idEst: estimateId }, include: { status: true } });
+    });
+  }
+
+  private async acceptCityFee(
+    tx: Prisma.TransactionClient,
+    context: { requiresCityFeeAcceptance?: boolean; cityFeeAmount?: string; baseAmount: { toFixed(n: number): string }; paymentSequence: number },
+    accepted: boolean | undefined, estimateId: number, actorId: number, manual = false,
+  ) {
+    if (!context.requiresCityFeeAcceptance) return;
+    if (accepted !== true) throw new BadRequestException('Review and accept the City Fee adjustment before payment.');
+    await tx.eventLog.create({ data: {
+      action: 'APPROVE', entityType: 'Estimate', entityId: estimateId, userId: actorId,
+      message: `${manual ? 'Staff confirmed customer acceptance of' : 'Payer accepted'} City Fee adjustment #${context.paymentSequence}: $${context.cityFeeAmount ?? context.baseAmount.toFixed(2)}. Amount due after credits: $${context.baseAmount.toFixed(2)}.`,
+    } });
   }
 
   private isCompletedCheckout(session: {payment_status: string; status: string | null; amount_total: number | null}) {
@@ -315,7 +382,9 @@ export class PaymentsService {
       where: { idEst: payment.idEst },
       select: { id: true },
     });
-    const actionUrl = order
+    const pendingReview = !order && payment.estimate.status.name === PENDING_ORDER_REVIEW &&
+      (payment.type === PaymentType.MATERIAL || (payment.type === PaymentType.INSTALLMENT && payment.sequence === 1));
+    const actionUrl = pendingReview ? `/estimates/${payment.idEst}/edit` : order
       ? `/orders/${order.id}`
       : payment.installationJobId
         ? `/installations/${payment.installationJobId}`
@@ -326,9 +395,9 @@ export class PaymentsService {
     await this.notifications.createAndSendToRoles(
       ['admin'],
       {
-        message: `${copy.label} confirmed${payerSuffix} for Estimate #${payment.estimate.number}.`,
+        message: `${copy.label} confirmed${payerSuffix} for Estimate #${payment.estimate.number}.${pendingReview ? " Pending order review." : ""}`,
         actionUrl,
-        actionLabel: copy.adminNextStep,
+        actionLabel: pendingReview ? 'Review order' : copy.adminNextStep,
         dedupeKey: `payment:${payment.id}:paid:admin`,
       },
       {
@@ -345,65 +414,46 @@ export class PaymentsService {
   ): Promise<boolean> {
     if (!this.isCompletedCheckout(session)) return false;
 
-    const paymentIntentId =
-      typeof session.payment_intent === 'string'
-        ? session.payment_intent
-        : null;
-    // El bloqueo precede a la primera lectura: evita reutilizar una orden anterior
-    // cuando dos webhooks llegan al mismo tiempo con aislamiento Repeatable Read.
-    await tx.$queryRaw`SELECT id FROM Estimate WHERE id = (SELECT idEst FROM payments WHERE stripeSessionId = ${session.id}) FOR UPDATE`;
-    const payment = await tx.payment.findUnique({
+    const paymentIntentId = typeof session.payment_intent === 'string' ? session.payment_intent : null;
+    // Una sesión puede contener varias cuotas del mismo estimate. Se confirman juntas.
+    await tx.$queryRaw`SELECT id FROM Estimate WHERE id = (SELECT idEst FROM payments WHERE stripeSessionId = ${session.id} LIMIT 1) FOR UPDATE`;
+    const payments = await tx.payment.findMany({
       where: { stripeSessionId: session.id },
       include: {
-        estimate: {
-          include: {
-            order: true,
-            status: true,
-            user: { include: { role: true } },
-          },
-        },
+        estimate: { include: { order: true, installationJob: true, status: true, user: { include: { role: true } } } },
       },
+      orderBy: { id: 'asc' },
     });
-    if (!payment) return false;
-    if (payment.type === PaymentType.INSTALLMENT && payment.status === PaymentStatus.REFUNDED) return false;
-
-    if (payment.status === PaymentStatus.PAID) {
-      await this.ensurePaidPaymentEffects(tx, payment);
-      return true;
+    if (!payments.length) return false;
+    if (payments.some(p => p.status === PaymentStatus.REFUNDED)) return false;
+    if (payments.length > 1 && payments.some(p => p.type !== PaymentType.INSTALLMENT)) throw new Error('Only installments may share a checkout.');
+    if (payments.some(p => p.idEst !== payments[0].idEst)) throw new Error('Checkout contains payments from different estimates.');
+    const recordedAmountCents = payments.reduce((sum, p) => sum + Math.round(Number(p.amount) * 100), 0);
+    if (session.amount_total == null || session.amount_total !== recordedAmountCents ||
+        payments.some(p => p.currency.toLowerCase() !== String(session.currency ?? '').toLowerCase())) {
+      throw new Error(`Paid checkout amount mismatch for Payment #${payments[0].id}.`);
     }
-
-    const stripeAmountCents = session.amount_total;
-    const recordedAmountCents = Math.round(Number(payment.amount) * 100);
-    const stripeCurrency = String(session.currency ?? '').toLowerCase();
-    const recordedCurrency = payment.currency.toLowerCase();
-    if (
-      stripeAmountCents === null ||
-      stripeAmountCents !== recordedAmountCents ||
-      stripeCurrency !== recordedCurrency
-    ) {
-      throw new Error(
-        `Paid checkout amount mismatch for Payment #${payment.id}.`,
-      );
-    }
-
-    await tx.payment.update({
-      where: { id: payment.id },
-      data: {
+    const paidAt = new Date();
+    for (const payment of payments) {
+      if (payment.status === PaymentStatus.PAID) continue;
+      await tx.payment.update({ where: { id: payment.id }, data: {
         status: PaymentStatus.PAID,
         paymentMethod: PaymentMethod.CARD,
-        paidAt: new Date(),
+        paidAt,
         payerName: session.customer_details?.name ?? payment.payerName,
         payerEmail: session.customer_details?.email ?? payment.payerEmail,
         payerPhone: session.customer_details?.phone ?? payment.payerPhone,
-        stripeCustomerId:
-          typeof session.customer === 'string'
-            ? session.customer
-            : payment.stripeCustomerId,
+        stripeCustomerId: typeof session.customer === 'string' ? session.customer : payment.stripeCustomerId,
         stripePaymentIntentId: paymentIntentId ?? payment.stripePaymentIntentId,
-      },
-    });
-
-    await this.ensurePaidPaymentEffects(tx, payment);
+      } });
+    }
+    // Aplica los efectos cuando todos los conceptos ya están pagados, con datos actuales.
+    for (const payment of payments) {
+      const confirmed = await tx.payment.findUniqueOrThrow({ where: { id: payment.id }, include: {
+        estimate: { include: { order: true, installationJob: true, status: true, user: { include: { role: true } } } },
+      } });
+      await this.ensurePaidPaymentEffects(tx, confirmed);
+    }
     return true;
   }
 
@@ -411,6 +461,7 @@ export class PaymentsService {
     const candidates = await this.prisma.payment.findMany({
       where: {
         status: PaymentStatus.PAID,
+        estimate: { status: { name: { not: PENDING_ORDER_REVIEW } } },
         OR: [
           { type: PaymentType.INSTALLMENT, sequence: 1, estimate: { order: null } },
           {
@@ -493,6 +544,7 @@ export class PaymentsService {
               estimate: {
                 include: {
                   order: true,
+                  installationJob: true,
                   status: true,
                   user: { include: { role: true } },
                 },
@@ -532,14 +584,13 @@ export class PaymentsService {
   }
 
   private async closeUnpaidCheckoutSession(
-    paymentId: number,
     stripeSessionId: string,
     finalStatus: PaymentStatus,
+    db: Prisma.TransactionClient = this.prisma,
   ): Promise<void> {
-    await this.prisma.payment.updateMany({
+    await db.payment.updateMany({
       where: {
-        id: paymentId,
-        status: { not: PaymentStatus.PAID },
+        status: { notIn: [PaymentStatus.PAID, PaymentStatus.REFUNDED] },
         stripeSessionId,
       },
       data: {
@@ -565,9 +616,11 @@ export class PaymentsService {
         orderBy: { id: 'asc' },
       });
 
+      const reconciledSessions = new Set<string>();
       for (const payment of pendingPayments) {
         const stripeSessionId = payment.stripeSessionId;
-        if (!stripeSessionId) continue;
+        if (!stripeSessionId || reconciledSessions.has(stripeSessionId)) continue;
+        reconciledSessions.add(stripeSessionId);
 
         try {
           const session =
@@ -583,7 +636,6 @@ export class PaymentsService {
             }
           } else if (session.status === 'expired') {
             await this.closeUnpaidCheckoutSession(
-              payment.id,
               stripeSessionId,
               PaymentStatus.EXPIRED,
             );
@@ -595,7 +647,6 @@ export class PaymentsService {
               : null;
           if (stripeError?.code === 'resource_missing') {
             await this.closeUnpaidCheckoutSession(
-              payment.id,
               stripeSessionId,
               PaymentStatus.EXPIRED,
             );
@@ -725,11 +776,12 @@ export class PaymentsService {
 
       if (promotionExpired(estimate)) return { enabled:true as const, status:'expired' as const, payment:null };
       const schedule = await getPaymentSchedule(tx, estimate.id);
-      const advanceDue = ['DEPOSIT_PAYMENT_PENDING', 'PERMIT_PAYMENT_PENDING'].includes(estimate.installationJob?.status ?? '');
+      const advanceDue = estimate.installationJob?.status === 'DEPOSIT_PAYMENT_PENDING';
       const request = schedule && !advanceDue
         ? schedule.next ? { type: PaymentType.INSTALLMENT, sequence: schedule.next.sequence }
           : estimate.order?.deliveries[0] ? { type: PaymentType.DELIVERY, sequence: estimate.order.deliveries[0].sequence }
-          : estimate.order?.extraCharges[0] ? { type: PaymentType.EXTRA, sequence: estimate.order.extraCharges[0].sequence } : null
+          : estimate.order?.extraCharges[0] ? { type: PaymentType.EXTRA, sequence: estimate.order.extraCharges[0].sequence }
+          : schedule.fullBalance ? { type: PaymentType.INSTALLMENT, sequence: schedule.fullBalance.sequences[0] } : null
         : this.resolveNextPaymentRequest(estimate);
       if (!request) {
         return {
@@ -751,7 +803,7 @@ export class PaymentsService {
         undefined,
         owner,
         tx,
-        { preview: true },
+        { preview: true, allowAdvance: request.type === PaymentType.INSTALLMENT && !schedule?.next },
       );
       const existingPayment = await tx.payment.findUnique({
         where: {
@@ -769,15 +821,28 @@ export class PaymentsService {
         },
       });
 
+      const checkoutRows = request.type === PaymentType.INSTALLMENT || schedule?.fullBalance
+        ? await tx.payment.findMany({ where: { idEst: estimate.id, type: PaymentType.INSTALLMENT,
+            status: PaymentStatus.PENDING, stripeSessionId: { not: null } } }) : [];
+      const installmentCheckouts = [...new Set(checkoutRows.map(p => p.stripeSessionId))].map(sessionId => {
+        const group = checkoutRows.filter(p => p.stripeSessionId === sessionId);
+        const total = (field: 'baseAmount' | 'surchargeAmount' | 'amount') => group.reduce(
+          (sum, p) => sum.add(p[field]), new Prisma.Decimal(0),
+        ).toFixed(2);
+        return { sequences: group.map(p => p.sequence), baseAmount: total('baseAmount'),
+          surchargePercent: group[0].surchargePercent.toFixed(4), surchargeAmount: total('surchargeAmount'), totalAmount: total('amount') };
+      });
+
       return {
         enabled: true as const,
-        status: 'due' as const,
+        status: request.type === PaymentType.INSTALLMENT && !schedule?.next ? 'available' as const : 'due' as const,
+        installmentCheckouts,
         schedule,
         promotionExpiresAt: estimate.promotionExpiresAt, expiresAt: estimate.expiresAt, promotionLockedAt: estimate.promotionLockedAt,
         payment: {
           type: request.type,
           sequence: context.paymentSequence,
-          title: request.type === PaymentType.INSTALLMENT ? schedule!.next!.title : this.publicPaymentTitle(request.type, context.paymentSequence),
+          title: request.type === PaymentType.INSTALLMENT ? schedule!.rows.find(row => row.sequence === context.paymentSequence)!.title : this.publicPaymentTitle(request.type, context.paymentSequence),
           description: context.description,
           baseAmount: context.baseAmount.toFixed(2),
           surchargePercent: context.surchargePercent.toFixed(4),
@@ -787,6 +852,8 @@ export class PaymentsService {
             existingPayment?.status === PaymentStatus.PENDING &&
               existingPayment.stripeSessionId,
           ),
+          requiresCityFeeAcceptance: context.requiresCityFeeAcceptance,
+          cityFeeAmount: context.cityFeeAmount,
           requiresTerms:
             request.type === PaymentType.INSTALLATION_DEPOSIT &&
             !context.job?.depositTermsAcceptedAt,
@@ -802,7 +869,11 @@ export class PaymentsService {
   async createCheckoutSessionForPublicToken(params: {
     token: string;
     installationDepositTermsAccepted?: boolean;
+    cityFeeAccepted?: boolean;
     agreementId?: string;
+    sequences?: number[];
+    payFullBalance?: boolean;
+    expectedBalance?: number;
   }) {
     const publicContext = await this.getPublicPaymentContext(params.token);
     if (!publicContext.enabled || !publicContext.payment) {
@@ -823,20 +894,130 @@ export class PaymentsService {
 
     return this.createCheckoutSessionForEstimate({
       estimateId: owner.id,
-      type: publicContext.payment.type,
-      sequence: publicContext.payment.sequence,
+      type: params.payFullBalance ? PaymentType.INSTALLMENT : publicContext.payment.type,
+      sequence: params.sequences || params.payFullBalance ? undefined : publicContext.payment.sequence,
+      sequences: params.sequences,
+      payFullBalance: params.payFullBalance,
+      expectedBalance: params.expectedBalance,
       installationDepositTermsAccepted: params.installationDepositTermsAccepted,
+      cityFeeAccepted: params.cityFeeAccepted,
       user: { id: owner.idUser, role: { name: 'dealer' } },
       publicToken: params.token,
       publicAgreementId: params.agreementId,
     });
   }
 
+  private async selectedPaymentContexts(
+    tx: Prisma.TransactionClient,
+    params: { estimateId: number; type: PaymentType; sequence?: number; sequences?: number[]; payFullBalance?: boolean; expectedBalance?: number; installationDepositTermsAccepted?: boolean },
+    user: AuthUser,
+    preview = false,
+  ) {
+    if (params.sequences !== undefined && (
+      params.type !== PaymentType.INSTALLMENT || params.sequence !== undefined ||
+      !Array.isArray(params.sequences) || !params.sequences.length || params.sequences.length > 50 ||
+      params.sequences.some(s => !Number.isSafeInteger(s) || s < 1) ||
+      new Set(params.sequences).size !== params.sequences.length
+    )) throw new BadRequestException('Select one or more distinct installments that are due.');
+    let sequences = params.sequences ? [...params.sequences].sort((a, b) => a - b) : [params.sequence];
+    if (params.payFullBalance) {
+      if (params.type !== PaymentType.INSTALLMENT || params.sequence !== undefined || params.sequences !== undefined ||
+        typeof params.expectedBalance !== 'number' || !Number.isFinite(params.expectedBalance) ||
+        params.expectedBalance <= 0 || new Prisma.Decimal(params.expectedBalance).decimalPlaces() > 2) {
+        throw new BadRequestException('Review the full project balance before payment.');
+      }
+      // Obtiene y valida el saldo bajo el mismo bloqueo que protege los cobros.
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${params.estimateId} FOR UPDATE`;
+      const owner = await tx.estimate.findUnique({ where: { id: params.estimateId }, select: { idUser: true } });
+      if (!owner || owner.idUser !== user.id) throw new NotFoundException('Estimate not found.');
+      const schedule = await getPaymentSchedule(tx, params.estimateId);
+      if (!schedule?.fullBalance) throw new ConflictException('The full project balance is not available. Refresh the payment schedule.');
+      if (!new Prisma.Decimal(params.expectedBalance).eq(schedule.fullBalance.amount)) {
+        throw new ConflictException('The project balance changed. Refresh and review the updated amount before payment.');
+      }
+      sequences = [...schedule.fullBalance.sequences].sort((a, b) => a - b);
+    }
+    const contexts: Awaited<ReturnType<InstallationWorkflowService['getPaymentContext']>>[] = [];
+    for (const sequence of sequences) {
+      contexts.push(await this.installationWorkflow.getPaymentContext(
+        params.estimateId, params.type, sequence, params.installationDepositTermsAccepted, user, tx,
+        { preview, ...(params.payFullBalance ? { allowAdvance: true } : {}) },
+      ));
+    }
+    // Calcula el recargo una sola vez sobre el total y distribuye los centavos sin perderlos.
+    if (contexts.length > 1) {
+      let base = new Prisma.Decimal(0);
+      let fee = new Prisma.Decimal(0);
+      for (const context of contexts) {
+        base = base.add(context.baseAmount.toFixed(2));
+        const cumulativeFee = base.mul(context.surchargePercent.toString()).div(100).toDecimalPlaces(2);
+        const allocatedFee = cumulativeFee.minus(fee);
+        context.surchargeAmount = new Decimal(allocatedFee.toFixed(2));
+        context.totalAmount = context.baseAmount.add(context.surchargeAmount);
+        fee = cumulativeFee;
+      }
+    }
+    return contexts;
+  }
+
+  private async resumeOrCloseInstallmentCheckouts(
+    tx: Prisma.TransactionClient,
+    existing: Array<{ stripeSessionId: string | null } | null>,
+    contexts: Awaited<ReturnType<PaymentsService['selectedPaymentContexts']>>,
+    refreshUrl: string,
+  ): Promise<{ url: string } | null> {
+    const sessions = [...new Set(existing.map(p => p?.stripeSessionId).filter((id): id is string => Boolean(id)))];
+    for (const sessionId of sessions) {
+      let session: Stripe.Checkout.Session;
+      try {
+        session = await this.stripe.checkout.sessions.retrieve(sessionId);
+      } catch (error: unknown) {
+        if ((error as { code?: string })?.code !== 'resource_missing') throw error;
+        await this.closeUnpaidCheckoutSession(sessionId, PaymentStatus.EXPIRED, tx);
+        continue;
+      }
+      if (this.isCompletedCheckout(session)) {
+        await this.processPaidCheckoutSession(tx, session);
+        // La selección puede haber cambiado: refresca los saldos confirmados antes de otro cobro.
+        return { url: refreshUrl };
+      }
+      if (session.status === 'complete') throw new ConflictException('Checkout completed, but payment confirmation is pending.');
+      const group = await tx.payment.findMany({ where: { stripeSessionId: sessionId } });
+      const matchesSelection = group.length === contexts.length && group.every(p =>
+        p.idEst === contexts[0].estimate.id && p.type === PaymentType.INSTALLMENT && p.status === PaymentStatus.PENDING &&
+        contexts.some(c => c.paymentSequence === p.sequence && c.baseAmount.eq(p.baseAmount.toString())));
+      if (session.status === 'open' && matchesSelection) {
+        if (!session.url) throw new BadRequestException('Stripe session has no checkout URL.');
+        return { url: session.url };
+      }
+      if (session.status === 'open') {
+        try {
+          await this.stripe.checkout.sessions.expire(sessionId);
+        } catch (error) {
+          const latest = await this.stripe.checkout.sessions.retrieve(sessionId);
+          if (this.isCompletedCheckout(latest)) {
+            await this.processPaidCheckoutSession(tx, latest);
+            return { url: refreshUrl };
+          }
+          if (latest.status !== 'expired') throw error;
+        }
+      } else if (session.status !== 'expired') {
+        throw new ConflictException('The previous checkout is still processing. Refresh before trying again.');
+      }
+      await this.closeUnpaidCheckoutSession(sessionId, PaymentStatus.CANCELED, tx);
+    }
+    return null;
+  }
+
   async createCheckoutSessionForEstimate(params: {
     estimateId: number;
     type?: PaymentType;
     sequence?: number;
+    sequences?: number[];
+    payFullBalance?: boolean;
+    expectedBalance?: number;
     installationDepositTermsAccepted?: boolean;
+    cityFeeAccepted?: boolean;
     materialAccepted?: boolean;
     user: AuthUser;
     publicToken?: string;
@@ -865,14 +1046,8 @@ export class PaymentsService {
         }
       }
 
-      const context = await this.installationWorkflow.getPaymentContext(
-        params.estimateId,
-        type,
-        params.sequence,
-        params.installationDepositTermsAccepted,
-        params.user,
-        tx,
-      );
+      const contexts = await this.selectedPaymentContexts(tx, { ...params, type }, params.user);
+      const context = contexts[0];
       if (
         context.estimate.dealerModeSnapshot === DealerMode.INTERNAL &&
         !params.publicToken
@@ -882,13 +1057,14 @@ export class PaymentsService {
         );
       }
       const requiresMaterialAcceptance =
-        (type === PaymentType.MATERIAL || (type === PaymentType.INSTALLMENT && context.paymentSequence === 1)) &&
+        (type === PaymentType.MATERIAL || (type === PaymentType.INSTALLMENT && contexts.some(c => c.paymentSequence === 1))) &&
         context.estimate.user.role.name === 'client';
       if (requiresMaterialAcceptance && params.materialAccepted !== true) {
         throw new BadRequestException(
           'Review and accept the material details in your estimate before payment.',
         );
       }
+      for (const selected of contexts) await this.acceptCityFee(tx, selected, params.cityFeeAccepted, params.estimateId, params.user.id);
       const materialAcceptance = requiresMaterialAcceptance
         ? {
             materialAcceptanceText: MATERIAL_ACCEPTANCE_TEXT,
@@ -901,6 +1077,7 @@ export class PaymentsService {
         );
       }
       const frontendUrl = this.getFrontendUrl();
+      const checkoutRef = randomUUID();
       const query = params.publicToken
         ? `token=${encodeURIComponent(params.publicToken)}&type=${type}&sequence=${context.paymentSequence}${params.publicAgreementId ? `&agreementId=${encodeURIComponent(params.publicAgreementId)}` : ''}`
         : `estimateId=${params.estimateId}&type=${type}&sequence=${context.paymentSequence}`;
@@ -908,23 +1085,31 @@ export class PaymentsService {
         ? `${frontendUrl}/public/checkout/success?${query}`
         : `${frontendUrl}/checkout/success?${query}`;
       const cancelUrl = params.publicToken
-        ? `${frontendUrl}/public/checkout/cancel?${query}`
-        : `${frontendUrl}/checkout/cancel?${query}`;
+        ? `${frontendUrl}/public/checkout/cancel?${query}&checkoutRef=${checkoutRef}`
+        : `${frontendUrl}/checkout/cancel?${query}&checkoutRef=${checkoutRef}`;
       const payer = this.getPayerSnapshot(context.estimate);
 
-      const existingPayment = await tx.payment.findUnique({
-        where: {
-          idEst_type_sequence: {
-            idEst: params.estimateId,
-            type,
-            sequence: context.paymentSequence,
-          },
-        },
-      });
-
-      if (type === PaymentType.INSTALLMENT && existingPayment?.status === PaymentStatus.REFUNDED) {
-        throw new ConflictException('This installment was refunded. Contact administration to review the balance.');
+      const existingPayments = [] as Array<Awaited<ReturnType<typeof tx.payment.findUnique>>>;
+      for (const selected of contexts) {
+        const existing = await tx.payment.findUnique({ where: { idEst_type_sequence: {
+          idEst: params.estimateId, type, sequence: selected.paymentSequence,
+        } } });
+        if (existing?.status === PaymentStatus.REFUNDED && type === PaymentType.INSTALLMENT) {
+          throw new ConflictException('This installment was refunded. Contact administration to review the balance.');
+        }
+        if (type === PaymentType.INSTALLMENT && existing?.status === PaymentStatus.PAID) throw new ConflictException(`${type} payment is already paid.`);
+        existingPayments.push(existing);
       }
+      if (type === PaymentType.INSTALLMENT) {
+        const refreshUrl = params.publicToken
+          ? params.publicAgreementId
+            ? `${frontendUrl}/public/estimates/${encodeURIComponent(params.publicToken)}/agreements/${encodeURIComponent(params.publicAgreementId)}`
+            : `${frontendUrl}/public/payments/${encodeURIComponent(params.publicToken)}`
+          : context.estimate.order ? `${frontendUrl}/orders/${context.estimate.order.id}` : `${frontendUrl}/estimates/${params.estimateId}/edit#estimate-payment`;
+        const resumed = await this.resumeOrCloseInstallmentCheckouts(tx, existingPayments, contexts, refreshUrl);
+        if (resumed) return resumed;
+      }
+      const existingPayment = type === PaymentType.INSTALLMENT ? null : existingPayments[0];
       if (existingPayment?.stripeSessionId) {
         try {
           const existingSession = await this.stripe.checkout.sessions.retrieve(
@@ -982,69 +1167,67 @@ export class PaymentsService {
         throw new ConflictException(`${type} payment is already paid.`);
       }
 
-      const payment = await tx.payment.upsert({
-        where: {
-          idEst_type_sequence: {
+      const payments = [] as Array<{ id: number }>;
+      for (const context of contexts) {
+        const payment = await tx.payment.upsert({
+          where: {
+            idEst_type_sequence: {
+              idEst: params.estimateId,
+              type,
+              sequence: context.paymentSequence,
+            },
+          },
+          create: {
             idEst: params.estimateId,
             type,
             sequence: context.paymentSequence,
+            installationJobId: context.job?.id ?? null,
+            extraChargeId: context.extraCharge?.id ?? null,
+            deliveryId: context.delivery?.id ?? null,
+            userId: context.estimate.idUser,
+            ...payer,
+            ...(requiresMaterialAcceptance && context.paymentSequence === 1 ? materialAcceptance : {}),
+            baseAmount: new Prisma.Decimal(context.baseAmount.toFixed(2)),
+            surchargePercent: new Prisma.Decimal(
+              context.surchargePercent.toFixed(4),
+            ),
+            surchargeAmount: new Prisma.Decimal(
+              context.surchargeAmount.toFixed(2),
+            ),
+            amount: new Prisma.Decimal(context.totalAmount.toFixed(2)),
+            currency: 'usd',
+            status: PaymentStatus.PENDING,
+            paymentMethod: PaymentMethod.CARD,
           },
-        },
-        create: {
-          idEst: params.estimateId,
-          type,
-          sequence: context.paymentSequence,
-          installationJobId: context.job?.id ?? null,
-          extraChargeId: context.extraCharge?.id ?? null,
-          deliveryId: context.delivery?.id ?? null,
-          userId: context.estimate.idUser,
-          ...payer,
-          ...materialAcceptance,
-          baseAmount: new Prisma.Decimal(context.baseAmount.toFixed(2)),
-          surchargePercent: new Prisma.Decimal(
-            context.surchargePercent.toFixed(4),
-          ),
-          surchargeAmount: new Prisma.Decimal(
-            context.surchargeAmount.toFixed(2),
-          ),
-          amount: new Prisma.Decimal(context.totalAmount.toFixed(2)),
-          currency: 'usd',
-          status: PaymentStatus.PENDING,
-          paymentMethod: PaymentMethod.CARD,
-        },
-        update: {
-          installationJobId: context.job?.id ?? null,
-          extraChargeId: context.extraCharge?.id ?? null,
-          deliveryId: context.delivery?.id ?? null,
-          userId: context.estimate.idUser,
-          ...payer,
-          ...materialAcceptance,
-          baseAmount: new Prisma.Decimal(context.baseAmount.toFixed(2)),
-          surchargePercent: new Prisma.Decimal(
-            context.surchargePercent.toFixed(4),
-          ),
-          surchargeAmount: new Prisma.Decimal(
-            context.surchargeAmount.toFixed(2),
-          ),
-          amount: new Prisma.Decimal(context.totalAmount.toFixed(2)),
-          currency: 'usd',
-          status: PaymentStatus.PENDING,
-          paymentMethod: PaymentMethod.CARD,
-          paidAt: null,
-          manualReference: null,
-          manualNote: null,
-          recordedById: null,
-          stripeSessionId: null,
-          stripePaymentIntentId: null,
-        },
-      });
+          update: {
+            installationJobId: context.job?.id ?? null,
+            extraChargeId: context.extraCharge?.id ?? null,
+            deliveryId: context.delivery?.id ?? null,
+            userId: context.estimate.idUser,
+            ...payer,
+            ...(requiresMaterialAcceptance && context.paymentSequence === 1 ? materialAcceptance : {}),
+            baseAmount: new Prisma.Decimal(context.baseAmount.toFixed(2)),
+            surchargePercent: new Prisma.Decimal(
+              context.surchargePercent.toFixed(4),
+            ),
+            surchargeAmount: new Prisma.Decimal(
+              context.surchargeAmount.toFixed(2),
+            ),
+            amount: new Prisma.Decimal(context.totalAmount.toFixed(2)),
+            currency: 'usd',
+            status: PaymentStatus.PENDING,
+            paymentMethod: PaymentMethod.CARD,
+            paidAt: null,
+            manualReference: null,
+            manualNote: null,
+            recordedById: null,
+            stripeSessionId: null,
+            stripePaymentIntentId: null,
+          },
+        });
 
-      const surchargePercentLabel = context.surchargePercent
-        .toFixed(4)
-        .replace(/\.?0+$/, '');
-      const cardFeeDescription = context.surchargeAmount.gt(0)
-        ? `Card processing fee: ${surchargePercentLabel}% of $${context.baseAmount.toFixed(2)} = $${context.surchargeAmount.toFixed(2)}.`
-        : '';
+        payments.push(payment);
+      }
 
       const session = await this.stripe.checkout.sessions.create({
         mode: 'payment',
@@ -1053,24 +1236,25 @@ export class PaymentsService {
         success_url: successUrl,
         cancel_url: cancelUrl,
         payment_method_types: ['card'],
-        line_items: [
-          {
-            quantity: 1,
-            price_data: {
-              currency: 'usd',
-              unit_amount: Math.round(context.totalAmount.toNumber() * 100),
-              product_data: {
-                name: context.description,
-                description:
-                  type === PaymentType.INSTALLATION_DEPOSIT
-                    ? `${context.job?.depositTermsSnapshot || INSTALLATION_DEPOSIT_TERMS}${cardFeeDescription ? ` ${cardFeeDescription}` : ''}`
-                    : cardFeeDescription || undefined,
-              },
+        line_items: contexts.map(context => {
+          const feeDescription = context.surchargeAmount.gt(0)
+            ? `Card processing fee: $${context.surchargeAmount.toFixed(2)}.` : '';
+          return { quantity: 1, price_data: {
+            currency: 'usd',
+            unit_amount: Math.round(context.totalAmount.toNumber() * 100),
+            product_data: {
+              name: context.description,
+              description: type === PaymentType.INSTALLATION_DEPOSIT
+                ? `${context.job?.depositTermsSnapshot || INSTALLATION_DEPOSIT_TERMS}${feeDescription ? ` ${feeDescription}` : ''}`
+                : feeDescription || undefined,
             },
-          },
-        ],
+          } };
+        }),
         metadata: {
-          paymentId: String(payment.id),
+          paymentId: String(payments[0].id),
+          paymentIds: payments.map(p => p.id).join(','),
+          checkoutRef,
+          ...(params.payFullBalance ? { paymentScope: 'FULL_PROJECT_BALANCE' } : {}),
           estimateId: String(params.estimateId),
           userId: String(context.estimate.idUser),
           paymentType: type,
@@ -1082,18 +1266,18 @@ export class PaymentsService {
         throw new BadRequestException('Stripe session URL not returned.');
       }
 
-      await tx.payment.update({
-        where: { id: payment.id },
-        data: { stripeSessionId: session.id },
-      });
+      for (const payment of payments) {
+        await tx.payment.update({ where: { id: payment.id }, data: { stripeSessionId: session.id } });
+      }
       return { url: session.url };
-    });
+    }, { timeout: 30_000 });
   }
 
   async cancelCheckoutSessionForEstimate(params: {
     estimateId: number;
     type?: PaymentType;
     sequence?: number;
+    checkoutRef?: string;
     user: AuthUser;
     publicToken?: string;
   }) {
@@ -1161,7 +1345,6 @@ export class PaymentsService {
           : null;
       if (stripeError?.code !== 'resource_missing') throw error;
       await this.closeUnpaidCheckoutSession(
-        payment.id,
         stripeSessionId,
         PaymentStatus.CANCELED,
       );
@@ -1171,6 +1354,10 @@ export class PaymentsService {
       };
     }
 
+    // Una página de cancelación antigua no debe cerrar un checkout más reciente.
+    if (params.checkoutRef && session.metadata?.checkoutRef !== params.checkoutRef) {
+      return { status: 'canceled' as const, orderId: estimate.order?.id ?? null };
+    }
     if (this.isCompletedCheckout(session)) return finalizePaid(session);
     if (session.status === 'open') {
       try {
@@ -1188,7 +1375,6 @@ export class PaymentsService {
     }
 
     await this.closeUnpaidCheckoutSession(
-      payment.id,
       stripeSessionId,
       PaymentStatus.CANCELED,
     );
@@ -1199,6 +1385,7 @@ export class PaymentsService {
     token: string;
     type?: PaymentType;
     sequence?: number;
+    checkoutRef?: string;
   }) {
     const owner = await this.prisma.estimate.findFirst({
       where: {
@@ -1216,6 +1403,7 @@ export class PaymentsService {
       estimateId: owner.id,
       type: params.type,
       sequence: params.sequence,
+      checkoutRef: params.checkoutRef,
       user: { id: owner.idUser, role: { name: 'dealer' } },
       publicToken: params.token,
     });
@@ -1310,7 +1498,6 @@ export class PaymentsService {
       // impide continuar. No se elimina ni se modifica un pago realizado.
       await this.closeStripeCheckoutBeforePaymentChange(payment, true);
       await this.closeUnpaidCheckoutSession(
-        payment.id,
         payment.stripeSessionId,
         PaymentStatus.CANCELED,
       );
@@ -1322,12 +1509,16 @@ export class PaymentsService {
     estimateId: number;
     type: PaymentType;
     sequence?: number;
+    sequences?: number[];
+    payFullBalance?: boolean;
+    expectedBalance?: number;
     method: PaymentMethod;
     fundsVerified: true;
     reference: string;
     note?: string;
     paidAt?: string;
     installationDepositTermsAccepted?: boolean;
+    cityFeeAccepted?: boolean;
     actor: AuthUser;
   }) {
     if (params.fundsVerified !== true) {
@@ -1385,149 +1576,125 @@ export class PaymentsService {
       role: { name: owner.user.role.name as AuthUser['role']['name'] },
     } satisfies AuthUser;
 
-    const preview = await this.prisma.$transaction((tx) =>
-      this.installationWorkflow.getPaymentContext(
-        params.estimateId,
-        params.type,
-        params.sequence,
-        params.installationDepositTermsAccepted,
-        ownerUser,
-        tx,
-        { preview: true },
-      ),
-    );
-    const existingPayment = await this.prisma.payment.findUnique({
-      where: {
-        idEst_type_sequence: {
-          idEst: params.estimateId,
-          type: params.type,
-          sequence: preview.paymentSequence,
-        },
-      },
-      select: { id: true, status: true, stripeSessionId: true },
-    });
-    if (existingPayment) {
-      await this.closeStripeCheckoutBeforePaymentChange(existingPayment);
+    const previews = await this.prisma.$transaction(tx => this.selectedPaymentContexts(tx, params, ownerUser, true));
+    if (previews.some(c => c.requiresCityFeeAcceptance) && params.cityFeeAccepted !== true) {
+      throw new BadRequestException('Confirm customer acceptance of the City Fee adjustment.');
+    }
+    for (const preview of previews) {
+      const existingPayment = await this.prisma.payment.findUnique({ where: { idEst_type_sequence: {
+        idEst: params.estimateId, type: params.type, sequence: preview.paymentSequence,
+      } }, select: { id: true, status: true, stripeSessionId: true } });
+      if (existingPayment) {
+        await this.closeStripeCheckoutBeforePaymentChange(existingPayment);
+        if (existingPayment.stripeSessionId) await this.closeUnpaidCheckoutSession(
+          existingPayment.stripeSessionId, PaymentStatus.CANCELED,
+        );
+      }
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const context = await this.installationWorkflow.getPaymentContext(
-        params.estimateId,
-        params.type,
-        params.sequence,
-        params.installationDepositTermsAccepted,
-        ownerUser,
-        tx,
-      );
-      const current = await tx.payment.findUnique({
-        where: {
-          idEst_type_sequence: {
-            idEst: params.estimateId,
-            type: params.type,
-            sequence: context.paymentSequence,
-          },
-        },
-        select: { status: true },
-      });
-      if (current?.status === PaymentStatus.PAID) {
-        throw new ConflictException('This charge is already paid.');
+    return this.prisma.$transaction(async tx => {
+      const contexts = await this.selectedPaymentContexts(tx, params, ownerUser);
+      // Verifica todo antes de escribir: ningún concepto puede quedar registrado parcialmente.
+      for (const context of contexts) {
+        await this.acceptCityFee(tx, context, params.cityFeeAccepted, params.estimateId, params.actor.id, true);
+        const current = await tx.payment.findUnique({ where: { idEst_type_sequence: {
+          idEst: params.estimateId, type: params.type, sequence: context.paymentSequence,
+        } }, select: { status: true, stripeSessionId: true } });
+        if (current?.status === PaymentStatus.PAID) throw new ConflictException('This charge is already paid.');
+        if (params.type === PaymentType.INSTALLMENT && current?.status === PaymentStatus.REFUNDED) {
+          throw new ConflictException('This installment was refunded. Review the balance before recording another payment.');
+        }
+        if (current?.stripeSessionId) throw new ConflictException('A new checkout was opened. Close it before recording a manual payment.');
       }
-      if (params.type === PaymentType.INSTALLMENT && current?.status === PaymentStatus.REFUNDED) {
-        throw new ConflictException('This installment was refunded. Review the balance before recording another payment.');
-      }
-
-      const payer = this.getPayerSnapshot(context.estimate);
-      const baseAmount = new Prisma.Decimal(context.baseAmount.toFixed(2));
-      const payment = await tx.payment.upsert({
-        where: {
-          idEst_type_sequence: {
-            idEst: params.estimateId,
-            type: params.type,
-            sequence: context.paymentSequence,
-          },
-        },
-        create: {
-          idEst: params.estimateId,
-          type: params.type,
-          sequence: context.paymentSequence,
-          installationJobId: context.job?.id ?? null,
-          extraChargeId: context.extraCharge?.id ?? null,
-          deliveryId: context.delivery?.id ?? null,
-          userId: context.estimate.idUser,
-          ...payer,
-          baseAmount,
-          surchargePercent: new Prisma.Decimal(0),
-          surchargeAmount: new Prisma.Decimal(0),
-          amount: baseAmount,
-          currency: 'usd',
-          status: PaymentStatus.PAID,
-          paymentMethod: params.method,
-          paidAt,
-          manualReference: reference,
-          manualNote: params.note?.trim() || null,
-          recordedById: params.actor.id,
-        },
-        update: {
-          installationJobId: context.job?.id ?? null,
-          extraChargeId: context.extraCharge?.id ?? null,
-          deliveryId: context.delivery?.id ?? null,
-          userId: context.estimate.idUser,
-          ...payer,
-          baseAmount,
-          surchargePercent: new Prisma.Decimal(0),
-          surchargeAmount: new Prisma.Decimal(0),
-          amount: baseAmount,
-          currency: 'usd',
-          status: PaymentStatus.PAID,
-          paymentMethod: params.method,
-          paidAt,
-          manualReference: reference,
-          manualNote: params.note?.trim() || null,
-          recordedById: params.actor.id,
-          stripeSessionId: null,
-          stripePaymentIntentId: null,
-          stripeCustomerId: null,
-          // Un cobro manual no debe heredar la aceptación de otro checkout.
-          materialAcceptanceText: null,
-          materialAcceptedAt: null,
-        },
-      });
-      const paymentWithEstimate = await tx.payment.findUniqueOrThrow({
-        where: { id: payment.id },
-        include: {
-          estimate: {
-            include: {
-              order: true,
-              status: true,
-              user: { include: { role: true } },
+      const paymentIds: number[] = [];
+      for (const context of contexts) {
+        const payer = this.getPayerSnapshot(context.estimate);
+        const baseAmount = new Prisma.Decimal(context.baseAmount.toFixed(2));
+        const payment = await tx.payment.upsert({
+          where: {
+            idEst_type_sequence: {
+              idEst: params.estimateId,
+              type: params.type,
+              sequence: context.paymentSequence,
             },
           },
-        },
-      });
-      await this.ensurePaidPaymentEffects(tx, paymentWithEstimate);
-      await tx.eventLog.create({
-        data: {
-          action: 'CREATE',
-          entityType: 'Payment',
-          entityId: payment.id,
-          userId: params.actor.id,
-          message: `${params.type} payment recorded as paid by ${params.method}.`,
-          tempLog: {
-            create: {
-              meta: {
-                source: 'manual',
-                fundsVerified: true,
-                reference,
-                paidAt: paidAt.toISOString(),
-                payerType: payer.payerType,
+          create: {
+            idEst: params.estimateId,
+            type: params.type,
+            sequence: context.paymentSequence,
+            installationJobId: context.job?.id ?? null,
+            extraChargeId: context.extraCharge?.id ?? null,
+            deliveryId: context.delivery?.id ?? null,
+            userId: context.estimate.idUser,
+            ...payer,
+            baseAmount,
+            surchargePercent: new Prisma.Decimal(0),
+            surchargeAmount: new Prisma.Decimal(0),
+            amount: baseAmount,
+            currency: 'usd',
+            status: PaymentStatus.PAID,
+            paymentMethod: params.method,
+            paidAt,
+            manualReference: reference,
+            manualNote: params.note?.trim() || null,
+            recordedById: params.actor.id,
+          },
+          update: {
+            installationJobId: context.job?.id ?? null,
+            extraChargeId: context.extraCharge?.id ?? null,
+            deliveryId: context.delivery?.id ?? null,
+            userId: context.estimate.idUser,
+            ...payer,
+            baseAmount,
+            surchargePercent: new Prisma.Decimal(0),
+            surchargeAmount: new Prisma.Decimal(0),
+            amount: baseAmount,
+            currency: 'usd',
+            status: PaymentStatus.PAID,
+            paymentMethod: params.method,
+            paidAt,
+            manualReference: reference,
+            manualNote: params.note?.trim() || null,
+            recordedById: params.actor.id,
+            stripeSessionId: null,
+            stripePaymentIntentId: null,
+            stripeCustomerId: null,
+            // Un cobro manual no debe heredar la aceptación de otro checkout.
+            materialAcceptanceText: null,
+            materialAcceptedAt: null,
+          },
+        });
+        paymentIds.push(payment.id);
+        await tx.eventLog.create({
+          data: {
+            action: 'CREATE',
+            entityType: 'Payment',
+            entityId: payment.id,
+            userId: params.actor.id,
+            message: `${params.type} payment recorded as paid by ${params.method}.`,
+            tempLog: {
+              create: {
+                meta: {
+                  source: 'manual',
+                  fundsVerified: true,
+                  reference,
+                  paidAt: paidAt.toISOString(),
+                  payerType: payer.payerType,
+                },
               },
             },
           },
-        },
-      });
+        });
 
+      }
+      for (const id of paymentIds) {
+        const confirmed = await tx.payment.findUniqueOrThrow({ where: { id }, include: {
+          estimate: { include: { order: true, installationJob: true, status: true, user: { include: { role: true } } } },
+        } });
+        await this.ensurePaidPaymentEffects(tx, confirmed);
+      }
       return tx.payment.findUniqueOrThrow({
-        where: { id: payment.id },
+        where: { id: paymentIds[0] },
         include: { order: true },
       });
     });

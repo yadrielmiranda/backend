@@ -35,6 +35,12 @@ export class PaymentsController {
     return this.payments.acceptDealerMeasurements(jobId, req.user as AuthUser);
   }
 
+  @Roles('admin')
+  @Post('estimates/:estimateId/approve-order')
+  approveOrder(@Param('estimateId', ParseIntPipe) estimateId: number, @Req() req: Request) {
+    return this.payments.approveOrder(estimateId, req.user as AuthUser);
+  }
+
   @Public()
   @Get('public/:token/context')
   getPublicPaymentContext(@Param('token') token: string) {
@@ -50,7 +56,11 @@ export class PaymentsController {
     return this.payments.createCheckoutSessionForPublicToken({
       token,
       installationDepositTermsAccepted: dto.installationDepositTermsAccepted,
+      cityFeeAccepted: dto.cityFeeAccepted,
       agreementId: dto.agreementId,
+      sequences: dto.sequences,
+      payFullBalance: dto.payFullBalance,
+      expectedBalance: dto.expectedBalance,
     });
   }
 
@@ -64,6 +74,7 @@ export class PaymentsController {
       token,
       type: dto.type,
       sequence: dto.sequence,
+      checkoutRef: dto.checkoutRef,
     });
   }
 
@@ -92,7 +103,11 @@ export class PaymentsController {
       type: dto.type,
       sequence: dto.sequence,
       installationDepositTermsAccepted: dto.installationDepositTermsAccepted,
+      cityFeeAccepted: dto.cityFeeAccepted,
       materialAccepted: dto.materialAccepted,
+      sequences: dto.sequences,
+      payFullBalance: dto.payFullBalance,
+      expectedBalance: dto.expectedBalance,
       user,
     });
   }
@@ -108,6 +123,7 @@ export class PaymentsController {
       estimateId: dto.estimateId,
       type: dto.type,
       sequence: dto.sequence,
+      checkoutRef: dto.checkoutRef,
       user,
     });
   }

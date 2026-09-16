@@ -1,6 +1,8 @@
 import Decimal from 'decimal.js';
 import { BadRequestException } from '@nestjs/common';
 
+export const PENDING_ORDER_REVIEW = 'Pending order review';
+
 export const milestones = ['ORDER', 'RELEASE', 'INSTALL', 'COMPLETE'] as const;
 export type Milestone = (typeof milestones)[number];
 export type Basis = 'PROJECT' | 'MATERIAL' | 'INSTALLATION';
@@ -120,6 +122,7 @@ export function validatePlan(input: unknown): PlanDefinition {
 }
 
 export type ScheduleRow = {
+  kind?: 'CITY_FEE';
   sequence: number;
   milestone: Milestone;
   title: string;
@@ -264,12 +267,14 @@ export function allocateSchedule(
     const applied = Decimal.min(credit, Decimal.max(0, amount.minus(direct)));
     credit = credit.minus(applied).add(Decimal.max(0, direct.minus(amount)));
     const balance = Decimal.max(0, amount.minus(direct).minus(applied));
+    const cityFeeUnconfirmed = row.kind === 'CITY_FEE' && amount.gt(0) &&
+      !paid.some(p => p.type === 'INSTALLMENT' && p.sequence === row.sequence);
     return {
       ...row,
       paid: money(direct),
       credit: money(applied),
       balance: money(balance),
-      status: balance.eq(0)
+      status: balance.eq(0) && !cityFeeUnconfirmed
         ? ('PAID' as const)
         : available.includes(row.milestone)
           ? ('DUE' as const)

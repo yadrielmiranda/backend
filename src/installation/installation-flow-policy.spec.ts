@@ -214,3 +214,12 @@ describe("installation flow policy", () => {
     );
   });
 });
+
+
+describe('Project installments before permit approval', () => {
+  it.each(['PAYMENT_PENDING', 'PAID', 'SUBMITTED', 'APPROVED', 'CHANGES_REQUIRED'] as const)(
+    'makes the first installment available with a %s permit and pending City Fee', (status) => {
+      expect(resolveApprovedPreOrderStage({ status, cityFee: null }, true)).toBe(InstallationJobStatus.MATERIAL_PAYMENT_PENDING);
+    },
+  );
+});

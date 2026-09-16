@@ -979,6 +979,7 @@ export class EstimatesService {
     return estimates.map((estimate) => ({
       ...estimate,
       manualDiscountSummary: calculateEstimateDiscount(estimate),
+      installationSummary: buildEstimateInstallationSummary(estimate.installationJob),
       installationJob: estimate.installationJob
         ? { id: estimate.installationJob.id, status: estimate.installationJob.status } : null,
     }));

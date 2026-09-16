@@ -239,8 +239,9 @@ export function resolveApprovedPreOrderStage(
     status: InstallationPermitStatus;
     cityFee: unknown | null;
   } | null,
+  usesPaymentPlan = false,
 ): InstallationJobStatus {
-  if (!permit) return InstallationJobStatus.MATERIAL_PAYMENT_PENDING;
+  if (usesPaymentPlan || !permit) return InstallationJobStatus.MATERIAL_PAYMENT_PENDING;
   if (permit.status === InstallationPermitStatus.PAYMENT_PENDING) {
     return InstallationJobStatus.PERMIT_PAYMENT_PENDING;
   }
