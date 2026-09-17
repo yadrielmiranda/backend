@@ -1,3 +1,4 @@
+import { AccountedPayment, decimalAmount, paidPrincipal } from '@/payments/payment-accounting';
 import Decimal from 'decimal.js';
 import { BadRequestException } from '@nestjs/common';
 
@@ -219,7 +220,7 @@ export function planRows(
     .map((row, index) => ({ ...row, sequence: index + 1 }));
 }
 
-export type SchedulePayment = {
+export type SchedulePayment = AccountedPayment & {
   type: string;
   status: string;
   sequence: number;
@@ -235,24 +236,32 @@ export function allocateSchedule(
   available: Milestone[],
   hasOrder: boolean,
 ) {
-  const paid = payments.filter((payment) => payment.status === 'PAID');
+  const paid = payments.filter((payment) => payment.status === 'PAID' || payment.netPaidBaseAmount != null);
   const deposit = paid
     .filter((p) => p.type === 'INSTALLATION_DEPOSIT')
-    .reduce((sum, p) => sum.add(String(p.baseAmount)), new Decimal(0));
+    .reduce((sum, p) => sum.add(paidPrincipal(p)), new Decimal(0));
   const permit = paid
     .filter((p) => p.type === 'PERMIT')
-    .reduce((sum, p) => sum.add(String(p.baseAmount)), new Decimal(0));
+    .reduce((sum, p) => sum.add(paidPrincipal(p)), new Decimal(0));
   const reductions = rows
     .filter((row) => new Decimal(row.amount).lt(0))
     .reduce((sum, row) => sum.minus(row.amount), new Decimal(0));
-  let credit = deposit.add(permit).add(reductions);
+  const approvedCredits = payments.reduce((sum, p) => sum.add(decimalAmount(p.refundCreditAmount)), new Decimal(0));
+  const advanceCredits = payments.filter(p => ['INSTALLATION_DEPOSIT', 'PERMIT'].includes(p.type))
+    .reduce((sum, p) => sum.add(decimalAmount(p.refundCreditAmount)), new Decimal(0));
+  let advanceReview = payments.filter(p => ['INSTALLATION_DEPOSIT', 'PERMIT'].includes(p.type) && p.refundReviewPending)
+    .reduce((sum, p) => sum.add(decimalAmount(p.refundReviewBaseAmount)), new Decimal(0));
+  let credit = deposit.add(permit).add(reductions).add(advanceCredits);
   const ordered = [...rows].sort(
     (a, b) =>
       milestones.indexOf(a.milestone) - milestones.indexOf(b.milestone) ||
       a.sequence - b.sequence,
   );
   const result = ordered.map((row) => {
-    const amount = new Decimal(row.amount);
+    const matching = payments.filter(p => p.type === 'INSTALLMENT' && p.sequence === row.sequence);
+    const approvedCredit = matching.reduce((sum, p) => sum.add(decimalAmount(p.refundCreditAmount)), new Decimal(0));
+    const originalAmount = new Decimal(row.amount);
+    const amount = originalAmount.lt(0) ? originalAmount : Decimal.max(0, originalAmount.minus(approvedCredit));
     if (amount.lt(0))
       return {
         ...row,
@@ -263,18 +272,26 @@ export function allocateSchedule(
       };
     const direct = paid
       .filter((p) => p.type === 'INSTALLMENT' && p.sequence === row.sequence)
-      .reduce((sum, p) => sum.add(String(p.baseAmount)), new Decimal(0));
+      .reduce((sum, p) => sum.add(paidPrincipal(p)), new Decimal(0));
+    credit = credit.add(Decimal.max(0, approvedCredit.minus(Decimal.max(0, originalAmount))));
     const applied = Decimal.min(credit, Decimal.max(0, amount.minus(direct)));
     credit = credit.minus(applied).add(Decimal.max(0, direct.minus(amount)));
     const balance = Decimal.max(0, amount.minus(direct).minus(applied));
+    const directReview = matching.some(p => p.refundReviewPending && decimalAmount(p.refundReviewBaseAmount).gt(0));
+    const affectedByAdvanceRefund = advanceReview.gt(0) && balance.gt(0);
+    if (affectedByAdvanceRefund) advanceReview = Decimal.max(0, advanceReview.minus(balance));
+    const review = directReview || affectedByAdvanceRefund;
     const cityFeeUnconfirmed = row.kind === 'CITY_FEE' && amount.gt(0) &&
-      !paid.some(p => p.type === 'INSTALLMENT' && p.sequence === row.sequence);
+      !matching.some(p => p.paidAt || p.status === 'PAID' || p.netPaidBaseAmount != null);
     return {
       ...row,
+      amount: money(amount),
+      originalAmount: row.amount,
+      approvedCredit: money(approvedCredit),
       paid: money(direct),
       credit: money(applied),
       balance: money(balance),
-      status: balance.eq(0) && !cityFeeUnconfirmed
+      status: review ? ('REVIEW' as const) : balance.eq(0) && !cityFeeUnconfirmed
         ? ('PAID' as const)
         : available.includes(row.milestone)
           ? ('DUE' as const)
@@ -287,21 +304,24 @@ export function allocateSchedule(
     !hasOrder &&
     first &&
     !paid.some(
-      (p) => p.type === 'INSTALLMENT' && p.sequence === first.sequence,
+      (p) => p.type === 'INSTALLMENT' && p.sequence === first.sequence && (p.status === 'PAID' || p.paidAt || p.netPaidBaseAmount != null),
     );
   const next = initialUnconfirmed
-    ? available.includes('ORDER')
+    ? available.includes('ORDER') && first.status !== 'REVIEW'
       ? first
       : null
     : (result.find((row) => row.status === 'DUE') ?? null);
   const installmentsPaid = paid
     .filter((p) => p.type === 'INSTALLMENT')
-    .reduce((sum, p) => sum.add(String(p.baseAmount)), new Decimal(0));
-  const total = rows.reduce((sum, row) => sum.add(row.amount), new Decimal(0));
+    .reduce((sum, p) => sum.add(paidPrincipal(p)), new Decimal(0));
+  const total = Decimal.max(0, rows.reduce((sum, row) => sum.add(row.amount), new Decimal(0)).minus(approvedCredits));
   const received = deposit.add(permit).add(installmentsPaid);
   return {
     rows: result,
     next,
+    refundReviewPending: payments.some(p => p.refundReviewPending),
+    refunded: money(payments.reduce((sum, p) => sum.add(decimalAmount(p.refundedAmount)), new Decimal(0))),
+    approvedRefundCredit: money(approvedCredits),
     total: money(total),
     paid: money(received),
     balance: money(Decimal.max(0, total.minus(received))),

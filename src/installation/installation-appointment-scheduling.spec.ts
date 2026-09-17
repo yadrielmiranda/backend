@@ -22,6 +22,9 @@ describe('Installation appointment scheduling', () => {
 
   function setup(activeStatus: InstallationAppointmentStatus) {
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 11 }]),
+      estimate: { findUnique: jest.fn().mockResolvedValue(job.estimate) },
+      payment: { findMany: jest.fn().mockResolvedValue([]) },
       installationAppointment: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -37,6 +40,7 @@ describe('Installation appointment scheduling', () => {
       },
     };
     const prisma = {
+      estimate: tx.estimate, payment: tx.payment,
       $transaction: jest.fn(
         async (callback: (client: typeof tx) => Promise<unknown>) =>
           callback(tx),

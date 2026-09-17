@@ -51,7 +51,7 @@ function fixture(status: InstallationPermitStatus = 'PAID', planned = false) {
       }),
     },
     estimate: { findFirst: jest.fn(async () => estimate), findUnique: jest.fn(async () => estimate), update: jest.fn(async ({ data }) => Object.assign(estimate, data)) },
-    payment: { findFirst: jest.fn().mockResolvedValue(null) },
+    payment: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null) },
     installationQuote: {
       findFirst: jest.fn().mockResolvedValue({ id: 4, status: 'APPROVED' }),
     },

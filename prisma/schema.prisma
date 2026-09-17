@@ -2207,6 +2207,7 @@ enum PaymentStatus {
 
 enum PaymentMethod {
   CARD
+  BANK
   CHECK
   ZELLE
   CASH
@@ -2267,7 +2268,19 @@ model Payment {
   stripePaymentIntentId String? @db.VarChar(255)
   stripeCustomerId      String? @db.VarChar(255)
 
-  paymentMethod   PaymentMethod @default(CARD)
+  // El pago conserva su recibo; estos campos resumen el dinero neto conciliado.
+  netPaidBaseAmount        Decimal?         @db.Decimal(12, 2)
+  originalBaseAmount       Decimal?         @db.Decimal(12, 2)
+  refundedAmount           Decimal          @default(0) @db.Decimal(12, 2)
+  refundCreditAmount       Decimal          @default(0) @db.Decimal(12, 2)
+  refundReviewPending      Boolean          @default(false)
+  refundReviewBaseAmount   Decimal          @default(0) @db.Decimal(12, 2)
+  paymentMethodLabel       String?          @db.VarChar(80)
+  stripeMethodType         String?          @db.VarChar(80)
+  stripeFundingSourceGroup String?          @db.VarChar(80)
+  receipts                 PaymentReceipt[]
+
+  paymentMethod   PaymentMethod @default(OTHER)
   paidAt          DateTime?
   manualReference String?       @db.VarChar(150)
   manualNote      String?       @db.VarChar(1000)
@@ -2289,6 +2302,75 @@ model Payment {
   @@index([installationJobId])
   @@index([recordedById])
   @@map("payments")
+}
+
+// Recibos inmutables: una cuota puede cobrarse otra vez después de una devolución.
+model PaymentReceipt {
+  id                       Int                       @id @default(autoincrement())
+  paymentId                Int
+  payment                  Payment                   @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  sourceKey                String                    @unique @db.VarChar(255)
+  stripeChargeId           String?                   @db.VarChar(255)
+  stripePaymentIntentId    String?                   @db.VarChar(255)
+  stripeSessionId          String?                   @db.VarChar(255)
+  amount                   Decimal                   @db.Decimal(12, 2)
+  baseAmount               Decimal                   @db.Decimal(12, 2)
+  surchargeAmount          Decimal                   @db.Decimal(12, 2)
+  currency                 String                    @db.VarChar(10)
+  paymentMethod            PaymentMethod
+  paymentMethodLabel       String?                   @db.VarChar(80)
+  stripeMethodType         String?                   @db.VarChar(80)
+  stripeFundingSourceGroup String?                   @db.VarChar(80)
+  paidAt                   DateTime
+  manualReference          String?                   @db.VarChar(150)
+  manualNote               String?                   @db.VarChar(1000)
+  recordedById             Int?
+  allocations              PaymentRefundAllocation[]
+  createdAt                DateTime                  @default(now())
+
+  @@index([paymentId])
+  @@index([stripeChargeId])
+  @@index([stripePaymentIntentId])
+  @@map("payment_receipts")
+}
+
+model PaymentRefund {
+  id                    String                    @id @db.VarChar(255)
+  stripeChargeId        String                    @db.VarChar(255)
+  stripePaymentIntentId String                    @db.VarChar(255)
+  amount                Decimal                   @db.Decimal(12, 2)
+  currency              String                    @db.VarChar(10)
+  status                String                    @db.VarChar(30)
+  reason                String?                   @db.VarChar(80)
+  failureReason         String?                   @db.VarChar(255)
+  stripeCreatedAt       DateTime
+  reviewedAt            DateTime?
+  reviewedById          Int?
+  reviewNote            String?                   @db.VarChar(1000)
+  allocations           PaymentRefundAllocation[]
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+
+  @@index([stripeChargeId])
+  @@index([stripePaymentIntentId])
+  @@index([status, updatedAt])
+  @@map("payment_refunds")
+}
+
+model PaymentRefundAllocation {
+  id           Int            @id @default(autoincrement())
+  refundId     String         @db.VarChar(255)
+  refund       PaymentRefund  @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  receiptId    Int
+  receipt      PaymentReceipt @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  amount       Decimal        @db.Decimal(12, 2)
+  baseAmount   Decimal        @db.Decimal(12, 2)
+  // Reducción comercial aprobada, independiente del estado bancario del reembolso.
+  creditAmount Decimal        @default(0) @db.Decimal(12, 2)
+
+  @@unique([refundId, receiptId])
+  @@index([receiptId])
+  @@map("payment_refund_allocations")
 }
 
 // =======================================

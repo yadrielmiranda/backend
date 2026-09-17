@@ -1,3 +1,5 @@
+import { reconcileChargeRefunds, recordStripeReceipt, refreshPaymentAccounting } from '@/payments/payment-ledger';
+import { attachLedgerStore } from '@/payments/testing/ledger-store';
 import { ConfigService } from '@nestjs/config';
 import { PaymentMethod, PaymentType, Prisma } from '@prisma/client';
 import Stripe from 'stripe';
@@ -144,7 +146,7 @@ function fixture({
             ? p.type === key.type && p.sequence === key.sequence
             : where.stripeSessionId
               ? p.stripeSessionId === where.stripeSessionId
-              : p.id === where.id,
+              : where.deliveryId ? p.deliveryId === where.deliveryId : p.id === where.id,
         );
         return p
           ? {
@@ -161,7 +163,7 @@ function fixture({
             p.sequence === where.idEst_type_sequence.sequence,
         );
         if (old) return Object.assign(old, update);
-        const p = { id: 40 + estimate.payments.length, ...create };
+        const p = { id: 40 + estimate.payments.length, currency: 'usd', refundedAmount: decimal(0), refundCreditAmount: decimal(0), refundReviewBaseAmount: decimal(0), refundReviewPending: false, ...create };
         estimate.payments.push(p);
         return p;
       }),
@@ -190,6 +192,7 @@ function fixture({
     eventLog: { create: jest.fn(async () => ({})) },
   };
   tx.payment.findUniqueOrThrow = tx.payment.findUnique;
+  const ledger = attachLedgerStore(tx, () => estimate.payments);
   tx.order.findUniqueOrThrow = tx.order.findUnique;
   tx.$transaction = jest.fn(async (work) => work(tx));
   const notifications: any = {
@@ -204,16 +207,26 @@ function fixture({
     {} as never,
     {} as never,
   );
+  jest.spyOn(workflow, 'refreshUnpaidDealerMeasurements').mockResolvedValue(undefined);
   const config = {
     get: (key: string) =>
       key === 'STRIPE_SECRET_KEY'
         ? 'sk_test_simulated'
+        : key === 'STRIPE_WEBHOOK_SECRET' ? 'whsec_test'
         : key === 'FRONTEND_URL'
           ? 'http://localhost:3000'
           : undefined,
   } as ConfigService;
   const service = new PaymentsService(tx, config, workflow, notifications);
   const stripe = (service as any).stripe as Stripe;
+  const refunds = jest.spyOn(stripe.refunds, 'list').mockResolvedValue({ data: [], has_more: false } as any);
+  const intent = jest.spyOn(stripe.paymentIntents, 'retrieve').mockImplementation(async (id: string) => {
+    const sessionId = id.startsWith('pi_cs_') ? id.slice(3) : 'cs_simulated';
+    const group = estimate.payments.filter(p => p.stripeSessionId === sessionId);
+    return { id, status: 'succeeded', latest_charge: { id: `ch_${id}`, payment_intent: id, paid: true, captured: true,
+      currency: 'usd', created: 1700000000, amount_captured: group.reduce((sum, p) => sum + Math.round(Number(p.amount) * 100), 0),
+      payment_method_details: { type: 'card', card: { brand: 'visa' } } } } as any;
+  });
   const createSession = jest
     .spyOn(stripe.checkout.sessions, 'create')
     .mockResolvedValue({
@@ -233,7 +246,7 @@ function fixture({
       reference: `receipt-${sequence}`,
       actor: admin ? { id: 1, role: { name: 'admin' } } : actor,
     });
-  return { estimate, tx, service, workflow, actor, manual, approve, createSession };
+  return { ledger, refunds, intent, stripe, estimate, tx, service, workflow, actor, manual, approve, createSession };
 }
 
 describe('Installment payment workflow', () => {
@@ -266,6 +279,7 @@ describe('Installment payment workflow', () => {
     const f = fixture({ deposit: 0, installation: 0 });
     await f.manual(1);
     f.estimate.order.status.name = 'Ready to pick up';
+    f.estimate.payments.push({ id: 98, type: 'DELIVERY', sequence: 1, deliveryId: 5, status: 'PAID', baseAmount: decimal(100) });
     const delivery: any = {
       id: 5,
       sequence: 1,
@@ -378,7 +392,7 @@ describe('Installment payment workflow', () => {
     expect(f.tx.order.create).not.toHaveBeenCalled();
     const session: any = {
       id: 'cs_simulated',
-      payment_status: 'paid',
+      payment_status: 'paid', payment_intent: 'pi_cs_simulated',
       amount_total: 489250,
       currency: 'usd',
     };
@@ -421,7 +435,7 @@ describe('Installment payment workflow', () => {
     );
     await (f.service as any).processPaidCheckoutSession(f.tx, {
       id: 'cs_simulated',
-      payment_status: 'paid',
+      payment_status: 'paid', payment_intent: 'pi_cs_simulated',
       amount_total: 412000,
       currency: 'usd',
     });
@@ -504,7 +518,7 @@ describe('Installment payment workflow', () => {
       status: 'REFUNDED',
       baseAmount: decimal(4750),
       amount: decimal(4750),
-      stripeSessionId: 'cs_refunded',
+      stripeSessionId: 'cs_refunded', currency: 'usd', surchargeAmount: decimal(0),
     });
     await expect(
       f.service.createCheckoutSessionForEstimate({
@@ -513,14 +527,15 @@ describe('Installment payment workflow', () => {
         sequence: 1,
         user: f.actor,
       }),
-    ).rejects.toThrow('refunded');
+    ).rejects.toThrow('reconciliation');
+    f.refunds.mockResolvedValue({ data: [{ id: 're_old', charge: 'ch_pi_cs_refunded', amount: 475000, currency: 'usd', status: 'succeeded', created: 1700000100 }], has_more: false } as any);
     await (f.service as any).processPaidCheckoutSession(f.tx, {
       id: 'cs_refunded',
-      payment_status: 'paid',
+      payment_status: 'paid', payment_intent: 'pi_cs_refunded',
       amount_total: 475000,
       currency: 'usd',
     });
-    expect(f.tx.payment.update).not.toHaveBeenCalled();
+    expect(f.estimate.payments.find(p => p.id === 42)).toMatchObject({ status: 'REFUNDED', refundReviewPending: true });
     expect(f.tx.order.create).not.toHaveBeenCalled();
   });
 
@@ -626,7 +641,7 @@ describe('Order review and permit installments', () => {
     f.estimate.installationJob.quotes[0].status = 'CUSTOMER_APPROVAL_PENDING';
     await expect(f.approve()).rejects.toThrow('Approve the installation quote');
     f.estimate.installationJob.quotes[0].status = 'APPROVED';
-    f.estimate.payments[1].status = 'REFUNDED';
+    Object.assign(f.estimate.payments[1], { status: 'REFUNDED', netPaidBaseAmount: decimal(0), refundReviewPending: true, refundReviewBaseAmount: decimal(4750) });
     await expect(f.approve()).rejects.toThrow();
     expect(f.tx.order.create).not.toHaveBeenCalled();
   });
@@ -740,9 +755,9 @@ describe('Selectable due installments', () => {
       expect(session.metadata.paymentScope).toBe('FULL_PROJECT_BALANCE');
       expect(session.line_items).toHaveLength(3);
       await f.confirm(session.id);
-      const writes = f.tx.payment.update.mock.calls.length;
+      const receipts = f.ledger.receipts.length;
       await f.confirm(session.id);
-      expect(f.tx.payment.update).toHaveBeenCalledTimes(writes);
+      expect(f.ledger.receipts).toHaveLength(receipts);
       expect(buildPaymentSchedule(f.estimate)).toMatchObject({ balance: '0.00', paid: '2585.06', next: null,
         fullBalance: null, canInstall: true, canRelease: true });
       expect(buildPaymentSchedule(f.estimate)?.rows.every(row => row.status === 'PAID')).toBe(true);
@@ -872,9 +887,9 @@ describe('Selectable due installments', () => {
     expect(selected.map(p => p.sequence)).toEqual([2, 101]);
     expect(selected.map(p => p.baseAmount.toFixed(2))).toEqual(['954.02', '200.00']);
     await f.confirm(session.id);
-    const writes = f.tx.payment.update.mock.calls.length;
+    const receipts = f.ledger.receipts.length;
     await f.confirm(session.id);
-    expect(f.tx.payment.update).toHaveBeenCalledTimes(writes);
+    expect(f.ledger.receipts).toHaveLength(receipts);
     expect(selected.every(p => p.status === 'PAID' && p.stripePaymentIntentId === session.payment_intent)).toBe(true);
     expect(buildPaymentSchedule(f.estimate)).toMatchObject({ total: '2585.06', paid: '2346.55', balance: '238.51', canRelease: true });
     expect(f.tx.order.create).toHaveBeenCalledTimes(1);
@@ -912,7 +927,7 @@ describe('Selectable due installments', () => {
   it('rejects a refunded installment and conflicting selection formats', async () => {
     const f = await readyFixture();
     f.estimate.payments.push({ id: 88, idEst: 1, type: 'INSTALLMENT', sequence: 2, status: 'REFUNDED', baseAmount: decimal(954.02) });
-    await expect(f.checkout([2])).rejects.toThrow('refunded');
+    await expect(f.checkout([2])).rejects.toThrow('reconciliation');
     await expect(f.service.createCheckoutSessionForEstimate({ estimateId: 1, type: PaymentType.INSTALLMENT, sequence: 101,
       sequences: [2], user: f.actor, cityFeeAccepted: true })).rejects.toThrow('distinct installments');
     expect(f.createSession).not.toHaveBeenCalled();
@@ -1160,4 +1175,189 @@ describe('Early full balance and operational milestones', () => {
     await refreshScheduledInstallation(f.tx, 1);
     expect(f.estimate.installationJob.status).toBe('INSTALLATION_PAID');
   });
+});
+
+// Regresiones de devoluciones con los servicios de pago y calendario reales.
+describe('Refund review and payment recovery', () => {
+  const admin: any = { id: 1, role: { name: 'admin' } };
+  async function captured() {
+    const f = fixture({ deposit: 0, installation: 0, role: 'client', mode: '' });
+    await f.service.createCheckoutSessionForEstimate({ estimateId: 1, type: PaymentType.INSTALLMENT, sequence: 1, materialAccepted: true, user: f.actor });
+    const session: any = { id: 'cs_simulated', payment_intent: 'pi_cs_simulated', payment_status: 'paid', amount_total: 412000, currency: 'usd' };
+    await (f.service as any).processPaidCheckoutSession(f.tx, session);
+    const charge = (await f.stripe.paymentIntents.retrieve('pi_cs_simulated') as any).latest_charge;
+    const refund: any = { id: 're_1', object: 'refund', charge: charge.id, amount: 10000, currency: 'usd', status: 'succeeded', created: 1700000100 };
+    const review = (credit = 0, actor = admin) => f.service.reviewRefund(1, 're_1', {
+      note: 'Reviewed project balance', allocations: f.ledger.allocations.filter(a => a.refundId === 're_1').map(a => ({ id: a.id, creditAmount: credit })),
+    }, actor);
+    return { ...f, session, charge, refund, review };
+  }
+
+  it('deducts only confirmed principal and pauses the affected payment until reviewed', async () => {
+    const f = await captured();
+    await reconcileChargeRefunds(f.tx, f.charge, [f.refund]);
+    const schedule = buildPaymentSchedule(f.estimate)!;
+    expect(schedule).toMatchObject({ paid: '3902.91', balance: '4097.09', refundReviewPending: true, fullBalance: null });
+    expect(schedule.rows[0]).toMatchObject({ status: 'REVIEW', balance: '97.09' });
+    expect(f.ledger.receipts[0].amount.toFixed(2)).toBe('4120.00');
+    await expect(f.manual(1)).rejects.toThrow('not available');
+    expect(f.estimate.order.status.name).toBe('Pending');
+  });
+
+  it('allows a verified manual repayment after review without losing the original Stripe receipt', async () => {
+    const f = await captured();
+    await reconcileChargeRefunds(f.tx, f.charge, [f.refund]);
+    await f.review();
+    expect(buildPaymentSchedule(f.estimate)!.next).toMatchObject({ sequence: 1, balance: '97.09', status: 'DUE' });
+    expect(f.estimate.payments[0].stripeSessionId).toBeNull();
+    await f.manual(1);
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ paid: '4000.00', balance: '4000.00' });
+    expect(f.ledger.receipts).toHaveLength(2);
+    expect(f.ledger.receipts.map(r => r.paymentMethod)).toEqual(['CARD', 'CASH']);
+    expect(f.tx.order.create).toHaveBeenCalledTimes(1);
+    await expect(f.manual(1)).rejects.toThrow();
+  });
+
+  it('can collect the reviewed balance through Stripe and ignores repeated old refund events', async () => {
+    const f = await captured();
+    await reconcileChargeRefunds(f.tx, f.charge, [f.refund]); await f.review();
+    f.createSession.mockResolvedValue({ id: 'cs_recovery', url: 'https://checkout.stripe.com/recovery' } as any);
+    await f.service.createCheckoutSessionForEstimate({ estimateId: 1, type: PaymentType.INSTALLMENT, sequence: 1, materialAccepted: true, user: f.actor });
+    await (f.service as any).processPaidCheckoutSession(f.tx, { id: 'cs_recovery', payment_intent: 'pi_cs_recovery', payment_status: 'paid', currency: 'usd', amount_total: 10000 });
+    await reconcileChargeRefunds(f.tx, f.charge, [f.refund]);
+    expect(f.ledger.receipts).toHaveLength(2);
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ paid: '4000.00', balance: '4000.00', refundReviewPending: false });
+    expect(f.ledger.refunds).toHaveLength(1);
+  });
+
+  it('reduces the amount owed when administration approves a new price reduction', async () => {
+    const f = await captured();
+    await reconcileChargeRefunds(f.tx, f.charge, [f.refund]); await f.review(97.09);
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ total: '7902.91', paid: '3902.91', balance: '4000.00', refundReviewPending: false });
+    expect(buildPaymentSchedule(f.estimate)!.rows[0]).toMatchObject({ status: 'PAID', amount: '3902.91', balance: '0.00' });
+    await f.review(97.09); // Reintento idempotente.
+    await expect(f.review(0)).rejects.toThrow('already been reviewed');
+  });
+
+  it('does not count a pending or failed refund as money already returned', async () => {
+    const f = await captured();
+    await reconcileChargeRefunds(f.tx, f.charge, [{ ...f.refund, status: 'pending' }]);
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ paid: '4000.00', refundReviewPending: true });
+    await reconcileChargeRefunds(f.tx, f.charge, [{ ...f.refund, status: 'failed', failure_reason: 'lost_or_stolen_card' }]);
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ paid: '4000.00', balance: '4000.00', refundReviewPending: false });
+    await expect(f.review()).rejects.toThrow('failed');
+  });
+
+  it('preserves the commercial credit if an approved pending refund later fails', async () => {
+    const f = await captured();
+    await reconcileChargeRefunds(f.tx, f.charge, [{ ...f.refund, status: 'pending' }]); await f.review(97.09);
+    await reconcileChargeRefunds(f.tx, f.charge, [{ ...f.refund, status: 'failed' }]);
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ total: '7902.91', paid: '4000.00', balance: '3902.91' });
+  });
+
+  it('handles multiple partial refunds and a final full refund without duplicate deductions', async () => {
+    const f = await captured();
+    const remainder: any = { ...f.refund, id: 're_2', amount: 402000, created: 1700000200 };
+    await reconcileChargeRefunds(f.tx, f.charge, [remainder, f.refund]);
+    await reconcileChargeRefunds(f.tx, f.charge, [f.refund, remainder]);
+    expect(f.ledger.allocations).toHaveLength(2);
+    expect(f.estimate.payments[0]).toMatchObject({ status: 'REFUNDED', refundReviewPending: true });
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ paid: '0.00', balance: '8000.00', refunded: '4120.00' });
+    expect(f.estimate.order).not.toBeNull();
+  });
+
+  it.each(['dealer', 'client'])('denies refund review to %s, even the owner', async role => {
+    const f = await captured(); await reconcileChargeRefunds(f.tx, f.charge, [f.refund]);
+    await expect(f.review(0, { id: 7, role: { name: role } })).rejects.toThrow('Only administrators');
+  });
+
+  it('denies history for other owners and hides administrative notes from the customer', async () => {
+    const f = await captured(); await reconcileChargeRefunds(f.tx, f.charge, [f.refund]); await f.review();
+    // History API queries include receipts; model that read without bypassing ownership checks.
+    const findMany = f.tx.payment.findMany;
+    f.tx.payment.findMany = jest.fn(async args => (await findMany(args)).map(p => ({ ...p, receipts: f.ledger.receipts.filter(r => r.paymentId === p.id).map(r => ({ ...r,
+      allocations: f.ledger.allocations.filter(a => a.receiptId === r.id).map(a => ({ ...a, refund: f.ledger.refunds.find(x => x.id === a.refundId) })) })) })));
+    await expect(f.service.getPaymentHistory(1, { id: 123, role: { name: 'client' } })).rejects.toThrow('not found');
+    const history = await f.service.getPaymentHistory(1, f.actor);
+    expect(history.canReview).toBe(false); expect(history.refunds[0].note).toBeUndefined();
+    expect(history.receipts[0]).toMatchObject({ amount: '4120.00', method: 'Card', refunded: '100.00' });
+  });
+
+  it('validates allocation amounts, complete selection and an active checkout before review', async () => {
+    const f = await captured(); await reconcileChargeRefunds(f.tx, f.charge, [f.refund]);
+    await expect(f.review(100)).rejects.toThrow('refunded principal');
+    await expect(f.service.reviewRefund(1, 're_1', { note: 'Review', allocations: [] }, admin)).rejects.toThrow('every refund allocation');
+    f.estimate.payments.push({ idEst: 1, status: 'PENDING', stripeSessionId: 'cs_open' });
+    await expect(f.review()).rejects.toThrow('active checkout');
+  });
+  it('returns only a duplicate overpayment without manufacturing another debt', async () => {
+    const f = await captured();
+    const payment = f.estimate.payments[0];
+    const duplicateCharge: any = { ...f.charge, id: 'ch_duplicate', payment_intent: 'pi_duplicate', amount_captured: 10300 };
+    await recordStripeReceipt(f.tx, { ...payment, amount: decimal(103), baseAmount: decimal(100), surchargeAmount: decimal(3) }, duplicateCharge, 'cs_duplicate');
+    await refreshPaymentAccounting(f.tx, payment.id);
+    expect(buildPaymentSchedule(f.estimate)!.paid).toBe('4100.00');
+    await reconcileChargeRefunds(f.tx, duplicateCharge, [{ ...f.refund, charge: 'ch_duplicate', amount: 10300, reason: 'duplicate' }]);
+    await f.review();
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ paid: '4000.00', balance: '4000.00' });
+    expect(buildPaymentSchedule(f.estimate)!.rows[0].balance).toBe('0.00');
+    expect(f.ledger.receipts).toHaveLength(2);
+  });
+
+  it('does not reverse an installed order or a completed installation after refund', async () => {
+    const f = await captured();
+    f.estimate.order.status.name = 'Installed';
+    f.estimate.installationJob = { id: 3, status: 'COMPLETED', completedAt: new Date(), quotes: [{ status: 'APPROVED', total: decimal(0) }], appointments: [] };
+    await reconcileChargeRefunds(f.tx, f.charge, [f.refund]); await f.review();
+    expect(f.estimate.order.status.name).toBe('Installed');
+    expect(f.estimate.installationJob.status).toBe('COMPLETED');
+  });
+
+  it('uses current Stripe refund state when an older webhook arrives later', async () => {
+    const f = await captured();
+    const event: any = { type: 'refund.created', data: { object: { ...f.refund, status: 'pending' } } };
+    jest.spyOn(f.stripe.webhooks, 'constructEvent').mockReturnValue(event);
+    jest.spyOn(f.stripe.charges, 'retrieve').mockResolvedValue(f.charge);
+    f.refunds.mockResolvedValue({ data: [f.refund], has_more: false } as any);
+    await f.service.handleStripeWebhook(Buffer.from('simulated'), 'signed-test');
+    await f.service.handleStripeWebhook(Buffer.from('simulated'), 'signed-test');
+    expect(f.ledger.refunds[0].status).toBe('succeeded');
+    expect(f.ledger.allocations).toHaveLength(1);
+    expect(buildPaymentSchedule(f.estimate)!.paid).toBe('3902.91');
+  });
+
+  it('keeps an asynchronous bank payment pending until confirmed and records Bank (Link)', async () => {
+    const f = fixture({ deposit: 0, installation: 0, role: 'client', mode: '' });
+    await f.service.createCheckoutSessionForEstimate({ estimateId: 1, type: PaymentType.INSTALLMENT, sequence: 1, materialAccepted: true, user: f.actor });
+    const session: any = { id: 'cs_simulated', payment_intent: 'pi_cs_simulated', status: 'complete', payment_status: 'unpaid', amount_total: 412000, currency: 'usd' };
+    const events = jest.spyOn(f.stripe.webhooks, 'constructEvent').mockReturnValue({ type: 'checkout.session.completed', data: { object: session } } as any);
+    await f.service.handleStripeWebhook(Buffer.from('simulated'), 'signed-test');
+    expect(f.estimate.payments[0].status).toBe('PENDING'); expect(f.ledger.receipts).toHaveLength(0);
+    expect(f.estimate.order).toBeNull();
+    f.intent.mockResolvedValue({ id: 'pi_cs_simulated', status: 'succeeded', latest_charge: { id: 'ch_bank', payment_intent: 'pi_cs_simulated',
+      amount_captured: 412000, currency: 'usd', created: 1700000000, paid: true, captured: true,
+      payment_method_details: { type: 'card', card: { brand: 'link', wallet: { type: 'link', link: { funding_source_group: 'lfsg_003' } } } } } } as any);
+    session.payment_status = 'paid';
+    events.mockReturnValue({ type: 'checkout.session.async_payment_succeeded', data: { object: session } } as any);
+    await f.service.handleStripeWebhook(Buffer.from('simulated'), 'signed-test');
+    expect(f.estimate.payments[0]).toMatchObject({ status: 'PAID', paymentMethod: 'BANK', paymentMethodLabel: 'Bank (Link)' });
+    expect(f.ledger.receipts).toHaveLength(1); expect(f.ledger.receipts[0].paymentMethod).toBe('BANK');
+    // Un evento de fallo antiguo no puede deshacer una confirmación posterior.
+    jest.spyOn(f.stripe.checkout.sessions, 'retrieve').mockResolvedValue(session);
+    events.mockReturnValue({ type: 'checkout.session.async_payment_failed', data: { object: { ...session, payment_status: 'unpaid' } } } as any);
+    await f.service.handleStripeWebhook(Buffer.from('simulated'), 'signed-test');
+    expect(f.estimate.payments[0].status).toBe('PAID'); expect(f.tx.order.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks a failed bank checkout as failed without crediting funds or creating an order', async () => {
+    const f = fixture({ deposit: 0, installation: 0 });
+    await f.service.createCheckoutSessionForEstimate({ estimateId: 1, type: PaymentType.INSTALLMENT, sequence: 1, user: f.actor });
+    const session: any = { id: 'cs_simulated', payment_status: 'unpaid', status: 'complete' };
+    jest.spyOn(f.stripe.checkout.sessions, 'retrieve').mockResolvedValue(session);
+    jest.spyOn(f.stripe.webhooks, 'constructEvent').mockReturnValue({ type: 'checkout.session.async_payment_failed', data: { object: session } } as any);
+    await f.service.handleStripeWebhook(Buffer.from('simulated'), 'signed-test');
+    expect(f.estimate.payments[0]).toMatchObject({ status: 'FAILED', stripeSessionId: null });
+    expect(f.ledger.receipts).toHaveLength(0); expect(f.estimate.order).toBeNull();
+  });
+
 });

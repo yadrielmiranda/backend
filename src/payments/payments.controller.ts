@@ -1,3 +1,4 @@
+import { ReviewRefundDto } from './dto/review-refund.dto';
 // @/payments/payments.controller.ts
 import {
   Body,
@@ -126,6 +127,24 @@ export class PaymentsController {
       checkoutRef: dto.checkoutRef,
       user,
     });
+  }
+
+  @Get('estimates/:estimateId/history')
+  history(@Param('estimateId', ParseIntPipe) estimateId: number, @Req() req: Request) {
+    return this.payments.getPaymentHistory(estimateId, req.user as AuthUser);
+  }
+
+  @Roles('admin')
+  @Post('estimates/:estimateId/sync-stripe')
+  syncStripe(@Param('estimateId', ParseIntPipe) estimateId: number, @Req() req: Request) {
+    return this.payments.synchronizeEstimatePayments(estimateId, req.user as AuthUser);
+  }
+
+  @Roles('admin')
+  @Post('estimates/:estimateId/refunds/:refundId/review')
+  reviewRefund(@Param('estimateId', ParseIntPipe) estimateId: number, @Param('refundId') refundId: string,
+    @Body() dto: ReviewRefundDto, @Req() req: Request) {
+    return this.payments.reviewRefund(estimateId, refundId, dto, req.user as AuthUser);
   }
 
   // Webhook PUBLIC

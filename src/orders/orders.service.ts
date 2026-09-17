@@ -1,3 +1,4 @@
+import { decimalAmount, hasRefundHistory, paidPrincipal, remainingRefundBalance } from '@/payments/payment-accounting';
 import { assertScheduleMilestone, buildPaymentSchedule, getPaymentSchedule } from '@/payment-plans/payment-schedule';
 // @/orders/orders.service.ts
 import {
@@ -92,9 +93,9 @@ function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof or
     charge.status === 'PAYMENT_DUE' && charge.total.gt(0) &&
     !['PAID', 'REFUNDED'].includes(charge.payment?.status ?? '');
   const installationCredit = order.estimate.payments
-    .filter(payment => payment.installationJobId === job?.id && payment.status === PaymentStatus.PAID &&
+    .filter(payment => payment.installationJobId === job?.id && (payment.status === PaymentStatus.PAID || payment.netPaidBaseAmount != null) &&
       (payment.type === PaymentType.INSTALLATION_DEPOSIT || payment.type === PaymentType.INSTALLATION))
-    .reduce((total, payment) => total.add(payment.baseAmount.toString()), new Decimal(0));
+    .reduce((total, payment) => total.add(paidPrincipal(payment)).add(decimalAmount(payment.refundCreditAmount)), new Decimal(0));
   const legacyInstallationDue = !schedule && activeInstallation &&
     job.status === InstallationJobStatus.INSTALLATION_PAYMENT_PENDING &&
     discountedInstallationTotal(estimate, job).gt(installationCredit);
@@ -102,7 +103,7 @@ function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof or
     (activeInstallation && order.extraCharges.some(unpaid));
   let paymentAnchor: 'estimate-payment' | 'order-additional-payments' | null = null;
   if (!['Canceled', 'Cancelled'].includes(order.status.name)) {
-    if (schedule?.next?.status === 'DUE') {
+    if (schedule?.next?.status === 'DUE' || order.estimate.payments.some(p => p.type !== PaymentType.INSTALLMENT && !p.refundReviewPending && hasRefundHistory(p) && remainingRefundBalance(p).gt(0) && (!schedule || [PaymentType.DELIVERY, PaymentType.EXTRA].includes(p.type as any)))) {
       paymentAnchor = 'estimate-payment';
     } else if (additionalPaymentDue) {
       paymentAnchor = 'order-additional-payments';
@@ -177,7 +178,7 @@ export class OrdersService {
                         PaymentType.INSTALLATION,
                       ],
                     },
-                    status: PaymentStatus.PAID,
+                    OR: [{ status: PaymentStatus.PAID }, { netPaidBaseAmount: { not: null } }],
                   },
                 },
               },
@@ -261,7 +262,7 @@ export class OrdersService {
           );
         }
         const paidInstallation = installation.payments.reduce(
-          (sum, payment) => sum.add(payment.baseAmount.toString()),
+          (sum, payment) => sum.add(paidPrincipal(payment)).add(decimalAmount(payment.refundCreditAmount)),
           new Decimal(0),
         );
         const schedule = await assertScheduleMilestone(this.prisma, current.idEst, 'RELEASE');
@@ -486,7 +487,7 @@ export class OrdersService {
                           PaymentType.INSTALLATION,
                         ],
                       },
-                      status: PaymentStatus.PAID,
+                      OR: [{ status: PaymentStatus.PAID }, { netPaidBaseAmount: { not: null } }],
                     },
                   },
                 },
@@ -521,7 +522,7 @@ export class OrdersService {
         );
       }
       const installationPaid = installation.payments.reduce(
-        (sum, payment) => sum.add(payment.baseAmount.toString()),
+        (sum, payment) => sum.add(paidPrincipal(payment)).add(decimalAmount(payment.refundCreditAmount)),
         new Decimal(0),
       );
       if (!order.estimate.paymentPlanSnapshot && installationPaid.lt(discountedInstallationTotal(order.estimate, installation))) {

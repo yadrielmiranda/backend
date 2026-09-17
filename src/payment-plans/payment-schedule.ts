@@ -1,3 +1,4 @@
+import { hasRefundHistory, paymentIsCovered } from '@/payments/payment-accounting';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { calculateEstimateDiscount } from '@/estimates/discounts/estimate-discount';
@@ -132,6 +133,20 @@ export function buildPaymentSchedule(estimate: any) {
     available,
     Boolean(estimate.order),
   );
+  // La cuota inicial puede volver a tener saldo después de una devolución.
+  // Solo cambia su presentación; la orden y los importes permanecen intactos.
+  const initialInstallment = allocation.rows.find(
+    row => row.sequence === installments[0]?.sequence,
+  );
+  if (
+    estimate.order &&
+    initialInstallment?.milestone === 'ORDER' &&
+    Number(initialInstallment.balance) > 0
+  ) {
+    initialInstallment.title = 'Outstanding balance · First installment';
+    initialInstallment.description =
+      'Remaining balance of the first installment for your existing order.';
+  }
   const installationPending = Boolean(job && quote?.status !== 'APPROVED');
   const cityFeePending = Boolean(job?.permit && job.permit.cityFee == null);
   const provisional = cityFeePending || (!snapshot.locked && installationPending);
@@ -141,7 +156,7 @@ export function buildPaymentSchedule(estimate: any) {
     Number(row.balance) > 0 || row.status === 'DUE' || row.sequence === allocation.next?.sequence,
   );
   const fullBalanceAmount = fullBalanceRows.reduce((total, row) => total.add(row.balance), new Prisma.Decimal(0));
-  const fullBalance = fullBalanceAmount.gt(0) && !installationPending &&
+  const fullBalance = fullBalanceAmount.gt(0) && !installationPending && !allocation.refundReviewPending &&
     estimate.units > 0 && (Boolean(estimate.order) || available.includes('ORDER') || orderReviewPending) &&
     ['Active', PENDING_ORDER_REVIEW, 'Ordered'].includes(estimate.status?.name) &&
     !['Canceled', 'Cancelled'].includes(orderStatus)
@@ -150,7 +165,7 @@ export function buildPaymentSchedule(estimate: any) {
   const orderReviewBlockedReason = !orderReviewPending ? null
     : estimate.units <= 0 ? 'At least one material unit is required to create an order.'
     : installationPending ? 'The installation quote must be approved before the order can be created.'
-    : allocation.rows.some(row => row.milestone === 'ORDER' && row.kind !== 'CITY_FEE' && Number(row.balance) > 0)
+    : allocation.rows.some(row => row.milestone === 'ORDER' && row.kind !== 'CITY_FEE' && (Number(row.balance) > 0 || row.status === 'REVIEW'))
       ? 'Pay the outstanding order installment or approved project adjustment before creating the order.'
       : null;
   const provisionalMessage = !provisional
@@ -177,13 +192,13 @@ export function buildPaymentSchedule(estimate: any) {
       allocation.rows.every(
         (row) =>
           !['ORDER', 'RELEASE'].includes(row.milestone) ||
-          (Number(row.balance) === 0 && (row.kind !== 'CITY_FEE' || Number(row.amount) <= 0 || row.status === 'PAID')),
+          (row.status !== 'REVIEW' && Number(row.balance) === 0 && (row.kind !== 'CITY_FEE' || Number(row.amount) <= 0 || row.status === 'PAID')),
       ),
     canInstall:
       Boolean(estimate.order) &&
       installationSequences.size > 0 &&
       allocation.rows.every(
-        (row) => !installationSequences.has(row.sequence) || Number(row.balance) === 0,
+        (row) => !installationSequences.has(row.sequence) || (Number(row.balance) === 0 && row.status !== 'REVIEW'),
       ),
     initialSequence: rows[0]?.sequence ?? 1,
   };
@@ -222,7 +237,7 @@ export async function installmentContext(
       ? schedule.next
       : schedule.rows.find((row) => row.sequence === sequence);
   const advanceAvailable = allowAdvance && schedule.fullBalance?.sequences.includes(row?.sequence ?? -1);
-  if (!row || (!advanceAvailable && row.status !== 'DUE' && row.sequence !== schedule.next?.sequence))
+  if (!row || row.status === 'REVIEW' || (!advanceAvailable && row.status !== 'DUE' && row.sequence !== schedule.next?.sequence))
     throw new ConflictException(
       'This installment is not available for payment. Refresh the payment schedule.',
     );
@@ -285,7 +300,7 @@ export async function synchronizeScheduleChanges(
   if (
     !estimate.order &&
     !estimate.payments.some(
-      (p) => p.type === 'INSTALLMENT' && p.status === 'PAID',
+      (p) => p.type === 'INSTALLMENT' && (p.status === 'PAID' || p.netPaidBaseAmount != null),
     )
   ) {
     // Un intento cancelado no fija una cotización aún editable. Se recalculan
@@ -346,6 +361,14 @@ export async function assertScheduleMilestone(
   milestone: 'RELEASE' | 'INSTALL',
 ) {
   const schedule = await getPaymentSchedule(db, estimateId);
+  if (!schedule) {
+    const payments = await db.payment.findMany({ where: { idEst: estimateId,
+      type: { in: milestone === 'RELEASE' ? ['MATERIAL'] : ['INSTALLATION', 'INSTALLATION_DEPOSIT'] },
+    } });
+    if (payments.some(p => (hasRefundHistory(p) || p.refundReviewPending) && !paymentIsCovered(p))) {
+      throw new BadRequestException('The required payment has a refund or balance under review. Resolve it before continuing.');
+    }
+  }
   if (
     schedule &&
     !(milestone === 'RELEASE' ? schedule.canRelease : schedule.canInstall)

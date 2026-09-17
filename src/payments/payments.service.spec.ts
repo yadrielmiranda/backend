@@ -1,3 +1,8 @@
+// Estos tests aíslan autorización/efectos; el ledger real se prueba en payment-refunds.spec y payment-workflow.spec.
+jest.mock('./payment-ledger', () => ({
+  recordStripeReceipt: jest.fn(), recordManualReceipt: jest.fn(), refreshPaymentAccounting: jest.fn(),
+  reconcileChargeRefunds: jest.fn(async () => ({ paymentIds: [], newRefundIds: [] })),
+}));
 import {
   BadRequestException,
   ConflictException,
@@ -28,6 +33,11 @@ describe('PaymentsService reconciliation', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.spyOn(PaymentsService.prototype as any, 'successfulCharge').mockImplementation(async (id: any) => ({
+      id: `ch_${id}`, payment_intent: id, created: 1700000000, amount_captured: Number(id.slice('pi_test_'.length)),
+      currency: 'usd', paid: true, captured: true, payment_method_details: { type: 'card', card: { brand: 'visa' } },
+    }));
+    jest.spyOn(PaymentsService.prototype as any, 'applyStripeRefunds').mockResolvedValue({ paymentIds: [], newRefundIds: [] });
   });
 
   describe('material acceptance at checkout', () => {
@@ -283,9 +293,11 @@ describe('PaymentsService reconciliation', () => {
       eventLog: { create: jest.fn().mockResolvedValue({}) },
     };
     const prisma = {
+      paymentRefund: { findMany: jest.fn().mockResolvedValue([]) },
       payment: {
         findMany: jest
           .fn()
+          .mockResolvedValueOnce([])
           .mockResolvedValueOnce([])
           .mockResolvedValueOnce([{ id: payment.id }]),
       },
@@ -463,7 +475,7 @@ describe('PaymentsService reconciliation', () => {
       transactions.map((tx, index) =>
         (service as any).processPaidCheckoutSession(tx, {
           id: payments[index].stripeSessionId,
-          payment_status: 'paid', amount_total: Math.round(Number(payments[index].amount) * 100), currency: 'usd',
+          payment_status: 'paid', payment_intent: `pi_test_${Math.round(Number(payments[index].amount) * 100)}`, amount_total: Math.round(Number(payments[index].amount) * 100), currency: 'usd',
         }),
       ),
     );
@@ -544,7 +556,7 @@ describe('PaymentsService reconciliation', () => {
     );
     const session = {
       id: payment.stripeSessionId,
-      payment_status: 'paid', amount_total: Math.round(Number(payment.amount) * 100), currency: 'usd',
+      payment_status: 'paid', payment_intent: `pi_test_${Math.round(Number(payment.amount) * 100)}`, amount_total: Math.round(Number(payment.amount) * 100), currency: 'usd',
     } as Stripe.Checkout.Session;
 
     const processed = await (
@@ -603,7 +615,7 @@ describe('PaymentsService reconciliation', () => {
     );
     const session = {
       id: payment.stripeSessionId,
-      payment_status: 'paid', amount_total: Math.round(Number(payment.amount) * 100), currency: 'usd',
+      payment_status: 'paid', payment_intent: `pi_test_${Math.round(Number(payment.amount) * 100)}`, amount_total: Math.round(Number(payment.amount) * 100), currency: 'usd',
     } as Stripe.Checkout.Session;
 
     await (
@@ -646,7 +658,7 @@ describe('PaymentsService reconciliation', () => {
     const workflow = { markPaymentPaid: jest.fn().mockResolvedValue(false) };
     const service = new PaymentsService({} as never, config, workflow as never, notifications as never);
     await (service as any).processPaidCheckoutSession(tx, {
-      id: payment.stripeSessionId, payment_status: 'paid', amount_total: Math.round(Number(payment.amount) * 100), currency: 'usd',
+      id: payment.stripeSessionId, payment_status: 'paid', payment_intent: `pi_test_${Math.round(Number(payment.amount) * 100)}`, amount_total: Math.round(Number(payment.amount) * 100), currency: 'usd',
     });
     expect(notifications.createAndSend).not.toHaveBeenCalled();
     expect(notifications.createAndSendToRoles).toHaveBeenCalledWith(

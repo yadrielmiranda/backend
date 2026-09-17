@@ -1,3 +1,4 @@
+import { decimalAmount, hasRefundHistory, paidPrincipal, paymentIsCovered, remainingRefundBalance } from '@/payments/payment-accounting';
 import { assertScheduleMilestone, getPaymentSchedule, installmentContext, refreshScheduledInstallation } from '@/payment-plans/payment-schedule';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
 import { assertCompleteEstimateCustomer } from '@/estimates/estimate-customer-details';
@@ -3767,7 +3768,7 @@ export class InstallationWorkflowService {
             where: { installationJob: { id: jobId } },
             include: { order: { include: { status: true } } },
           }),
-          tx.payment.aggregate({
+          tx.payment.findMany({
             where: {
               installationJobId: jobId,
               type: {
@@ -3776,17 +3777,13 @@ export class InstallationWorkflowService {
                   PaymentType.INSTALLATION,
                 ],
               },
-              status: PaymentStatus.PAID,
             },
-            _sum: { baseAmount: true },
           }),
-          tx.payment.aggregate({
+          tx.payment.findMany({
             where: {
               installationJobId: jobId,
               type: PaymentType.INSTALLATION,
-              status: PaymentStatus.PAID,
             },
-            _sum: { baseAmount: true },
           }),
           tx.installationJob.findUnique({
             where: { id: jobId },
@@ -3811,14 +3808,14 @@ export class InstallationWorkflowService {
           }),
         ]);
       const paidInstallationTotal = new Decimal(
-        paidInstallation._sum.baseAmount?.toString() ?? 0,
+        paidInstallation.reduce((sum, p) => sum.add(paidPrincipal(p)).add(decimalAmount(p.refundCreditAmount)), new Decimal(0)),
       );
       const installationBalance = calculateInstallationBalance(
         estimate ? discountedInstallationTotal(estimate, { status: 'APPROVED', quotes: [quote], permit }).toString() : quote.total.toString(),
         [paidInstallationTotal],
       );
       const paidInstallationBalanceTotal = new Decimal(
-        paidInstallationBalance._sum.baseAmount?.toString() ?? 0,
+        paidInstallationBalance.reduce((sum, p) => sum.add(paidPrincipal(p)).add(decimalAmount(p.refundCreditAmount)), new Decimal(0)),
       );
 
       let nextStatus: InstallationJobStatus = InstallationJobStatus.QUOTE_DRAFT;
@@ -4080,13 +4077,13 @@ export class InstallationWorkflowService {
       );
     }
     if (dto.type === InstallationAppointmentType.INSTALLATION) {
-      if (job.estimate.paymentPlanSnapshot) await assertScheduleMilestone(this.prisma, job.estimateId, 'INSTALL');
+      await assertScheduleMilestone(this.prisma, job.estimateId, 'INSTALL');
       const unpaidDeliveryOverride = job.estimate.order?.deliveries.find(
         (delivery) =>
           delivery.type === DeliveryType.INSTALLATION_OVERRIDE &&
           delivery.status !== DeliveryStatus.CANCELED &&
           delivery.status !== DeliveryStatus.COMPLETED &&
-          delivery.payment?.status !== PaymentStatus.PAID,
+          !paymentIsCovered(delivery.payment),
       );
       if (unpaidDeliveryOverride) {
         throw new BadRequestException(
@@ -4102,7 +4099,7 @@ export class InstallationWorkflowService {
     }
 
     const appointment = await this.prisma.$transaction(async (tx) => {
-      if (dto.type === InstallationAppointmentType.INSTALLATION && job.estimate.paymentPlanSnapshot) {
+      if (dto.type === InstallationAppointmentType.INSTALLATION) {
         await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${job.estimateId} FOR UPDATE`;
         await assertScheduleMilestone(tx, job.estimateId, 'INSTALL');
       }
@@ -4271,7 +4268,7 @@ export class InstallationWorkflowService {
     );
     if (
       deliveryOverride &&
-      deliveryOverride.payment?.status !== PaymentStatus.PAID
+      !paymentIsCovered(deliveryOverride.payment)
     ) {
       throw new BadRequestException(
         'The delivery charge must be paid before installation can start.',
@@ -4298,13 +4295,13 @@ export class InstallationWorkflowService {
         (payment) =>
           (payment.type === PaymentType.INSTALLATION_DEPOSIT ||
             payment.type === PaymentType.INSTALLATION) &&
-          payment.status === PaymentStatus.PAID,
+          (payment.status === PaymentStatus.PAID || payment.netPaidBaseAmount != null),
       )
       .reduce(
-        (sum, payment) => sum.add(payment.baseAmount.toString()),
+        (sum, payment) => sum.add(paidPrincipal(payment)).add(decimalAmount(payment.refundCreditAmount)),
         new Decimal(0),
       );
-    const paymentSchedule = job.estimate.paymentPlanSnapshot ? await assertScheduleMilestone(this.prisma, job.estimateId, 'INSTALL') : null;
+    const paymentSchedule = await assertScheduleMilestone(this.prisma, job.estimateId, 'INSTALL');
     if (!paymentSchedule && paidInstallation.lt(discountedInstallationTotal(job.estimate, { ...job, quotes: [approvedQuote] }))) {
       throw new BadRequestException(
         'Installation must be fully paid before work can start.',
@@ -4316,7 +4313,7 @@ export class InstallationWorkflowService {
       if (currentPermit && currentPermit.status !== InstallationPermitStatus.APPROVED) {
         throw new BadRequestException('The company-managed permit must be approved before installation can start.');
       }
-      if (job.estimate.paymentPlanSnapshot) await assertScheduleMilestone(tx, job.estimateId, 'INSTALL');
+      await assertScheduleMilestone(tx, job.estimateId, 'INSTALL');
       const inProgress = await tx.orderStatus.findUnique({
         where: { name: 'Installation in progress' },
       });
@@ -4622,7 +4619,7 @@ export class InstallationWorkflowService {
     const estimate = await tx.estimate.findUnique({
       where: { id: estimateId },
       include: {
-        payments: { select: { status: true } },
+        payments: true,
         user: {
           select: {
             id: true,
@@ -4689,7 +4686,18 @@ export class InstallationWorkflowService {
     let extraCharge: Prisma.OrderExtraChargeGetPayload<{}> | null = null;
     let delivery: Prisma.OrderDeliveryGetPayload<{}> | null = null;
 
-    if (type === PaymentType.INSTALLATION_DEPOSIT) {
+    const refundedPayment = estimate.payments.find(p => p.type === type && p.sequence === (sequence ?? 1));
+    if (refundedPayment?.refundReviewPending && type !== PaymentType.INSTALLMENT) {
+      throw new ConflictException('This refund is under administrative review. No replacement payment is available yet.');
+    }
+    if (type !== PaymentType.INSTALLMENT && hasRefundHistory(refundedPayment)) {
+      baseAmount = remainingRefundBalance(refundedPayment!);
+      paymentSequence = refundedPayment!.sequence;
+      description = `Reviewed ${type.toLowerCase().replaceAll('_', ' ')} balance — Estimate #${estimate.number}`;
+      if (refundedPayment!.deliveryId) delivery = await tx.orderDelivery.findUnique({ where: { id: refundedPayment!.deliveryId } });
+      if (refundedPayment!.extraChargeId) extraCharge = await tx.orderExtraCharge.findUnique({ where: { id: refundedPayment!.extraChargeId } });
+      if (baseAmount.lte(0)) throw new ConflictException('This charge is already covered.');
+    } else if (type === PaymentType.INSTALLATION_DEPOSIT) {
       if (
         !job ||
         job.dealerMeasurementsAcceptedAt ||
@@ -4811,29 +4819,14 @@ export class InstallationWorkflowService {
           'No approved installation quote is available.',
         );
       }
-      const paidInstallation = await tx.payment.aggregate({
-        where: {
-          installationJobId: job.id,
-          type: {
-            in: [PaymentType.INSTALLATION_DEPOSIT, PaymentType.INSTALLATION],
-          },
-          status: PaymentStatus.PAID,
-        },
-        _sum: { baseAmount: true },
-      });
+      const paidInstallation = estimate.payments.filter(p => p.installationJobId === job.id &&
+        [PaymentType.INSTALLATION_DEPOSIT, PaymentType.INSTALLATION].includes(p.type as any));
       const paidBase = new Decimal(
-        paidInstallation._sum.baseAmount?.toString() ?? 0,
+        paidInstallation.reduce((sum, p) => sum.add(paidPrincipal(p)).add(decimalAmount(p.refundCreditAmount)), new Decimal(0)),
       );
-      const paidBalance = await tx.payment.aggregate({
-        where: {
-          installationJobId: job.id,
-          type: PaymentType.INSTALLATION,
-          status: PaymentStatus.PAID,
-        },
-        _sum: { baseAmount: true },
-      });
+      const paidBalance = estimate.payments.filter(p => p.installationJobId === job.id && p.type === PaymentType.INSTALLATION);
       const paidBalanceBase = new Decimal(
-        paidBalance._sum.baseAmount?.toString() ?? 0,
+        paidBalance.reduce((sum, p) => sum.add(paidPrincipal(p)).add(decimalAmount(p.refundCreditAmount)), new Decimal(0)),
       );
       if (
         !['Ready to pick up', 'Delivered'].includes(
@@ -4907,18 +4900,10 @@ export class InstallationWorkflowService {
           'An approved installation quote is required.',
         );
       }
-      const paidInstallation = await tx.payment.aggregate({
-        where: {
-          installationJobId: job.id,
-          type: {
-            in: [PaymentType.INSTALLATION_DEPOSIT, PaymentType.INSTALLATION],
-          },
-          status: PaymentStatus.PAID,
-        },
-        _sum: { baseAmount: true },
-      });
+      const paidInstallation = estimate.payments.filter(p => p.installationJobId === job.id &&
+        [PaymentType.INSTALLATION_DEPOSIT, PaymentType.INSTALLATION].includes(p.type as any));
       const paidInstallationTotal = new Decimal(
-        paidInstallation._sum.baseAmount?.toString() ?? 0,
+        paidInstallation.reduce((sum, p) => sum.add(paidPrincipal(p)).add(decimalAmount(p.refundCreditAmount)), new Decimal(0)),
       );
       if (!estimate.paymentPlanSnapshot && paidInstallationTotal.lt(manualDiscount?.installation.total ?? quote.total.toString())) {
         throw new BadRequestException(
@@ -5224,14 +5209,14 @@ export class InstallationWorkflowService {
             type: {
               in: [PaymentType.INSTALLATION_DEPOSIT, PaymentType.INSTALLATION],
             },
-            status: PaymentStatus.PAID,
+            OR: [{ status: PaymentStatus.PAID }, { netPaidBaseAmount: { not: null } }],
           },
         },
       },
     });
     if (job && job.status === InstallationJobStatus.MATERIAL_PAID) {
       const credit = job.payments.reduce(
-        (sum, payment) => sum.add(payment.baseAmount.toString()),
+        (sum, payment) => sum.add(paidPrincipal(payment)).add(decimalAmount(payment.refundCreditAmount)),
         new Decimal(0),
       );
       const quote = job.quotes[0];

@@ -575,3 +575,38 @@ it('requires City Fee acceptance even when existing credit covers the entire adj
   expect(after.rows[1].status).toBe('PAID');
   expect(after.paid).toBe('150.00');
 });
+
+describe('Refund balances and operational milestones', () => {
+  function ready(definition = project) {
+    const e = estimate(definition);
+    e.status.name = 'Ordered'; e.order = { id: 1, status: { name: 'Ready to pick up' } };
+    e.installationJob.status = 'INSTALLATION_PAID';
+    return e;
+  }
+  it('holds only the refunded release payment while another due adjustment remains payable', () => {
+    const e = ready();
+    e.payments = [paid('INSTALLMENT', '5000', 1), { ...paid('INSTALLMENT', '4000', 2), netPaidBaseAmount: '3500', refundedAmount: '500', refundReviewPending: true, refundReviewBaseAmount: '500' }];
+    e.paymentPlanSnapshot.adjustments = [{ sequence: 101, milestone: 'ORDER', kind: 'CITY_FEE', title: 'City Fee', description: '', amount: '200' }];
+    const s = buildPaymentSchedule(e)!;
+    expect(s.rows.find(r => r.sequence === 2)).toMatchObject({ balance: '500.00', status: 'REVIEW' });
+    expect(s.next?.sequence).toBe(101); expect(s.fullBalance).toBeNull(); expect(s.canInstall).toBe(false);
+  });
+  it('uses Before installation when present, even if Release materials has a refunded balance', () => {
+    const e = ready(split);
+    e.payments = [paid('INSTALLMENT', '4000', 1), { ...paid('INSTALLMENT', '4000', 2), netPaidBaseAmount: '3900', refundedAmount: '100' }, paid('INSTALLMENT', '1000', 3)];
+    const s = buildPaymentSchedule(e)!;
+    expect(s.canRelease).toBe(false); expect(s.canInstall).toBe(true);
+  });
+  it('does not block installation because of a refund on the After installation installment', () => {
+    const e = ready();
+    e.payments = [paid('INSTALLMENT', '5000', 1), paid('INSTALLMENT', '4000', 2), { ...paid('INSTALLMENT', '1000', 3), netPaidBaseAmount: '900', refundReviewPending: true, refundReviewBaseAmount: '100' }];
+    expect(buildPaymentSchedule(e)).toMatchObject({ canRelease: true, canInstall: true });
+  });
+  it('preserves a reduction already recorded in the project and does not add a second credit', () => {
+    const e = ready();
+    e.payments = [{ ...paid('INSTALLMENT', '5000', 1), netPaidBaseAmount: '4900', refundedAmount: '100', refundCreditAmount: '0' }];
+    e.paymentPlanSnapshot.adjustments = [{ sequence: 101, milestone: 'ORDER', title: 'Reduction', description: '', amount: '-100' }];
+    expect(buildPaymentSchedule(e)).toMatchObject({ total: '9900.00', paid: '4900.00', balance: '5000.00' });
+    expect(buildPaymentSchedule(e)!.rows[0].balance).toBe('0.00');
+  });
+});

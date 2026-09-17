@@ -1,3 +1,4 @@
+import { decimalAmount, paidPrincipal, paymentIsCovered } from '@/payments/payment-accounting';
 import { assertScheduleMilestone } from '@/payment-plans/payment-schedule';
 import {
   BadRequestException,
@@ -56,7 +57,7 @@ const orderForDeliveryInclude = {
                   PaymentType.INSTALLATION,
                 ],
               },
-              status: PaymentStatus.PAID,
+              OR: [{ status: PaymentStatus.PAID }, { netPaidBaseAmount: { not: null } }],
             },
           },
         },
@@ -201,7 +202,7 @@ export class DeliveriesService {
       );
     }
     const paid = installation.payments.reduce(
-      (sum, payment) => sum.add(payment.baseAmount.toString()),
+      (sum, payment) => sum.add(paidPrincipal(payment)).add(decimalAmount(payment.refundCreditAmount)),
       new Decimal(0),
     );
     if (paid.lt(discountedInstallationTotal(order.estimate, installation))) {
@@ -650,7 +651,7 @@ export class DeliveriesService {
     if (
       (delivery.status !== DeliveryStatus.READY_TO_SCHEDULE &&
         delivery.status !== DeliveryStatus.SCHEDULED) ||
-      delivery.payment?.status !== PaymentStatus.PAID
+      !paymentIsCovered(delivery.payment)
     ) {
       throw new BadRequestException(
         'Delivery must be paid before it can be scheduled.',
@@ -664,6 +665,8 @@ export class DeliveriesService {
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${delivery.order.idEst} FOR UPDATE`;
       await assertScheduleMilestone(tx, delivery.order.idEst, 'RELEASE');
+      const currentPayment = await tx.payment.findUnique({ where: { deliveryId } });
+      if (!paymentIsCovered(currentPayment)) throw new BadRequestException('Delivery payment must be covered before scheduling.');
       return tx.orderDelivery.update({
         where: { id: deliveryId },
         data: { status: DeliveryStatus.SCHEDULED, scheduledFor },
@@ -707,7 +710,7 @@ export class DeliveriesService {
     if (
       (delivery.status !== DeliveryStatus.READY_TO_SCHEDULE &&
         delivery.status !== DeliveryStatus.SCHEDULED) ||
-      delivery.payment?.status !== PaymentStatus.PAID
+      !paymentIsCovered(delivery.payment)
     ) {
       throw new BadRequestException(
         'Only a paid delivery can be marked completed.',
@@ -729,6 +732,9 @@ export class DeliveriesService {
     const completedAt = new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${order.idEst} FOR UPDATE`;
+      if (!paymentIsCovered(await tx.payment.findUnique({ where: { deliveryId } }))) {
+        throw new BadRequestException('Delivery payment must be covered before completion.');
+      }
       if (shouldFulfillOrder) await assertScheduleMilestone(tx, order.idEst, 'RELEASE');
       const completed = await tx.orderDelivery.update({
         where: { id: deliveryId },

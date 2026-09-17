@@ -1,3 +1,7 @@
+import { cents, hasRefundHistory, paidPrincipal, paymentIsCovered, remainingRefundBalance } from './payment-accounting';
+import { reconcileChargeRefunds, recordManualReceipt, recordStripeReceipt, refreshPaymentAccounting } from './payment-ledger';
+import { stripePaymentMethod } from './stripe-payment-method';
+import { ReviewRefundDto } from './dto/review-refund.dto';
 import Decimal from 'decimal.js';
 import { randomUUID } from 'node:crypto';
 import { PENDING_ORDER_REVIEW } from '@/payment-plans/payment-plan';
@@ -270,7 +274,7 @@ export class PaymentsService {
       if (job && job.quotes[0]?.status !== 'APPROVED') throw new ConflictException('Approve the installation quote before creating the order.');
       const schedule = await getPaymentSchedule(tx, estimateId);
       if (schedule?.orderReviewBlockedReason) throw new ConflictException(schedule.orderReviewBlockedReason);
-      const firstPayment = estimate.payments.find(p => p.status === PaymentStatus.PAID &&
+      const firstPayment = estimate.payments.find(p => (schedule ? !p.refundReviewPending && (p.paidAt != null || p.status === PaymentStatus.PAID) : paymentIsCovered(p)) &&
         (schedule ? p.type === PaymentType.INSTALLMENT && p.sequence === schedule.initialSequence : p.type === PaymentType.MATERIAL));
       if (!firstPayment) throw new ConflictException('The first order payment must be confirmed before approval.');
       const payment = await tx.payment.findUniqueOrThrow({ where: { id: firstPayment.id }, include: {
@@ -303,6 +307,12 @@ export class PaymentsService {
     tx: Prisma.TransactionClient,
     payment: PaymentWithEstimate,
   ): Promise<boolean> {
+    if (payment.type === PaymentType.INSTALLMENT) {
+      const schedule = await getPaymentSchedule(tx, payment.idEst);
+      const row = schedule?.rows.find(row => row.sequence === payment.sequence);
+      if (row && (Number(row.balance) > 0 || row.status === 'REVIEW')) return false;
+      if (!row && !paymentIsCovered(payment)) return false;
+    } else if (!paymentIsCovered(payment)) return false;
     let changed = false;
     const discount = estimateDiscountConfig(payment.estimate.manualDiscount);
     if (discount && !discount.lockedAt) {
@@ -414,7 +424,7 @@ export class PaymentsService {
   ): Promise<boolean> {
     if (!this.isCompletedCheckout(session)) return false;
 
-    const paymentIntentId = typeof session.payment_intent === 'string' ? session.payment_intent : null;
+    const paymentIntentId = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id ?? null;
     // Una sesión puede contener varias cuotas del mismo estimate. Se confirman juntas.
     await tx.$queryRaw`SELECT id FROM Estimate WHERE id = (SELECT idEst FROM payments WHERE stripeSessionId = ${session.id} LIMIT 1) FOR UPDATE`;
     const payments = await tx.payment.findMany({
@@ -425,7 +435,6 @@ export class PaymentsService {
       orderBy: { id: 'asc' },
     });
     if (!payments.length) return false;
-    if (payments.some(p => p.status === PaymentStatus.REFUNDED)) return false;
     if (payments.length > 1 && payments.some(p => p.type !== PaymentType.INSTALLMENT)) throw new Error('Only installments may share a checkout.');
     if (payments.some(p => p.idEst !== payments[0].idEst)) throw new Error('Checkout contains payments from different estimates.');
     const recordedAmountCents = payments.reduce((sum, p) => sum + Math.round(Number(p.amount) * 100), 0);
@@ -433,12 +442,17 @@ export class PaymentsService {
         payments.some(p => p.currency.toLowerCase() !== String(session.currency ?? '').toLowerCase())) {
       throw new Error(`Paid checkout amount mismatch for Payment #${payments[0].id}.`);
     }
-    const paidAt = new Date();
+    const charge = paymentIntentId ? await this.successfulCharge(paymentIntentId) : null;
+    if (recordedAmountCents > 0 && (!charge || charge.amount_captured !== recordedAmountCents || charge.currency !== session.currency)) {
+      throw new Error('Stripe capture does not match the recorded checkout.');
+    }
+    const method = charge ? stripePaymentMethod(charge) : { paymentMethod: PaymentMethod.OTHER, paymentMethodLabel: 'No payment required' };
+    const paidAt = charge ? new Date(charge.created * 1000) : new Date();
     for (const payment of payments) {
-      if (payment.status === PaymentStatus.PAID) continue;
+      if ([PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(payment.status as any)) continue;
       await tx.payment.update({ where: { id: payment.id }, data: {
         status: PaymentStatus.PAID,
-        paymentMethod: PaymentMethod.CARD,
+        ...method,
         paidAt,
         payerName: session.customer_details?.name ?? payment.payerName,
         payerEmail: session.customer_details?.email ?? payment.payerEmail,
@@ -446,6 +460,13 @@ export class PaymentsService {
         stripeCustomerId: typeof session.customer === 'string' ? session.customer : payment.stripeCustomerId,
         stripePaymentIntentId: paymentIntentId ?? payment.stripePaymentIntentId,
       } });
+    }
+    if (charge) {
+      for (const payment of payments) {
+        const confirmed = await tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
+        await recordStripeReceipt(tx, confirmed, charge, session.id);
+      }
+      await this.applyStripeRefunds(tx, charge);
     }
     // Aplica los efectos cuando todos los conceptos ya están pagados, con datos actuales.
     for (const payment of payments) {
@@ -551,7 +572,7 @@ export class PaymentsService {
               },
             },
           });
-          if (!payment || payment.status !== PaymentStatus.PAID) return false;
+          if (!payment || !paymentIsCovered(payment)) return false;
 
           const changed = await this.ensurePaidPaymentEffects(tx, payment);
           if (changed) {
@@ -660,6 +681,23 @@ export class PaymentsService {
         }
       }
 
+      // Recupera notificaciones perdidas de métodos antiguos y reembolsos todavía pendientes.
+      const legacy = await this.prisma.payment.findMany({ where: {
+        status: { in: [PaymentStatus.PAID, PaymentStatus.REFUNDED] }, stripeSessionId: { not: null },
+        stripeMethodType: null, amount: { gt: 0 },
+      }, select: { stripeSessionId: true }, orderBy: { id: 'asc' }, take: 20 });
+      for (const sessionId of new Set(legacy.map(p => p.stripeSessionId!))) {
+        try {
+          const session = await this.stripe.checkout.sessions.retrieve(sessionId);
+          await this.prisma.$transaction(tx => this.processPaidCheckoutSession(tx, session), { timeout: 30000 });
+        } catch (error) { this.logger.error(`Unable to reconcile historic checkout ${sessionId}: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+      const pendingRefunds = await this.prisma.paymentRefund.findMany({ where: { status: { in: ['pending', 'requires_action'] } },
+        orderBy: { updatedAt: 'asc' }, take: 20, select: { stripeChargeId: true } });
+      for (const chargeId of new Set(pendingRefunds.map(r => r.stripeChargeId))) {
+        try { await this.synchronizeStripeCharge(chargeId); }
+        catch (error) { this.logger.error(`Unable to reconcile pending refund for ${chargeId}: ${error instanceof Error ? error.message : String(error)}`); }
+      }
       await this.reconcilePaidPaymentEffects();
     } finally {
       this.reconciliationInProgress = false;
@@ -699,6 +737,7 @@ export class PaymentsService {
           },
         },
         installationJob: { select: { id: true, status: true } },
+        payments: true,
       },
     });
 
@@ -776,8 +815,11 @@ export class PaymentsService {
 
       if (promotionExpired(estimate)) return { enabled:true as const, status:'expired' as const, payment:null };
       const schedule = await getPaymentSchedule(tx, estimate.id);
+      const recovery = estimate.payments.find(p => p.type !== PaymentType.INSTALLMENT &&
+        !p.refundReviewPending && hasRefundHistory(p) && remainingRefundBalance(p).gt(0) &&
+        (!schedule || [PaymentType.DELIVERY, PaymentType.EXTRA].includes(p.type as any)));
       const advanceDue = estimate.installationJob?.status === 'DEPOSIT_PAYMENT_PENDING';
-      const request = schedule && !advanceDue
+      const request = recovery ? { type: recovery.type, sequence: recovery.sequence } : schedule && !advanceDue
         ? schedule.next ? { type: PaymentType.INSTALLMENT, sequence: schedule.next.sequence }
           : estimate.order?.deliveries[0] ? { type: PaymentType.DELIVERY, sequence: estimate.order.deliveries[0].sequence }
           : estimate.order?.extraCharges[0] ? { type: PaymentType.EXTRA, sequence: estimate.order.extraCharges[0].sequence }
@@ -786,7 +828,7 @@ export class PaymentsService {
       if (!request) {
         return {
           enabled: true as const,
-          status: 'complete' as const,
+          status: estimate.payments.some(p => p.refundReviewPending) ? 'review' as const : 'complete' as const,
           schedule,
           payment: null,
         };
@@ -1094,10 +1136,10 @@ export class PaymentsService {
         const existing = await tx.payment.findUnique({ where: { idEst_type_sequence: {
           idEst: params.estimateId, type, sequence: selected.paymentSequence,
         } } });
-        if (existing?.status === PaymentStatus.REFUNDED && type === PaymentType.INSTALLMENT) {
-          throw new ConflictException('This installment was refunded. Contact administration to review the balance.');
+        if (existing?.refundReviewPending) throw new ConflictException('Review this refund before collecting another payment.');
+        if (existing && [PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(existing.status as any) && !hasRefundHistory(existing)) {
+          throw new ConflictException(`${type} payment is already paid or requires administrative reconciliation.`);
         }
-        if (type === PaymentType.INSTALLMENT && existing?.status === PaymentStatus.PAID) throw new ConflictException(`${type} payment is already paid.`);
         existingPayments.push(existing);
       }
       if (type === PaymentType.INSTALLMENT) {
@@ -1163,7 +1205,7 @@ export class PaymentsService {
         }
       }
 
-      if (existingPayment?.status === PaymentStatus.PAID) {
+      if (existingPayment?.status === PaymentStatus.PAID && !hasRefundHistory(existingPayment)) {
         throw new ConflictException(`${type} payment is already paid.`);
       }
 
@@ -1197,7 +1239,10 @@ export class PaymentsService {
             amount: new Prisma.Decimal(context.totalAmount.toFixed(2)),
             currency: 'usd',
             status: PaymentStatus.PENDING,
-            paymentMethod: PaymentMethod.CARD,
+            paymentMethod: PaymentMethod.OTHER,
+            paymentMethodLabel: 'Stripe — awaiting confirmation',
+            stripeMethodType: null,
+            stripeFundingSourceGroup: null,
           },
           update: {
             installationJobId: context.job?.id ?? null,
@@ -1216,7 +1261,10 @@ export class PaymentsService {
             amount: new Prisma.Decimal(context.totalAmount.toFixed(2)),
             currency: 'usd',
             status: PaymentStatus.PENDING,
-            paymentMethod: PaymentMethod.CARD,
+            paymentMethod: PaymentMethod.OTHER,
+            paymentMethodLabel: 'Stripe — awaiting confirmation',
+            stripeMethodType: null,
+            stripeFundingSourceGroup: null,
             paidAt: null,
             manualReference: null,
             manualNote: null,
@@ -1417,8 +1465,9 @@ export class PaymentsService {
       stripeSessionId: string | null;
     },
     requireConfirmedClosure = false,
+    allowRefundRecovery = false,
   ) {
-    if (payment.status === PaymentStatus.PAID) {
+    if (payment.status === PaymentStatus.PAID && !allowRefundRecovery) {
       throw new ConflictException('This charge is already paid.');
     }
     if (!payment.stripeSessionId) return;
@@ -1526,9 +1575,9 @@ export class PaymentsService {
         'Confirm that the funds are already available before recording a manual payment.',
       );
     }
-    if (params.method === PaymentMethod.CARD) {
+    if ([PaymentMethod.CARD, PaymentMethod.BANK].includes(params.method as any)) {
       throw new BadRequestException(
-        'CARD payments must be confirmed through Stripe.',
+        'Card and Stripe bank payments must be confirmed through Stripe. Use ACH or WIRE for a verified manual bank payment.',
       );
     }
     const reference = params.reference.trim();
@@ -1583,9 +1632,9 @@ export class PaymentsService {
     for (const preview of previews) {
       const existingPayment = await this.prisma.payment.findUnique({ where: { idEst_type_sequence: {
         idEst: params.estimateId, type: params.type, sequence: preview.paymentSequence,
-      } }, select: { id: true, status: true, stripeSessionId: true } });
+      } } });
       if (existingPayment) {
-        await this.closeStripeCheckoutBeforePaymentChange(existingPayment);
+        await this.closeStripeCheckoutBeforePaymentChange(existingPayment, false, hasRefundHistory(existingPayment) && !existingPayment.refundReviewPending);
         if (existingPayment.stripeSessionId) await this.closeUnpaidCheckoutSession(
           existingPayment.stripeSessionId, PaymentStatus.CANCELED,
         );
@@ -1599,11 +1648,8 @@ export class PaymentsService {
         await this.acceptCityFee(tx, context, params.cityFeeAccepted, params.estimateId, params.actor.id, true);
         const current = await tx.payment.findUnique({ where: { idEst_type_sequence: {
           idEst: params.estimateId, type: params.type, sequence: context.paymentSequence,
-        } }, select: { status: true, stripeSessionId: true } });
-        if (current?.status === PaymentStatus.PAID) throw new ConflictException('This charge is already paid.');
-        if (params.type === PaymentType.INSTALLMENT && current?.status === PaymentStatus.REFUNDED) {
-          throw new ConflictException('This installment was refunded. Review the balance before recording another payment.');
-        }
+        } } });
+        if (current?.refundReviewPending || (current && [PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(current.status as any) && !hasRefundHistory(current))) throw new ConflictException('This charge is already paid or requires refund review.');
         if (current?.stripeSessionId) throw new ConflictException('A new checkout was opened. Close it before recording a manual payment.');
       }
       const paymentIds: number[] = [];
@@ -1634,6 +1680,9 @@ export class PaymentsService {
             currency: 'usd',
             status: PaymentStatus.PAID,
             paymentMethod: params.method,
+            paymentMethodLabel: params.method === PaymentMethod.ACH ? 'Bank (ACH)' : params.method === PaymentMethod.WIRE ? 'Bank transfer' : params.method,
+            stripeMethodType: null,
+            stripeFundingSourceGroup: null,
             paidAt,
             manualReference: reference,
             manualNote: params.note?.trim() || null,
@@ -1652,6 +1701,9 @@ export class PaymentsService {
             currency: 'usd',
             status: PaymentStatus.PAID,
             paymentMethod: params.method,
+            paymentMethodLabel: params.method === PaymentMethod.ACH ? 'Bank (ACH)' : params.method === PaymentMethod.WIRE ? 'Bank transfer' : params.method,
+            stripeMethodType: null,
+            stripeFundingSourceGroup: null,
             paidAt,
             manualReference: reference,
             manualNote: params.note?.trim() || null,
@@ -1664,6 +1716,7 @@ export class PaymentsService {
             materialAcceptedAt: null,
           },
         });
+        await recordManualReceipt(tx, payment, `manual:${randomUUID()}`);
         paymentIds.push(payment.id);
         await tx.eventLog.create({
           data: {
@@ -1700,6 +1753,172 @@ export class PaymentsService {
     });
   }
 
+  private async successfulCharge(intentId: string): Promise<Stripe.Charge> {
+    const intent = await this.stripe.paymentIntents.retrieve(intentId, { expand: ['latest_charge'] });
+    const charge = typeof intent.latest_charge === 'string'
+      ? await this.stripe.charges.retrieve(intent.latest_charge) : intent.latest_charge;
+    if (intent.status !== 'succeeded' || !charge?.paid || !charge.captured) {
+      throw new ConflictException('Stripe has not confirmed the captured funds yet.');
+    }
+    return charge;
+  }
+
+  private async applyStripeRefunds(tx: Prisma.TransactionClient, charge: Stripe.Charge) {
+    const refunds: Stripe.Refund[] = [];
+    let after: string | undefined;
+    do {
+      const page = await this.stripe.refunds.list({ charge: charge.id, limit: 100, ...(after ? { starting_after: after } : {}) });
+      refunds.push(...page.data);
+      after = page.has_more ? page.data.at(-1)?.id : undefined;
+      if (page.has_more && !after) throw new Error('Incomplete Stripe refund page.');
+    } while (after);
+    const result = await reconcileChargeRefunds(tx, charge, refunds);
+    if (result.newRefundIds.length && result.paymentIds.length) {
+      const payment = await tx.payment.findUniqueOrThrow({ where: { id: result.paymentIds[0] }, include: { estimate: { select: { number: true } } } });
+      for (const refundId of result.newRefundIds) await this.notifications.createAndSendToRoles(['admin'], {
+        message: `Refund for Estimate #${payment.estimate.number} requires review of the remaining balance.`,
+        actionUrl: `/estimates/${payment.idEst}/edit#payment-history`, actionLabel: 'Review refund',
+        dedupeKey: `refund:${refundId}:review`,
+      }, { db: tx });
+    }
+    return result;
+  }
+
+  // Se leen datos actuales de Stripe, no el estado antiguo de un webhook repetido.
+  private async synchronizeStripeCharge(chargeId: string) {
+    const knownReceipt = await this.prisma.paymentReceipt.findFirst({ where: { stripeChargeId: chargeId }, include: { payment: true } });
+    const charge = await this.stripe.charges.retrieve(chargeId);
+    const intentId = typeof charge.payment_intent === 'string' ? charge.payment_intent : charge.payment_intent?.id;
+    if (!intentId) return;
+    let payment = knownReceipt?.payment ?? await this.prisma.payment.findFirst({ where: { stripePaymentIntentId: intentId } });
+    if (!payment) {
+      // Un reembolso puede llegar antes que checkout.session.completed.
+      const sessions = await this.stripe.checkout.sessions.list({ payment_intent: intentId, limit: 100 });
+      if (sessions.data.length) payment = await this.prisma.payment.findFirst({ where: { stripeSessionId: { in: sessions.data.map(s => s.id) } } });
+    }
+    if (!payment) return; // El cargo no pertenece a este portal.
+    const estimateId = payment.idEst;
+    await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
+      const existing = await tx.paymentReceipt.findFirst({ where: { stripeChargeId: chargeId } });
+      if (!existing) {
+        const current = await tx.payment.findUniqueOrThrow({ where: { id: payment!.id } });
+        if (!current.stripeSessionId) throw new Error('Original Stripe checkout is missing; refund reconciliation requires review.');
+        const session = await this.stripe.checkout.sessions.retrieve(current.stripeSessionId);
+        await this.processPaidCheckoutSession(tx, session);
+      } else {
+        const latestCharge = await this.stripe.charges.retrieve(chargeId);
+        const method = stripePaymentMethod(latestCharge);
+        await tx.paymentReceipt.updateMany({ where: { stripeChargeId: chargeId }, data: method });
+        await tx.payment.updateMany({ where: { idEst: estimateId, stripePaymentIntentId: intentId }, data: method });
+        await this.applyStripeRefunds(tx, latestCharge);
+      }
+      await refreshScheduledInstallation(tx, estimateId);
+    }, { timeout: 30000 });
+  }
+
+  private async requireEstimateAccess(estimateId: number, actor: AuthUser) {
+    const estimate = await this.prisma.estimate.findUnique({ where: { id: estimateId }, select: { id: true, idUser: true } });
+    if (!estimate || (actor.role?.name !== 'admin' && estimate.idUser !== actor.id)) {
+      throw new NotFoundException('Estimate not found.');
+    }
+    return estimate;
+  }
+
+  async getPaymentHistory(estimateId: number, actor: AuthUser) {
+    await this.requireEstimateAccess(estimateId, actor);
+    const payments = await this.prisma.payment.findMany({ where: { idEst: estimateId }, orderBy: { id: 'asc' }, include: {
+      receipts: { orderBy: { paidAt: 'asc' }, include: { allocations: { include: { refund: true } } } },
+    } });
+    const admin = actor.role?.name === 'admin';
+    const refunds = new Map<string, { id: string; amount: string; status: string; createdAt: Date; reviewedAt: Date | null; note?: string | null; allocations: Array<{ id: number; title: string; amount: string; principal: string; creditAmount: string }> }>();
+    const receipts = payments.flatMap(payment => payment.receipts.map(receipt => {
+      for (const allocation of receipt.allocations) {
+        const r = allocation.refund;
+        if (!refunds.has(r.id)) refunds.set(r.id, { id: r.id, amount: r.amount.toFixed(2), status: r.status,
+          createdAt: r.stripeCreatedAt, reviewedAt: r.reviewedAt, ...(admin ? { note: r.reviewNote } : {}), allocations: [] });
+        refunds.get(r.id)!.allocations.push({ id: allocation.id,
+          title: this.paymentNotificationCopy(payment.type, payment.sequence).label,
+          amount: allocation.amount.toFixed(2), principal: allocation.baseAmount.toFixed(2), creditAmount: allocation.creditAmount.toFixed(2) });
+      }
+      return { id: receipt.id, title: this.paymentNotificationCopy(payment.type, payment.sequence).label,
+        amount: receipt.amount.toFixed(2), principal: receipt.baseAmount.toFixed(2), fee: receipt.surchargeAmount.toFixed(2),
+        method: receipt.paymentMethodLabel ?? receipt.paymentMethod, paidAt: receipt.paidAt,
+        refunded: receipt.allocations.filter(a => a.refund.status === 'succeeded').reduce((sum, a) => sum.add(a.amount), new Prisma.Decimal(0)).toFixed(2) };
+    }));
+    // Recibos anteriores a esta migración siguen visibles mientras se sincroniza Stripe.
+    for (const payment of payments.filter(p => !p.receipts.length && p.paidAt)) receipts.push({
+      id: -payment.id, title: this.paymentNotificationCopy(payment.type, payment.sequence).label,
+      amount: payment.amount.toFixed(2), principal: payment.baseAmount.toFixed(2), fee: payment.surchargeAmount.toFixed(2),
+      method: payment.stripeSessionId ? 'Stripe — pending verification' : payment.paymentMethodLabel ?? payment.paymentMethod,
+      paidAt: payment.paidAt!, refunded: payment.refundedAmount.toFixed(2),
+    });
+    return { receipts, refunds: [...refunds.values()].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()),
+      reviewPending: payments.some(p => p.refundReviewPending), canReview: admin };
+  }
+
+  async synchronizeEstimatePayments(estimateId: number, actor: AuthUser) {
+    if (actor.role?.name !== 'admin') throw new ForbiddenException('Only administrators can reconcile Stripe payments.');
+    await this.requireEstimateAccess(estimateId, actor);
+    const payments = await this.prisma.payment.findMany({ where: { idEst: estimateId }, include: { receipts: true } });
+    const sessions = new Set(payments.filter(p => p.stripeSessionId).map(p => p.stripeSessionId!));
+    for (const sessionId of sessions) {
+      const session = await this.stripe.checkout.sessions.retrieve(sessionId);
+      if (this.isCompletedCheckout(session)) await this.prisma.$transaction(tx => this.processPaidCheckoutSession(tx, session), { timeout: 30000 });
+    }
+    const charges = new Set(payments.flatMap(p => p.receipts.map(r => r.stripeChargeId).filter((id): id is string => Boolean(id))));
+    for (const chargeId of charges) await this.synchronizeStripeCharge(chargeId);
+    return this.getPaymentHistory(estimateId, actor);
+  }
+
+  async reviewRefund(estimateId: number, refundId: string, dto: ReviewRefundDto, actor: AuthUser) {
+    if (actor.role?.name !== 'admin') throw new ForbiddenException('Only administrators can review refunds.');
+    await this.requireEstimateAccess(estimateId, actor);
+    const note = dto.note?.trim();
+    if (!note || note.length < 3 || note.length > 1000) throw new BadRequestException('Explain the refund decision.');
+    return this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
+      const refund = await tx.paymentRefund.findUnique({ where: { id: refundId }, include: {
+        allocations: { include: { receipt: { include: { payment: true } } } },
+      } });
+      if (!refund || !refund.allocations.length || refund.allocations.some(a => a.receipt.payment.idEst !== estimateId)) {
+        throw new NotFoundException('Refund not found.');
+      }
+      if (!['pending', 'requires_action', 'succeeded'].includes(refund.status)) throw new ConflictException('This refund failed or was canceled.');
+      if (!dto.allocations?.length || dto.allocations.length !== refund.allocations.length || new Set(dto.allocations.map(a => a.id)).size !== dto.allocations.length) {
+        throw new BadRequestException('Review every refund allocation once.');
+      }
+      for (const input of dto.allocations) {
+        const allocation = refund.allocations.find(a => a.id === input.id);
+        if (!allocation || !Number.isFinite(input.creditAmount) || input.creditAmount < 0 || new Prisma.Decimal(input.creditAmount).decimalPlaces() > 2 ||
+            new Prisma.Decimal(input.creditAmount).gt(allocation.baseAmount)) throw new BadRequestException('The approved reduction must be between zero and the refunded principal.');
+      }
+      if (refund.reviewedAt) {
+        if (refund.reviewNote === note && dto.allocations.every(input => refund.allocations.find(a => a.id === input.id)!.creditAmount.eq(input.creditAmount))) return { reviewed: true };
+        throw new ConflictException('This refund has already been reviewed. Its audit record cannot be overwritten.');
+      }
+      if (await tx.payment.count({ where: { idEst: estimateId, status: PaymentStatus.PENDING, stripeSessionId: { not: null } } })) {
+        throw new ConflictException('Finish or cancel the active checkout before reviewing the refund.');
+      }
+      for (const input of dto.allocations) await tx.paymentRefundAllocation.update({ where: { id: input.id }, data: { creditAmount: input.creditAmount } });
+      await tx.paymentRefund.update({ where: { id: refund.id }, data: { reviewedAt: new Date(), reviewedById: actor.id, reviewNote: note } });
+      for (const paymentId of new Set(refund.allocations.map(a => a.receipt.paymentId))) await refreshPaymentAccounting(tx, paymentId);
+      await refreshScheduledInstallation(tx, estimateId);
+      const estimate = await tx.estimate.findUnique({ where: { id: estimateId }, include: { order: true, status: true } });
+      const schedule = await getPaymentSchedule(tx, estimateId);
+      if (estimate && !estimate.order && estimate.status.name === 'Active' && schedule &&
+        schedule.rows.some(row => row.sequence === schedule.initialSequence && row.status === 'PAID')) {
+        // Si el reembolso llegó antes de crear la orden, la decisión comercial deja
+        // la creación en manos del admin, incluso cuando la cuota queda cubierta.
+        const pending = await tx.estimateStatus.upsert({ where: { name: PENDING_ORDER_REVIEW }, update: {}, create: { name: PENDING_ORDER_REVIEW } });
+        await tx.estimate.update({ where: { id: estimateId }, data: { statusId: pending.id } });
+      }
+      await tx.eventLog.create({ data: { action: 'UPDATE', entityType: 'Payment', entityId: refund.allocations[0].receipt.paymentId,
+        userId: actor.id, message: `Refund ${refund.id} reviewed. Approved additional principal reduction: $${dto.allocations.reduce((sum, a) => sum.add(a.creditAmount), new Prisma.Decimal(0)).toFixed(2)}. ${note}` } });
+      return { reviewed: true };
+    });
+  }
+
   async handleStripeWebhook(rawBody: Buffer, signature: string | undefined) {
     const secret = this.config.get<string>('STRIPE_WEBHOOK_SECRET');
     if (!secret) throw new Error('STRIPE_WEBHOOK_SECRET is not set in .env');
@@ -1712,11 +1931,23 @@ export class PaymentsService {
       throw new BadRequestException('Invalid Stripe signature');
     }
 
-    if (event.type === 'checkout.session.completed') {
+    if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
       const session = event.data.object as Stripe.Checkout.Session;
       await this.prisma.$transaction((tx) =>
-        this.processPaidCheckoutSession(tx, session),
+        this.processPaidCheckoutSession(tx, session), { timeout: 30000 },
       );
+    } else if (event.type === 'checkout.session.async_payment_failed') {
+      const eventSession = event.data.object as Stripe.Checkout.Session;
+      const session = await this.stripe.checkout.sessions.retrieve(eventSession.id);
+      if (this.isCompletedCheckout(session)) {
+        await this.prisma.$transaction(tx => this.processPaidCheckoutSession(tx, session), { timeout: 30000 });
+      } else {
+        await this.closeUnpaidCheckoutSession(session.id, PaymentStatus.FAILED);
+      }
+    } else if (['refund.created', 'refund.updated', 'refund.failed', 'charge.refunded'].includes(event.type)) {
+      const object = event.data.object as Stripe.Refund | Stripe.Charge;
+      const chargeId = object.object === 'charge' ? object.id : typeof object.charge === 'string' ? object.charge : object.charge?.id;
+      if (chargeId) await this.synchronizeStripeCharge(chargeId);
     }
     return { received: true };
   }

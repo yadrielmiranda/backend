@@ -14,6 +14,7 @@ function fixture() {
     units: 2,
     status: { name: 'Active' },
     order: null,
+    payments: [{ type: 'INSTALLATION_DEPOSIT', sequence: 1, installationJobId: 2, status: 'PAID', baseAmount: '50', refundCreditAmount: '0' }],
     priceT: '1000',
     totalPayable: '1070',
     taxRate: '.07',
@@ -114,7 +115,7 @@ describe('Manual discount payment integration', () => {
     );
     service.notifyPaymentConfirmed = jest.fn();
     await service.ensurePaidPaymentEffects(f.tx, {
-      type: PaymentType.INSTALLATION_DEPOSIT,
+      type: PaymentType.INSTALLATION_DEPOSIT, status: 'PAID',
       idEst: 1,
       paidAt: new Date('2026-09-07T12:00:00Z'),
       estimate: f.estimate,
@@ -227,7 +228,7 @@ describe('Manual discount payment integration', () => {
     );
     service.notifyPaymentConfirmed = jest.fn();
     const payment = {
-      type: PaymentType.INSTALLATION_DEPOSIT,
+      type: PaymentType.INSTALLATION_DEPOSIT, status: 'PAID',
       idEst: 1,
       paidAt: new Date('2026-09-07T12:00:00Z'),
       estimate: f.estimate,
