@@ -54,6 +54,9 @@ function fixture({
     taxAmount: decimal(0),
     taxRate: decimal(0),
     dealerModeSnapshot: mode,
+    publicTokenEnabled: true,
+    publicToken: 'customer-link',
+    publicTotalToken: 'customer-total-link',
     paymentPlanSnapshot: {
       version: 1,
       planId: 2,
@@ -99,6 +102,7 @@ function fixture({
     });
   const tx: any = {
     $queryRaw: jest.fn().mockResolvedValue([{ id: 1 }]),
+    estimateAgreement: { findFirst: jest.fn().mockResolvedValue(null) },
     estimate: {
       findUnique: jest.fn(async (args) => {
         const filter = args?.include?.payments?.where;
@@ -689,10 +693,10 @@ describe('Order review and permit installments', () => {
     const f = fixture({ mode: 'INTERNAL', material: 1313.10 });
     f.estimate.installationJob.permit = { status: 'PAYMENT_PENDING', permitFeeSnapshot: decimal(1500), cityFee: null };
     f.estimate.installationJob.status = 'PERMIT_PAYMENT_PENDING';
-    const context = await f.service.getPublicPaymentContext('internal-token');
+    const context = await f.service.getPublicPaymentContext('customer-link');
     expect(context.payment).toMatchObject({ type: 'INSTALLMENT', sequence: 1, baseAmount: '2156.55' });
     await f.manual(1, false);
-    const paid = await f.service.getPublicPaymentContext('internal-token');
+    const paid = await f.service.getPublicPaymentContext('customer-link');
     expect(paid).toMatchObject({ status: 'available', payment: { type: 'INSTALLMENT', sequence: 2 },
       schedule: { orderReviewPending: true, next: null, fullBalance: { amount: '2406.55', sequences: [2, 3] } } });
     expect(f.tx.order.create).not.toHaveBeenCalled();

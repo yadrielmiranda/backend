@@ -8,7 +8,7 @@ import { PENDING_ORDER_REVIEW } from '@/payment-plans/payment-plan';
 import { getPaymentSchedule, refreshScheduledInstallation, scheduleInclude } from '@/payment-plans/payment-schedule';
 import { calculateEstimateDiscount, estimateDiscountConfig } from '@/estimates/discounts/estimate-discount';
 import { checkoutPromotionExpiry, promotionExpired, promotionTerms } from '@/promotions/promotion-pricing';
-import { requireSignedAgreementForPayment } from '@/contracts/agreement-payment';
+import { getAgreementPaymentRequirement, requireSignedAgreementForPayment } from '@/contracts/agreement-payment';
 import {
   BadRequestException,
   ConflictException,
@@ -814,6 +814,7 @@ export class PaymentsService {
       }
 
       if (promotionExpired(estimate)) return { enabled:true as const, status:'expired' as const, payment:null };
+      const agreement = await getAgreementPaymentRequirement(tx, estimate.id, token);
       const schedule = await getPaymentSchedule(tx, estimate.id);
       const recovery = estimate.payments.find(p => p.type !== PaymentType.INSTALLMENT &&
         !p.refundReviewPending && hasRefundHistory(p) && remainingRefundBalance(p).gt(0) &&
@@ -829,6 +830,7 @@ export class PaymentsService {
         return {
           enabled: true as const,
           status: estimate.payments.some(p => p.refundReviewPending) ? 'review' as const : 'complete' as const,
+          agreement,
           schedule,
           payment: null,
         };
@@ -878,6 +880,7 @@ export class PaymentsService {
       return {
         enabled: true as const,
         status: request.type === PaymentType.INSTALLMENT && !schedule?.next ? 'available' as const : 'due' as const,
+        agreement,
         installmentCheckouts,
         schedule,
         promotionExpiresAt: estimate.promotionExpiresAt, expiresAt: estimate.expiresAt, promotionLockedAt: estimate.promotionLockedAt,
@@ -1113,7 +1116,9 @@ export class PaymentsService {
             materialAcceptedAt: new Date(),
           }
         : {};
-      if (params.publicAgreementId) {
+      // El servidor exige la firma aunque se omita agreementId. El depósito
+      // conserva su propia aceptación de términos y no exige contrato firmado.
+      if (params.publicToken && type !== PaymentType.INSTALLATION_DEPOSIT) {
         await requireSignedAgreementForPayment(
           tx, params.estimateId, params.publicToken, params.publicAgreementId,
         );

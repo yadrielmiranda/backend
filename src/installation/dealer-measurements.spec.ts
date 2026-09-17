@@ -34,6 +34,7 @@ function fixture() {
     customerTotalPayable: new Prisma.Decimal(900),
     dealerModeSnapshot: 'INTERNAL',
     publicTokenEnabled: true,
+    publicToken: 'test-token',
     order: null,
     payments: [],
     manualDiscount: null,
@@ -112,7 +113,10 @@ function fixture() {
         extraCharges: [],
       })),
     },
-    estimateAgreement: { findMany: jest.fn().mockResolvedValue([]) },
+    estimateAgreement: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     installationJob: {
       findUnique: jest.fn(async () => job),
       update: jest.fn(async ({ data }) => Object.assign(job, data)),

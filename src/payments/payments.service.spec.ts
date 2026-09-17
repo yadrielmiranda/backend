@@ -67,7 +67,14 @@ describe('PaymentsService reconciliation', () => {
       };
       const tx = {
         $queryRaw: jest.fn().mockResolvedValue([{ id: 9 }]),
-        estimate: { findFirst: jest.fn().mockResolvedValue({ id: 9 }) },
+        estimate: {
+          findFirst: jest.fn().mockResolvedValue({ id: 9 }),
+          findUnique: jest.fn().mockResolvedValue({
+            publicTokenEnabled: true, dealerModeSnapshot: DealerMode.INTERNAL,
+            publicToken: 'customer-link', publicTotalToken: 'customer-total-link',
+          }),
+        },
+        estimateAgreement: { findFirst: jest.fn().mockResolvedValue(null) },
         payment: {
           findUnique: jest.fn().mockResolvedValue(options.existing ?? null),
           upsert: jest.fn().mockResolvedValue({ id: 41 }),
@@ -756,7 +763,7 @@ describe('PaymentsService reconciliation', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
-  it('records a verified internal-customer check and creates the material order atomically', async () => {
+  it.each(['admin', 'dealer'] as const)('lets %s record a verified internal-customer check without requiring a contract signature', async role => {
     const internalEstimate = {
       ...materialPayment().estimate,
       priceT: new Prisma.Decimal(1200),
@@ -848,7 +855,7 @@ describe('PaymentsService reconciliation', () => {
       method: PaymentMethod.CHECK,
       fundsVerified: true,
       reference: 'CHK-1009',
-      actor: { id: internalEstimate.idUser, role: { name: 'dealer' } },
+      actor: { id: role === 'admin' ? 1 : internalEstimate.idUser, role: { name: role } },
     });
 
     expect(tx.payment.upsert).toHaveBeenCalledWith(

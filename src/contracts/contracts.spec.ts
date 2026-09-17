@@ -1,6 +1,7 @@
 import { agreementQuoteReport, changeOrderHtml } from './contract-pdf.service';
 import { PaymentsService } from '@/payments/payments.service';
-import { Prisma } from '@prisma/client';
+import { PaymentType, Prisma } from '@prisma/client';
+import { getAgreementPaymentRequirement, requireSignedAgreementForPayment } from './agreement-payment';
 import { EstimatePdfHtmlBuilder } from '@/estimates/pdf/estimate-pdf-html.builder';
 import { randomUUID } from 'crypto';
 import { mkdtemp, rm } from 'fs/promises';
@@ -456,6 +457,38 @@ describe('Agreement acceptance, access and history', () => {
     signature: strokes,
     accepted: true,
   });
+
+  function paymentHarness(type: PaymentType = PaymentType.MATERIAL, amount = 1370) {
+    f.db.payment = {
+      findUnique: jest.fn().mockResolvedValue(null),
+      upsert: jest.fn().mockResolvedValue({ id: 42 }),
+      update: jest.fn().mockResolvedValue({}),
+    };
+    const context = () => ({
+      estimate: f.state().estimate[0],
+      job: f.state().estimate[0].installationJob,
+      paymentSequence: 1,
+      description: 'Customer payment',
+      baseAmount: new Prisma.Decimal(amount),
+      surchargePercent: new Prisma.Decimal(0),
+      surchargeAmount: new Prisma.Decimal(0),
+      totalAmount: new Prisma.Decimal(amount),
+    });
+    const workflow = { getPaymentContext: jest.fn(async (..._args: unknown[]) => context()) };
+    const payments = new PaymentsService(f.db, {
+      get: (key: string) => key === 'STRIPE_SECRET_KEY' ? 'sk_test_local' : 'http://localhost:3000',
+    } as any, workflow as any, {} as any);
+    // Un contexto visto antes de la firma no puede decidir la autorización del POST.
+    jest.spyOn(payments, 'getPublicPaymentContext').mockResolvedValue({
+      enabled: true, payment: { type, sequence: 1 },
+    } as any);
+    const create = jest.fn().mockResolvedValue({ id: 'cs_test', url: 'https://checkout.stripe.com/test' });
+    const retrieve = jest.fn().mockResolvedValue({
+      id: 'cs_open', status: 'open', payment_status: 'unpaid', url: 'https://checkout.stripe.com/open',
+    });
+    (payments as any).stripe = { checkout: { sessions: { create, retrieve } } };
+    return { payments, create, retrieve, workflow, context };
+  }
 
   it('stores duplicate uploads once and reuses a prepared agreement', async () => {
     await service.upload(dealer, {
@@ -1022,6 +1055,179 @@ describe('Agreement acceptance, access and history', () => {
       materialDiscountBasis: 'BEFORE_TAX',
     };
     expect((await ready()).kind).toBe('AGREEMENT');
+  });
+
+  it('does not impose a signature just because the dealer uploaded a contract', async () => {
+    installation();
+    expect(f.state().dealerContract).toHaveLength(1);
+    expect(await getAgreementPaymentRequirement(f.db, 1, token)).toEqual({
+      required: false, satisfied: true, signingUrl: null,
+    });
+    const { payments, create } = paymentHarness();
+    await payments.createCheckoutSessionForPublicToken({ token });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires the issued agreement when agreementId is omitted, and accepts the same request after signing', async () => {
+    installation();
+    const a = await ready();
+    const { payments, create } = paymentHarness();
+    await expect(payments.createCheckoutSessionForPublicToken({ token })).rejects.toThrow('Review and sign');
+    expect(create).not.toHaveBeenCalled();
+    await service.sign(token, a.id, input(a), {});
+    await payments.createCheckoutSessionForPublicToken({ token });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['detailed', 'total'] as const)(
+    'accepts a current %s signature from both payment links without signing the other document', async (signedMode) => {
+      installation();
+      const detailed = await ready('detailed');
+      const total = await ready('total');
+      const signed = signedMode === 'detailed' ? detailed : total;
+      const other = signedMode === 'detailed' ? total : detailed;
+      const signedToken = signedMode === 'detailed' ? token : `total_${token}`;
+      const otherSnapshot = structuredClone(f.state().estimateAgreement.find(a => a.id === other.id).snapshot);
+      await service.sign(signedToken, signed.id, input(signed), {});
+      const originalPdf = await service.publicDocument(signedToken, signed.id, 'signed');
+      const { payments, create } = paymentHarness();
+      for (const [link, document] of [[token, detailed], [`total_${token}`, total]] as const) {
+        expect(await getAgreementPaymentRequirement(f.db, 1, link)).toEqual({
+          required: true, satisfied: true, signingUrl: null,
+        });
+        await payments.createCheckoutSessionForPublicToken({ token: link, agreementId: document.id });
+        await payments.createCheckoutSessionForPublicToken({ token: link });
+      }
+      expect(create).toHaveBeenCalledTimes(4);
+      const unsigned = f.state().estimateAgreement.find(a => a.id === other.id);
+      expect(unsigned.signedAt).toBeNull();
+      expect(unsigned.signature).toBeUndefined();
+      expect(unsigned.snapshot).toEqual(otherSnapshot);
+      expect(await service.publicDocument(signedToken, signed.id, 'signed')).toEqual(originalPdf);
+      // Reconocer la firma no amplía el acceso al PDF detallado.
+      await expect(service.publicDocument(`total_${token}`, detailed.id, 'quote')).rejects.toThrow('not found');
+    },
+  );
+
+  it('only returns a signing link for the current token presentation', async () => {
+    installation();
+    const detailed = await ready();
+    expect(await getAgreementPaymentRequirement(f.db, 1, `total_${token}`)).toEqual({
+      required: true, satisfied: false, signingUrl: null,
+    });
+    const total = await ready('total');
+    expect(await getAgreementPaymentRequirement(f.db, 1, `total_${token}`)).toEqual({
+      required: true, satisfied: false,
+      signingUrl: `/public/estimates/total_${token}/agreements/${total.id}`,
+    });
+    expect((await getAgreementPaymentRequirement(f.db, 1, token)).signingUrl).toContain(detailed.id);
+  });
+
+  it('rejects a supplied foreign or wrong-presentation agreement even when a valid signature exists', async () => {
+    installation();
+    const detailed = await ready();
+    await service.sign(token, detailed.id, input(detailed), {});
+    const foreign = { ...f.state().estimateAgreement[0], id: randomUUID(), estimateId: 2 };
+    f.state().estimateAgreement.push(foreign);
+    for (const id of [foreign.id, randomUUID()])
+      await expect(requireSignedAgreementForPayment(f.db, 1, token, id)).rejects.toThrow('Review and sign');
+    await expect(requireSignedAgreementForPayment(f.db, 1, `total_${token}`, detailed.id)).rejects.toThrow('Review and sign');
+  });
+
+  it('keeps a changed agreement required, accepts its signed Change Order across views, and rejects the stale document', async () => {
+    const e = installation();
+    const first = await ready();
+    await service.sign(token, first.id, input(first), {});
+    e.installationJob.permit.cityFee = '350.00';
+    await expect(requireSignedAgreementForPayment(f.db, 1, token)).rejects.toThrow('Review and sign');
+    const change = await ready();
+    expect(change.kind).toBe('CHANGE_ORDER');
+    await expect(requireSignedAgreementForPayment(f.db, 1, token)).rejects.toThrow('Review and sign');
+    await service.sign(token, change.id, input(change), {});
+    await expect(requireSignedAgreementForPayment(f.db, 1, `total_${token}`)).resolves.toBeUndefined();
+    await expect(requireSignedAgreementForPayment(f.db, 1, token, first.id)).rejects.toThrow('Review and sign');
+  });
+
+  it('does not revive an invalidated signature after restoring the original content', async () => {
+    const e = installation();
+    const first = await ready();
+    await service.sign(token, first.id, input(first), {});
+    e.pieces[0].width = 49;
+    await invalidateChangedAgreements(f.db, 1);
+    e.pieces[0].width = 48;
+    expect(await getAgreementPaymentRequirement(f.db, 1, token)).toEqual({
+      required: true, satisfied: false, signingUrl: null,
+    });
+    await expect(requireSignedAgreementForPayment(f.db, 1, token)).rejects.toThrow('Review and sign');
+  });
+
+  it('requires the replacement contract but does not change acceptance on an unrelated upload', async () => {
+    installation();
+    const first = await ready();
+    await service.sign(token, first.id, input(first), {});
+    const replacement = await PDFDocument.create();
+    replacement.addPage([400, 500]);
+    await service.upload(dealer, { buffer: Buffer.from(await replacement.save()), originalname: 'New.pdf' } as any);
+    await expect(requireSignedAgreementForPayment(f.db, 1, token)).resolves.toBeUndefined();
+    const newer = (await service.prepare(1, 'total', true, dealer)).current!;
+    await expect(requireSignedAgreementForPayment(f.db, 1, token)).rejects.toThrow('Review and sign');
+    await service.sign(`total_${token}`, newer.id, input(newer), {});
+    await expect(requireSignedAgreementForPayment(f.db, 1, token)).resolves.toBeUndefined();
+  });
+
+  it.each([250, 300])('keeps the installation deposit of %s payable without a contract signature', async amount => {
+    installation();
+    const first = await ready();
+    const { payments, create, workflow } = paymentHarness(PaymentType.INSTALLATION_DEPOSIT, amount);
+    await payments.createCheckoutSessionForPublicToken({
+      token, agreementId: first.id, installationDepositTermsAccepted: true,
+    });
+    expect(workflow.getPaymentContext.mock.calls[0][3]).toBe(true);
+    expect(create.mock.calls[0][0].line_items[0].price_data.unit_amount).toBe(amount * 100);
+    expect(f.state().estimateAgreement[0].signedAt).toBeNull();
+  });
+
+  it('does not exempt a non-deposit charge just because it is $250', async () => {
+    installation();
+    await ready();
+    const { payments, create } = paymentHarness(PaymentType.MATERIAL, 250);
+    await expect(payments.createCheckoutSessionForPublicToken({ token })).rejects.toThrow('Review and sign');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('checks current acceptance before resuming an existing Stripe checkout', async () => {
+    installation();
+    await ready();
+    const { payments, create, retrieve } = paymentHarness();
+    f.db.payment.findUnique.mockResolvedValue({ id: 42, status: 'PENDING', stripeSessionId: 'cs_open' });
+    await expect(payments.createCheckoutSessionForPublicToken({ token })).rejects.toThrow('Review and sign');
+    expect(create).not.toHaveBeenCalled();
+    expect(retrieve).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { sequences: [1] }, { sequences: [1, 2, 3] }, { payFullBalance: true, expectedBalance: 1370 },
+  ])('checks acceptance for an installment selection or advance balance: %j', async selection => {
+    installation();
+    const first = await ready();
+    const { payments, context } = paymentHarness(PaymentType.INSTALLMENT);
+    jest.spyOn(payments as any, 'selectedPaymentContexts').mockImplementation(async (_tx, params: any) =>
+      (params.sequences ?? [1, 2, 3]).map((sequence: number) => ({ ...context(), paymentSequence: sequence })),
+    );
+    const resume = jest.spyOn(payments as any, 'resumeOrCloseInstallmentCheckouts').mockResolvedValue({ url: 'https://checkout.stripe.com/group' });
+    await expect(payments.createCheckoutSessionForPublicToken({ token, ...selection })).rejects.toThrow('Review and sign');
+    expect(resume).not.toHaveBeenCalled();
+    await service.sign(token, first.id, input(first), {});
+    await expect(payments.createCheckoutSessionForPublicToken({ token, ...selection })).resolves.toEqual({ url: 'https://checkout.stripe.com/group' });
+  });
+
+  it('lets an external dealer pay independently of the unsigned customer contract', async () => {
+    installation(false);
+    await ready();
+    const { payments, create } = paymentHarness();
+    await payments.createCheckoutSessionForEstimate({ estimateId: 1, type: PaymentType.MATERIAL, user: dealer });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(f.state().estimateAgreement[0].signedAt).toBeNull();
   });
 
   it('only opens an internal customer checkout for the signed current document and preserves its return link', async () => {
