@@ -3,13 +3,30 @@ import { ArrayMaxSize, ArrayNotEmpty, ArrayUnique, IsArray,
   IsEnum,
   IsInt,
   IsOptional,
-  IsUUID,
+  IsUUID, ValidateNested,
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaymentType } from '@prisma/client';
 
+export class PublicPaymentItemDto {
+  @IsEnum(PaymentType)
+  type: PaymentType;
+
+  @IsInt()
+  @Min(1)
+  sequence: number;
+}
+
 export class CreatePublicCheckoutSessionDto {
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => PublicPaymentItemDto)
+  items?: PublicPaymentItemDto[];
+
   @IsOptional()
   @IsUUID()
   agreementId?: string;

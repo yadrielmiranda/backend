@@ -46,6 +46,15 @@ import { NotificationsService } from '@/notifications/notifications.service';
 const MATERIAL_ACCEPTANCE_TEXT =
   'I have reviewed and accept the products, dimensions, configurations and prices in this estimate.';
 
+type UnavailablePublicPaymentContext = {
+  enabled: boolean; status: 'not_applicable' | 'expired'; payment: null;
+  payments?: never; fullBalance?: never; checkouts?: never;
+  installmentCheckouts?: never; schedule?: never; agreement?: never;
+};
+
+type PaymentSelection = { type: PaymentType; sequence: number };
+const paymentSelectionKey = (item: { type: PaymentType; sequence?: number }) => `${item.type}:${item.sequence}`;
+
 type PaymentWithEstimate = Prisma.PaymentGetPayload<{
   include: {
     estimate: {
@@ -435,7 +444,8 @@ export class PaymentsService {
       orderBy: { id: 'asc' },
     });
     if (!payments.length) return false;
-    if (payments.length > 1 && payments.some(p => p.type !== PaymentType.INSTALLMENT)) throw new Error('Only installments may share a checkout.');
+    // Cada concepto conserva su recibo y asignación, aunque comparta el checkout.
+    if (new Set(payments.map(paymentSelectionKey)).size !== payments.length) throw new Error('Checkout contains duplicate payment items.');
     if (payments.some(p => p.idEst !== payments[0].idEst)) throw new Error('Checkout contains payments from different estimates.');
     const recordedAmountCents = payments.reduce((sum, p) => sum + Math.round(Number(p.amount) * 100), 0);
     if (session.amount_total == null || session.amount_total !== recordedAmountCents ||
@@ -801,118 +811,127 @@ export class PaymentsService {
     return `Extra charge #${sequence}`;
   }
 
+  private async publicPaymentOptions(
+    tx: Prisma.TransactionClient,
+    estimate: Awaited<ReturnType<PaymentsService['findPublicEstimateForPayment']>>['estimate'],
+    schedule: Awaited<ReturnType<typeof getPaymentSchedule>>,
+  ) {
+    const requests = new Map<string, { type: PaymentType; sequence?: number; advanceOnly: boolean }>();
+    const add = (type: PaymentType, sequence?: number, advanceOnly = false) => {
+      const item = { type, sequence, advanceOnly };
+      const existing = estimate.payments.find(p => p.type === type && p.sequence === sequence);
+      if (existing?.refundReviewPending || (type !== PaymentType.INSTALLMENT && paymentIsCovered(existing))) return;
+      if (!requests.has(paymentSelectionKey(item))) requests.set(paymentSelectionKey(item), item);
+    };
+    const depositDue = estimate.installationJob?.status === 'DEPOSIT_PAYMENT_PENDING';
+    for (const payment of estimate.payments) {
+      if (payment.type !== PaymentType.INSTALLMENT && hasRefundHistory(payment) &&
+          remainingRefundBalance(payment).gt(0) &&
+          (!schedule || [PaymentType.DELIVERY, PaymentType.EXTRA].includes(payment.type as any))) {
+        add(payment.type, payment.sequence);
+      }
+    }
+    if (depositDue) add(PaymentType.INSTALLATION_DEPOSIT);
+    else if (schedule) {
+      for (const row of schedule.rows) {
+        if (row.status === 'DUE' || row.sequence === schedule.next?.sequence) add(PaymentType.INSTALLMENT, row.sequence);
+      }
+    } else {
+      const next = this.resolveNextPaymentRequest(estimate);
+      if (next) add(next.type, next.sequence);
+    }
+    for (const delivery of estimate.order?.deliveries ?? []) {
+      if (!delivery.status || delivery.status === DeliveryStatus.PAYMENT_DUE) add(PaymentType.DELIVERY, delivery.sequence);
+    }
+    for (const extra of estimate.order?.extraCharges ?? []) {
+      if (!extra.status || extra.status === OrderExtraChargeStatus.PAYMENT_DUE) add(PaymentType.EXTRA, extra.sequence);
+    }
+    if (!depositDue) {
+      for (const sequence of schedule?.fullBalance?.sequences ?? []) add(PaymentType.INSTALLMENT, sequence, true);
+    }
+    const owner = { id: estimate.idUser, role: { name: 'dealer' as const } } satisfies AuthUser;
+    const payments: Array<{
+      type: PaymentType; sequence: number; title: string; description: string;
+      baseAmount: string; surchargePercent: string; surchargeAmount: string; totalAmount: string;
+      checkoutStarted: boolean; requiresCityFeeAcceptance: boolean; cityFeeAmount?: string;
+      requiresTerms: boolean; terms: string | null; advanceOnly: boolean;
+    }> = [];
+    for (const request of requests.values()) {
+      let context: Awaited<ReturnType<InstallationWorkflowService['getPaymentContext']>>;
+      try {
+        context = await this.installationWorkflow.getPaymentContext(estimate.id, request.type, request.sequence,
+          undefined, owner, tx, { preview: true, allowAdvance: request.advanceOnly });
+      } catch (error) {
+        // Un cargo aún no aprobado o bajo revisión no debe ocultar los otros cargos disponibles.
+        if (error instanceof BadRequestException || error instanceof ConflictException) continue;
+        throw error;
+      }
+      const existing = estimate.payments.find(p => p.type === request.type && p.sequence === context.paymentSequence);
+      // Los cobros antiguos de instalación resuelven su secuencia desde la versión de la cotización.
+      if ((request.type !== PaymentType.INSTALLMENT && paymentIsCovered(existing)) ||
+          payments.some(p => p.type === request.type && p.sequence === context.paymentSequence)) continue;
+      payments.push({
+        type: request.type, sequence: context.paymentSequence, advanceOnly: request.advanceOnly,
+        title: request.type === PaymentType.INSTALLMENT
+          ? schedule!.rows.find(row => row.sequence === context.paymentSequence)!.title
+          : this.publicPaymentTitle(request.type, context.paymentSequence),
+        description: context.description,
+        baseAmount: context.baseAmount.toFixed(2), surchargePercent: context.surchargePercent.toFixed(4),
+        surchargeAmount: context.surchargeAmount.toFixed(2), totalAmount: context.totalAmount.toFixed(2),
+        checkoutStarted: Boolean(existing?.status === PaymentStatus.PENDING && existing.stripeSessionId),
+        requiresCityFeeAcceptance: Boolean(context.requiresCityFeeAcceptance), cityFeeAmount: context.cityFeeAmount,
+        requiresTerms: request.type === PaymentType.INSTALLATION_DEPOSIT && !context.job?.depositTermsAcceptedAt,
+        terms: request.type === PaymentType.INSTALLATION_DEPOSIT ? context.job?.depositTermsSnapshot || INSTALLATION_DEPOSIT_TERMS : null,
+      });
+    }
+    const total = payments.reduce((sum, p) => sum.add(p.baseAmount), new Prisma.Decimal(0));
+    // Solo se ofrece liquidación total si incluye todo el saldo conocido y aprobado.
+    const fullBalance = !depositDue && schedule &&
+      (schedule.fullBalance || Number(schedule.balance) === 0) &&
+      !estimate.payments.some(p => p.refundReviewPending) && payments.length === requests.size && total.gt(0)
+      ? { amount: total.toFixed(2), items: payments.map(({ type, sequence }) => ({ type, sequence })) }
+      : null;
+    return { payments, fullBalance };
+  }
+
   async getPublicPaymentContext(token: string) {
     return this.prisma.$transaction(async (tx) => {
       const { estimate } = await this.findPublicEstimateForPayment(token, tx);
-
       if (estimate.dealerModeSnapshot !== DealerMode.INTERNAL) {
-        return {
-          enabled: false as const,
-          status: 'not_applicable' as const,
-          payment: null,
-        };
+        return { enabled: false, status: 'not_applicable', payment: null } as UnavailablePublicPaymentContext;
       }
-
-      if (promotionExpired(estimate)) return { enabled:true as const, status:'expired' as const, payment:null };
+      if (promotionExpired(estimate)) return { enabled: true, status: 'expired', payment: null } as UnavailablePublicPaymentContext;
       const agreement = await getAgreementPaymentRequirement(tx, estimate.id, token);
       const schedule = await getPaymentSchedule(tx, estimate.id);
-      const recovery = estimate.payments.find(p => p.type !== PaymentType.INSTALLMENT &&
-        !p.refundReviewPending && hasRefundHistory(p) && remainingRefundBalance(p).gt(0) &&
-        (!schedule || [PaymentType.DELIVERY, PaymentType.EXTRA].includes(p.type as any)));
-      const advanceDue = estimate.installationJob?.status === 'DEPOSIT_PAYMENT_PENDING';
-      const request = recovery ? { type: recovery.type, sequence: recovery.sequence } : schedule && !advanceDue
-        ? schedule.next ? { type: PaymentType.INSTALLMENT, sequence: schedule.next.sequence }
-          : estimate.order?.deliveries[0] ? { type: PaymentType.DELIVERY, sequence: estimate.order.deliveries[0].sequence }
-          : estimate.order?.extraCharges[0] ? { type: PaymentType.EXTRA, sequence: estimate.order.extraCharges[0].sequence }
-          : schedule.fullBalance ? { type: PaymentType.INSTALLMENT, sequence: schedule.fullBalance.sequences[0] } : null
-        : this.resolveNextPaymentRequest(estimate);
-      if (!request) {
-        return {
-          enabled: true as const,
-          status: estimate.payments.some(p => p.refundReviewPending) ? 'review' as const : 'complete' as const,
-          agreement,
-          schedule,
-          payment: null,
-        };
-      }
-
-      const owner = {
-        id: estimate.idUser,
-        role: { name: 'dealer' as const },
-      } satisfies AuthUser;
-      const context = await this.installationWorkflow.getPaymentContext(
-        estimate.id,
-        request.type,
-        request.sequence,
-        undefined,
-        owner,
-        tx,
-        { preview: true, allowAdvance: request.type === PaymentType.INSTALLMENT && !schedule?.next },
-      );
-      const existingPayment = await tx.payment.findUnique({
-        where: {
-          idEst_type_sequence: {
-            idEst: estimate.id,
-            type: request.type,
-            sequence: context.paymentSequence,
-          },
-        },
-        select: {
-          status: true,
-          stripeSessionId: true,
-          paymentMethod: true,
-          paidAt: true,
-        },
-      });
-
-      const checkoutRows = request.type === PaymentType.INSTALLMENT || schedule?.fullBalance
-        ? await tx.payment.findMany({ where: { idEst: estimate.id, type: PaymentType.INSTALLMENT,
-            status: PaymentStatus.PENDING, stripeSessionId: { not: null } } }) : [];
-      const installmentCheckouts = [...new Set(checkoutRows.map(p => p.stripeSessionId))].map(sessionId => {
+      const options = await this.publicPaymentOptions(tx, estimate, schedule);
+      const payment = options.payments.find(p => !p.advanceOnly) ?? options.payments[0] ?? null;
+      const checkoutRows = estimate.payments.filter(p => p.status === PaymentStatus.PENDING && p.stripeSessionId);
+      const checkouts = [...new Set(checkoutRows.map(p => p.stripeSessionId))].map(sessionId => {
         const group = checkoutRows.filter(p => p.stripeSessionId === sessionId);
         const total = (field: 'baseAmount' | 'surchargeAmount' | 'amount') => group.reduce(
           (sum, p) => sum.add(p[field]), new Prisma.Decimal(0),
         ).toFixed(2);
-        return { sequences: group.map(p => p.sequence), baseAmount: total('baseAmount'),
+        return { items: group.map(({ type, sequence }) => ({ type, sequence })), baseAmount: total('baseAmount'),
           surchargePercent: group[0].surchargePercent.toFixed(4), surchargeAmount: total('surchargeAmount'), totalAmount: total('amount') };
       });
-
       return {
         enabled: true as const,
-        status: request.type === PaymentType.INSTALLMENT && !schedule?.next ? 'available' as const : 'due' as const,
-        agreement,
-        installmentCheckouts,
-        schedule,
+        status: payment ? payment.advanceOnly ? 'available' as const : 'due' as const
+          : estimate.payments.some(p => p.refundReviewPending) ? 'review' as const : 'complete' as const,
+        agreement, schedule, ...options, checkouts,
+        installmentCheckouts: checkouts.filter(c => c.items.every(p => p.type === PaymentType.INSTALLMENT))
+          .map(({ items, ...rest }) => ({ ...rest, sequences: items.map(p => p.sequence) })),
         promotionExpiresAt: estimate.promotionExpiresAt, expiresAt: estimate.expiresAt, promotionLockedAt: estimate.promotionLockedAt,
-        payment: {
-          type: request.type,
-          sequence: context.paymentSequence,
-          title: request.type === PaymentType.INSTALLMENT ? schedule!.rows.find(row => row.sequence === context.paymentSequence)!.title : this.publicPaymentTitle(request.type, context.paymentSequence),
-          description: context.description,
-          baseAmount: context.baseAmount.toFixed(2),
-          surchargePercent: context.surchargePercent.toFixed(4),
-          surchargeAmount: context.surchargeAmount.toFixed(2),
-          totalAmount: context.totalAmount.toFixed(2),
-          checkoutStarted: Boolean(
-            existingPayment?.status === PaymentStatus.PENDING &&
-              existingPayment.stripeSessionId,
-          ),
-          requiresCityFeeAcceptance: context.requiresCityFeeAcceptance,
-          cityFeeAmount: context.cityFeeAmount,
-          requiresTerms:
-            request.type === PaymentType.INSTALLATION_DEPOSIT &&
-            !context.job?.depositTermsAcceptedAt,
-          terms:
-            request.type === PaymentType.INSTALLATION_DEPOSIT
-              ? context.job?.depositTermsSnapshot || INSTALLATION_DEPOSIT_TERMS
-              : null,
-        },
+        payment,
       };
     });
   }
 
   async createCheckoutSessionForPublicToken(params: {
     token: string;
+    type?: PaymentType;
+    sequence?: number;
+    items?: PaymentSelection[];
     installationDepositTermsAccepted?: boolean;
     cityFeeAccepted?: boolean;
     agreementId?: string;
@@ -920,6 +939,11 @@ export class PaymentsService {
     payFullBalance?: boolean;
     expectedBalance?: number;
   }) {
+    if ((params.items !== undefined && (params.type !== undefined || params.sequence !== undefined || params.sequences !== undefined || params.payFullBalance)) ||
+        (params.payFullBalance && (params.type !== undefined || params.sequence !== undefined || params.sequences !== undefined))) {
+      throw new BadRequestException('Choose either payment items or the full balance.');
+    }
+    if (params.sequence !== undefined && params.type === undefined) throw new BadRequestException('Payment type is required with a sequence.');
     const publicContext = await this.getPublicPaymentContext(params.token);
     if (!publicContext.enabled || !publicContext.payment) {
       throw new ConflictException('There is no payment due on this link.');
@@ -939,8 +963,10 @@ export class PaymentsService {
 
     return this.createCheckoutSessionForEstimate({
       estimateId: owner.id,
-      type: params.payFullBalance ? PaymentType.INSTALLMENT : publicContext.payment.type,
-      sequence: params.sequences || params.payFullBalance ? undefined : publicContext.payment.sequence,
+      type: params.type ?? (params.sequences || params.payFullBalance ? PaymentType.INSTALLMENT : publicContext.payment.type),
+      sequence: params.items || params.sequences || params.payFullBalance ? undefined
+        : params.sequence ?? (params.type === undefined ? publicContext.payment.sequence : undefined),
+      items: params.items,
       sequences: params.sequences,
       payFullBalance: params.payFullBalance,
       expectedBalance: params.expectedBalance,
@@ -954,7 +980,7 @@ export class PaymentsService {
 
   private async selectedPaymentContexts(
     tx: Prisma.TransactionClient,
-    params: { estimateId: number; type: PaymentType; sequence?: number; sequences?: number[]; payFullBalance?: boolean; expectedBalance?: number; installationDepositTermsAccepted?: boolean },
+    params: { estimateId: number; type: PaymentType; sequence?: number; sequences?: number[]; items?: PaymentSelection[]; publicToken?: string; payFullBalance?: boolean; expectedBalance?: number; installationDepositTermsAccepted?: boolean },
     user: AuthUser,
     preview = false,
   ) {
@@ -964,7 +990,25 @@ export class PaymentsService {
       params.sequences.some(s => !Number.isSafeInteger(s) || s < 1) ||
       new Set(params.sequences).size !== params.sequences.length
     )) throw new BadRequestException('Select one or more distinct installments that are due.');
-    let sequences = params.sequences ? [...params.sequences].sort((a, b) => a - b) : [params.sequence];
+    const sequences = params.sequences ? [...params.sequences].sort((a, b) => a - b) : [params.sequence];
+    let selections: Array<{ type: PaymentType; sequence?: number }> = sequences.map(sequence => ({ type: params.type, sequence }));
+    if (params.items !== undefined) {
+      if (!params.publicToken || params.payFullBalance || params.sequence !== undefined || params.sequences !== undefined ||
+          !Array.isArray(params.items) || !params.items.length || params.items.length > 50 ||
+          params.items.some(p => !p || !Object.values(PaymentType).includes(p.type) || !Number.isSafeInteger(p.sequence) || p.sequence < 1) ||
+          new Set(params.items.map(paymentSelectionKey)).size !== params.items.length ||
+          typeof params.expectedBalance !== 'number' || !Number.isFinite(params.expectedBalance) || params.expectedBalance < 0 ||
+          new Prisma.Decimal(params.expectedBalance).decimalPlaces() > 2) {
+        throw new BadRequestException('Select distinct payment items and review their total before payment.');
+      }
+      const { estimate } = await this.findPublicEstimateForPayment(params.publicToken, tx);
+      if (estimate.id !== params.estimateId || estimate.idUser !== user.id || estimate.dealerModeSnapshot !== DealerMode.INTERNAL) throw new NotFoundException('Customer payment link not found.');
+      const options = await this.publicPaymentOptions(tx, estimate, await getPaymentSchedule(tx, estimate.id));
+      if (params.items.some(item => !options.payments.some(p => !p.advanceOnly && paymentSelectionKey(p) === paymentSelectionKey(item)))) {
+        throw new ConflictException('A selected payment is no longer available. Refresh the payment list.');
+      }
+      selections = [...params.items];
+    }
     if (params.payFullBalance) {
       if (params.type !== PaymentType.INSTALLMENT || params.sequence !== undefined || params.sequences !== undefined ||
         typeof params.expectedBalance !== 'number' || !Number.isFinite(params.expectedBalance) ||
@@ -976,18 +1020,31 @@ export class PaymentsService {
       const owner = await tx.estimate.findUnique({ where: { id: params.estimateId }, select: { idUser: true } });
       if (!owner || owner.idUser !== user.id) throw new NotFoundException('Estimate not found.');
       const schedule = await getPaymentSchedule(tx, params.estimateId);
-      if (!schedule?.fullBalance) throw new ConflictException('The full project balance is not available. Refresh the payment schedule.');
-      if (!new Prisma.Decimal(params.expectedBalance).eq(schedule.fullBalance.amount)) {
+      let fullBalance: { amount: string; items: PaymentSelection[] } | null = schedule?.fullBalance
+        ? { amount: schedule.fullBalance.amount, items: schedule.fullBalance.sequences.map(sequence => ({ type: PaymentType.INSTALLMENT, sequence })) } : null;
+      if (params.publicToken) {
+        const { estimate } = await this.findPublicEstimateForPayment(params.publicToken, tx);
+        if (estimate.id !== params.estimateId || estimate.idUser !== user.id || estimate.dealerModeSnapshot !== DealerMode.INTERNAL) throw new NotFoundException('Customer payment link not found.');
+        fullBalance = (await this.publicPaymentOptions(tx, estimate, schedule)).fullBalance;
+      }
+      if (!fullBalance) throw new ConflictException('The full project balance is not available. Refresh the payment schedule.');
+      if (!new Prisma.Decimal(params.expectedBalance).eq(fullBalance.amount)) {
         throw new ConflictException('The project balance changed. Refresh and review the updated amount before payment.');
       }
-      sequences = [...schedule.fullBalance.sequences].sort((a, b) => a - b);
+      selections = fullBalance.items;
     }
     const contexts: Awaited<ReturnType<InstallationWorkflowService['getPaymentContext']>>[] = [];
-    for (const sequence of sequences) {
-      contexts.push(await this.installationWorkflow.getPaymentContext(
-        params.estimateId, params.type, sequence, params.installationDepositTermsAccepted, user, tx,
+    // Orden estable para repartir recargos, registrar recibos y reanudar la misma selección.
+    selections.sort((a, b) => a.type.localeCompare(b.type) || (a.sequence ?? 0) - (b.sequence ?? 0));
+    for (const item of selections) {
+      const context = await this.installationWorkflow.getPaymentContext(
+        params.estimateId, item.type, item.sequence, params.installationDepositTermsAccepted, user, tx,
         { preview, ...(params.payFullBalance ? { allowAdvance: true } : {}) },
-      ));
+      );
+      contexts.push({ ...context, type: item.type });
+    }
+    if (params.items && !contexts.reduce((sum, c) => sum.add(c.baseAmount.toString()), new Prisma.Decimal(0)).eq(params.expectedBalance!)) {
+      throw new ConflictException('The selected balance changed. Refresh and review the updated amount before payment.');
     }
     // Calcula el recargo una sola vez sobre el total y distribuye los centavos sin perderlos.
     if (contexts.length > 1) {
@@ -1005,7 +1062,7 @@ export class PaymentsService {
     return contexts;
   }
 
-  private async resumeOrCloseInstallmentCheckouts(
+  private async resumeOrCloseSelectedCheckouts(
     tx: Prisma.TransactionClient,
     existing: Array<{ stripeSessionId: string | null } | null>,
     contexts: Awaited<ReturnType<PaymentsService['selectedPaymentContexts']>>,
@@ -1029,8 +1086,8 @@ export class PaymentsService {
       if (session.status === 'complete') throw new ConflictException('Checkout completed, but payment confirmation is pending.');
       const group = await tx.payment.findMany({ where: { stripeSessionId: sessionId } });
       const matchesSelection = group.length === contexts.length && group.every(p =>
-        p.idEst === contexts[0].estimate.id && p.type === PaymentType.INSTALLMENT && p.status === PaymentStatus.PENDING &&
-        contexts.some(c => c.paymentSequence === p.sequence && c.baseAmount.eq(p.baseAmount.toString())));
+        p.idEst === contexts[0].estimate.id && p.status === PaymentStatus.PENDING &&
+        contexts.some(c => c.type === p.type && c.paymentSequence === p.sequence && c.baseAmount.eq(p.baseAmount.toString())));
       if (session.status === 'open' && matchesSelection) {
         if (!session.url) throw new BadRequestException('Stripe session has no checkout URL.');
         return { url: session.url };
@@ -1059,6 +1116,7 @@ export class PaymentsService {
     type?: PaymentType;
     sequence?: number;
     sequences?: number[];
+    items?: PaymentSelection[];
     payFullBalance?: boolean;
     expectedBalance?: number;
     installationDepositTermsAccepted?: boolean;
@@ -1102,7 +1160,7 @@ export class PaymentsService {
         );
       }
       const requiresMaterialAcceptance =
-        (type === PaymentType.MATERIAL || (type === PaymentType.INSTALLMENT && contexts.some(c => c.paymentSequence === 1))) &&
+        contexts.some(c => c.type === PaymentType.MATERIAL || (c.type === PaymentType.INSTALLMENT && c.paymentSequence === 1)) &&
         context.estimate.user.role.name === 'client';
       if (requiresMaterialAcceptance && params.materialAccepted !== true) {
         throw new BadRequestException(
@@ -1118,16 +1176,17 @@ export class PaymentsService {
         : {};
       // El servidor exige la firma aunque se omita agreementId. El depósito
       // conserva su propia aceptación de términos y no exige contrato firmado.
-      if (params.publicToken && type !== PaymentType.INSTALLATION_DEPOSIT) {
+      if (params.publicToken && contexts.some(c => c.type !== PaymentType.INSTALLATION_DEPOSIT)) {
         await requireSignedAgreementForPayment(
           tx, params.estimateId, params.publicToken, params.publicAgreementId,
         );
       }
+      const firstType = context.type;
       const frontendUrl = this.getFrontendUrl();
       const checkoutRef = randomUUID();
       const query = params.publicToken
-        ? `token=${encodeURIComponent(params.publicToken)}&type=${type}&sequence=${context.paymentSequence}${params.publicAgreementId ? `&agreementId=${encodeURIComponent(params.publicAgreementId)}` : ''}`
-        : `estimateId=${params.estimateId}&type=${type}&sequence=${context.paymentSequence}`;
+        ? `token=${encodeURIComponent(params.publicToken)}&type=${firstType}&sequence=${context.paymentSequence}${params.publicAgreementId ? `&agreementId=${encodeURIComponent(params.publicAgreementId)}` : ''}`
+        : `estimateId=${params.estimateId}&type=${firstType}&sequence=${context.paymentSequence}`;
       const successUrl = params.publicToken
         ? `${frontendUrl}/public/checkout/success?${query}`
         : `${frontendUrl}/checkout/success?${query}`;
@@ -1139,7 +1198,7 @@ export class PaymentsService {
       const existingPayments = [] as Array<Awaited<ReturnType<typeof tx.payment.findUnique>>>;
       for (const selected of contexts) {
         const existing = await tx.payment.findUnique({ where: { idEst_type_sequence: {
-          idEst: params.estimateId, type, sequence: selected.paymentSequence,
+          idEst: params.estimateId, type: selected.type, sequence: selected.paymentSequence,
         } } });
         if (existing?.refundReviewPending) throw new ConflictException('Review this refund before collecting another payment.');
         if (existing && [PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(existing.status as any) && !hasRefundHistory(existing)) {
@@ -1147,16 +1206,16 @@ export class PaymentsService {
         }
         existingPayments.push(existing);
       }
-      if (type === PaymentType.INSTALLMENT) {
+      if (type === PaymentType.INSTALLMENT || params.publicToken) {
         const refreshUrl = params.publicToken
           ? params.publicAgreementId
             ? `${frontendUrl}/public/estimates/${encodeURIComponent(params.publicToken)}/agreements/${encodeURIComponent(params.publicAgreementId)}`
             : `${frontendUrl}/public/payments/${encodeURIComponent(params.publicToken)}`
           : context.estimate.order ? `${frontendUrl}/orders/${context.estimate.order.id}` : `${frontendUrl}/estimates/${params.estimateId}/edit#estimate-payment`;
-        const resumed = await this.resumeOrCloseInstallmentCheckouts(tx, existingPayments, contexts, refreshUrl);
+        const resumed = await this.resumeOrCloseSelectedCheckouts(tx, existingPayments, contexts, refreshUrl);
         if (resumed) return resumed;
       }
-      const existingPayment = type === PaymentType.INSTALLMENT ? null : existingPayments[0];
+      const existingPayment = type === PaymentType.INSTALLMENT || params.publicToken ? null : existingPayments[0];
       if (existingPayment?.stripeSessionId) {
         try {
           const existingSession = await this.stripe.checkout.sessions.retrieve(
@@ -1220,13 +1279,13 @@ export class PaymentsService {
           where: {
             idEst_type_sequence: {
               idEst: params.estimateId,
-              type,
+              type: context.type,
               sequence: context.paymentSequence,
             },
           },
           create: {
             idEst: params.estimateId,
-            type,
+            type: context.type,
             sequence: context.paymentSequence,
             installationJobId: context.job?.id ?? null,
             extraChargeId: context.extraCharge?.id ?? null,
@@ -1297,7 +1356,7 @@ export class PaymentsService {
             unit_amount: Math.round(context.totalAmount.toNumber() * 100),
             product_data: {
               name: context.description,
-              description: type === PaymentType.INSTALLATION_DEPOSIT
+              description: context.type === PaymentType.INSTALLATION_DEPOSIT
                 ? `${context.job?.depositTermsSnapshot || INSTALLATION_DEPOSIT_TERMS}${feeDescription ? ` ${feeDescription}` : ''}`
                 : feeDescription || undefined,
             },
@@ -1310,7 +1369,7 @@ export class PaymentsService {
           ...(params.payFullBalance ? { paymentScope: 'FULL_PROJECT_BALANCE' } : {}),
           estimateId: String(params.estimateId),
           userId: String(context.estimate.idUser),
-          paymentType: type,
+          paymentType: contexts.every(c => c.type === firstType) ? firstType : 'MIXED',
           payerType: payer.payerType,
         },
         ...(payer.payerEmail ? { customer_email: payer.payerEmail } : {}),

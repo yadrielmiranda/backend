@@ -15,6 +15,8 @@ import { ValidationPipe } from '@nestjs/common';
 import { RegisterUserDto } from '@/auth/dto/register-user.dto';
 import { UpdateProfileDto } from '@/auth/dto/update-profile.dto';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
+import { PaymentsController } from '@/payments/payments.controller';
+import { CreatePublicCheckoutSessionDto } from '@/payments/dto/create-public-checkout-session.dto';
 import { DeliveriesService } from '@/deliveries/deliveries.service';
 
 const plan: PlanDefinition = {
@@ -745,6 +747,224 @@ describe('Selectable due installments', () => {
     return { ...f, stripe, sessions, checkout, confirm, retrieve, expire };
   }
 
+  describe('H06/H09 — Independent delivery, extras and public selections', () => {
+    async function mixedFixture() {
+      const f = await readyFixture(true);
+      const delivery = { id: 71, orderId: 22, sequence: 1, status: 'PAYMENT_DUE', total: decimal(150), type: 'STANDARD' };
+      const delivery2 = { id: 72, orderId: 22, sequence: 2, status: 'PAYMENT_DUE', total: decimal(50), type: 'STANDARD' };
+      const extra = { id: 81, orderId: 22, sequence: 1, status: 'PAYMENT_DUE', total: decimal(25) };
+      f.estimate.order.deliveries = [delivery, delivery2];
+      f.estimate.order.extraCharges = [extra];
+      const store = (rows: any[]) => ({
+        findFirst: jest.fn(async ({ where }) => rows.find(r => r.orderId === where.orderId && r.sequence === where.sequence) ?? null),
+        findUnique: jest.fn(async ({ where }) => {
+          const row = rows.find(r => r.id === where.id);
+          return row ? { ...row, order: f.estimate.order, payment: f.estimate.payments.find(p => p.deliveryId === row.id || p.extraChargeId === row.id) } : null;
+        }),
+        update: jest.fn(async ({ where, data }) => Object.assign(rows.find(r => r.id === where.id), data, { updatedAt: new Date() })),
+      });
+      f.tx.orderDelivery = store([delivery, delivery2]);
+      f.tx.orderExtraCharge = store([extra]);
+      const select = (items: Array<{ type: PaymentType; sequence: number }>, expectedBalance: number, cityFeeAccepted?: boolean) =>
+        f.service.createCheckoutSessionForPublicToken({ token: 'customer-link', items, expectedBalance, cityFeeAccepted });
+      return { ...f, delivery, delivery2, extra, select };
+    }
+    const release = { type: PaymentType.INSTALLMENT, sequence: 2 };
+    const city = { type: PaymentType.INSTALLMENT, sequence: 101 };
+    const delivery = { type: PaymentType.DELIVERY, sequence: 1 };
+    const extra = { type: PaymentType.EXTRA, sequence: 1 };
+
+    it('validates nested item types, sequences and forbids caller-provided charge amounts', async () => {
+      const pipe = new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true });
+      const transform = (body: unknown) => pipe.transform(body, { type: 'body', metatype: CreatePublicCheckoutSessionDto });
+      await expect(transform({ items: [delivery, extra], expectedBalance: 175 })).resolves.toMatchObject({ items: [delivery, extra] });
+      for (const item of [{ type: 'OTHER', sequence: 1 }, { type: 'DELIVERY', sequence: -1 },
+        { type: 'EXTRA', sequence: 1.1 }, { type: 'DELIVERY', sequence: 1, amount: 1 }, 'DELIVERY']) {
+        await expect(transform({ items: [item], expectedBalance: 1 })).rejects.toThrow();
+      }
+    });
+
+    it('lists every independent eligible charge and includes upcoming installments in full balance', async () => {
+      const f = await mixedFixture();
+      const context = await f.service.getPublicPaymentContext('customer-link');
+      expect(context.payments).toEqual(expect.arrayContaining([
+        expect.objectContaining({ ...release, baseAmount: '954.02', advanceOnly: false }),
+        expect.objectContaining({ ...city, baseAmount: '200.00', requiresCityFeeAcceptance: true }),
+        expect.objectContaining({ ...delivery, baseAmount: '150.00' }),
+        expect.objectContaining({ type: 'DELIVERY', sequence: 2, baseAmount: '50.00' }),
+        expect.objectContaining({ ...extra, baseAmount: '25.00' }),
+        expect.objectContaining({ type: 'INSTALLMENT', sequence: 3, baseAmount: '238.51', advanceOnly: true }),
+      ]));
+      expect(context.fullBalance?.amount).toBe('1617.53');
+      expect(context.fullBalance?.items).toHaveLength(6);
+    });
+
+    it('honors an explicit delivery request instead of charging the outstanding installment', async () => {
+      const f = await mixedFixture();
+      const controller = new PaymentsController(f.service);
+      const pipe = new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true });
+      const dto = await pipe.transform(delivery, { type: 'body', metatype: CreatePublicCheckoutSessionDto });
+      await controller.createPublicCheckoutSession('customer-link', dto);
+      expect(f.sessions.get('cs_selection_1').amount_total).toBe(15000);
+      await f.confirm('cs_selection_1');
+      expect(f.delivery.status).toBe('READY_TO_SCHEDULE');
+      expect(buildPaymentSchedule(f.estimate)?.rows.find(r => r.sequence === 2)?.balance).toBe('954.02');
+    });
+
+    it.each([
+      { items: [delivery], amount: 150 },
+      { items: [extra], amount: 25 },
+      { items: [delivery, extra], amount: 175 },
+      { items: [release, delivery, extra], amount: 1129.02 },
+      { items: [city, delivery, extra], amount: 375 },
+    ])('pays the selected concepts only: $items', async ({ items, amount }) => {
+      const f = await mixedFixture();
+      await f.select(items, amount, items.some(item => item.sequence === 101));
+      expect(f.sessions.get('cs_selection_1').amount_total).toBe(Math.round(amount * 100));
+      await f.confirm('cs_selection_1');
+      const paid = f.estimate.payments.filter(p => p.stripeSessionId === 'cs_selection_1');
+      expect(paid).toHaveLength(items.length);
+      expect(paid.every(p => p.status === 'PAID')).toBe(true);
+      expect(paid.map(p => ({ type: p.type, sequence: p.sequence }))).toEqual(expect.arrayContaining(items));
+      expect(f.ledger.receipts.filter(r => r.stripeSessionId === 'cs_selection_1')).toHaveLength(items.length);
+      expect(f.delivery2.status).toBe('PAYMENT_DUE');
+      const count = f.ledger.receipts.length;
+      await f.confirm('cs_selection_1');
+      expect(f.ledger.receipts).toHaveLength(count);
+    });
+
+    it('pays the full balance including both deliveries, extras, City Fee and the final installment', async () => {
+      const f = await mixedFixture();
+      await expect(f.service.createCheckoutSessionForPublicToken({ token: 'customer-link', payFullBalance: true, expectedBalance: 1617.53 })).rejects.toThrow('accept the City Fee');
+      await f.service.createCheckoutSessionForPublicToken({ token: 'customer-total-link', payFullBalance: true, expectedBalance: 1617.53, cityFeeAccepted: true });
+      expect(f.sessions.get('cs_selection_1').amount_total).toBe(161753);
+      await f.confirm('cs_selection_1');
+      expect(buildPaymentSchedule(f.estimate)?.balance).toBe('0.00');
+      expect(f.delivery.status).toBe('READY_TO_SCHEDULE');
+      expect(f.delivery2.status).toBe('READY_TO_SCHEDULE');
+      expect(f.extra.status).toBe('PAID');
+      expect(f.estimate.installationJob.completedAt).toBeUndefined();
+      expect(await f.service.getPublicPaymentContext('customer-link')).toMatchObject({ status: 'complete', payment: null });
+    });
+
+    it('preserves legacy installation revisions when the previous sequence is paid', async () => {
+      const f = await mixedFixture();
+      f.estimate.paymentPlanSnapshot = null;
+      f.estimate.payments.find(p => p.type === 'INSTALLATION_DEPOSIT').installationJobId = 3;
+      f.estimate.installationJob.status = 'INSTALLATION_PAYMENT_PENDING';
+      Object.assign(f.estimate.installationJob.quotes[0], { version: 2, total: decimal(500) });
+      f.estimate.payments.push({ id: 95, idEst: 1, installationJobId: 3, type: 'INSTALLATION', sequence: 1,
+        status: 'PAID', baseAmount: decimal(100), amount: decimal(100) });
+      const context = await f.service.getPublicPaymentContext('customer-link');
+      expect(context.payments).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'INSTALLATION', sequence: 2, baseAmount: '150.00' }),
+      ]));
+      await f.select([{ type: PaymentType.INSTALLATION, sequence: 2 }], 150);
+      expect(f.sessions.get('cs_selection_1').amount_total).toBe(15000);
+    });
+
+    it('still offers full balance when only independent charges remain', async () => {
+      const f = await mixedFixture();
+      await f.manual(2); await f.manual(101, true, true);
+      f.estimate.order.status.name = 'Installed'; await f.manual(3);
+      expect((await f.service.getPublicPaymentContext('customer-link')).fullBalance?.amount).toBe('225.00');
+      await f.service.createCheckoutSessionForPublicToken({ token: 'customer-link', payFullBalance: true, expectedBalance: 225 });
+      expect(f.sessions.get('cs_selection_1').amount_total).toBe(22500);
+    });
+
+    it('resumes the exact mixed selection and closes it before opening a different selection', async () => {
+      const f = await mixedFixture();
+      await f.select([delivery, extra], 175);
+      await f.select([extra, delivery], 175);
+      expect(f.createSession).toHaveBeenCalledTimes(1);
+      const context = await f.service.getPublicPaymentContext('customer-link');
+      expect(context.checkouts?.[0]).toMatchObject({ baseAmount: '175.00', items: [delivery, extra] });
+      expect(context.installmentCheckouts).toHaveLength(0);
+      await f.select([extra], 25);
+      expect(f.sessions.get('cs_selection_1').status).toBe('expired');
+      expect(f.sessions.get('cs_selection_2').amount_total).toBe(2500);
+      expect(f.estimate.payments.find(p => p.type === 'DELIVERY').status).toBe('CANCELED');
+      await f.confirm('cs_selection_2');
+      expect(f.extra.status).toBe('PAID');
+      expect(f.delivery.status).toBe('PAYMENT_DUE');
+    });
+
+    it('rejects changed amounts, duplicates, unknown items and partial advance payments', async () => {
+      const f = await mixedFixture();
+      for (const [items, amount] of [
+        [[delivery, delivery], 300], [[{ ...delivery, sequence: 999 }], 150],
+        [[{ type: PaymentType.INSTALLMENT, sequence: 3 }], 238.51], [[delivery], 149.99],
+      ] as Array<[Array<{ type: PaymentType; sequence: number }>, number]>) {
+        await expect(f.select(items, amount)).rejects.toThrow();
+      }
+      await expect(f.service.createCheckoutSessionForPublicToken({ token: 'customer-link', items: [delivery], type: 'DELIVERY', expectedBalance: 150 })).rejects.toThrow('either');
+      f.delivery.total = decimal(151);
+      await expect(f.select([delivery], 150)).rejects.toThrow('balance changed');
+      await expect(f.service.createCheckoutSessionForPublicToken({ token: 'customer-link', payFullBalance: true, expectedBalance: 1617.53, cityFeeAccepted: true })).rejects.toThrow('balance changed');
+      expect(f.createSession).not.toHaveBeenCalled();
+    });
+
+    it('keeps unrelated charges available while one refund is under review', async () => {
+      const f = await mixedFixture();
+      await f.select([delivery], 150); await f.confirm('cs_selection_1');
+      const payment = f.estimate.payments.find(p => p.type === 'DELIVERY');
+      payment.refundReviewPending = true;
+      const context = await f.service.getPublicPaymentContext('customer-link');
+      expect(context.payments?.some(p => p.type === 'EXTRA')).toBe(true);
+      expect(context.payments?.some(p => p.type === 'DELIVERY' && p.sequence === 1)).toBe(false);
+      expect(context.fullBalance).toBeNull();
+      await f.select([extra], 25);
+      expect(f.sessions.get('cs_selection_2').amount_total).toBe(2500);
+    });
+
+    it('preserves per-item accounting and idempotency on a partial refund of mixed charges', async () => {
+      const f = await mixedFixture();
+      await f.select([release, delivery, extra], 1129.02); await f.confirm('cs_selection_1');
+      const charge = (await f.stripe.paymentIntents.retrieve('pi_cs_selection_1')).latest_charge as any;
+      const refund: any = { id: 're_mixed', charge: charge.id, amount: 10000, currency: 'usd', status: 'succeeded', created: 1700000100 };
+      await reconcileChargeRefunds(f.tx, charge, [refund]);
+      await reconcileChargeRefunds(f.tx, charge, [refund]);
+      const allocations = f.ledger.allocations.filter(a => a.refundId === refund.id);
+      expect(allocations).toHaveLength(3);
+      expect(allocations.reduce((sum, a) => sum + Number(a.amount), 0)).toBeCloseTo(100, 2);
+      const group = f.estimate.payments.filter(p => p.stripeSessionId === 'cs_selection_1');
+      expect(group.every(p => p.refundReviewPending)).toBe(true);
+      expect(buildPaymentSchedule(f.estimate)?.canRelease).toBe(false);
+      await f.service.reviewRefund(1, refund.id, { note: 'Amounts remain due after refund', allocations: allocations.map(a => ({ id: a.id, creditAmount: 0 })) }, { id: 1, role: { name: 'admin' } });
+      const payment = f.estimate.payments.find(p => p.type === 'DELIVERY');
+      const balance = Number(payment.originalBaseAmount) - Number(payment.netPaidBaseAmount);
+      expect((await f.service.getPublicPaymentContext('customer-link')).payments).toEqual(expect.arrayContaining([
+        expect.objectContaining({ ...delivery, baseAmount: balance.toFixed(2) }),
+      ]));
+      await f.select([delivery], Number(balance.toFixed(2))); await f.confirm('cs_selection_2');
+      expect(Number(payment.netPaidBaseAmount)).toBe(150);
+      expect(f.delivery.status).toBe('READY_TO_SCHEDULE');
+      expect(f.ledger.refunds).toHaveLength(1);
+    });
+
+    it('permits pickup after release payment while the independent City Fee remains pending', async () => {
+      const f = await mixedFixture();
+      await f.select([release], 954.02); await f.confirm('cs_selection_1');
+      f.estimate.order.fulfillmentMethod = 'CUSTOMER_PICKUP';
+      f.tx.order.update = jest.fn(async ({ data }) => Object.assign(f.estimate.order, data));
+      const deliveries = new DeliveriesService(f.tx, {} as never, {} as never,
+        { createAndSend: jest.fn() } as never, { log: jest.fn() } as never);
+      await deliveries.completePickup(22, { id: 1, role: { name: 'admin' } });
+      expect(f.tx.order.update).toHaveBeenCalled();
+      expect(buildPaymentSchedule(f.estimate)?.rows.find(r => r.sequence === 101)?.balance).toBe('200.00');
+    });
+
+    it('uses the same release rule when scheduling a paid delivery', async () => {
+      const f = await mixedFixture();
+      await f.select([release, delivery], 1104.02); await f.confirm('cs_selection_1');
+      const deliveries = new DeliveriesService(f.tx, {} as never, {} as never,
+        { createAndSend: jest.fn() } as never, { log: jest.fn() } as never);
+      await deliveries.scheduleDelivery(71, { scheduledFor: new Date(Date.now() + 86400000).toISOString() }, { id: 1, role: { name: 'admin' } });
+      expect(f.delivery.status).toBe('SCHEDULED');
+      expect(buildPaymentSchedule(f.estimate)?.rows.find(r => r.sequence === 101)?.balance).toBe('200.00');
+    });
+  });
+
   describe('Voluntary full balance payments', () => {
     const fullCheckout = (f: Awaited<ReturnType<typeof readyFixture>>, expectedBalance = 1392.53, cityFeeAccepted = true) =>
       f.service.createCheckoutSessionForEstimate({ estimateId: 1, type: PaymentType.INSTALLMENT,
@@ -871,7 +1091,7 @@ describe('Selectable due installments', () => {
     const schedule = buildPaymentSchedule(f.estimate)!;
     expect(schedule.rows.find(r => r.sequence === sequence)?.status).toBe('PAID');
     expect(schedule.rows.find(r => r.sequence === (sequence === 2 ? 101 : 2))?.status).toBe('DUE');
-    expect(schedule.canRelease).toBe(false);
+    expect(schedule.canRelease).toBe(sequence === 2);
     expect(schedule.canInstall).toBe(sequence === 2);
     expect(f.estimate.installationJob.status).toBe(sequence === 2 ? 'INSTALLATION_PAID' : 'INSTALLATION_PAYMENT_PENDING');
     expect(schedule.rows.find(r => r.sequence === 3)?.status).toBe('UPCOMING');

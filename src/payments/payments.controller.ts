@@ -56,6 +56,9 @@ export class PaymentsController {
   ) {
     return this.payments.createCheckoutSessionForPublicToken({
       token,
+      type: dto.type,
+      sequence: dto.sequence,
+      items: dto.items,
       installationDepositTermsAccepted: dto.installationDepositTermsAccepted,
       cityFeeAccepted: dto.cityFeeAccepted,
       agreementId: dto.agreementId,

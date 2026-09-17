@@ -589,7 +589,7 @@ export class EstimatePieceCalculatorService {
 
       const rateR = rate.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       const priceR = price.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-      const netProfitR = netProfit.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+      const netProfitR = priceR.sub(rateR);
       const markupR = effectiveMarkup.toDecimalPlaces(18, Decimal.ROUND_HALF_UP);
       const dealerMarkupDecimalR = dealerMarkupDecimal.toDecimalPlaces(
         4,
@@ -599,18 +599,11 @@ export class EstimatePieceCalculatorService {
       const subtotalR = priceR
         .mul(qtyDec)
         .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-      const netProfitDR = subtotalR
-        .mul(dealerMarkupDecimalR)
+      // El precio unitario en centavos es la base común de línea, resumen y ganancia.
+      const customerPriceR = priceR.mul(new Decimal(1).add(dealerMarkupDecimalR))
         .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-      const customerSubtotalR = subtotalR
-        .add(netProfitDR)
-        .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-
-      const customerPriceR = qtyDec.gt(0)
-        ? customerSubtotalR
-          .div(qtyDec)
-          .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
-        : new Decimal(0);
+      const customerSubtotalR = customerPriceR.mul(qtyDec);
+      const netProfitDR = customerSubtotalR.sub(subtotalR);
 
       const result: CalculatedPieceCombined = {
         ...(pieceDto as any),
@@ -1590,7 +1583,7 @@ export class EstimatePieceCalculatorService {
 
     const rateR = rate.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
     const priceR = price.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-    const netProfitR = netProfit.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    const netProfitR = priceR.sub(rateR);
     const markupR = effectiveMarkup.toDecimalPlaces(18, Decimal.ROUND_HALF_UP);
     const dealerMarkupDecimalR = dealerMarkupDecimal.toDecimalPlaces(
       4,
@@ -1601,17 +1594,11 @@ export class EstimatePieceCalculatorService {
       .mul(qtyDec)
       .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
-    const netProfitDR = subtotalR
-      .mul(dealerMarkupDecimalR)
+    // El precio unitario en centavos es la base común de línea, resumen y ganancia.
+    const customerPriceR = priceR.mul(new Decimal(1).add(dealerMarkupDecimalR))
       .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-
-    const customerSubtotalR = subtotalR
-      .add(netProfitDR)
-      .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-
-    const customerPriceR = qtyDec.gt(0)
-      ? customerSubtotalR.div(qtyDec).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
-      : new Decimal(0);
+    const customerSubtotalR = customerPriceR.mul(qtyDec);
+    const netProfitDR = customerSubtotalR.sub(subtotalR);
 
     const result: CalculatedPieceCombined = {
       ...(pieceDto as any),
@@ -1704,7 +1691,7 @@ export class EstimatePieceCalculatorService {
           piece.customerPrice.mul(qty),
         );
 
-        const dealerProfitPiece = piece.promotionSnapshot ? piece.customerPrice.sub(piece.price) : piece.price.mul(piece.dealerMarkupDecimal);
+        const dealerProfitPiece = piece.customerPrice.sub(piece.price);
 
         acc.netProfitD = acc.netProfitD.add(dealerProfitPiece.mul(qty));
 

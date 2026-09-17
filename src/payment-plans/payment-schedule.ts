@@ -191,8 +191,10 @@ export function buildPaymentSchedule(estimate: any) {
       Boolean(estimate.order) &&
       allocation.rows.every(
         (row) =>
+          // El City Fee independiente sigue adeudado, pero no condiciona la entrega.
+          row.kind === 'CITY_FEE' ||
           !['ORDER', 'RELEASE'].includes(row.milestone) ||
-          (row.status !== 'REVIEW' && Number(row.balance) === 0 && (row.kind !== 'CITY_FEE' || Number(row.amount) <= 0 || row.status === 'PAID')),
+          (row.status !== 'REVIEW' && Number(row.balance) === 0),
       ),
     canInstall:
       Boolean(estimate.order) &&

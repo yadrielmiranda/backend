@@ -1207,14 +1207,17 @@ describe('Agreement acceptance, access and history', () => {
 
   it.each([
     { sequences: [1] }, { sequences: [1, 2, 3] }, { payFullBalance: true, expectedBalance: 1370 },
+    { items: [{ type: PaymentType.DELIVERY, sequence: 1 }, { type: PaymentType.EXTRA, sequence: 1 }], expectedBalance: 1370 },
+    { items: [{ type: PaymentType.INSTALLATION_DEPOSIT, sequence: 1 }, { type: PaymentType.DELIVERY, sequence: 1 }], expectedBalance: 1370 },
   ])('checks acceptance for an installment selection or advance balance: %j', async selection => {
     installation();
     const first = await ready();
     const { payments, context } = paymentHarness(PaymentType.INSTALLMENT);
     jest.spyOn(payments as any, 'selectedPaymentContexts').mockImplementation(async (_tx, params: any) =>
-      (params.sequences ?? [1, 2, 3]).map((sequence: number) => ({ ...context(), paymentSequence: sequence })),
+      (params.items ?? (params.sequences ?? [1, 2, 3]).map((sequence: number) => ({ type: PaymentType.INSTALLMENT, sequence })))
+        .map((item: any) => ({ ...context(), type: item.type, paymentSequence: item.sequence })),
     );
-    const resume = jest.spyOn(payments as any, 'resumeOrCloseInstallmentCheckouts').mockResolvedValue({ url: 'https://checkout.stripe.com/group' });
+    const resume = jest.spyOn(payments as any, 'resumeOrCloseSelectedCheckouts').mockResolvedValue({ url: 'https://checkout.stripe.com/group' });
     await expect(payments.createCheckoutSessionForPublicToken({ token, ...selection })).rejects.toThrow('Review and sign');
     expect(resume).not.toHaveBeenCalled();
     await service.sign(token, first.id, input(first), {});
