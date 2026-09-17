@@ -23,6 +23,7 @@ export class LinearPricingRulesController {
     ) { }
 
     @Get()
+    @Roles('admin', 'operator')
     findAll(
         @Query("take") take?: string,
         @Query("skip") skip?: string,
@@ -42,6 +43,7 @@ export class LinearPricingRulesController {
     }
 
     @Get(":id")
+    @Roles('admin', 'operator')
     findOne(@Param("id", ParseIntPipe) id: number) {
         return this.linearPricingRulesService.findOne(id);
     }

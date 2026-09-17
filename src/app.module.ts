@@ -1,7 +1,8 @@
 import { PaymentPlansModule } from './payment-plans/payment-plans.module';
 import { ContractsModule } from './contracts/contracts.module';
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { ResponsePrivacyInterceptor } from './common/response-privacy.interceptor';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ProductsModule } from './products/products.module';
@@ -95,9 +96,10 @@ import { SmsConsentModule } from './sms/sms-consent.module';
   controllers: [AppController],
   providers: [
     AppService,
-    { provide: APP_GUARD, useClass: SessionTouchGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: SessionTouchGuard },
+    { provide: APP_INTERCEPTOR, useClass: ResponsePrivacyInterceptor },
   ],
 })
 export class AppModule { }

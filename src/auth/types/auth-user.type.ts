@@ -6,6 +6,7 @@ export type AuthUser = {
   firstName?: string;
   lastName?: string;
   email?: string;
+  sessionId?: string;
 
   // ✅ siempre será objeto { name } en req.user (por JwtStrategy)
   role?: { name: RoleName };

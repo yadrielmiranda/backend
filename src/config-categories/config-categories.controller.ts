@@ -11,6 +11,7 @@ import {
 import { ConfigCategoriesService } from './config-categories.service';
 import { CreateConfigCategoryDto } from './dto/create-config-category.dto';
 import { UpdateConfigCategoryDto } from './dto/update-config-category.dto';
+import { Roles } from '@/auth/roles.decorator';
 
 @Controller('config-categories')
 export class ConfigCategoriesController {
@@ -29,11 +30,13 @@ export class ConfigCategoriesController {
     }
 
     @Post()
+    @Roles('admin')
     create(@Body() dto: CreateConfigCategoryDto) {
         return this.configCategoriesService.create(dto);
     }
 
     @Patch(':id')
+    @Roles('admin')
     update(
         @Param('id', ParseIntPipe) id: number,
         @Body() dto: UpdateConfigCategoryDto,
@@ -42,6 +45,7 @@ export class ConfigCategoriesController {
     }
 
     @Delete(':id')
+    @Roles('admin')
     remove(@Param('id', ParseIntPipe) id: number) {
         return this.configCategoriesService.remove(id);
     }

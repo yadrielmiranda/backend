@@ -7,8 +7,10 @@ import {
 import { Server, Socket } from 'socket.io';
 import * as cookie from 'cookie';
 import { JwtService } from '@nestjs/jwt';
+import { PrismaService } from '@/prisma/prisma.service';
+import { SessionTokenPayload, validateAccessSession } from '@/auth/access-session';
 
-type JwtPayload = { sub?: string | number };
+type JwtPayload = SessionTokenPayload;
 
 @WebSocketGateway({
   cors: {
@@ -33,10 +35,11 @@ export class NotificationsGateway
   @WebSocketServer()
   server: Server;
 
-  constructor(private jwtService: JwtService) { }
+  constructor(private jwtService: JwtService, private prisma: PrismaService) { }
 
   // ✅ PRO: múltiples sockets por usuario
   private userSockets = new Map<number, Set<string>>();
+  private sessions = new Map<string, { client: Socket; payload: JwtPayload }>();
 
   private addSocket(userId: number, socketId: string) {
     const set = this.userSockets.get(userId) ?? new Set<string>();
@@ -63,11 +66,9 @@ export class NotificationsGateway
         ignoreExpiration: false,
       });
 
-      const userId =
-        typeof payload.sub === 'string' ? Number(payload.sub) : payload.sub;
-
-      if (!Number.isFinite(userId)) return null;
-      return userId as number;
+      const user = await validateAccessSession(this.prisma, payload);
+      this.sessions.set(client.id, { client, payload });
+      return user.id;
     } catch {
       return null;
     }
@@ -87,6 +88,7 @@ export class NotificationsGateway
   }
 
   handleDisconnect(client: Socket) {
+    this.sessions.delete(client.id);
     const userId = (client.data as any)?.userId as number | undefined;
     if (!userId) return;
 
@@ -94,12 +96,23 @@ export class NotificationsGateway
     console.log(`[WS] Disconnected socket=${client.id} userId=${userId}`);
   }
 
-  sendNotificationToUser(userId: number, payload: any) {
+  async sendNotificationToUser(userId: number, payload: any) {
     const sockets = this.userSockets.get(userId);
     if (!sockets || sockets.size === 0) return;
 
     for (const socketId of sockets) {
-      this.server.to(socketId).emit('new_notification', payload);
+      const connection = this.sessions.get(socketId);
+      if (!connection) continue;
+      try {
+        // Una conexión abierta no conserva acceso después de revocar la sesión.
+        await validateAccessSession(this.prisma, connection.payload);
+        if (!this.sessions.has(socketId)) continue;
+        this.server.to(socketId).emit('new_notification', payload);
+      } catch {
+        this.sessions.delete(socketId);
+        this.removeSocket(userId, socketId);
+        connection.client.disconnect(true);
+      }
     }
   }
 }

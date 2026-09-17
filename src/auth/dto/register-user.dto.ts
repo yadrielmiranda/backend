@@ -1,16 +1,10 @@
-import { OmitType } from '@nestjs/mapped-types';
+import { PickType } from '@nestjs/mapped-types';
 import { CreateUserDto } from '@/users/dto/create-user.dto';
 import { IsBoolean, IsString, Matches, ValidateIf } from 'class-validator';
+import { PROFILE_FIELDS } from './self-service-fields';
 
-// Este DTO hereda todas las validaciones de CreateUserDto
-// pero omite el campo 'idRole' para que no se pueda inyectar en el registro público.
-export class RegisterUserDto extends OmitType(CreateUserDto, [
-  'idRole',
-  'paymentPlanId',
-  'installationPriceProfileId',
-  'noInstallationDeposit',
-  'dealerMode',
-] as const) {
+// Las condiciones comerciales se asignan exclusivamente desde administración.
+export class RegisterUserDto extends PickType(CreateUserDto, [...PROFILE_FIELDS, 'password'] as const) {
   // unknown evita que la conversión implícita acepte cadenas como "false".
   @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()

@@ -77,12 +77,12 @@ export class AuthController {
       loginDto.password,
     );
 
-    const accessToken = await this.authService.signAccessToken(user);
-
     const sessionId = this.authService.newSessionId();
+    const accessToken = await this.authService.signAccessToken(user, sessionId);
     const refreshToken = await this.authService.signRefreshToken(
       user.id,
       sessionId,
+      user.passwordUpdatedAt,
     );
 
     // crea sesión + LOG LOGIN dentro del service
@@ -152,14 +152,9 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('logout')
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const refreshToken = req.cookies?.[REFRESH_COOKIE];
-    if (refreshToken) {
-      // ✅ revoca + LOG LOGOUT dentro del service
-      await this.authService.revokeByRefreshToken(refreshToken, {
-        reason: 'USER_LOGOUT',
-        source: 'AuthController.logout',
-      });
-    }
+    const actor = req.user as AuthUser;
+    // La sesión autenticada se revoca aunque no se envíe la cookie de renovación.
+    await this.authService.revokeSession(actor.id, actor.sessionId!);
 
     res.clearCookie(ACCESS_COOKIE, this.clearCookieOptions());
     res.clearCookie(REFRESH_COOKIE, this.clearCookieOptions());

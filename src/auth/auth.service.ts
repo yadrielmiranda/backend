@@ -21,15 +21,12 @@ import { createHash, randomBytes, randomUUID } from 'crypto';
 import { LogsService } from '@/logs/logs.service';
 import { MailService } from '@/mail/mail.service';
 import { SmsConsentService } from '@/sms/sms-consent.service';
+import { pickProfileFields } from './dto/self-service-fields';
+import { assertTokenPurpose, SessionTokenPayload } from './access-session';
 
 type JwtRolePayload = string | undefined;
 
-type RefreshPayload = {
-  sub: number;
-  sid: string;
-  iat?: number;
-  exp?: number;
-};
+type RefreshPayload = SessionTokenPayload;
 
 @Injectable()
 export class AuthService {
@@ -140,12 +137,16 @@ export class AuthService {
     pass: string,
   ): Promise<{ access_token: string }> {
     const user = await this.validateUser(identifier, pass);
-    const access_token = await this.signAccessToken(user);
+    const sessionId = this.newSessionId();
+    const refreshToken = await this.signRefreshToken(user.id, sessionId, user.passwordUpdatedAt);
+    await this.createSession({ sessionId, userId: user.id, refreshToken });
+    const access_token = await this.signAccessToken(user, sessionId);
     return { access_token };
   }
 
   async registerUser(registerUserDto: RegisterUserDto) {
-    const { password, serviceConsent, promotionsConsent, consentVersion, ...userData } = registerUserDto;
+    const { password, serviceConsent, promotionsConsent, consentVersion } = registerUserDto;
+    const userData = pickProfileFields(registerUserDto);
     // También se valida aquí para no depender exclusivamente del formulario o del DTO.
     if (serviceConsent !== undefined && typeof serviceConsent !== 'boolean') {
       throw new BadRequestException('serviceConsent must be a boolean.');
@@ -188,6 +189,7 @@ export class AuthService {
           data: {
             ...userData,
             password: hashedPassword,
+            isTaxExempt: false,
             role: { connect: { id: clientRole.id } },
           },
           select: {
@@ -267,11 +269,11 @@ export class AuthService {
   async updateProfile(userId: number, data: UpdateProfileDto) {
     return this.usersService.updateUser({
       where: { id: userId },
-      data,
+      data: pickProfileFields(data),
     });
   }
 
-  private buildAccessPayload(user: any) {
+  private buildAccessPayload(user: any, sessionId: string) {
     return {
       sub: user.id,
       username: user.username,
@@ -279,6 +281,9 @@ export class AuthService {
       lastName: user.lastName,
       email: user.email,
       role: user.role?.name as JwtRolePayload,
+      sid: sessionId,
+      tokenType: 'access',
+      passwordVersion: new Date(user.passwordUpdatedAt).getTime(),
     };
   }
 
@@ -296,15 +301,16 @@ export class AuthService {
     return user;
   }
 
-  async signAccessToken(user: any) {
-    return this.jwtService.signAsync(this.buildAccessPayload(user), {
+  async signAccessToken(user: any, sessionId: string) {
+    return this.jwtService.signAsync(this.buildAccessPayload(user, sessionId), {
       expiresIn: this.accessTtl,
     });
   }
 
-  async signRefreshToken(userId: number, sessionId: string) {
+  async signRefreshToken(userId: number, sessionId: string, passwordUpdatedAt: Date) {
     return this.jwtService.signAsync(
-      { sub: userId, sid: sessionId },
+      { sub: userId, sid: sessionId, tokenType: 'refresh',
+        passwordVersion: new Date(passwordUpdatedAt).getTime(), jti: randomUUID() },
       { expiresIn: this.refreshTtl },
     );
   }
@@ -317,7 +323,7 @@ export class AuthService {
     ip?: string;
   }) {
     const refreshTokenHash = await bcrypt.hash(
-      params.refreshToken,
+      this.hashResetToken(params.refreshToken),
       this.bcryptRounds,
     );
 
@@ -504,135 +510,55 @@ export class AuthService {
     currentRefreshToken?: string,
   ): Promise<{ accessToken?: string; refreshToken?: string; message: string }> {
     const user = await this.usersService.userWithPassword({ id: userId });
-
-    const isPasswordMatching = await bcrypt.compare(dto.currentPassword, user.password);
-    if (!isPasswordMatching) {
+    if (!await bcrypt.compare(dto.currentPassword, user.password)) {
       throw new UnauthorizedException('La contraseña actual es incorrecta.');
     }
 
-    await this.usersService.updateUser({
-      where: { id: userId },
-      data: { password: dto.newPassword },
-    });
-
-    if (!currentRefreshToken) {
-      const sessionsToRevoke = await this.prisma.session.findMany({
-        where: { userId, revokedAt: null },
-        select: { id: true },
-      });
-
-      await this.prisma.session.updateMany({
-        where: { userId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
-
-      for (const s of sessionsToRevoke) {
-        await this.logSessionLogout({
-          userId,
-          sessionId: s.id,
-          reason: 'PASSWORD_CHANGED',
-          source: 'AuthService.changePasswordSelf(no-refresh)',
-        });
+    // Solo una renovación vigente puede conservar el acceso tras cambiar la clave.
+    let currentSession: { ip: string | null; userAgent: string | null } | null = null;
+    if (currentRefreshToken) {
+      try {
+        const payload = await this.jwtService.verifyAsync<RefreshPayload>(currentRefreshToken);
+        assertTokenPurpose(payload, 'refresh');
+        const session = await this.prisma.session.findUnique({ where: { id: payload.sid } });
+        if (payload.sub === userId && session?.userId === userId && !session.revokedAt &&
+          session.expiresAt > new Date() && payload.passwordVersion === user.passwordUpdatedAt.getTime() &&
+          await bcrypt.compare(this.hashResetToken(currentRefreshToken), session.refreshTokenHash)) {
+          currentSession = session;
+        }
+      } catch {
+        // El cambio sigue siendo válido con la contraseña actual; se cerrarán las sesiones.
       }
-
-      return { message: 'Contraseña actualizada. Vuelve a iniciar sesión.' };
     }
 
-    let payload: RefreshPayload;
-    try {
-      payload = await this.jwtService.verifyAsync<RefreshPayload>(currentRefreshToken);
-    } catch {
-      const sessionsToRevoke = await this.prisma.session.findMany({
-        where: { userId, revokedAt: null },
-        select: { id: true },
-      });
-
-      await this.prisma.session.updateMany({
-        where: { userId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
-
-      for (const s of sessionsToRevoke) {
-        await this.logSessionLogout({
-          userId,
-          sessionId: s.id,
-          reason: 'PASSWORD_CHANGED',
-          source: 'AuthService.changePasswordSelf(bad-refresh)',
-        });
-      }
-
-      return { message: 'Contraseña actualizada. Vuelve a iniciar sesión.' };
+    await this.usersService.updateUser({ where: { id: userId }, data: { password: dto.newPassword } });
+    const sessions = await this.prisma.session.findMany({ where: { userId, revokedAt: null }, select: { id: true } });
+    await this.prisma.session.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } });
+    for (const session of sessions) {
+      await this.logSessionLogout({ userId, sessionId: session.id, reason: 'PASSWORD_CHANGED',
+        source: 'AuthService.changePasswordSelf' });
     }
+    if (!currentSession) return { message: 'Contraseña actualizada. Vuelve a iniciar sesión.' };
 
-    if (!payload?.sid || payload.sub !== userId) {
-      const sessionsToRevoke = await this.prisma.session.findMany({
-        where: { userId, revokedAt: null },
-        select: { id: true },
-      });
-
-      await this.prisma.session.updateMany({
-        where: { userId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
-
-      for (const s of sessionsToRevoke) {
-        await this.logSessionLogout({
-          userId,
-          sessionId: s.id,
-          reason: 'PASSWORD_CHANGED',
-          source: 'AuthService.changePasswordSelf(mismatch-refresh)',
-        });
-      }
-
-      return { message: 'Contraseña actualizada. Vuelve a iniciar sesión.' };
-    }
-
-    const currentSid = payload.sid;
-
-    const sessionsToRevoke = await this.prisma.session.findMany({
-      where: { userId, revokedAt: null, NOT: { id: currentSid } },
-      select: { id: true },
-    });
-
-    await this.prisma.session.updateMany({
-      where: { userId, revokedAt: null, NOT: { id: currentSid } },
-      data: { revokedAt: new Date() },
-    });
-
-    for (const s of sessionsToRevoke) {
-      await this.logSessionLogout({
-        userId,
-        sessionId: s.id,
-        reason: 'PASSWORD_CHANGED',
-        source: 'AuthService.changePasswordSelf(revoke-others)',
-      });
-    }
-
-    const newRefresh = await this.signRefreshToken(userId, currentSid);
-    const newHash = await bcrypt.hash(newRefresh, this.bcryptRounds);
-
-    await this.prisma.session.update({
-      where: { id: currentSid },
-      data: {
-        refreshTokenHash: newHash,
-        lastUsedAt: new Date(),
-        revokedAt: null,
-      },
-    });
-
-    const freshUser = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: { role: true },
-    });
-    if (!freshUser) throw new UnauthorizedException('Usuario no existe.');
-
-    const newAccess = await this.signAccessToken(freshUser);
-
+    const freshUser = await this.prisma.user.findUnique({ where: { id: userId }, include: { role: true } });
+    if (!freshUser?.isActive || freshUser.deletedAt) throw new UnauthorizedException('This user account is inactive.');
+    const sessionId = this.newSessionId();
+    const refreshToken = await this.signRefreshToken(userId, sessionId, freshUser.passwordUpdatedAt);
+    // Se crea una sesión nueva; nunca se reactiva una sesión revocada.
+    await this.createSession({ sessionId, userId, refreshToken,
+      ip: currentSession.ip ?? undefined, userAgent: currentSession.userAgent ?? undefined });
     return {
-      accessToken: newAccess,
-      refreshToken: newRefresh,
+      accessToken: await this.signAccessToken(freshUser, sessionId), refreshToken,
       message: 'Contraseña actualizada exitosamente.',
     };
+  }
+
+  async revokeSession(userId: number, sessionId: string): Promise<void> {
+    if (!sessionId) throw new UnauthorizedException('Invalid session.');
+    const result = await this.prisma.session.updateMany({
+      where: { id: sessionId, userId, revokedAt: null }, data: { revokedAt: new Date() },
+    });
+    if (result.count) await this.logSessionLogout({ userId, sessionId, reason: 'USER_LOGOUT', source: 'AuthService.revokeSession' });
   }
 
   async refreshFromToken(refreshToken: string): Promise<{
@@ -647,9 +573,7 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token inválido o expirado.');
     }
 
-    if (!payload?.sub || !payload?.sid) {
-      throw new UnauthorizedException('Refresh token inválido.');
-    }
+    assertTokenPurpose(payload, 'refresh');
 
     const session = await this.prisma.session.findUnique({
       where: { id: payload.sid },
@@ -680,7 +604,8 @@ export class AuthService {
       }
     }
 
-    const ok = await bcrypt.compare(refreshToken, session.refreshTokenHash);
+    // bcrypt limita la entrada a 72 bytes; el digest incluye el JWT completo.
+    const ok = await bcrypt.compare(this.hashResetToken(refreshToken), session.refreshTokenHash);
     if (!ok) {
       await this.prisma.session.update({
         where: { id: session.id },
@@ -719,10 +644,9 @@ export class AuthService {
       throw new UnauthorizedException('This user account is inactive.');
     }
 
-    if (payload.iat) {
-      const refreshIatMs = payload.iat * 1000;
+    {
       const pwdUpdatedMs = new Date(user.passwordUpdatedAt).getTime();
-      if (pwdUpdatedMs > refreshIatMs) {
+      if (payload.passwordVersion !== pwdUpdatedMs) {
         await this.prisma.session.update({
           where: { id: session.id },
           data: { revokedAt: new Date() },
@@ -739,20 +663,21 @@ export class AuthService {
       }
     }
 
-    const accessToken = await this.signAccessToken(user);
+    const accessToken = await this.signAccessToken(user, session.id);
 
-    const newRefreshToken = await this.signRefreshToken(user.id, session.id);
-    const newHash = await bcrypt.hash(newRefreshToken, this.bcryptRounds);
-
-    await this.prisma.session.update({
-      where: { id: session.id },
+    // La credencial de renovación mantiene el vencimiento original de la sesión.
+    // SSR no puede persistir las cookies del navegador; cambiarla aquí invalidaría
+    // otras pestañas y peticiones simultáneas. Login/cambio de clave emiten una nueva.
+    const refreshed = await this.prisma.session.updateMany({
+      where: { id: session.id, refreshTokenHash: session.refreshTokenHash, revokedAt: null,
+        expiresAt: { gt: new Date() } },
       data: {
-        refreshTokenHash: newHash,
         lastRefreshedAt: new Date(),
       },
     });
+    if (refreshed.count !== 1) throw new UnauthorizedException('Session changed. Sign in again.');
 
-    return { accessToken, newRefreshToken };
+    return { accessToken, newRefreshToken: refreshToken };
   }
 
   async revokeByRefreshToken(
@@ -764,14 +689,14 @@ export class AuthService {
 
     try {
       const payload = await this.jwtService.verifyAsync<RefreshPayload>(refreshToken);
-      if (!payload?.sid) return;
+      assertTokenPurpose(payload, 'refresh');
 
       const session = await this.prisma.session.findUnique({
         where: { id: payload.sid },
         select: { id: true, userId: true, revokedAt: true },
       });
 
-      if (!session) return;
+      if (!session || session.userId !== payload.sub) return;
 
       if (!session.revokedAt) {
         await this.prisma.session.update({
