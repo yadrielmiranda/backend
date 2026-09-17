@@ -10,6 +10,7 @@ function fixture() {
   const state: any = { users: [], registration: [], sms: [], events: [], blocks: [], fail: null, roleExists: true };
   const clone = (value: any) => structuredClone(value);
   const db: any = {
+    platformTermsState: { findUniqueOrThrow: async () => ({ currentVersion: null }) },
     branding: { findFirst: async () => ({ name: 'Authentic Evolution Co', email: 'support@example.com', phone: '+13055550100' }) },
     role: { findUnique: async () => state.roleExists ? { id: 3 } : null },
     user: {

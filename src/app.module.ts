@@ -1,5 +1,7 @@
 import { PaymentPlansModule } from './payment-plans/payment-plans.module';
 import { ContractsModule } from './contracts/contracts.module';
+import { PlatformTermsModule } from './platform-terms/platform-terms.module';
+import { PlatformTermsGuard } from './platform-terms/platform-terms.guard';
 import { Module } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ResponsePrivacyInterceptor } from './common/response-privacy.interceptor';
@@ -56,6 +58,7 @@ import { SmsConsentModule } from './sms/sms-consent.module';
 
     PrismaModule,
     ContractsModule,
+    PlatformTermsModule,
     ProductsModule,
     SystemsModule,
     UsersModule,
@@ -99,6 +102,7 @@ import { SmsConsentModule } from './sms/sms-consent.module';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: SessionTouchGuard },
+    { provide: APP_GUARD, useClass: PlatformTermsGuard },
     { provide: APP_INTERCEPTOR, useClass: ResponsePrivacyInterceptor },
   ],
 })

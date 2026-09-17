@@ -44,6 +44,8 @@ describe('Self-service field authorization (H01)', () => {
       user: { create: jest.fn(async ({ data }) => ({ id: 7, ...data })) },
       registrationConsent: { create: jest.fn() }, smsConsent: { create: jest.fn() }, smsConsentEvent: { create: jest.fn() } };
     db.$transaction = work => work(db);
+    db.$queryRaw = jest.fn(async () => [{ id: 1 }]);
+    db.platformTermsState = { findUniqueOrThrow: jest.fn(async () => ({ currentVersion: null })) };
     const service = new AuthService({} as any, db, {} as any, {} as any, {} as any,
       { getProgram: async () => ({ version: 'a'.repeat(64) }) } as any);
     await service.registerUser({ ...personal, ...restricted, password: 'Example-password-123',

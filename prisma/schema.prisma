@@ -111,6 +111,8 @@ model User {
   smsConsent                        SmsConsent?
   smsConsentEvents                  SmsConsentEvent[]
   registrationConsent               RegistrationConsent?
+  platformTermsAcceptances          PlatformTermsAcceptance[]
+  platformTermsPublished            PlatformTermsVersion[]      @relation("PlatformTermsPublisher")
   sessions                          Session[]
   passwordResetTokens               PasswordResetToken[]
   dealerContracts                   DealerContract[]
@@ -136,6 +138,41 @@ model User {
   @@index([deletedAt])
   @@index([installationPriceProfileId])
   @@index([dealerMode])
+}
+
+// Cada publicación conserva su texto y sus aceptaciones por versión.
+model PlatformTermsVersion {
+  id            Int                       @id @default(autoincrement())
+  content       String                    @db.LongText
+  sourceHash    String                    @db.Char(64)
+  originalName  String                    @db.VarChar(255)
+  sizeBytes     Int
+  consentText   String                    @db.VarChar(500)
+  publishedAt   DateTime                  @default(now())
+  publishedById Int?
+  publishedBy   User?                     @relation("PlatformTermsPublisher", fields: [publishedById], references: [id], onDelete: SetNull)
+  activeState   PlatformTermsState?
+  acceptances   PlatformTermsAcceptance[]
+}
+
+// La fila 1 serializa publicaciones y aceptaciones de la versión vigente.
+model PlatformTermsState {
+  id               Int                   @id
+  currentVersionId Int?                  @unique
+  currentVersion   PlatformTermsVersion? @relation(fields: [currentVersionId], references: [id], onDelete: Restrict)
+}
+
+model PlatformTermsAcceptance {
+  id         Int                  @id @default(autoincrement())
+  userId     Int
+  versionId  Int
+  acceptedAt DateTime             @default(now())
+  source     String               @db.VarChar(20)
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
+  version    PlatformTermsVersion @relation(fields: [versionId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, versionId])
+  @@index([versionId])
 }
 
 // Copia inmutable de las dos elecciones hechas al crear la cuenta.

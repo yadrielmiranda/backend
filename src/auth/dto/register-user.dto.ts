@@ -1,10 +1,19 @@
 import { PickType } from '@nestjs/mapped-types';
 import { CreateUserDto } from '@/users/dto/create-user.dto';
-import { IsBoolean, IsString, Matches, ValidateIf } from 'class-validator';
+import { IsBoolean, IsInt, IsString, Matches, Min, ValidateIf } from 'class-validator';
 import { PROFILE_FIELDS } from './self-service-fields';
 
 // Las condiciones comerciales se asignan exclusivamente desde administración.
 export class RegisterUserDto extends PickType(CreateUserDto, [...PROFILE_FIELDS, 'password'] as const) {
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsBoolean()
+  platformTermsAccepted?: unknown;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsInt()
+  @Min(1)
+  platformTermsVersionId?: number;
+
   // unknown evita que la conversión implícita acepte cadenas como "false".
   @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()

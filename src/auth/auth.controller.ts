@@ -13,6 +13,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { AllowBeforePlatformTerms } from '@/platform-terms/platform-terms.decorator';
 import { LoginDto } from './dto/login.dto';
 import { Response, Request, CookieOptions } from 'express';
 import { RegisterUserDto } from './dto/register-user.dto';
@@ -143,6 +144,7 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Get('profile')
+  @AllowBeforePlatformTerms()
   async getProfile(@Req() req: Request): Promise<UserSafe> {
     const userId = (req.user as AuthUser).id;
     return this.usersService.userSafe({ id: userId });
@@ -151,6 +153,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('logout')
+  @AllowBeforePlatformTerms()
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const actor = req.user as AuthUser;
     // La sesión autenticada se revoca aunque no se envíe la cookie de renovación.
@@ -181,6 +184,7 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Patch('change-password')
+  @AllowBeforePlatformTerms()
   @HttpCode(HttpStatus.OK)
   async changePassword(
     @Req() req: Request,

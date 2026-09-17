@@ -23,6 +23,7 @@ import { MailService } from '@/mail/mail.service';
 import { SmsConsentService } from '@/sms/sms-consent.service';
 import { pickProfileFields } from './dto/self-service-fields';
 import { assertTokenPurpose, SessionTokenPayload } from './access-session';
+import { lockCurrentPlatformTerms, requireCurrentAcceptance, savePlatformTermsAcceptance } from '@/platform-terms/platform-terms.policy';
 
 type JwtRolePayload = string | undefined;
 
@@ -179,6 +180,8 @@ export class AuthService {
 
     try {
       return await this.prisma.$transaction(async (tx) => {
+        const terms = await lockCurrentPlatformTerms(tx);
+        requireCurrentAcceptance(terms, registerUserDto.platformTermsAccepted, registerUserDto.platformTermsVersionId);
         if (wantsSms) {
           const block = await tx.smsPhoneBlock.findUnique({ where: { phone: userData.phone } });
           if (block) {
@@ -210,6 +213,7 @@ export class AuthService {
           },
         });
         const now = new Date();
+        if (terms) await savePlatformTermsAcceptance(tx, user.id, terms.id, 'REGISTRATION');
         const consentText = JSON.stringify({
           source: 'REGISTRATION',
           channel: 'SMS',
