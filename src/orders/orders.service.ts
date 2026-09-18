@@ -283,7 +283,7 @@ export class OrdersService {
         const finalPo =
           normalizedPo !== undefined
             ? normalizedPo
-            : (current.poNumber ?? null);
+            : (current.poNumber?.trim() || null);
 
         if (!finalPo) {
           throw new BadRequestException(
@@ -297,7 +297,17 @@ export class OrdersService {
       normalizedRateReal !== undefined ? normalizedRateReal : current.rateReal;
 
     const finalPoNumber =
-      normalizedPo !== undefined ? normalizedPo : current.poNumber;
+      normalizedPo !== undefined ? normalizedPo : current.poNumber?.trim() || null;
+    // Una orden que ya avanzó no puede perder su referencia del fabricante.
+    if (
+      normalizedPo === null &&
+      current.poNumber?.trim() &&
+      (nextStatus?.name ?? current.status.name) !== 'Pending'
+    ) {
+      throw new BadRequestException(
+        'The factory PO cannot be removed after the order leaves Pending.',
+      );
+    }
     if (finalRateReal && !finalPoNumber) {
       throw new BadRequestException(
         'PO Number is required before recording the real factory cost.',
