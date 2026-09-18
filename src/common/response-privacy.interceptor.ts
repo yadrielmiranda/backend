@@ -40,6 +40,7 @@ export function presentApiResponse(value: unknown, user?: AuthUser): any {
     const isUser = 'username' in input && ('idRole' in input || 'password' in input);
     return Object.fromEntries(Object.entries(input)
       .filter(([key]) => !credentials.has(key) && (!isUser || userFields.has(key)) &&
+        (user?.role?.name === 'admin' || key !== 'coverageSnapshot') &&
         (staff || !companyFinancials.has(key)) &&
         (staff || dealer || !dealerFinancials.has(key)))
       .map(([key, child]) => [key, visit(child)]));

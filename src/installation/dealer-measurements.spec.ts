@@ -1,3 +1,4 @@
+const confirmedAddress = { installationAddress: { street: '123 Example Street', city: 'Miami', state: 'FL', postalCode: '33101' }, installationAddressConfirmed: true };
 import { ForbiddenException } from '@nestjs/common';
 import {
   InstallationApprovalDecision,
@@ -221,6 +222,8 @@ function fixture() {
     createAndSend: jest.fn(),
     createAndSendToRoles: jest.fn(),
   };
+  tx.installationQuoteCoverageSnapshot = { upsert: jest.fn(), findUnique: jest.fn().mockResolvedValue(null) };
+  Object.assign(prisma, { installationQuoteCoverageSnapshot: tx.installationQuoteCoverageSnapshot });
   const workflow = new InstallationWorkflowService(
     prisma,
     {} as never,
@@ -229,6 +232,7 @@ function fixture() {
     {} as never,
     notifications as never,
   );
+  Object.assign(workflow, { coverage: { prepare: jest.fn().mockResolvedValue({ address: confirmedAddress.installationAddress, snapshot: { schema: 1, revision: 1 } }), assertCurrent: jest.fn() } });
   // Los cálculos se verifican en sus suites; aquí se prueban estados, medidas,
   // autorizaciones y pagos utilizando los métodos reales del flujo.
   jest.spyOn(workflow as any, 'rebuildAutomaticLines').mockResolvedValue(null);
@@ -630,11 +634,11 @@ describe('Editing and removing an unpaid installation after waiving its deposit'
       await f.workflow.acceptDealerMeasurements(f.job.id, admin);
       const acceptedAt = f.job.dealerMeasurementsAcceptedAt;
       f.tx.globalParameter.findUnique.mockResolvedValue({ value: new Prisma.Decimal(1500) });
-      await f.workflow.updateInstallationRequest(f.job.id, { permitRequested: true }, dealer);
+      await f.workflow.updateInstallationRequest(f.job.id, { ...confirmedAddress, permitRequested: true }, dealer);
       expect(f.job.status).toBe('PERMIT_PAYMENT_PENDING');
       expect(f.job.permit.permitFeeSnapshot.toString()).toBe('1500');
       expect(f.quote.status).toBe('APPROVED');
-      await f.workflow.updateInstallationRequest(f.job.id, { permitRequested: false }, dealer);
+      await f.workflow.updateInstallationRequest(f.job.id, { ...confirmedAddress, permitRequested: false }, dealer);
       expect(f.job.status).toBe('MATERIAL_PAYMENT_PENDING');
       expect(f.job.permit).toBeNull();
       expect(f.job.dealerMeasurementsAcceptedAt).toBe(acceptedAt);
@@ -648,7 +652,7 @@ describe('Editing and removing an unpaid installation after waiving its deposit'
     const f = fixture();
     await f.workflow.acceptDealerMeasurements(f.job.id, dealer);
     f.quote.total = new Prisma.Decimal(100);
-    await f.workflow.updateInstallationRequest(f.job.id, { permitRequested: false }, dealer);
+    await f.workflow.updateInstallationRequest(f.job.id, { ...confirmedAddress, permitRequested: false }, dealer);
     expect(f.quote.total.toString()).toBe('100');
     expect(f.quote.status).toBe('APPROVED');
   });
@@ -662,7 +666,7 @@ describe('Editing and removing an unpaid installation after waiving its deposit'
         f.quote.total = new Prisma.Decimal(1200);
       });
     await f.workflow.updateInstallationRequest(f.job.id, {
-      permitRequested: false, selectedServices: [{ serviceId: 42, occurrences: 1 }],
+      ...confirmedAddress, permitRequested: false, selectedServices: [{ serviceId: 42, occurrences: 1 }],
     }, dealer);
     expect(addLine).toHaveBeenCalledTimes(1);
     expect(f.quote.status).toBe('APPROVED');
@@ -735,7 +739,7 @@ describe('Editing and removing an unpaid installation after waiving its deposit'
       // Incluye pagos del Estimate aunque no estén asociados al InstallationJob.
       f.job.payments = [];
       f.estimate.payments.push({ type, status: 'PENDING', stripeSessionId: 'cs_started' });
-      await expect(f.workflow.updateInstallationRequest(f.job.id, { permitRequested: false }, dealer))
+      await expect(f.workflow.updateInstallationRequest(f.job.id, { ...confirmedAddress, permitRequested: false }, dealer))
         .rejects.toThrow('before payment starts');
       await expect(f.workflow.cancelInstallation(f.job.id, {}, dealer)).rejects.toThrow('before payment starts');
       await expect(f.workflow.assertEstimateEditAllowed(f.estimate.id, dealer, false, f.tx)).rejects.toThrow('locked');
@@ -772,7 +776,7 @@ describe('Editing and removing an unpaid installation after waiving its deposit'
     f.quote.status = 'PENDING_ADMIN_APPROVAL';
     f.quote.submittedAt = new Date();
     f.job.status = 'ADMIN_APPROVAL_PENDING';
-    await expect(f.workflow.updateInstallationRequest(f.job.id, { permitRequested: false }, dealer)).rejects.toThrow('before payment starts');
+    await expect(f.workflow.updateInstallationRequest(f.job.id, { ...confirmedAddress, permitRequested: false }, dealer)).rejects.toThrow('before payment starts');
     await expect(f.workflow.refreshUnpaidDealerMeasurements(f.estimate.id, f.tx)).rejects.toThrow('locked');
     expect(f.quote.status).toBe('PENDING_ADMIN_APPROVAL');
   });
@@ -781,8 +785,39 @@ describe('Editing and removing an unpaid installation after waiving its deposit'
     const f = fixture();
     await f.workflow.acceptDealerMeasurements(f.job.id, dealer);
     const other = { id: 99, role: { name: 'dealer' } } as const;
-    await expect(f.workflow.updateInstallationRequest(f.job.id, { permitRequested: false }, other)).rejects.toThrow();
+    await expect(f.workflow.updateInstallationRequest(f.job.id, { ...confirmedAddress, permitRequested: false }, other)).rejects.toThrow();
     await expect(f.workflow.cancelInstallation(f.job.id, {}, other)).rejects.toThrow();
     expect(f.tx.installationJob.delete).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('Coverage policy preserved for an unchanged work address', () => {
+  it('keeps the saved policy when services change at the same address', async () => {
+    const f = fixture();
+    f.job.installationAddress = confirmedAddress.installationAddress;
+    const saved = { schema: 1, revision: 4, range: { type: 'FIXED', value: '150' } };
+    f.tx.installationQuoteCoverageSnapshot.findUnique.mockResolvedValue({ data: saved });
+    await f.workflow.updateInstallationRequest(f.job.id, { ...confirmedAddress, permitRequested: false }, dealer);
+    expect((f.workflow as any).coverage.prepare).not.toHaveBeenCalled();
+    expect((f.workflow as any).coverage.assertCurrent).not.toHaveBeenCalled();
+    expect(f.tx.installationQuoteCoverageSnapshot.upsert.mock.calls[0][0].update.data).toEqual(saved);
+  });
+  it('rechecks coverage when the work address changes', async () => {
+    const f = fixture();
+    f.job.installationAddress = { ...confirmedAddress.installationAddress, street: '789 Previous Street' };
+    await f.workflow.updateInstallationRequest(f.job.id, { ...confirmedAddress, permitRequested: false }, dealer);
+    expect((f.workflow as any).coverage.prepare).toHaveBeenCalledWith(confirmedAddress.installationAddress);
+    expect(f.job.installationAddress).toEqual(confirmedAddress.installationAddress);
+  });
+});
+
+
+describe('Pre-existing installation deposit exemption', () => {
+  it('does not bypass coverage when waiving a legacy preliminary deposit', async () => {
+    const f = fixture();
+    f.job.installationAddressConfirmedAt = null;
+    await expect(f.workflow.acceptDealerMeasurements(f.job.id, admin)).rejects.toThrow('confirm its address');
+    expect(f.job.dealerMeasurementsAcceptedAt).toBeNull();
   });
 });

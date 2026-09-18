@@ -1,3 +1,7 @@
+import { HttpModule } from '@nestjs/axios';
+import { GoogleAddressValidationService } from '@/deliveries/google-address-validation.service';
+import { GoogleRoutesService } from '@/deliveries/google-routes.service';
+import { InstallationCoverageCalculationService } from './installation-coverage-calculation.service';
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '@/prisma/prisma.module';
 import { LogsModule } from '@/logs/logs.module';
@@ -10,11 +14,17 @@ import { EstimateDimensionValidationService } from '@/estimates/dimensions/estim
 import { EstimateMuntinService } from '@/estimates/muntins/estimate-muntin.service';
 import { EstimatePieceCalculatorService } from '@/estimates/calculation/estimate-piece-calculator.service';
 import { NotificationsModule } from '@/notifications/notifications.module';
+import { InstallationCoverageController } from './installation-coverage.controller';
+import { InstallationCoverageService } from './installation-coverage.service';
 
 @Module({
-  imports: [PrismaModule, LogsModule, NotificationsModule],
-  controllers: [InstallationCatalogController, InstallationWorkflowController],
+  imports: [HttpModule, PrismaModule, LogsModule, NotificationsModule],
+  controllers: [InstallationCatalogController, InstallationWorkflowController, InstallationCoverageController],
   providers: [
+    GoogleAddressValidationService,
+    GoogleRoutesService,
+    InstallationCoverageCalculationService,
+    InstallationCoverageService,
     InstallationCatalogService,
     InstallationPricingService,
     InstallationWorkflowService,

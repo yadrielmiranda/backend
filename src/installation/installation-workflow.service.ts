@@ -1,3 +1,6 @@
+import { installationAddress } from './installation-address';
+import { Inject } from '@nestjs/common';
+import { InstallationCoverageCalculationService, installationSurcharge, installationBaseForSurcharge, type CoverageSnapshot } from './installation-coverage-calculation.service';
 import { decimalAmount, hasRefundHistory, paidPrincipal, paymentIsCovered, remainingRefundBalance } from '@/payments/payment-accounting';
 import { assertScheduleMilestone, getPaymentSchedule, installmentContext, refreshScheduledInstallation } from '@/payment-plans/payment-schedule';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
@@ -281,6 +284,16 @@ const jobInclude = {
 
 @Injectable()
 export class InstallationWorkflowService {
+  @Inject(InstallationCoverageCalculationService)
+  private readonly coverage: InstallationCoverageCalculationService;
+
+  private async prepareInstallationCoverage(estimateId: number, dto: RequestInstallationDto, user: AuthUser) {
+    if (dto.installationAddressConfirmed !== true) throw new BadRequestException('Confirm the installation address.');
+    const estimate = await this.prisma.estimate.findUnique({ where: { id: estimateId }, select: { idUser: true } });
+    if (!estimate || (!canViewAllInstallations(user.role?.name) && estimate.idUser !== user.id)) throw new NotFoundException('Estimate not found.');
+    return this.coverage.prepare(dto.installationAddress);
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly pricing: InstallationPricingService,
@@ -1205,6 +1218,7 @@ export class InstallationWorkflowService {
       where: { jobId },
       orderBy: { version: 'desc' },
       include: {
+        coverageSnapshot: true,
         lines: { select: quoteLineSnapshotSelect, orderBy: { id: 'asc' } },
       },
     });
@@ -1258,6 +1272,8 @@ export class InstallationWorkflowService {
             ? Prisma.JsonNull
             : (latest.serviceMinimumsSnapshot as Prisma.InputJsonValue),
         minimumAdjustment: latest.minimumAdjustment,
+        installationSurcharge: latest.installationSurcharge,
+        ...(latest.coverageSnapshot ? { coverageSnapshot: { create: { data: latest.coverageSnapshot.data as Prisma.InputJsonValue } } } : {}),
         total: latest.total,
         notes: latest.notes,
         createdById: actorId,
@@ -1284,9 +1300,12 @@ export class InstallationWorkflowService {
     const quote = await tx.installationQuote.findUnique({
       where: { id: quoteId },
       include: {
+        coverageSnapshot: true,
+        job: { select: { installationAddressConfirmedAt: true } },
         lines: {
           select: {
             serviceId: true,
+            origin: true,
             serviceNameSnapshot: true,
             baseAmount: true,
             adjustedAmount: true,
@@ -1342,7 +1361,14 @@ export class InstallationWorkflowService {
             subtotalAfterServiceMinimums,
           ),
         );
-    const total = subtotalAfterServiceMinimums.add(minimumAdjustment);
+    const installationBase = subtotalAfterServiceMinimums.add(minimumAdjustment);
+    if (quote.job?.installationAddressConfirmedAt && !quote.coverageSnapshot) {
+      throw new BadRequestException('Installation pricing must be verified before recalculating.');
+    }
+    const surcharge = quote.coverageSnapshot
+      ? installationSurcharge(installationBaseForSurcharge(installationBase, quote.lines, serviceMinimums.snapshot), quote.coverageSnapshot.data as unknown as CoverageSnapshot)
+      : new Decimal(0); // Las cotizaciones anteriores conservan el precio acordado.
+    const total = installationBase.add(surcharge);
 
     return tx.installationQuote.update({
       where: { id: quoteId },
@@ -1357,6 +1383,7 @@ export class InstallationWorkflowService {
             ? Prisma.JsonNull
             : (serviceMinimums.snapshot as Prisma.InputJsonValue),
         minimumAdjustment: new Prisma.Decimal(minimumAdjustment.toFixed(2)),
+        installationSurcharge: new Prisma.Decimal(surcharge.toFixed(2)),
         total: new Prisma.Decimal(total.toFixed(2)),
       },
     });
@@ -1663,7 +1690,10 @@ export class InstallationWorkflowService {
     dto: RequestInstallationDto,
     user: AuthUser,
   ) {
+    // La consulta externa ocurre antes de abrir la transacción de la cotización.
+    const coverage = await this.prepareInstallationCoverage(estimateId, dto, user);
     const createdJob = await withAgreementTransaction(this.prisma, estimateId, async (tx) => {
+      await this.coverage.assertCurrent(coverage.snapshot, tx);
       const estimate = await tx.estimate.findUnique({
         where: { id: estimateId },
         include: {
@@ -1747,6 +1777,8 @@ export class InstallationWorkflowService {
       const job = await tx.installationJob.create({
         data: {
           estimateId,
+          installationAddress: coverage.address,
+          installationAddressConfirmedAt: new Date(),
           requestedById: user.id,
           status: InstallationJobStatus.DEPOSIT_PAYMENT_PENDING,
           depositAmountSnapshot: new Prisma.Decimal(depositAmount.toFixed(2)),
@@ -1771,6 +1803,7 @@ export class InstallationWorkflowService {
           quotes: {
             create: {
               version: 1,
+              coverageSnapshot: { create: { data: coverage.snapshot as unknown as Prisma.InputJsonValue } },
               status: InstallationQuoteStatus.DRAFT,
               approvalReason: InstallationQuoteReason.REMEASUREMENT,
               profileId: profile.id,
@@ -1901,6 +1934,10 @@ export class InstallationWorkflowService {
       throw new ConflictException(
         'Dealer measurements can only be accepted while the installation deposit is pending.',
       );
+    }
+    // Las solicitudes preliminares anteriores a la migración deben verificar su obra antes de continuar.
+    if (job.installationAddressConfirmedAt === null) {
+      throw new BadRequestException('Edit the installation request and confirm its address before continuing.');
     }
     this.assertUnchangedDealerQuote(job);
   }
@@ -2045,12 +2082,29 @@ export class InstallationWorkflowService {
     user: AuthUser,
   ) {
     const currentJob = await this.findJob(jobId, user);
+    if (hasStartedInstallationPayment(currentJob.estimate.payments ?? []) || currentJob.estimate.order) {
+      throw new BadRequestException('Installation details can only be changed before payment starts.');
+    }
+    if (dto.installationAddressConfirmed !== true) throw new BadRequestException('Confirm the installation address.');
+    const address = installationAddress(dto.installationAddress);
+    const previousAddress = installationAddress(currentJob.installationAddress);
+    const sameAddress = address && previousAddress && Object.keys(address).every(
+      key => address[key].toUpperCase() === previousAddress[key].toUpperCase(),
+    );
+    const savedCoverage = sameAddress && currentJob.quotes[0]
+      ? await this.prisma.installationQuoteCoverageSnapshot.findUnique({ where: { quoteId: currentJob.quotes[0].id } })
+      : null;
+    // Los servicios pueden cambiar sin sustituir la tarifa ya acordada para la misma obra.
+    const coverage = savedCoverage
+      ? { address: previousAddress!, snapshot: savedCoverage.data as unknown as CoverageSnapshot }
+      : await this.prepareInstallationCoverage(currentJob.estimateId, dto, user);
     const beforeSelectedServiceIds =
       currentJob.quotes[0]?.lines
         .filter((line) => line.origin === InstallationLineOrigin.USER_SELECTED)
         .map((line) => line.serviceId) ?? [];
 
     await this.withAgreementJobTransaction(jobId, async (tx) => {
+      if (!savedCoverage) await this.coverage.assertCurrent(coverage.snapshot, tx);
       const job = await tx.installationJob.findUnique({
         where: { id: jobId },
         include: {
@@ -2087,6 +2141,7 @@ export class InstallationWorkflowService {
       if (!job) {
         throw new NotFoundException(`Installation job #${jobId} not found.`);
       }
+      this.assertAccess(job, user);
       const editableWaiver = canEditUnpaidWaivedInstallation(job);
       if (
         (!editableWaiver && job.status !== InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) ||
@@ -2102,12 +2157,26 @@ export class InstallationWorkflowService {
         );
       }
 
+      if (savedCoverage && (job.quotes[0]?.id !== currentJob.quotes[0]?.id ||
+        JSON.stringify(installationAddress(job.installationAddress)) !== JSON.stringify(previousAddress))) {
+        throw new ConflictException('Installation details changed. Reload the estimate before trying again.');
+      }
       const quote = job.quotes[0];
       if (!quote || (!editableWaiver && quote.status !== InstallationQuoteStatus.DRAFT)) {
         throw new BadRequestException(
           'Only the preliminary installation quote can be changed.',
         );
       }
+
+      await tx.installationQuoteCoverageSnapshot.upsert({
+        where: { quoteId: quote.id },
+        create: { quoteId: quote.id, data: coverage.snapshot as unknown as Prisma.InputJsonValue },
+        update: { data: coverage.snapshot as unknown as Prisma.InputJsonValue },
+      });
+      await tx.installationJob.update({
+        where: { id: jobId },
+        data: { installationAddress: coverage.address, installationAddressConfirmedAt: new Date() },
+      });
 
       if (editableWaiver) {
         await tx.installationQuote.update({
@@ -4712,6 +4781,9 @@ export class InstallationWorkflowService {
         throw new BadRequestException(
           'A preliminary installation quote is required before deposit payment.',
         );
+      }
+      if (!options.preview && job.installationAddressConfirmedAt === null && !hasStartedInstallationPayment(estimate.payments)) {
+        throw new BadRequestException('Edit the installation request and confirm its address before paying the deposit.');
       }
       if (!options.preview) {
         assertCompleteEstimateCustomer(estimate, 'deposit');

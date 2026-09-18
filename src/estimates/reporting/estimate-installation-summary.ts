@@ -3,10 +3,12 @@ import {
   InstallationQuoteStatus,
   Prisma,
 } from '@prisma/client';
+import { installationAddress, type InstallationAddress } from '@/installation/installation-address';
 
 export const estimateInstallationSummarySelect = {
   id: true,
   status: true,
+  installationAddress: true,
   quotes: {
     where: {
       status: {
@@ -20,6 +22,7 @@ export const estimateInstallationSummarySelect = {
     select: {
       status: true,
       total: true,
+      installationSurcharge: true,
       serviceMinimumsSnapshot: true,
       lines: {
         orderBy: [
@@ -51,6 +54,8 @@ export type EstimateInstallationReportSummary = {
   status: InstallationJobStatus;
   quoteStatus: InstallationQuoteStatus | null;
   installationAmount: string | null;
+  installationSurcharge?: string;
+  installationAddress?: InstallationAddress | null;
   installationTotal: string | null;
   additionalServices: Array<{
     serviceId: number;
@@ -162,6 +167,8 @@ export function buildEstimateInstallationSummary(
 
   return {
     status: job.status,
+    ...(installationAddress(job.installationAddress) ? { installationAddress: installationAddress(job.installationAddress) } : {}),
+    ...(numberValue(quote?.installationSurcharge) > 0 ? { installationSurcharge: moneyString(numberValue(quote?.installationSurcharge)) } : {}),
     quoteStatus: quote?.status ?? null,
     installationAmount:
       installationAmount == null ? null : moneyString(installationAmount),

@@ -740,3 +740,28 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).not.toContain('Thank you for your business.');
   });
 });
+
+
+describe('Installation coverage in PDF output', () => {
+  it('shows only the surcharge amount and the confirmed work address', () => {
+    const estimate = estimateFixture();
+    estimate.dealerModeSnapshot = null;
+    estimate.installationSummary!.installationSurcharge = '150.00';
+    estimate.installationSummary!.installationAddress = { street: '987 Work Site', city: 'Miami', state: 'FL', postalCode: '33101' };
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'client');
+    expect(html).toContain('Installation surcharge');
+    expect(html).toContain('$250.00');
+    expect(html).toContain('$150.00');
+    expect(html).toContain('987 Work Site');
+    expect(html).not.toMatch(/originStreet|distanceMeters|includedMiles|coverageSnapshot/);
+  });
+  it('does not disclose the company surcharge in the external dealer customer PDF', () => {
+    const estimate = withExternalDealerCustomerCharges();
+    estimate.installationSummary!.installationSurcharge = '149.37';
+    estimate.installationSummary!.installationAddress = { street: '987 Work Site', city: 'Miami', state: 'FL', postalCode: '33101' };
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'dealer_public');
+    expect(html).toContain('987 Work Site');
+    expect(html).not.toContain('$149.37');
+    expect(html).toContain('$650.00');
+  });
+});

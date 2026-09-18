@@ -1,3 +1,4 @@
+const confirmedAddress = { installationAddress: { street: '123 Example Street', city: 'Miami', state: 'FL', postalCode: '33101' }, installationAddressConfirmed: true };
 import { GlobalParameterKey, PaymentType, Prisma } from '@prisma/client';
 import Decimal from 'decimal.js';
 import { InstallationWorkflowService } from './installation-workflow.service';
@@ -108,6 +109,7 @@ function fixture(role: 'dealer' | 'client' = 'dealer') {
     eventLog: { create: jest.fn() },
   };
   const prisma = {
+    ...tx,
     $transaction: jest.fn(async (work) => work(tx)),
   };
   const pricing = {
@@ -118,6 +120,8 @@ function fixture(role: 'dealer' | 'client' = 'dealer') {
       minimumCharge: new Decimal(0),
     }),
   };
+  tx.installationQuoteCoverageSnapshot = { upsert: jest.fn(), findUnique: jest.fn().mockResolvedValue(null) };
+  Object.assign(prisma, { installationQuoteCoverageSnapshot: tx.installationQuoteCoverageSnapshot });
   const workflow = new InstallationWorkflowService(
     prisma as never,
     pricing as never,
@@ -126,6 +130,7 @@ function fixture(role: 'dealer' | 'client' = 'dealer') {
     {} as never,
     {} as never,
   );
+  Object.assign(workflow, { coverage: { prepare: jest.fn().mockResolvedValue({ address: confirmedAddress.installationAddress, snapshot: { schema: 1, revision: 1 } }), assertCurrent: jest.fn() } });
   // Se aísla el cálculo de piezas; la solicitud y la validación del pago son reales.
   jest.spyOn(workflow as any, 'rebuildAutomaticLines').mockResolvedValue(null);
   jest
@@ -162,7 +167,7 @@ describe('Customer details at installation commitment', () => {
       f.estimate.user.dealerMode = mode;
       const result = await f.workflow.requestInstallation(
         1,
-        { permitRequested: false, selectedServices: [] },
+        { ...confirmedAddress, permitRequested: false, selectedServices: [] },
         f.actor,
       );
       expect(result.id).toBe(3);
@@ -183,7 +188,7 @@ describe('Customer details at installation commitment', () => {
       (f.estimate.user as any).noInstallationDeposit = true;
       await f.workflow.requestInstallation(
         1,
-        { permitRequested: false },
+        { ...confirmedAddress, permitRequested: false },
         f.actor,
       );
       expect(f.job.status).toBe('MATERIAL_PAYMENT_PENDING');
@@ -212,7 +217,7 @@ describe('Customer details at installation commitment', () => {
     f.job.quotes[0].total = new Prisma.Decimal(100);
     await f.workflow.requestInstallation(
       1,
-      { permitRequested: false },
+      { ...confirmedAddress, permitRequested: false },
       f.actor,
     );
     expect(f.job.status).toBe('MATERIAL_PAYMENT_PENDING');
@@ -225,7 +230,7 @@ describe('Customer details at installation commitment', () => {
     f.tx.globalParameter.findUnique.mockResolvedValue({
       value: new Prisma.Decimal(250),
     });
-    await f.workflow.requestInstallation(1, { permitRequested: true }, f.actor);
+    await f.workflow.requestInstallation(1, { ...confirmedAddress, permitRequested: true }, f.actor);
     expect(f.job.status).toBe('PERMIT_PAYMENT_PENDING');
     expect(f.job.permit.status).toBe('PAYMENT_PENDING');
   });
@@ -235,7 +240,7 @@ describe('Customer details at installation commitment', () => {
     (f.estimate.user as any).noInstallationDeposit = true;
     await f.workflow.requestInstallation(
       1,
-      { permitRequested: false },
+      { ...confirmedAddress, permitRequested: false },
       f.actor,
     );
     expect(f.job.status).toBe('DEPOSIT_PAYMENT_PENDING');
@@ -248,7 +253,7 @@ describe('Customer details at installation commitment', () => {
     await expect(
       f.workflow.requestInstallation(
         1,
-        { permitRequested: false, selectedServices: [] },
+        { ...confirmedAddress, permitRequested: false, selectedServices: [] },
         f.actor,
       ),
     ).resolves.toHaveProperty('id', 3);
@@ -305,6 +310,43 @@ describe('Customer details at installation commitment', () => {
     expect(f.tx.installationJob.update).not.toHaveBeenCalled();
     f.estimate.user.street = '456 Account Street';
     for (const key of Object.keys(customer)) f.estimate[key] = null;
+    expect((await f.deposit()).baseAmount.toFixed(2)).toBe('250.00');
+  });
+});
+
+
+describe('Installation address commitment', () => {
+  it('stores the confirmed work address without rewriting customer or profile data', async () => {
+    const f = fixture();
+    const profile = { ...f.estimate.user };
+    await f.workflow.requestInstallation(1, { ...confirmedAddress, permitRequested: false }, f.actor);
+    expect(f.tx.installationJob.create.mock.calls[0][0].data).toMatchObject({ installationAddress: confirmedAddress.installationAddress, installationAddressConfirmedAt: expect.any(Date), quotes: { create: { coverageSnapshot: { create: { data: { schema: 1, revision: 1 } } } } } });
+    expect(f.estimate.user).toEqual(profile);
+    expect(f.estimate.customerStreet).toBeNull();
+  });
+  it.each([false, true])('blocks all installation creation outside coverage, including deposit exemption %s', async exempt => {
+    const f = fixture();
+    f.estimate.user.noInstallationDeposit = exempt;
+    (f.workflow as any).coverage.prepare.mockRejectedValue(new Error('Installation is not available at this address.'));
+    await expect(f.workflow.requestInstallation(1, { ...confirmedAddress, permitRequested: false }, f.actor)).rejects.toThrow('not available');
+    expect(f.tx.installationJob.create).not.toHaveBeenCalled();
+  });
+  it('requires the explicit confirmation even for service calls', async () => {
+    const f = fixture();
+    await expect(f.workflow.requestInstallation(1, { ...confirmedAddress, installationAddressConfirmed: false, permitRequested: false }, f.actor)).rejects.toThrow('Confirm the installation address');
+    expect((f.workflow as any).coverage.prepare).not.toHaveBeenCalled();
+    expect(f.tx.installationJob.create).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('Pre-existing preliminary installation coverage', () => {
+  it('blocks an unpaid legacy deposit until its address is confirmed', async () => {
+    const f = fixture();
+    Object.assign(f.estimate, customer);
+    f.job.installationAddressConfirmedAt = null;
+    await expect(f.deposit()).rejects.toThrow('confirm its address before paying');
+    f.job.installationAddressConfirmedAt = new Date();
     expect((await f.deposit()).baseAmount.toFixed(2)).toBe('250.00');
   });
 });

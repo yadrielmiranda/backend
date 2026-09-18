@@ -26,6 +26,7 @@ function record(value: unknown): value is RecordValue {
 }
 
 const internalFields = new Set([
+  'coverageSnapshot',
   'rate',
   'rateT',
   'rateReal',
@@ -96,6 +97,7 @@ function publicQuote(quote: RecordValue, user: AuthUser | undefined) {
       'status',
       'approvalReason',
       'total',
+      'installationSurcharge',
       'needsRecalculation',
       'notes',
       'submittedAt',
@@ -110,7 +112,7 @@ function publicQuote(quote: RecordValue, user: AuthUser | undefined) {
     // Muestra el importe restante sin revelar las reglas de mínimos que lo originaron.
     additionalInstallationCharge: Decimal.max(
       0,
-      new Decimal(String(quote.total)).minus(linesTotal),
+      new Decimal(String(quote.total)).minus(linesTotal).minus(String(quote.installationSurcharge ?? 0)),
     ).toFixed(2),
   };
 }

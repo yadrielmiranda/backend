@@ -30,7 +30,7 @@ export function installationQuoteContent(quote: Snapshot & { lines: Snapshot[] }
   return JSON.stringify({
     ...numbers(quote, [
       'profileAdjustmentPercent', 'profileMinimumSnapshot', 'baseSubtotal',
-      'adjustedSubtotal', 'serviceMinimumAdjustment', 'minimumAdjustment', 'total',
+      'adjustedSubtotal', 'serviceMinimumAdjustment', 'minimumAdjustment', 'installationSurcharge', 'total',
     ]),
     lines,
   });

@@ -719,8 +719,8 @@ export class EstimatePdfHtmlBuilder {
         installationSummary.installationAmount == null
           ? 'Pending'
           : Number(manualDiscount?.installation.discount) > 0
-            ? originalPrice(numberValue(installationSummary.installationAmount))
-            : formatMoney(installationSummary.installationAmount);
+            ? originalPrice(numberValue(installationSummary.installationAmount) - numberValue(installationSummary.installationSurcharge))
+            : formatMoney(numberValue(installationSummary.installationAmount) - numberValue(installationSummary.installationSurcharge));
       const rows = [
         summaryRow(
           'Installation',
@@ -728,6 +728,9 @@ export class EstimatePdfHtmlBuilder {
         ),
       ];
 
+      if (numberValue(installationSummary.installationSurcharge) > 0) {
+        rows.push(summaryRow('Installation surcharge', formatMoney(installationSummary.installationSurcharge)));
+      }
       if (installationSummary.quoteStatus !== null) {
         if (installationSummary.additionalServices.length > 0) {
           for (const service of installationSummary.additionalServices) {
@@ -801,6 +804,9 @@ export class EstimatePdfHtmlBuilder {
         ),
       ];
 
+      if (numberValue(installationSummary.installationSurcharge) > 0) {
+        rows.push(summaryRow('Installation surcharge', formatMoney(installationSummary.installationSurcharge)));
+      }
       if (installationSummary.quoteStatus !== null) {
         if (installationSummary.additionalServices.length > 0) {
           for (const service of installationSummary.additionalServices) {
@@ -1038,7 +1044,7 @@ export class EstimatePdfHtmlBuilder {
   </header>
   <section class="prepared-section">
     <div class="prepared-details"><div class="eyebrow">Prepared for</div><div class="prepared-name">${escapeHtml(preparedFor)}</div>${projectName ? `<div class="project-name">Project: ${escapeHtml(projectName)}</div>` : ''}</div>
-    <div class="contact">${contactPhone ? `<div>${escapeHtml(contactPhone)}</div>` : ''}${contactEmail ? `<div>${escapeHtml(contactEmail)}</div>` : ''}${contactAddress ? `<div>${escapeHtml(contactAddress)}</div>` : ''}</div>
+    <div class="contact">${contactPhone ? `<div>${escapeHtml(contactPhone)}</div>` : ''}${contactEmail ? `<div>${escapeHtml(contactEmail)}</div>` : ''}${contactAddress ? `<div>${escapeHtml(contactAddress)}</div>` : ''}${installationSummary?.installationAddress ? `<div><strong>Installation address:</strong> ${escapeHtml(Object.values(installationSummary.installationAddress).join(', '))}</div>` : ''}</div>
     <div class="dates"><div class="date-group"><div class="date-label">Date</div><div class="date-value">${escapeHtml(formatDate(estimate.date))}</div></div>${estimate.expiresAt && !estimate.promotionLockedAt && !estimateDiscountConfig(estimate.manualDiscount)?.lockedAt ? `<div class="date-group"><div class="date-label">Valid through</div><div class="date-value">${escapeHtml(estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString('en-US') : formatDate(estimate.expiresAt))}</div></div>` : ''}</div>
   </section>
   <section class="products-section"><div class="products-heading"><h2 class="section-heading">Product Details</h2><div class="illustration-note">Illustrations are visual references; written specifications govern.</div></div><div class="product-list">${productCards}</div></section>

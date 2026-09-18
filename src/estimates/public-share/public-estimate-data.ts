@@ -75,6 +75,7 @@ export function buildPublicEstimateData(
     fullInstallationSummary
       ? {
           ...fullInstallationSummary,
+          ...(fullInstallationSummary.installationSurcharge ? { installationSurcharge: '0.00' } : {}),
           installationAmount:
             fullInstallationSummary.installationAmount == null ? null : '0.00',
           installationTotal:

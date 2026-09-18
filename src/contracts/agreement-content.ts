@@ -156,6 +156,8 @@ export function agreementContent(publicEstimate: any) {
             'permitFee',
             'cityFee',
           ]),
+          ...(installation.installationAddress ? { installationAddress: installation.installationAddress } : {}),
+          ...(Number(installation.installationSurcharge) > 0 ? { installationSurcharge: installation.installationSurcharge } : {}),
           additionalServices: installation.additionalServices,
         }
       : null,
@@ -257,6 +259,7 @@ export function agreementScopes(snapshot: any): AgreementScopes {
     canonicalJson({
       ...(original.paymentPlan ? { paymentPlan: original.paymentPlan } : {}),
       header: original.header,
+      ...(original.installation?.installationAddress ? { installationAddress: original.installation.installationAddress } : {}),
       totals: original.totals,
       materialDiscount: money(discount?.material?.discount ?? 0),
       materialTotal,
@@ -273,7 +276,8 @@ export function agreementScopes(snapshot: any): AgreementScopes {
     }
   } else if (snapshot.installationSummary) {
     const installation = snapshot.installationSummary;
-    add('Installation', installation.installationAmount);
+    add('Installation', installation.installationAmount == null ? null : new Decimal(installation.installationAmount).minus(installation.installationSurcharge ?? 0).toFixed(2));
+    if (Number(installation.installationSurcharge) > 0) add('Installation surcharge', installation.installationSurcharge);
     for (const service of installation.additionalServices ?? [])
       add(service.name, service.amount);
     if (installation.permitIncluded) {

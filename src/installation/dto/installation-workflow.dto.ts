@@ -1,3 +1,5 @@
+import { InstallationAddressDto } from './installation-address.dto';
+import { Equals } from 'class-validator';
 import { PartialType } from '@nestjs/mapped-types';
 import { Type } from 'class-transformer';
 import {
@@ -77,6 +79,14 @@ export class AddInstallationLineDto {
 }
 
 export class RequestInstallationDto {
+  @IsDefined()
+  @ValidateNested()
+  @Type(() => InstallationAddressDto)
+  installationAddress: InstallationAddressDto;
+
+  @Equals(true, { message: 'Confirm the installation address.' })
+  installationAddressConfirmed: boolean;
+
   @IsDefined()
   @IsBoolean()
   permitRequested: boolean;

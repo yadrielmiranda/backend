@@ -1694,6 +1694,23 @@ enum InstallationAppointmentType {
   INSTALLATION
 }
 
+// Configuración única de cobertura; los rangos se guardan juntos y validados.
+model InstallationCoverage {
+  id               Int      @id @default(1)
+  revision         Int      @default(1)
+  originStreet     String   @db.VarChar(150)
+  originCity       String   @db.VarChar(100)
+  originState      String   @db.VarChar(2)
+  originPostalCode String   @db.VarChar(10)
+  maxDistanceMiles Decimal  @db.Decimal(10, 2)
+  includedMiles    Decimal  @db.Decimal(10, 2)
+  ranges           Json
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("installation_coverage")
+}
+
 model InstallationService {
   id          Int     @id @default(autoincrement())
   name        String  @unique @db.VarChar(150)
@@ -1778,9 +1795,12 @@ model InstallationPriceProfile {
 }
 
 model InstallationJob {
-  id         Int                   @id @default(autoincrement())
-  estimateId Int                   @unique
-  status     InstallationJobStatus @default(REQUESTED)
+  id         Int @id @default(autoincrement())
+  estimateId Int @unique
+
+  installationAddress            Json?
+  installationAddressConfirmedAt DateTime?
+  status                         InstallationJobStatus @default(REQUESTED)
 
   depositAmountSnapshot  Decimal   @default(0) @db.Decimal(12, 2)
   depositTermsSnapshot   String?   @db.VarChar(1000)
@@ -1877,13 +1897,15 @@ model InstallationQuote {
   profileAdjustmentPercent Decimal @default(0) @db.Decimal(10, 4)
   profileMinimumSnapshot   Decimal @default(0) @db.Decimal(12, 2)
 
-  baseSubtotal             Decimal @default(0) @db.Decimal(12, 2)
-  adjustedSubtotal         Decimal @default(0) @db.Decimal(12, 2)
-  serviceMinimumAdjustment Decimal @default(0) @db.Decimal(12, 2)
+  baseSubtotal             Decimal                            @default(0) @db.Decimal(12, 2)
+  adjustedSubtotal         Decimal                            @default(0) @db.Decimal(12, 2)
+  serviceMinimumAdjustment Decimal                            @default(0) @db.Decimal(12, 2)
   serviceMinimumsSnapshot  Json?
-  minimumAdjustment        Decimal @default(0) @db.Decimal(12, 2)
-  total                    Decimal @default(0) @db.Decimal(12, 2)
-  needsRecalculation       Boolean @default(false)
+  minimumAdjustment        Decimal                            @default(0) @db.Decimal(12, 2)
+  installationSurcharge    Decimal                            @default(0) @db.Decimal(12, 2)
+  coverageSnapshot         InstallationQuoteCoverageSnapshot?
+  total                    Decimal                            @default(0) @db.Decimal(12, 2)
+  needsRecalculation       Boolean                            @default(false)
 
   notes       String?   @db.VarChar(2000)
   submittedAt DateTime?
@@ -1906,6 +1928,15 @@ model InstallationQuote {
   @@index([profileId])
   @@index([createdById])
   @@map("installation_quotes")
+}
+
+// Registro privado: no se incluye en consultas de instalaciones, estimados ni documentos.
+model InstallationQuoteCoverageSnapshot {
+  quoteId Int               @id
+  data    Json
+  quote   InstallationQuote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@map("installation_quote_coverage_snapshots")
 }
 
 model EstimateRevision {
