@@ -20,9 +20,10 @@ const valid = () => ({
   originPostalCode: '33101',
   includedMiles: 25,
   maxDistanceMiles: 75,
+  hoursPerDay: 7.5,
   ranges: [
-    { upToMiles: 50, chargeType: 'FIXED', value: 150 },
-    { upToMiles: 75, chargeType: 'PERCENTAGE', value: 15 },
+    { upToMiles: 50, chargeType: 'FIXED', value: 150, dailyCharge: 75.5 },
+    { upToMiles: 75, chargeType: 'PERCENTAGE', value: 15, dailyCharge: 125 },
   ],
 });
 
@@ -151,6 +152,7 @@ describe('Installation coverage settings', () => {
       originState: 'FL',
       includedMiles: '25',
       maxDistanceMiles: '75',
+      hoursPerDay: '7.5',
     });
     expect(saved.ranges).toEqual([
       {
@@ -158,12 +160,14 @@ describe('Installation coverage settings', () => {
         upToMiles: '50.00',
         chargeType: 'FIXED',
         value: '150.00',
+        dailyCharge: '75.50',
       },
       {
         fromMiles: '50.00',
         upToMiles: '75.00',
         chargeType: 'PERCENTAGE',
         value: '15.00',
+        dailyCharge: '125.00',
       },
     ]);
     expect((await read().expect(200)).body.configuration).toEqual(saved);
@@ -196,6 +200,46 @@ describe('Installation coverage settings', () => {
     expect(events.at(-1).action).toBe('UPDATE');
   });
 
+  it('updates the workday and daily rates together while retaining existing one-time charges', async () => {
+    const initial = (await save(valid()).expect(200)).body;
+    const edited = {
+      ...valid(),
+      revision: 1,
+      hoursPerDay: 6.25,
+      ranges: valid().ranges.map((range) => ({
+        ...range,
+        dailyCharge: 200.25,
+      })),
+    };
+    const updated = (await save(edited).expect(200)).body;
+    expect(updated.hoursPerDay).toBe('6.25');
+    expect(updated.revision).toBe(2);
+    expect(updated.ranges).toEqual(
+      initial.ranges.map((range) => ({ ...range, dailyCharge: '200.25' })),
+    );
+    expect((await read().expect(200)).body.configuration).toEqual(updated);
+  });
+
+  it('reads existing ranges without changing their saved amounts before the next explicit save', async () => {
+    stored = {
+      ...valid(),
+      revision: 4,
+      hoursPerDay: '8',
+      ranges: [
+        {
+          fromMiles: '25.00',
+          upToMiles: '75.00',
+          chargeType: 'FIXED',
+          value: '500.00',
+        },
+      ],
+    };
+    const before = clone(stored);
+    expect((await read().expect(200)).body.configuration).toEqual(before);
+    expect(stored).toEqual(before);
+    expect(events).toHaveLength(0);
+  });
+
   it('accepts zero included miles, zero charges, decimal boundaries and percentages above 100', async () => {
     const saved = (
       await save({
@@ -203,8 +247,13 @@ describe('Installation coverage settings', () => {
         includedMiles: 0,
         maxDistanceMiles: 75.25,
         ranges: [
-          { upToMiles: 40.5, chargeType: 'FIXED', value: 0 },
-          { upToMiles: 75.25, chargeType: 'PERCENTAGE', value: 125.5 },
+          { upToMiles: 40.5, chargeType: 'FIXED', value: 0, dailyCharge: 0 },
+          {
+            upToMiles: 75.25,
+            chargeType: 'PERCENTAGE',
+            value: 125.5,
+            dailyCharge: 0,
+          },
         ],
       }).expect(200)
     ).body;
@@ -213,6 +262,7 @@ describe('Installation coverage settings', () => {
       upToMiles: '75.25',
       chargeType: 'PERCENTAGE',
       value: '125.50',
+      dailyCharge: '0.00',
     });
   });
 
@@ -245,27 +295,55 @@ describe('Installation coverage settings', () => {
     ['negative included miles', { includedMiles: -1 }],
     ['excess precision', { includedMiles: 25.001 }],
     ['included miles beyond maximum', { includedMiles: 100 }],
+    ['zero workday', { hoursPerDay: 0 }],
+    ['negative workday', { hoursPerDay: -8 }],
+    ['workday longer than 24 hours', { hoursPerDay: 24.01 }],
+    ['empty workday', { hoursPerDay: '' }],
+    ['null workday', { hoursPerDay: null }],
+    ['missing workday', { hoursPerDay: undefined }],
+    ['boolean workday', { hoursPerDay: true }],
+    ['workday with excess precision', { hoursPerDay: 7.555 }],
     ['missing ranges', { ranges: null }],
     ['uncovered distance', { ranges: [] }],
     [
       'overlapping ranges',
-      { ranges: [{ upToMiles: 25, chargeType: 'FIXED', value: 1 }] },
+      {
+        ranges: [
+          { upToMiles: 25, chargeType: 'FIXED', value: 1, dailyCharge: 0 },
+        ],
+      },
     ],
     [
       'range beyond maximum',
-      { ranges: [{ upToMiles: 80, chargeType: 'FIXED', value: 1 }] },
+      {
+        ranges: [
+          { upToMiles: 80, chargeType: 'FIXED', value: 1, dailyCharge: 0 },
+        ],
+      },
     ],
     [
       'negative charge',
-      { ranges: [{ upToMiles: 75, chargeType: 'FIXED', value: -1 }] },
+      {
+        ranges: [
+          { upToMiles: 75, chargeType: 'FIXED', value: -1, dailyCharge: 0 },
+        ],
+      },
     ],
     [
       'empty charge',
-      { ranges: [{ upToMiles: 75, chargeType: 'FIXED', value: null }] },
+      {
+        ranges: [
+          { upToMiles: 75, chargeType: 'FIXED', value: null, dailyCharge: 0 },
+        ],
+      },
     ],
     [
       'unsupported charge type',
-      { ranges: [{ upToMiles: 75, chargeType: 'PER_MILE', value: 1 }] },
+      {
+        ranges: [
+          { upToMiles: 75, chargeType: 'PER_MILE', value: 1, dailyCharge: 0 },
+        ],
+      },
     ],
     [
       'too many ranges',
@@ -274,6 +352,7 @@ describe('Installation coverage settings', () => {
           upToMiles: 26 + index,
           chargeType: 'FIXED',
           value: 1,
+          dailyCharge: 0,
         })),
       },
     ],
@@ -284,6 +363,21 @@ describe('Installation coverage settings', () => {
     expect(stored).toEqual(before);
     expect(events).toHaveLength(1);
   });
+
+  it.each([-1, '', null, undefined, true, 1.001, 10000000000])(
+    'rejects invalid daily rate %s without replacing saved settings',
+    async (dailyCharge) => {
+      await save(valid()).expect(200);
+      const before = clone(stored);
+      await save({
+        ...valid(),
+        revision: 1,
+        ranges: valid().ranges.map((range) => ({ ...range, dailyCharge })),
+      }).expect(400);
+      expect(stored).toEqual(before);
+      expect(events).toHaveLength(1);
+    },
+  );
 
   it('rejects stale edits and competing initial saves', async () => {
     await save(valid()).expect(200);

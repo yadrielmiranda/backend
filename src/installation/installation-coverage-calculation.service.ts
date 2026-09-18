@@ -17,47 +17,101 @@ import {
 const unavailable =
   'Installation pricing is temporarily unavailable. Please try again or contact support.';
 
+export type InstallationSurchargeCalculation = {
+  totalMinutes: string;
+  installationDays: string;
+  oneTimeCharge: string;
+  dailyChargeTotal: string;
+  totalCharge: string;
+};
+
 export type CoverageSnapshot = {
-  schema: 1;
+  schema: 1 | 2;
   revision: number;
   origin: InstallationAddress;
   destination: InstallationAddress & { placeId: string };
   distanceMeters: number;
   maximumMiles: string;
   includedMiles: string;
+  hoursPerDay?: string;
   range: {
     type: 'NONE' | 'FIXED' | 'PERCENTAGE';
     value: string;
     fromMiles: string;
     upToMiles: string;
+    dailyCharge?: string;
   };
+  calculation?: InstallationSurchargeCalculation;
 };
 
-// El importe se aplica una sola vez sobre el cálculo existente, con mínimos ya incluidos.
-// La selección del tramo usa la distancia sin redondear; solo se redondea el dinero.
-export function installationSurcharge(
+function savedDecimal(value: string | undefined): Decimal {
+  try {
+    const number = new Decimal(value!);
+    if (number.isFinite() && number.gte(0)) return number;
+  } catch {
+    // Los detalles privados de configuración no se reenvían al usuario.
+  }
+  throw new ServiceUnavailableException(unavailable);
+}
+
+// Ambos cargos proceden exclusivamente del tramo guardado con la cotización.
+export function installationSurchargeCalculation(
   base: Decimal,
   snapshot: CoverageSnapshot,
-): Decimal {
+  totalMinutes = new Decimal(0),
+): InstallationSurchargeCalculation {
   const { type, value } = snapshot.range;
   if (
+    ![1, 2].includes(snapshot.schema) ||
     !['NONE', 'FIXED', 'PERCENTAGE'].includes(type) ||
-    !new Decimal(value).isFinite() ||
-    new Decimal(value).lt(0)
+    !totalMinutes.isFinite() || totalMinutes.lt(0)
   ) {
     throw new ServiceUnavailableException(unavailable);
   }
-  const surcharge =
+  const amount = savedDecimal(value);
+  const oneTimeCharge = (
     type === 'NONE'
       ? new Decimal(0)
       : type === 'FIXED'
-        ? new Decimal(value)
-        : base.mul(value).div(100);
+        ? amount
+        : base.mul(amount).div(100)
+  ).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+  let days = new Decimal(0);
+  let dailyChargeTotal = new Decimal(0);
+  // Las cotizaciones anteriores conservan solo el cargo que tenían acordado.
+  if (snapshot.schema === 2) {
+    const hoursPerDay = savedDecimal(snapshot.hoursPerDay);
+    if (hoursPerDay.lte(0) || hoursPerDay.gt(24)) {
+      throw new ServiceUnavailableException(unavailable);
+    }
+    // Se redondea una sola vez tras sumar todos los servicios. Cero minutos son cero días.
+    days = totalMinutes.div(hoursPerDay.mul(60)).ceil();
+    if (type !== 'NONE') {
+      dailyChargeTotal = savedDecimal(snapshot.range.dailyCharge).mul(days)
+        .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    }
+  }
+  const surcharge = oneTimeCharge.add(dailyChargeTotal);
   if (base.add(surcharge).gt('9999999999.99'))
     throw new BadRequestException(
       'The installation amount exceeds the supported limit. Please contact support.',
     );
-  return surcharge.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  return {
+    totalMinutes: totalMinutes.toString(),
+    installationDays: days.toFixed(0),
+    oneTimeCharge: oneTimeCharge.toFixed(2),
+    dailyChargeTotal: dailyChargeTotal.toFixed(2),
+    totalCharge: surcharge.toFixed(2),
+  };
+}
+
+export function installationSurcharge(
+  base: Decimal,
+  snapshot: CoverageSnapshot,
+  totalMinutes = new Decimal(0),
+): Decimal {
+  return new Decimal(installationSurchargeCalculation(base, snapshot, totalMinutes).totalCharge);
 }
 
 // Los adicionales y sus mínimos exclusivos no forman parte de la base del recargo.
@@ -156,11 +210,13 @@ export class InstallationCoverageCalculationService {
       upToMiles: string;
       chargeType: 'FIXED' | 'PERCENTAGE';
       value: string;
+      dailyCharge?: string;
     }>;
     const range = miles.lte(policy.includedMiles.toString())
       ? {
           type: 'NONE' as const,
           value: '0.00',
+          dailyCharge: '0.00',
           fromMiles: '0.00',
           upToMiles: policy.includedMiles.toString(),
         }
@@ -172,18 +228,20 @@ export class InstallationCoverageCalculationService {
           return {
             type: matched.chargeType,
             value: matched.value,
+            dailyCharge: matched.dailyCharge ?? '0.00',
             fromMiles: matched.fromMiles,
             upToMiles: matched.upToMiles,
           };
         })();
     const snapshot: CoverageSnapshot = {
-      schema: 1,
+      schema: 2,
       revision: policy.revision,
       origin,
       destination,
       distanceMeters,
       maximumMiles: policy.maxDistanceMiles.toString(),
       includedMiles: policy.includedMiles.toString(),
+      hoursPerDay: policy.hoursPerDay.toString(),
       range,
     };
     return { address, snapshot };

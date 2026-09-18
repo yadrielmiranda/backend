@@ -1,6 +1,6 @@
 import { installationAddress } from './installation-address';
 import { Inject } from '@nestjs/common';
-import { InstallationCoverageCalculationService, installationSurcharge, installationBaseForSurcharge, type CoverageSnapshot } from './installation-coverage-calculation.service';
+import { InstallationCoverageCalculationService, installationSurchargeCalculation, installationBaseForSurcharge, type CoverageSnapshot } from './installation-coverage-calculation.service';
 import { decimalAmount, hasRefundHistory, paidPrincipal, paymentIsCovered, remainingRefundBalance } from '@/payments/payment-accounting';
 import { assertScheduleMilestone, getPaymentSchedule, installmentContext, refreshScheduledInstallation } from '@/payment-plans/payment-schedule';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
@@ -136,6 +136,7 @@ const quoteLineSnapshotSelect = {
   billingUnitSnapshot: true,
   ruleMetricSnapshot: true,
   ruleSnapshot: true,
+  timeSnapshot: true,
   widthIn: true,
   heightIn: true,
   areaSqFt: true,
@@ -1284,6 +1285,10 @@ export class InstallationWorkflowService {
               line.ruleSnapshot === null
                 ? Prisma.JsonNull
                 : (line.ruleSnapshot as Prisma.InputJsonValue),
+            timeSnapshot:
+              line.timeSnapshot == null
+                ? Prisma.DbNull
+                : (line.timeSnapshot as Prisma.InputJsonValue),
           })),
         },
       },
@@ -1309,6 +1314,7 @@ export class InstallationWorkflowService {
             serviceNameSnapshot: true,
             baseAmount: true,
             adjustedAmount: true,
+            timeSnapshot: true,
             service: { select: { minimumCharge: true } },
           },
         },
@@ -1365,10 +1371,19 @@ export class InstallationWorkflowService {
     if (quote.job?.installationAddressConfirmedAt && !quote.coverageSnapshot) {
       throw new BadRequestException('Installation pricing must be verified before recalculating.');
     }
-    const surcharge = quote.coverageSnapshot
-      ? installationSurcharge(installationBaseForSurcharge(installationBase, quote.lines, serviceMinimums.snapshot), quote.coverageSnapshot.data as unknown as CoverageSnapshot)
-      : new Decimal(0); // Las cotizaciones anteriores conservan el precio acordado.
+    const coverageSnapshot = quote.coverageSnapshot?.data as unknown as CoverageSnapshot | undefined;
+    const calculation = coverageSnapshot
+      ? installationSurchargeCalculation(
+          installationBaseForSurcharge(installationBase, quote.lines, serviceMinimums.snapshot),
+          coverageSnapshot,
+          this.pricing.calculateTotalMinutes(quote.lines),
+        )
+      : null;
+    const surcharge = new Decimal(calculation?.totalCharge ?? 0);
     const total = installationBase.add(surcharge);
+    if (total.gt('9999999999.99')) {
+      throw new BadRequestException('The installation amount exceeds the supported limit. Please contact support.');
+    }
 
     return tx.installationQuote.update({
       where: { id: quoteId },
@@ -1384,6 +1399,13 @@ export class InstallationWorkflowService {
             : (serviceMinimums.snapshot as Prisma.InputJsonValue),
         minimumAdjustment: new Prisma.Decimal(minimumAdjustment.toFixed(2)),
         installationSurcharge: new Prisma.Decimal(surcharge.toFixed(2)),
+        ...(coverageSnapshot?.schema === 2 && calculation
+          ? {
+              coverageSnapshot: {
+                update: { data: { ...coverageSnapshot, calculation } as Prisma.InputJsonValue },
+              },
+            }
+          : {}),
         total: new Prisma.Decimal(total.toFixed(2)),
       },
     });
@@ -2182,6 +2204,14 @@ export class InstallationWorkflowService {
         await tx.installationQuote.update({
           where: { id: quote.id }, data: { status: InstallationQuoteStatus.DRAFT },
         });
+      }
+
+      // Una dirección nueva adopta la cobertura nueva. Las líneas antiguas sin
+      // duración deben recalcularse antes de aplicar su cargo diario.
+      if (!savedCoverage && coverage.snapshot.schema === 2 && quote.lines.some(
+        (line) => line.origin === InstallationLineOrigin.AUTO && line.timeSnapshot == null,
+      )) {
+        await this.rebuildAutomaticLines(jobId, quote.id, tx);
       }
 
       if (dto.permitRequested && !job.permit) {

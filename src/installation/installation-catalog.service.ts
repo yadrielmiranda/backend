@@ -159,6 +159,9 @@ export class InstallationCatalogService {
           : this.decimal(rule.maxValue, 'Rule maximum'),
       maxInclusive: rule.maxInclusive === true,
       rate: this.decimal(rule.rate, 'Rule rate'),
+      estimatedMinutes: rule.estimatedMinutes == null
+        ? null
+        : this.decimal(rule.estimatedMinutes, 'Rule estimated time'),
       sortOrder: rule.sortOrder ?? index,
       isActive: rule.isActive !== false,
     };
@@ -194,6 +197,7 @@ export class InstallationCatalogService {
           ruleMetric: dto.ruleMetric,
           baseRate: this.decimal(dto.baseRate, 'Base rate'),
           minimumCharge: this.decimal(dto.minimumCharge ?? 0, 'Minimum charge'),
+          estimatedMinutes: this.decimal(dto.estimatedMinutes ?? 0, 'Estimated time'),
           availableForRequest: dto.availableForRequest ?? false,
           availableForField: dto.availableForField ?? true,
           isActive: dto.isActive ?? true,
@@ -235,6 +239,7 @@ export class InstallationCatalogService {
       maxValue: rule.maxValue == null ? null : Number(rule.maxValue),
       maxInclusive: rule.maxInclusive,
       rate: Number(rule.rate),
+      estimatedMinutes: rule.estimatedMinutes == null ? null : Number(rule.estimatedMinutes),
       sortOrder: rule.sortOrder,
       isActive: rule.isActive,
     }));
@@ -242,6 +247,7 @@ export class InstallationCatalogService {
     this.validateRules(metric, rules);
 
     const nextBillingUnit = dto.billingUnit ?? before.billingUnit;
+    const billingUnitChanged = nextBillingUnit !== before.billingUnit;
 
     if (
       installationServiceRequiresPanelCount({
@@ -288,6 +294,12 @@ export class InstallationCatalogService {
       const updated = await this.prisma.$transaction(async (tx) => {
         if (dto.rules !== undefined) {
           await tx.installationServiceRule.deleteMany({ where: { serviceId: id } });
+        } else if (billingUnitChanged) {
+          // Los tiempos por la unidad anterior no se reutilizan con otra unidad.
+          await tx.installationServiceRule.updateMany({
+            where: { serviceId: id },
+            data: { estimatedMinutes: null },
+          });
         }
 
         return tx.installationService.update({
@@ -301,6 +313,11 @@ export class InstallationCatalogService {
             ...(dto.ruleMetric !== undefined ? { ruleMetric: dto.ruleMetric } : {}),
             ...(dto.baseRate !== undefined
               ? { baseRate: this.decimal(dto.baseRate, 'Base rate') }
+              : {}),
+            ...(dto.estimatedMinutes !== undefined || billingUnitChanged
+              ? {
+                  estimatedMinutes: this.decimal(dto.estimatedMinutes ?? 0, 'Estimated time'),
+                }
               : {}),
             ...(dto.minimumCharge !== undefined
               ? {

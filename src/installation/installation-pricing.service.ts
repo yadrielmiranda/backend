@@ -54,6 +54,15 @@ export type InstallationServiceMinimumSnapshot = {
   adjustment: string;
 };
 
+export type InstallationLineTimeSnapshot = {
+  schema: 1;
+  source: 'SERVICE' | 'RULE';
+  minutesPerUnit: string;
+  quantity: string;
+  occurrences: number;
+  totalMinutes: string;
+};
+
 type CalculateLineInput = {
   service: InstallationServiceForPricing;
   profile: InstallationProfileSnapshot;
@@ -84,6 +93,24 @@ export class InstallationPricingService {
       throw new BadRequestException(`${label} must be greater than zero.`);
     }
     return value;
+  }
+
+  calculateTotalMinutes(lines: Array<{ timeSnapshot?: Prisma.JsonValue }>): Decimal {
+    return lines.reduce((total, line) => {
+      // Las líneas anteriores al cálculo diario conservan su duración cero.
+      if (line.timeSnapshot == null) return total;
+      const snapshot = line.timeSnapshot as Partial<InstallationLineTimeSnapshot>;
+      let minutes: Decimal;
+      try {
+        minutes = new Decimal(snapshot.totalMinutes!);
+      } catch {
+        throw new BadRequestException('The saved installation time is invalid. Please recalculate the quote.');
+      }
+      if (snapshot.schema !== 1 || !minutes.isFinite() || minutes.lt(0)) {
+        throw new BadRequestException('The saved installation time is invalid. Please recalculate the quote.');
+      }
+      return total.add(minutes);
+    }, new Decimal(0));
   }
 
   calculateServiceMinimums(lines: InstallationServiceMinimumInput[]) {
@@ -368,6 +395,22 @@ export class InstallationPricingService {
       throw new BadRequestException('Occurrences must be a whole number greater than zero.');
     }
 
+    const minutesPerUnit = new Decimal(
+      String(selectedRule?.estimatedMinutes ?? input.service.estimatedMinutes ?? 0),
+    );
+    if (!minutesPerUnit.isFinite() || minutesPerUnit.lt(0)) {
+      throw new BadRequestException(`Estimated time for service "${input.service.name}" is invalid.`);
+    }
+    // La duración usa la cantidad real, antes de mínimos, ajustes o redondeos de dinero.
+    const timeSnapshot: InstallationLineTimeSnapshot = {
+      schema: 1,
+      source: selectedRule?.estimatedMinutes != null ? 'RULE' : 'SERVICE',
+      minutesPerUnit: minutesPerUnit.toString(),
+      quantity: billableQuantity.toString(),
+      occurrences,
+      totalMinutes: minutesPerUnit.mul(billableQuantity).mul(occurrences).toString(),
+    };
+
     const baseAmount = rate
       .mul(billableQuantity)
       .mul(occurrences)
@@ -391,6 +434,7 @@ export class InstallationPricingService {
       serviceNameSnapshot: input.service.name,
       billingUnitSnapshot: input.service.billingUnit,
       ruleMetricSnapshot: input.service.ruleMetric,
+      timeSnapshot,
       ruleSnapshot: selectedRule
         ? ({
             id: selectedRule.id,

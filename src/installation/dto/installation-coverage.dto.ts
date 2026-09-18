@@ -52,6 +52,12 @@ export class InstallationCoverageRangeDto {
   @Min(0)
   @Max(9999999999.99)
   value: number;
+
+  @Transform(numericValue)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(9999999999.99)
+  dailyCharge: number;
 }
 
 export class SaveInstallationCoverageDto {
@@ -97,6 +103,12 @@ export class SaveInstallationCoverageDto {
   @Min(0)
   @Max(99999999.99)
   includedMiles: number;
+
+  @Transform(numericValue)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  @Max(24)
+  hoursPerDay: number;
 
   @IsArray()
   @ArrayMaxSize(30)

@@ -27,6 +27,8 @@ function record(value: unknown): value is RecordValue {
 
 const internalFields = new Set([
   'coverageSnapshot',
+  'estimatedMinutes',
+  'timeSnapshot',
   'rate',
   'rateT',
   'rateReal',

@@ -42,6 +42,7 @@ export class InstallationCoverageService {
         upToMiles: upper.toFixed(2),
         chargeType: range.chargeType,
         value: new Decimal(range.value).toFixed(2),
+        dailyCharge: new Decimal(range.dailyCharge).toFixed(2),
       };
       lower = upper;
       return result;
@@ -59,6 +60,7 @@ export class InstallationCoverageService {
       originPostalCode: dto.originPostalCode,
       maxDistanceMiles: new Prisma.Decimal(maximum.toFixed(2)),
       includedMiles: new Prisma.Decimal(included.toFixed(2)),
+      hoursPerDay: new Prisma.Decimal(dto.hoursPerDay.toFixed(2)),
       ranges,
     };
     try {

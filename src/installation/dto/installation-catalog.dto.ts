@@ -1,5 +1,5 @@
 import { PartialType } from '@nestjs/mapped-types';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -11,6 +11,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
   Min,
   ValidateNested,
@@ -19,6 +20,24 @@ import {
   InstallationBillingUnit,
   InstallationRuleMetric,
 } from '@prisma/client';
+
+// Conserva null para que el catálogo aplique cero al tiempo base o herencia al rango.
+// Rechaza vacíos y booleanos en lugar de convertirlos en números.
+const estimatedMinutesValue = ({
+  obj,
+  key,
+}: {
+  obj: Record<string, unknown>;
+  key: string;
+}) => {
+  const value = obj[key];
+  if (value === null || value === undefined) return value;
+  return typeof value === 'number'
+    ? value
+    : typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim())
+      ? Number(value)
+      : Number.NaN;
+};
 
 export class InstallationServiceRuleDto {
   @IsOptional()
@@ -43,6 +62,13 @@ export class InstallationServiceRuleDto {
   @IsNumber()
   @Min(0)
   rate: number;
+
+  @IsOptional()
+  @Transform(estimatedMinutesValue)
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  @Max(99999999.9999)
+  estimatedMinutes?: number | null;
 
   @IsOptional()
   @Type(() => Number)
@@ -80,6 +106,13 @@ export class CreateInstallationServiceDto {
   @IsNumber()
   @Min(0)
   minimumCharge?: number;
+
+  @IsOptional()
+  @Transform(estimatedMinutesValue)
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  @Max(99999999.9999)
+  estimatedMinutes?: number | null;
 
   @IsOptional()
   @IsBoolean()

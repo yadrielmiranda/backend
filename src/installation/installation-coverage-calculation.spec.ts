@@ -34,6 +34,7 @@ const policy = {
   originPostalCode: '33175',
   includedMiles: new Prisma.Decimal(25),
   maxDistanceMiles: new Prisma.Decimal(75),
+  hoursPerDay: new Prisma.Decimal(8),
   ranges: [
     { fromMiles: '25', upToMiles: '50', chargeType: 'FIXED', value: '150' },
     { fromMiles: '50', upToMiles: '75', chargeType: 'PERCENTAGE', value: '15' },
@@ -74,6 +75,24 @@ const fixed: CoverageSnapshot = {
 };
 
 describe('Installation coverage calculation', () => {
+  it.each([
+    [0, '0'],
+    [50000, '150'],
+    [100000, '300'],
+  ])('keeps the daily charge at zero for zero minutes at %s meters', async (meters, expected) => {
+    const f = fixture(Number(meters));
+    f.prisma.installationCoverage.findUnique.mockResolvedValue({
+      ...policy,
+      hoursPerDay: new Prisma.Decimal(7.5),
+      ranges: policy.ranges.map((range) => ({ ...range, dailyCharge: '250.00' })),
+    });
+    const result = await f.service.prepare(address);
+    expect(result.snapshot.schema).toBe(2);
+    expect(result.snapshot.hoursPerDay).toBe('7.5');
+    expect(result.snapshot.range.dailyCharge).toBe(meters === 0 ? '0.00' : '250.00');
+    expect(installationSurcharge(new Decimal(2000), result.snapshot).toString()).toBe(expected);
+  });
+
   it.each(['GA', 'CA', 'NY'])('rejects %s before any Google request', async state => {
     const f = fixture();
     await expect(f.service.prepare({ ...address, state })).rejects.toThrow('Installation is available only in Florida.');

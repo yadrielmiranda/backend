@@ -10,6 +10,7 @@ import { InstallationCatalogService } from './installation-catalog.service';
 import { InstallationWorkflowController } from './installation-workflow.controller';
 import { InstallationWorkflowService } from './installation-workflow.service';
 import { presentInstallationPricing } from './installation-pricing.interceptor';
+import { presentApiResponse } from '@/common/response-privacy.interceptor';
 
 const user = (name: RoleName): AuthUser => ({ id: 7, role: { name } });
 const decimal = (value: string) => new Prisma.Decimal(value);
@@ -20,11 +21,12 @@ const service = {
   ruleMetric: 'AREA',
   baseRate: decimal('35'),
   minimumCharge: decimal('100'),
+  estimatedMinutes: decimal('1.5'),
   availableForRequest: true,
   availableForField: true,
   isActive: true,
   sortOrder: 0,
-  rules: [{ id: 1, rate: decimal('35'), minValue: null, maxValue: null }],
+  rules: [{ id: 1, rate: decimal('35'), minValue: null, maxValue: null, estimatedMinutes: decimal('2.5') }],
 };
 const line = {
   id: 10,
@@ -37,6 +39,7 @@ const line = {
   billingUnitSnapshot: 'SQFT',
   ruleMetricSnapshot: 'AREA',
   ruleSnapshot: { rate: '35', minimumCharge: '100' },
+  timeSnapshot: { schema: 1, minutesPerUnit: '2.5', quantity: '20', occurrences: 1, totalMinutes: '50' },
   metricValue: decimal('20'),
   widthIn: decimal('48'),
   heightIn: decimal('60'),
@@ -120,6 +123,7 @@ function expectCommercial(result: any) {
       'origin',
       'billableQuantity',
       'ruleSnapshot',
+      'timeSnapshot',
       'metricValue',
       'billingUnitSnapshot',
       'adjustmentPercent',
@@ -131,6 +135,20 @@ function expectCommercial(result: any) {
 }
 
 describe('installation pricing response privacy', () => {
+  it.each<RoleName>(['client', 'dealer', 'operator'])(
+    'keeps configured times private for %s, including nested standalone rules',
+    (role) => {
+      const payload = { service, mappings: [{ service }], rules: service.rules, lines: [line] };
+      expect(JSON.stringify(presentApiResponse(payload, user(role)))).not.toContain('estimatedMinutes');
+      expect(JSON.stringify(presentInstallationPricing(payload, user(role)))).not.toContain('estimatedMinutes');
+      expect(JSON.stringify(presentApiResponse(payload, user(role)))).not.toContain('timeSnapshot');
+      expect(JSON.stringify(presentInstallationPricing(payload, user(role)))).not.toContain('timeSnapshot');
+      expect(presentApiResponse(payload, user('admin')).lines[0].timeSnapshot).toEqual(line.timeSnapshot);
+      expect(presentApiResponse(payload, user('admin')).service.estimatedMinutes).toEqual(decimal('1.5'));
+      expect(presentApiResponse(payload, user('admin')).rules[0].estimatedMinutes).toEqual(decimal('2.5'));
+      expect(payload.service.estimatedMinutes).toEqual(decimal('1.5'));
+    },
+  );
   it.each<RoleName>(['client', 'dealer', 'operator'])(
     'protects every quote version for %s and preserves commercial amounts',
     (role) => {

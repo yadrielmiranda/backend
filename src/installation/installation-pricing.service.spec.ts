@@ -20,6 +20,7 @@ describe('InstallationPricingService', () => {
     const service = {
       id: 1,
       name: 'Configured service',
+      estimatedMinutes: new Prisma.Decimal(30),
       description: null,
       billingUnit: InstallationBillingUnit.UNIT,
       ruleMetric: InstallationRuleMetric.WIDTH,
@@ -40,6 +41,7 @@ describe('InstallationPricingService', () => {
           maxValue: new Prisma.Decimal(53),
           maxInclusive: false,
           rate: new Prisma.Decimal(100),
+          estimatedMinutes: null,
           sortOrder: 0,
           isActive: true,
           createdAt: new Date(),
@@ -53,6 +55,7 @@ describe('InstallationPricingService', () => {
           maxValue: null,
           maxInclusive: false,
           rate: new Prisma.Decimal(150),
+          estimatedMinutes: new Prisma.Decimal(60),
           sortOrder: 1,
           isActive: true,
           createdAt: new Date(),
@@ -71,12 +74,14 @@ describe('InstallationPricingService', () => {
     expect(line.ruleId).toBe(2);
     expect(line.baseAmount.toString()).toBe('150');
     expect(line.adjustedAmount.toString()).toBe('165');
+    expect(line.timeSnapshot.totalMinutes).toBe('60');
   });
 
   it('uses only panelCount for PANEL billing', () => {
     const service = {
       id: 2,
       name: 'Panel service',
+      estimatedMinutes: new Prisma.Decimal(15.5),
       description: null,
       billingUnit: InstallationBillingUnit.PANEL,
       ruleMetric: InstallationRuleMetric.NONE,
@@ -100,12 +105,14 @@ describe('InstallationPricingService', () => {
 
     expect(line.billableQuantity.toString()).toBe('3');
     expect(line.adjustedAmount.toString()).toBe('120');
+    expect(line.timeSnapshot.totalMinutes).toBe('46.5');
   });
 
   it('uses manually entered square feet without an estimate opening', () => {
     const service = {
       id: 3,
       name: 'Concrete cutting',
+      estimatedMinutes: new Prisma.Decimal(0),
       description: null,
       billingUnit: InstallationBillingUnit.SQFT,
       ruleMetric: InstallationRuleMetric.AREA,
@@ -126,6 +133,7 @@ describe('InstallationPricingService', () => {
           maxValue: null,
           maxInclusive: false,
           rate: new Prisma.Decimal(25),
+          estimatedMinutes: new Prisma.Decimal(0),
           sortOrder: 0,
           isActive: true,
           createdAt: new Date(),
@@ -147,6 +155,7 @@ describe('InstallationPricingService', () => {
     expect(line.metricValue?.toString()).toBe('8.5');
     expect(line.billableQuantity.toString()).toBe('8.5');
     expect(line.baseAmount.toString()).toBe('425');
+    expect(line.timeSnapshot.totalMinutes).toBe('0');
   });
 
   it('applies one minimum to the combined total of each service', () => {
