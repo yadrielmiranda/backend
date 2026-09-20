@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { PrismaService } from '@/prisma/prisma.service';
 import { GlobalParameter, GlobalParameterKey, Prisma } from '@prisma/client';
 import { UpdateGlobalParameterDto } from './dto/update-global-parameter.dto';
+import { DELIVERY_PARAMETER_KEYS } from '@/warehouse-delivery/warehouse-delivery.constants';
 
 @Injectable()
 export class GlobalParametersService {
@@ -12,6 +13,9 @@ export class GlobalParametersService {
   }
 
   async update(key: GlobalParameterKey, dto: UpdateGlobalParameterDto): Promise<GlobalParameter> {
+    if (DELIVERY_PARAMETER_KEYS.includes(key)) {
+      throw new BadRequestException('Manage delivery pricing in Settings > Warehouse & Delivery.');
+    }
     const exists = await this.prisma.globalParameter.findUnique({
       where: { key },
       select: { key: true },

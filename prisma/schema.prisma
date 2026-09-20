@@ -2147,6 +2147,21 @@ enum DeliveryStatus {
   CANCELED
 }
 
+// Dirección común para recogida y salida de delivery; tarifas en GlobalParameter.
+model WarehouseDeliverySettings {
+  id               Int      @id @default(1)
+  revision         Int      @default(1)
+  street           String   @db.VarChar(150)
+  city             String   @db.VarChar(100)
+  state            String   @db.VarChar(2)
+  postalCode       String   @db.VarChar(10)
+  maxDeliveryMiles Decimal  @db.Decimal(10, 2)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("warehouse_delivery_settings")
+}
+
 model OrderDelivery {
   id       Int            @id @default(autoincrement())
   orderId  Int
@@ -2170,6 +2185,8 @@ model OrderDelivery {
 
   distanceMeters Int
   roadMiles      Decimal @db.Decimal(10, 2)
+
+  maxDistanceMilesSnapshot Decimal? @db.Decimal(10, 2)
 
   basePriceSnapshot           Decimal @db.Decimal(12, 2)
   includedMilesSnapshot       Decimal @db.Decimal(10, 2)

@@ -7,9 +7,10 @@ import { DeliveriesController } from './deliveries.controller';
 import { DeliveriesService } from './deliveries.service';
 import { GoogleRoutesService } from './google-routes.service';
 import { GoogleAddressValidationService } from './google-address-validation.service';
+import { WarehouseDeliveryModule } from '@/warehouse-delivery/warehouse-delivery.module';
 
 @Module({
-  imports: [HttpModule, PrismaModule, NotificationsModule, LogsModule],
+  imports: [HttpModule, PrismaModule, NotificationsModule, LogsModule, WarehouseDeliveryModule],
   controllers: [DeliveriesController],
   providers: [
     DeliveriesService,

@@ -2,12 +2,12 @@ import { decimalAmount, paidPrincipal, paymentIsCovered } from '@/payments/payme
 import { assertScheduleMilestone } from '@/payment-plans/payment-schedule';
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import {
-  BrandingType,
   DeliveryStatus,
   DeliveryType,
   GlobalParameterKey,
@@ -24,7 +24,8 @@ import { NotificationsService } from '@/notifications/notifications.service';
 import { LogsService } from '@/logs/logs.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { getRoleName } from '@/auth/utils/get-role-name';
-import { calculateDeliveryPricing } from './delivery-pricing';
+import { calculateDeliveryPricing, METERS_PER_MILE } from './delivery-pricing';
+import { WarehouseDeliveryService } from '@/warehouse-delivery/warehouse-delivery.service';
 import {
   GoogleRoutesService,
   type DeliveryRouteAddress,
@@ -103,6 +104,7 @@ export class DeliveriesService {
     private readonly addressValidation: GoogleAddressValidationService,
     private readonly notifications: NotificationsService,
     private readonly logs: LogsService,
+    private readonly warehouse: WarehouseDeliveryService,
   ) {}
 
   private async getOrder(orderId: number, actor: AuthUser) {
@@ -464,61 +466,47 @@ export class DeliveriesService {
     }
 
     const requestedDestination = this.resolveDestination(order, dto);
-    const [company, parameters] = await Promise.all([
-      this.prisma.branding.findFirst({
-        where: { type: BrandingType.COMPANY, isActive: true },
-      }),
-      this.prisma.globalParameter.findMany({
-        where: {
-          key: {
-            in: [
-              GlobalParameterKey.DELIVERY_BASE_PRICE,
-              GlobalParameterKey.DELIVERY_INCLUDED_MILES,
-              GlobalParameterKey.DELIVERY_ADDITIONAL_MILE_PRICE,
-              GlobalParameterKey.SALES_TAX,
-            ],
-          },
-        },
-      }),
+    const [settings, taxParameter] = await Promise.all([
+      this.warehouse.find(),
+      this.prisma.globalParameter.findUnique({ where: { key: GlobalParameterKey.SALES_TAX } }),
     ]);
-    if (
-      !company?.street ||
-      !company.city ||
-      !company.state ||
-      !company.postalCode
-    ) {
+    const { configuration, pricing: rates } = settings;
+    if (!configuration) {
       throw new BadRequestException(
-        'Complete the active Company Branding address before calculating delivery.',
+        isStaff(role)
+          ? 'Configure Warehouse & Delivery before calculating delivery.'
+          : 'Delivery is currently unavailable. Please contact us for assistance.',
       );
     }
     const origin: DeliveryRouteAddress = {
-      street: company.street,
-      city: company.city,
-      state: company.state.toUpperCase(),
-      postalCode: company.postalCode,
+      street: configuration.street,
+      city: configuration.city,
+      state: configuration.state,
+      postalCode: configuration.postalCode,
     };
-    const byKey = new Map(parameters.map((item) => [item.key, item.value]));
-    const basePrice = byKey.get(GlobalParameterKey.DELIVERY_BASE_PRICE);
-    const includedMiles = byKey.get(GlobalParameterKey.DELIVERY_INCLUDED_MILES);
-    const additionalMilePrice = byKey.get(
-      GlobalParameterKey.DELIVERY_ADDITIONAL_MILE_PRICE,
-    );
-    if (!basePrice || !includedMiles || !additionalMilePrice) {
+    const { basePrice, includedMiles, additionalMilePrice } = rates;
+    if (basePrice === null || includedMiles === null || additionalMilePrice === null) {
       throw new BadRequestException(
-        'Configure all three delivery pricing parameters before calculating delivery.',
+        isStaff(role)
+          ? 'Complete the pricing in Warehouse & Delivery before calculating delivery.'
+          : 'Delivery is currently unavailable. Please contact us for assistance.',
       );
     }
 
     const taxable = role === 'admin' && dto.taxable === true;
     const taxRate =
       taxable && !order.user.isTaxExempt
-        ? (byKey.get(GlobalParameterKey.SALES_TAX)?.toString() ?? '0')
+        ? (taxParameter?.value.toString() ?? '0')
         : '0';
     const destination =
       await this.addressValidation.validateDeliveryAddress(
         requestedDestination,
       );
     const route = await this.routes.calculateDrivingRoute(origin, destination);
+    // El límite usa la distancia sin redondear; la tarifa mantiene el cálculo existente.
+    if (new Decimal(route.distanceMeters).gt(new Decimal(configuration.maxDeliveryMiles).mul(METERS_PER_MILE))) {
+      throw new BadRequestException('This address is outside our delivery coverage area.');
+    }
     let pricing;
     try {
       pricing = calculateDeliveryPricing({
@@ -536,6 +524,10 @@ export class DeliveriesService {
     }
 
     const delivery = await this.prisma.$transaction(async (tx) => {
+      const currentSettings = await tx.warehouseDeliverySettings.findUnique({ where: { id: 1 } });
+      if (currentSettings?.revision !== configuration.revision) {
+        throw new ConflictException('Delivery settings changed. Please calculate delivery again.');
+      }
       const latest = await tx.orderDelivery.findFirst({
         where: { orderId },
         orderBy: { sequence: 'desc' },
@@ -559,6 +551,7 @@ export class DeliveriesService {
           destinationPostalCode: destination.postalCode,
           distanceMeters: route.distanceMeters,
           roadMiles: new Prisma.Decimal(pricing.roadMiles.toFixed(2)),
+          maxDistanceMilesSnapshot: configuration.maxDeliveryMiles,
           basePriceSnapshot: new Prisma.Decimal(pricing.basePrice.toFixed(2)),
           includedMilesSnapshot: new Prisma.Decimal(
             pricing.includedMiles.toFixed(2),

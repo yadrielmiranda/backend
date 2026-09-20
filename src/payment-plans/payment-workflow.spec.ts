@@ -270,6 +270,7 @@ describe('Installment payment workflow', () => {
       {} as never,
       { createAndSend: jest.fn() } as never,
       { log: jest.fn() } as never,
+      {} as never,
     );
     const admin: any = { id: 1, role: { name: 'admin' } };
     await expect(deliveries.completePickup(22, admin)).rejects.toThrow(
@@ -309,6 +310,7 @@ describe('Installment payment workflow', () => {
       {} as never,
       { createAndSend: jest.fn() } as never,
       { log: jest.fn() } as never,
+      {} as never,
     );
     const admin: any = { id: 1, role: { name: 'admin' } };
     const when = {
@@ -948,7 +950,7 @@ describe('Selectable due installments', () => {
       f.estimate.order.fulfillmentMethod = 'CUSTOMER_PICKUP';
       f.tx.order.update = jest.fn(async ({ data }) => Object.assign(f.estimate.order, data));
       const deliveries = new DeliveriesService(f.tx, {} as never, {} as never,
-        { createAndSend: jest.fn() } as never, { log: jest.fn() } as never);
+        { createAndSend: jest.fn() } as never, { log: jest.fn() } as never, {} as never);
       await deliveries.completePickup(22, { id: 1, role: { name: 'admin' } });
       expect(f.tx.order.update).toHaveBeenCalled();
       expect(buildPaymentSchedule(f.estimate)?.rows.find(r => r.sequence === 101)?.balance).toBe('200.00');
@@ -958,7 +960,7 @@ describe('Selectable due installments', () => {
       const f = await mixedFixture();
       await f.select([release, delivery], 1104.02); await f.confirm('cs_selection_1');
       const deliveries = new DeliveriesService(f.tx, {} as never, {} as never,
-        { createAndSend: jest.fn() } as never, { log: jest.fn() } as never);
+        { createAndSend: jest.fn() } as never, { log: jest.fn() } as never, {} as never);
       await deliveries.scheduleDelivery(71, { scheduledFor: new Date(Date.now() + 86400000).toISOString() }, { id: 1, role: { name: 'admin' } });
       expect(f.delivery.status).toBe('SCHEDULED');
       expect(buildPaymentSchedule(f.estimate)?.rows.find(r => r.sequence === 101)?.balance).toBe('200.00');
@@ -1343,7 +1345,7 @@ describe('Early full balance and operational milestones', () => {
     f.estimate.order.fulfillmentMethod = 'CUSTOMER_PICKUP';
     f.tx.order.update = jest.fn(async () => ({ status: { name: 'Picked up' } }));
     const deliveries = new DeliveriesService(f.tx, {} as never, {} as never,
-      { createAndSend: jest.fn() } as never, { log: jest.fn() } as never);
+      { createAndSend: jest.fn() } as never, { log: jest.fn() } as never, {} as never);
     await deliveries.completePickup(22, { id: 1, role: { name: 'admin' } });
     expect(f.tx.order.update).toHaveBeenCalledTimes(1);
     expect(f.createSession).not.toHaveBeenCalled();
