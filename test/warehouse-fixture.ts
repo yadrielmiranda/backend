@@ -42,11 +42,17 @@ export function warehouseFixture() {
     expectedParts: d[5],
     inTransit: 0,
     onHand: 0,
+    unassigned: 0,
     released: 0,
     version: 0,
     updatedAt: new Date(),
     pieceId: pieces[i].id,
   }));
+  const stores: any[] = [
+    { id: 1, name: 'Main', isActive: true, version: 0, createdAt: new Date(), updatedAt: new Date() },
+    { id: 2, name: 'Overflow', isActive: true, version: 0, createdAt: new Date(), updatedAt: new Date() },
+  ];
+  const balances: any[] = [];
   const movements: any[] = [],
     counts: any[] = [],
     countLines: any[] = [];
@@ -55,6 +61,9 @@ export function warehouseFixture() {
     s
       ? {
           ...s,
+          storeBalances: balances.filter((b) => b.lineNumber === s.lineNumber).map((b) => ({
+            ...b, store: clone(stores.find((store) => store.id === b.storeId)),
+          })),
           unit: {
             lineNumber: s.lineNumber,
             pieceId: s.pieceId,
@@ -66,6 +75,8 @@ export function warehouseFixture() {
     m
       ? {
           ...m,
+          fromStore: clone(stores.find((s) => s.id === m.fromStoreId) ?? null),
+          toStore: clone(stores.find((s) => s.id === m.toStoreId) ?? null),
           actor: users.find((u) => u.id === m.actorId),
           reversal: movements.find((x) => x.reversalOfId === m.id) ?? null,
           stock: stockView(stocks.find((s) => s.lineNumber === m.lineNumber)),
@@ -75,6 +86,7 @@ export function warehouseFixture() {
     c
       ? {
           ...c,
+          store: clone(stores.find((s) => s.id === c.storeId) ?? null),
           startedBy: users.find((u) => u.id === c.startedById),
           closedBy: users.find((u) => u.id === c.closedById) ?? null,
         }
@@ -90,6 +102,7 @@ export function warehouseFixture() {
     if (condition === undefined) return true;
     if (condition === null || typeof condition !== 'object')
       return value === condition;
+    if ('some' in condition) return Array.isArray(value) && value.some((v) => matches(v, condition.some));
     if ('_ref' in condition) return value === row[condition._ref];
     if ('equals' in condition && !compare(value, condition.equals, row))
       return false;
@@ -149,6 +162,8 @@ export function warehouseFixture() {
           matches(row, v),
         );
       if (key === 'NOT') return !matches(row, value);
+      if (key === 'lineNumber_storeId')
+        return row?.lineNumber === value.lineNumber && row?.storeId === value.storeId;
       if (key === 'countId_lineNumber')
         return (
           row?.countId === value.countId && row?.lineNumber === value.lineNumber
@@ -189,6 +204,18 @@ export function warehouseFixture() {
     },
     count: async ({ where } = {} as any) =>
       rows.filter((r) => matches(view(r), where)).length,
+    groupBy: async ({ by, where, _sum, _count }) => {
+      const groups = new Map<string, any[]>();
+      for (const row of rows.filter((r) => matches(view(r), where))) {
+        const key = JSON.stringify(by.map((k) => row[k]));
+        groups.set(key, [...(groups.get(key) ?? []), row]);
+      }
+      return [...groups.values()].map((group) => ({
+        ...Object.fromEntries(by.map((k) => [k, group[0][k]])),
+        _sum: Object.fromEntries(Object.keys(_sum ?? {}).map((k) => [k, group.reduce((sum, r) => sum + r[k], 0)])),
+        ...(_count ? { _count: { _all: group.length } } : {}),
+      }));
+    },
     aggregate: async ({ where, _sum }) => ({
       _sum: Object.fromEntries(
         Object.keys(_sum).map((k) => [
@@ -231,9 +258,17 @@ export function warehouseFixture() {
   });
   let queue: Promise<any> = Promise.resolve();
   const db: any = {
+    warehouseStore: model(stores, (s) => s ?? null, (d) => ({
+      id: Math.max(0, ...stores.map((s) => s.id)) + 1, isActive: true, version: 0,
+      createdAt: new Date(), updatedAt: new Date(), ...d,
+    })),
+    warehouseStoreStock: model(balances, (b) => b ?? null, (d) => ({
+      onHand: 0, updatedAt: new Date(), ...d,
+    })),
     warehouseStock: model(stocks, stockView, (d) => ({
       inTransit: 0,
       onHand: 0,
+      unassigned: 0,
       released: 0,
       version: 0,
       updatedAt: new Date(),
@@ -245,6 +280,9 @@ export function warehouseFixture() {
       onHandDelta: 0,
       releasedDelta: 0,
       countDelta: 0,
+      quantity: 0,
+      fromStoreId: null,
+      toStoreId: null,
       reversalOfId: null,
       countId: null,
       reason: null,
@@ -254,6 +292,8 @@ export function warehouseFixture() {
     warehouseCount: model(counts, countView, (d) => ({
       id: counts.length + 1,
       status: 'OPEN',
+      scope: 'ALL',
+      storeId: null,
       startedAt: new Date(),
       closedAt: null,
       closedById: null,
@@ -270,7 +310,7 @@ export function warehouseFixture() {
     $queryRaw: async () => [],
     $transaction: (callback) => {
       const result = queue.then(async () => {
-        const lists = [stocks, movements, counts, countLines],
+        const lists = [stocks, movements, counts, countLines, stores, balances],
           before = lists.map(clone);
         try {
           return await callback(db);
@@ -285,5 +325,5 @@ export function warehouseFixture() {
   };
   db.warehouseStock.fields = { expectedParts: { _ref: 'expectedParts' } };
   db.warehouseCountLine.fields = { expected: { _ref: 'expected' } };
-  return { db, stocks, movements, counts, countLines, pieces, order };
+  return { db, stocks, movements, counts, countLines, pieces, order, stores, balances };
 }

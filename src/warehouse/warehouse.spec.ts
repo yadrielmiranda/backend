@@ -27,7 +27,7 @@ function fixture() {
     action: 'COLLECT' | 'RECEIVE' | 'RELEASE',
     barcode = door,
     actor = admin,
-  ) => service.scan({ ...request(), action, barcode }, actor);
+  ) => service.scan({ ...request(), action, barcode, ...(action === 'COLLECT' ? {} : { storeId: 1 }) }, actor);
   return { ...f, service, scan };
 }
 
@@ -195,7 +195,7 @@ describe('warehouse movements', () => {
   });
   it('idempotently retries the same reading but allows distinct physical parts sharing a code', async () => {
     const f = fixture(),
-      dto = { ...request(), barcode: door, action: 'RECEIVE' as const };
+      dto = { ...request(), barcode: door, action: 'RECEIVE' as const, storeId: 1 };
     await f.service.scan(dto, admin);
     expect((await f.service.scan(dto, admin)).replayed).toBe(true);
     await f.scan('RECEIVE');
@@ -394,10 +394,10 @@ describe('physical inventory count', () => {
   it('starts once and pauses movements while preserving the physical inventory', async () => {
     const f = fixture();
     await f.scan('RECEIVE');
-    const dto = request(),
+    const dto = { ...request(), scope: 'STORE' as const, storeId: 1 },
       count = await f.service.startCount(dto, operator);
     expect(await f.service.startCount(dto, operator)).toEqual(count);
-    await expect(f.service.startCount(request(), admin)).rejects.toThrow(
+    await expect(f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, admin)).rejects.toThrow(
       'is open',
     );
     await expect(f.scan('RECEIVE')).rejects.toThrow('is open');
@@ -413,7 +413,7 @@ describe('physical inventory count', () => {
   it('retries and reverses count readings without affecting stock', async () => {
     const f = fixture();
     await f.scan('RECEIVE');
-    const count = await f.service.startCount(request(), operator),
+    const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, operator),
       dto = { ...request(), barcode: door };
     const result = await f.service.countScan(count.id, dto, operator);
     expect((await f.service.countScan(count.id, dto, operator)).counted).toBe(
@@ -426,7 +426,7 @@ describe('physical inventory count', () => {
   it('permits a staff member to close a count with no differences', async () => {
     const f = fixture();
     await f.scan('RECEIVE');
-    const count = await f.service.startCount(request(), operator);
+    const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, operator);
     await f.service.countScan(
       count.id,
       { ...request(), barcode: door },
@@ -446,7 +446,7 @@ describe('physical inventory count', () => {
     const f = fixture();
     await f.scan('RECEIVE');
     await f.scan('RECEIVE');
-    const count = await f.service.startCount(request(), operator);
+    const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, operator);
     await f.service.countScan(
       count.id,
       { ...request(), barcode: door },
@@ -478,7 +478,7 @@ describe('physical inventory count', () => {
   it('rejects a stale count review if another person scans after it was reviewed', async () => {
     const f = fixture();
     await f.scan('RECEIVE');
-    const count = await f.service.startCount(request(), operator),
+    const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, operator),
       before = await f.service.count(count.id, {}, admin);
     await f.service.countScan(
       count.id,
@@ -496,7 +496,7 @@ describe('physical inventory count', () => {
   });
   it('tracks found stock that was recorded at zero, with admin review before an adjustment', async () => {
     const f = fixture();
-    const count = await f.service.startCount(request(), admin);
+    const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, admin);
     await f.service.countScan(
       count.id,
       { ...request(), barcode: windowLine },
@@ -519,7 +519,7 @@ describe('physical inventory count', () => {
   it('cancels without changing stock and disallows further readings', async () => {
     const f = fixture();
     await f.scan('RECEIVE');
-    const count = await f.service.startCount(request(), operator);
+    const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, operator);
     await f.service.closeCount(count.id, { action: 'CANCEL' }, operator);
     expect(f.stocks[0].onHand).toBe(1);
     await expect(
@@ -530,7 +530,7 @@ describe('physical inventory count', () => {
   it('does not count transit parts as warehouse stock or exceed the shared barcode capacity', async () => {
     const f = fixture();
     await f.scan('COLLECT', windowLine);
-    const count = await f.service.startCount(request(), admin);
+    const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, admin);
     await expect(
       f.service.countScan(
         count.id,
@@ -543,7 +543,7 @@ describe('physical inventory count', () => {
   it('rolls back both adjustments and closure when an audit write fails', async () => {
     const f = fixture();
     await f.scan('RECEIVE');
-    const count = await f.service.startCount(request(), admin),
+    const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, admin),
       review = await f.service.count(count.id, {}, admin);
     f.db.warehouseMovement.create = async () => {
       throw new Error('Audit failure');

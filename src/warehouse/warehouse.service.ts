@@ -21,6 +21,11 @@ import {
   WarehousePartsDto,
   WarehouseCountScanDto,
   WarehouseCountCloseDto,
+  WarehouseCountStartDto,
+  WarehouseReceiptDto,
+  WarehouseTransferDto,
+  WarehouseStoreCreateDto,
+  WarehouseStoreUpdateDto,
 } from './warehouse.dto';
 
 const actorSelect = {
@@ -28,7 +33,9 @@ const actorSelect = {
   firstName: true,
   lastName: true,
 } satisfies Prisma.UserSelect;
+const storeSelect = { id: true, name: true, isActive: true } satisfies Prisma.WarehouseStoreSelect;
 const stockInclude = {
+  storeBalances: { include: { store: { select: storeSelect } } },
   unit: {
     include: {
       piece: {
@@ -55,6 +62,8 @@ const stockInclude = {
   },
 } satisfies Prisma.WarehouseStockInclude;
 const movementInclude = {
+  fromStore: { select: storeSelect },
+  toStore: { select: storeSelect },
   actor: { select: actorSelect },
   reversal: { select: { id: true } },
 } satisfies Prisma.WarehouseMovementInclude;
@@ -105,6 +114,11 @@ function presentStock(stock: Stock) {
     expectedParts: expected,
     inTransit: stock.inTransit,
     onHand: stock.onHand,
+    unassigned: stock.unassigned,
+    stores: stock.storeBalances
+      .filter((b) => b.onHand > 0)
+      .map((b) => ({ ...b.store, onHand: b.onHand }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
     released: stock.released,
     pending:
       expected === null
@@ -131,6 +145,9 @@ function presentMovement(m: Movement) {
     id: m.id,
     lineNumber: m.lineNumber,
     type: m.type,
+    quantity: m.quantity,
+    fromStore: m.fromStore,
+    toStore: m.toStore,
     transitDelta: m.transitDelta,
     onHandDelta: m.onHandDelta,
     releasedDelta: m.releasedDelta,
@@ -148,6 +165,25 @@ function presentMovement(m: Movement) {
     countDelta: m.countDelta,
     createdAt: m.createdAt,
   };
+}
+function storeQuantity(stock: Stock, storeId: number | null): number {
+  return storeId === null
+    ? stock.unassigned
+    : stock.storeBalances.find((b) => b.storeId === storeId)?.onHand ?? 0;
+}
+function countQuantity(
+  stock: Stock,
+  count: { scope: string; storeId: number | null },
+) {
+  return count.scope === 'ALL'
+    ? stock.onHand
+    : storeQuantity(stock, count.storeId);
+}
+function storeName(value: string) {
+  const clean = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+  if (!clean || clean.length > 80 || clean.toLowerCase() === 'unassigned')
+    throw new BadRequestException('Enter a store name (1–80 characters). Unassigned is reserved.');
+  return clean;
 }
 function countRevision(
   id: number,
@@ -240,12 +276,12 @@ export class WarehouseService {
         'Warehouse is available to authorized staff only.',
       );
   }
-  private async transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
+  private async transaction<T>(work: (tx: Tx) => Promise<T>, timeout = 20000): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       try {
         return await this.prisma.$transaction(work, {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-          timeout: 20000,
+          timeout,
         });
       } catch (e) {
         if (
@@ -259,6 +295,19 @@ export class WarehouseService {
         }
         throw e;
       }
+    }
+  }
+  // El bloqueo del store impide desactivarlo mientras una operación recibe stock.
+  private async lockStores(tx: Tx, ids: number[], activeIds: number[] = []) {
+    const unique = [...new Set(ids)].sort((a, b) => a - b);
+    for (const id of unique) {
+      if (!Number.isSafeInteger(id) || id < 1)
+        throw new BadRequestException('Choose a valid store.');
+      await tx.$queryRaw`SELECT id FROM warehouse_stores WHERE id = ${id} FOR UPDATE`;
+      const store = await tx.warehouseStore.findUnique({ where: { id } });
+      if (!store) throw new NotFoundException('Store not found.');
+      if (activeIds.includes(id) && !store.isActive)
+        throw new ConflictException('This store is inactive. Choose an active store.');
     }
   }
   private async load(tx: Tx, lineNumber: string): Promise<Stock> {
@@ -316,9 +365,14 @@ export class WarehouseService {
       reason?: string;
       reversalOfId?: number;
       countId?: number;
+      quantity?: number;
+      fromStoreId?: number | null;
+      toStoreId?: number | null;
     },
   ) {
-    const { transitDelta = 0, onHandDelta = 0, releasedDelta = 0 } = data;
+    const { transitDelta = 0, onHandDelta = 0, releasedDelta = 0,
+      quantity = Math.max(Math.abs(transitDelta), Math.abs(onHandDelta), Math.abs(releasedDelta)),
+      fromStoreId = null, toStoreId = null } = data;
     const next = {
       expectedParts: data.expectedParts ?? parts(stock),
       inTransit: stock.inTransit + transitDelta,
@@ -326,17 +380,42 @@ export class WarehouseService {
       released: stock.released + releasedDelta,
     };
     assertBalances(next);
+    const assigned = stock.storeBalances.reduce((sum, b) => sum + b.onHand, 0);
+    if (stock.unassigned < 0 || assigned + stock.unassigned !== stock.onHand)
+      throw new ConflictException('Store balances do not match warehouse stock. Review this unit before moving it.');
+    const changes = new Map<number, number>();
+    if (fromStoreId !== null) changes.set(fromStoreId, -quantity);
+    if (toStoreId !== null) changes.set(toStoreId, (changes.get(toStoreId) ?? 0) + quantity);
+    const unassigned = stock.unassigned + onHandDelta
+      - [...changes.values()].reduce((sum, delta) => sum + delta, 0);
+    if (unassigned < 0)
+      throw new BadRequestException('Not enough Unassigned parts. Choose the store that holds these parts; for a count, count the affected store separately.');
+    for (const [storeId, delta] of changes) {
+      if (storeQuantity(stock, storeId) + delta < 0)
+        throw new BadRequestException('Not enough parts in the selected source store.');
+    }
     const changed = await tx.warehouseStock.updateMany({
       where: { lineNumber: stock.lineNumber, version: stock.version },
-      data: { ...next, version: { increment: 1 } },
+      data: { ...next, unassigned, version: { increment: 1 } },
     });
     if (changed.count !== 1)
       throw new ConflictException(
         'This unit changed. Refresh it before trying again.',
       );
+    for (const [storeId, delta] of changes) {
+      if (delta === 0) continue;
+      await tx.warehouseStoreStock.upsert({
+        where: { lineNumber_storeId: { lineNumber: stock.lineNumber, storeId } },
+        create: { lineNumber: stock.lineNumber, storeId, onHand: storeQuantity(stock, storeId) + delta },
+        update: { onHand: { increment: delta } },
+      });
+    }
     const movement = await tx.warehouseMovement.create({
       data: {
         lineNumber: stock.lineNumber,
+        quantity,
+        fromStoreId,
+        toStoreId,
         type: data.type,
         actorId: data.actorId,
         requestKey: data.requestKey,
@@ -363,6 +442,135 @@ export class WarehouseService {
     };
   }
 
+  async stores(actor: AuthUser) {
+    this.staff(actor);
+    return this.prisma.$transaction(async (tx) => {
+      const stores = await tx.warehouseStore.findMany({ orderBy: { name: 'asc' } });
+      const balances = await tx.warehouseStoreStock.groupBy({
+        by: ['storeId'], where: { onHand: { gt: 0 } },
+        _sum: { onHand: true }, _count: { _all: true },
+      });
+      return stores.map((s) => {
+        const total = balances.find((b) => b.storeId === s.id);
+        return { ...s, onHand: total?._sum.onHand ?? 0, units: total?._count._all ?? 0 };
+      });
+    });
+  }
+  async createStore(dto: WarehouseStoreCreateDto, actor: AuthUser) {
+    this.staff(actor, true);
+    const name = storeName(dto.name);
+    return this.transaction(async (tx) => {
+      if (await tx.warehouseStore.findUnique({ where: { name } }))
+        throw new ConflictException('A store with this name already exists. Rename or reactivate that store.');
+      return tx.warehouseStore.create({ data: { name } });
+    });
+  }
+  async updateStore(id: number, dto: WarehouseStoreUpdateDto, actor: AuthUser) {
+    this.staff(actor, true);
+    const name = storeName(dto.name);
+    if (typeof dto.isActive !== 'boolean' || !Number.isSafeInteger(dto.version) || dto.version < 0)
+      throw new BadRequestException('Enter a valid store status and version.');
+    return this.transaction(async (tx) => {
+      await this.lockStores(tx, [id]);
+      const duplicate = await tx.warehouseStore.findUnique({ where: { name } });
+      if (duplicate && duplicate.id !== id)
+        throw new ConflictException('A store with this name already exists.');
+      if (!dto.isActive) {
+        if (await tx.warehouseStoreStock.count({ where: { storeId: id, onHand: { gt: 0 } } }))
+          throw new ConflictException('Transfer all parts out of this store before deactivating it.');
+        if (await tx.warehouseCount.count({ where: { storeId: id, status: 'OPEN' } }))
+          throw new ConflictException('Finish or cancel the physical count for this store before deactivating it.');
+      }
+      const changed = await tx.warehouseStore.updateMany({
+        where: { id, version: dto.version },
+        data: { name, isActive: dto.isActive, version: { increment: 1 } },
+      });
+      if (changed.count !== 1)
+        throw new ConflictException('This store changed. Refresh before saving.');
+      return tx.warehouseStore.findUniqueOrThrow({ where: { id } });
+    });
+  }
+  async receive(dto: WarehouseReceiptDto, actor: AuthUser) {
+    this.staff(actor);
+    if (!Number.isSafeInteger(dto.storeId) || dto.storeId < 1)
+      throw new BadRequestException('Choose a destination store.');
+    if (!Array.isArray(dto.items) || !dto.items.length || dto.items.length > 500)
+      throw new BadRequestException('Select between 1 and 500 units per receipt.');
+    if (dto.items.some((item) => !item || typeof item !== 'object'))
+      throw new BadRequestException('Select valid receipt units.');
+    const items = dto.items.map((item) => ({
+      lineNumber: barcodeLine(item.barcode), quantity: item.quantity, version: item.version,
+    })).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
+    if (new Set(items.map((i) => i.lineNumber)).size !== items.length ||
+        items.some((i) => !Number.isInteger(i.quantity) || i.quantity < 1 || i.quantity > 200 ||
+          !Number.isSafeInteger(i.version) || i.version < 0))
+      throw new BadRequestException('Choose each unit once and enter valid quantities and versions.');
+    const requestHash = hash([actor.id, 'BATCH_RECEIVE', dto.storeId, items]);
+    return this.transaction(async (tx) => {
+      // El primer movimiento identifica el lote completo. Todo el lote se confirma
+      // en una sola transacción; nunca queda un recibo parcialmente aplicado.
+      const prior = await tx.warehouseMovement.findUnique({
+        where: { requestKey: dto.requestKey }, include: movementInclude,
+      });
+      const summary = {
+        units: items.length,
+        parts: items.reduce((sum, i) => sum + i.quantity, 0),
+        storeId: dto.storeId,
+      };
+      if (prior) {
+        if (prior.requestHash !== requestHash)
+          throw new ConflictException('This request identifier was already used for another operation.');
+        return { ...summary, storeName: prior.toStore?.name ?? '', replayed: true };
+      }
+      await this.noCount(tx);
+      await this.lockStores(tx, [dto.storeId], [dto.storeId]);
+      const store = await tx.warehouseStore.findUniqueOrThrow({ where: { id: dto.storeId } });
+      for (const [index, item] of items.entries()) {
+        const stock = await this.load(tx, item.lineNumber);
+        if (stock.version !== item.version)
+          throw new ConflictException(`Unit I${item.lineNumber} changed. Refresh the selection before receiving. No parts were received by this request.`);
+        if (stock.inTransit < item.quantity)
+          throw new BadRequestException(`Unit I${item.lineNumber} does not have that many parts in transit. No parts were received by this request.`);
+        await this.move(tx, stock, {
+          type: 'RECEIVE', actorId: actor.id,
+          requestKey: index === 0 ? dto.requestKey : hash([dto.requestKey, item.lineNumber]),
+          requestHash, quantity: item.quantity,
+          transitDelta: -item.quantity, onHandDelta: item.quantity,
+          toStoreId: dto.storeId,
+        });
+      }
+      return { ...summary, storeName: store.name, replayed: false };
+    }, 60000);
+  }
+  async transfer(dto: WarehouseTransferDto, actor: AuthUser) {
+    this.staff(actor);
+    const lineNumber = barcodeLine(dto.barcode);
+    if (dto.fromStoreId === undefined ||
+        (dto.fromStoreId !== null && (!Number.isSafeInteger(dto.fromStoreId) || dto.fromStoreId < 1)) ||
+        !Number.isSafeInteger(dto.toStoreId) || dto.toStoreId < 1 || dto.fromStoreId === dto.toStoreId ||
+        !Number.isInteger(dto.quantity) || dto.quantity < 1 || dto.quantity > 200 ||
+        !Number.isSafeInteger(dto.version) || dto.version < 0)
+      throw new BadRequestException('Choose different source and destination locations and a valid quantity.');
+    const requestHash = hash([actor.id, 'TRANSFER', lineNumber, dto.fromStoreId, dto.toStoreId, dto.quantity, dto.version]);
+    return this.transaction(async (tx) => {
+      const replay = await this.replay(tx, dto.requestKey, requestHash);
+      if (replay) return replay;
+      await this.noCount(tx);
+      await this.lockStores(tx,
+        dto.fromStoreId === null ? [dto.toStoreId] : [dto.fromStoreId, dto.toStoreId], [dto.toStoreId]);
+      const stock = await this.load(tx, lineNumber);
+      if (stock.version !== dto.version)
+        throw new ConflictException('This unit changed. Refresh its details before transferring parts.');
+      if (storeQuantity(stock, dto.fromStoreId) < dto.quantity)
+        throw new BadRequestException('Not enough parts in the selected source location.');
+      return this.move(tx, stock, {
+        type: 'TRANSFER', actorId: actor.id,
+        requestKey: dto.requestKey, requestHash,
+        quantity: dto.quantity, fromStoreId: dto.fromStoreId, toStoreId: dto.toStoreId,
+      });
+    });
+  }
+
   async inventory(query: Query, actor: AuthUser) {
     this.staff(actor);
     const pagination = paging(query),
@@ -382,6 +590,17 @@ export class WarehouseService {
       ];
     else if (view !== 'all')
       throw new BadRequestException('Invalid inventory filter.');
+    if (view === 'in_transit' && query.storeId && query.storeId !== 'all')
+      throw new BadRequestException('In-transit parts have no store yet. Choose their destination in Pending receipt.');
+    if (query.storeId && query.storeId !== 'all') {
+      if (query.storeId === 'unassigned') where.unassigned = { gt: 0 };
+      else {
+        const storeId = Number(query.storeId);
+        if (!Number.isSafeInteger(storeId) || storeId < 1)
+          throw new BadRequestException('Invalid store filter.');
+        where.storeBalances = { some: { storeId, onHand: { gt: 0 } } };
+      }
+    }
     return this.prisma.$transaction(async (tx) => {
       const rows = await tx.warehouseStock.findMany({
         where,
@@ -392,7 +611,7 @@ export class WarehouseService {
       });
       const total = await tx.warehouseStock.count({ where });
       const sum = await tx.warehouseStock.aggregate({
-        _sum: { onHand: true, inTransit: true, released: true },
+        _sum: { onHand: true, unassigned: true, inTransit: true, released: true },
       });
       const activeCount = await tx.warehouseCount.findUnique({
         where: { activeSlot: 1 },
@@ -405,6 +624,7 @@ export class WarehouseService {
         pageSize: pagination.pageSize,
         summary: {
           onHand: sum._sum.onHand ?? 0,
+          unassigned: sum._sum.unassigned ?? 0,
           inTransit: sum._sum.inTransit ?? 0,
           released: sum._sum.released ?? 0,
         },
@@ -440,11 +660,21 @@ export class WarehouseService {
   async scan(dto: WarehouseScanDto, actor: AuthUser) {
     this.staff(actor);
     const lineNumber = barcodeLine(dto.barcode),
-      requestHash = hash([actor.id, dto.action, lineNumber]);
+      requestHash = hash(dto.storeId === undefined
+        ? [actor.id, dto.action, lineNumber]
+        : [actor.id, dto.action, lineNumber, dto.storeId]);
     return this.transaction(async (tx) => {
       const replay = await this.replay(tx, dto.requestKey, requestHash);
       if (replay) return replay;
       await this.noCount(tx);
+      if (dto.action === 'COLLECT' && dto.storeId != null)
+        throw new BadRequestException('Factory collection does not assign a store.');
+      if (dto.action === 'RECEIVE' && (!Number.isSafeInteger(dto.storeId) || dto.storeId! < 1))
+        throw new BadRequestException('Choose the destination store before receiving parts.');
+      if (dto.action === 'RELEASE' && dto.storeId === undefined)
+        throw new BadRequestException('Choose the source store, or explicitly select Unassigned.');
+      if (dto.storeId != null)
+        await this.lockStores(tx, [dto.storeId], dto.action === 'RECEIVE' ? [dto.storeId] : []);
       const stock = await this.load(tx, lineNumber);
       const deltas = { transitDelta: 0, onHandDelta: 0, releasedDelta: 0 };
       if (dto.action === 'COLLECT') deltas.transitDelta = 1;
@@ -467,6 +697,9 @@ export class WarehouseService {
         actorId: actor.id,
         requestKey: dto.requestKey,
         requestHash,
+        quantity: 1,
+        fromStoreId: dto.action === 'RELEASE' ? dto.storeId : null,
+        toStoreId: dto.action === 'RECEIVE' ? dto.storeId : null,
       });
     });
   }
@@ -522,7 +755,7 @@ export class WarehouseService {
         throw new ForbiddenException('You can undo only your own readings.');
       if (
         m.reversal ||
-        !['COLLECT', 'RECEIVE', 'RELEASE', 'COUNT'].includes(m.type)
+        !['COLLECT', 'RECEIVE', 'RELEASE', 'TRANSFER', 'COUNT'].includes(m.type)
       )
         throw new BadRequestException('This reading cannot be undone.');
       const stock = await this.load(tx, m.lineNumber);
@@ -555,6 +788,9 @@ export class WarehouseService {
         throw new ConflictException(
           'This unit has newer movements. Only its latest reading can be undone.',
         );
+      await this.lockStores(tx,
+        [m.fromStoreId, m.toStoreId].filter((id): id is number => id !== null),
+        m.fromStoreId !== null ? [m.fromStoreId] : []);
       return this.move(tx, stock, {
         type: 'UNDO',
         actorId: actor.id,
@@ -563,6 +799,9 @@ export class WarehouseService {
         transitDelta: -m.transitDelta,
         onHandDelta: -m.onHandDelta,
         releasedDelta: -m.releasedDelta,
+        quantity: m.quantity,
+        fromStoreId: m.toStoreId,
+        toStoreId: m.fromStoreId,
         reversalOfId: m.id,
       });
     });
@@ -576,6 +815,9 @@ export class WarehouseService {
       select: {
         id: true,
         status: true,
+        scope: true,
+        storeId: true,
+        store: { select: storeSelect },
         startedAt: true,
         closedAt: true,
         reason: true,
@@ -584,36 +826,45 @@ export class WarehouseService {
       },
     });
   }
-  async startCount(dto: WarehouseRequestDto, actor: AuthUser) {
+  async startCount(dto: WarehouseCountStartDto, actor: AuthUser) {
     this.staff(actor);
+    const scope = dto.scope ?? 'ALL', storeId = dto.storeId ?? null;
+    if (!['ALL', 'STORE', 'UNASSIGNED'].includes(scope) ||
+        (scope === 'STORE' ? !Number.isSafeInteger(storeId) || storeId! < 1 : storeId !== null))
+      throw new BadRequestException('Choose a valid physical count location.');
     return this.transaction(async (tx) => {
       const prior = await tx.warehouseCount.findUnique({
         where: { requestKey: dto.requestKey },
       });
       if (prior) {
-        if (prior.startedById !== actor.id)
+        if (prior.startedById !== actor.id || prior.scope !== scope || prior.storeId !== storeId)
           throw new ConflictException('Request identifier already used.');
         return { id: prior.id };
       }
       await this.noCount(tx);
+      if (storeId !== null) await this.lockStores(tx, [storeId], [storeId]);
       const created = await tx.warehouseCount.create({
         data: {
           requestKey: dto.requestKey,
           activeSlot: 1,
           startedById: actor.id,
+          scope,
+          storeId,
         },
       });
       // Fotografía de existencias reales. Las unidades a cero se agregan si se escanean.
       const rows = await tx.warehouseStock.findMany({
-        where: { onHand: { gt: 0 } },
-        select: { lineNumber: true, onHand: true, version: true },
+        where: scope === 'ALL' ? { onHand: { gt: 0 } }
+          : scope === 'UNASSIGNED' ? { unassigned: { gt: 0 } }
+          : { storeBalances: { some: { storeId: storeId!, onHand: { gt: 0 } } } },
+        include: stockInclude,
       });
       for (let offset = 0; offset < rows.length; offset += 500) {
         await tx.warehouseCountLine.createMany({
           data: rows.slice(offset, offset + 500).map((s) => ({
             countId: created.id,
             lineNumber: s.lineNumber,
-            expected: s.onHand,
+            expected: countQuantity(s, created),
             stockVersion: s.version,
           })),
         });
@@ -638,6 +889,9 @@ export class WarehouseService {
         select: {
           id: true,
           status: true,
+          scope: true,
+          storeId: true,
+          store: { select: storeSelect },
           startedAt: true,
           closedAt: true,
           reason: true,
@@ -716,6 +970,7 @@ export class WarehouseService {
     const movement = await tx.warehouseMovement.create({
       data: {
         ...data,
+        quantity: Math.abs(data.countDelta),
         lineNumber: stock.lineNumber,
         transitAfter: stock.inTransit,
         onHandAfter: stock.onHand,
@@ -753,7 +1008,7 @@ export class WarehouseService {
         });
         return { ...replay, counted: line.counted };
       }
-      await this.openCount(tx, id);
+      const count = await this.openCount(tx, id);
       const stock = await this.load(tx, lineNumber),
         expectedParts = parts(stock);
       if (!expectedParts)
@@ -765,14 +1020,15 @@ export class WarehouseService {
         create: {
           countId: id,
           lineNumber,
-          expected: stock.onHand,
+          expected: countQuantity(stock, count),
           stockVersion: stock.version,
         },
         update: {},
       });
-      if (line.counted + 1 + stock.inTransit + stock.released > expectedParts)
+      const otherLocations = stock.onHand - countQuantity(stock, count);
+      if (line.counted + 1 + otherLocations + stock.inTransit + stock.released > expectedParts)
         throw new BadRequestException(
-          'This reading exceeds the parts that can be in the warehouse. Review the readings and transit or release records.',
+          'This reading exceeds the parts that can be in the warehouse. Review the readings, other stores, and transit or release records.',
         );
       await tx.warehouseCountLine.update({
         where: { countId_lineNumber: { countId: id, lineNumber } },
@@ -819,6 +1075,7 @@ export class WarehouseService {
               'Review the differences and enter a reason before applying inventory adjustments.',
             );
         }
+        if (count.storeId !== null) await this.lockStores(tx, [count.storeId], [count.storeId]);
         for (const line of lines) {
           if (line.stockVersion !== line.stock.version)
             throw new ConflictException(
@@ -837,6 +1094,9 @@ export class WarehouseService {
               ]),
               countId: id,
               onHandDelta: line.counted - line.expected,
+              quantity: Math.abs(line.counted - line.expected),
+              fromStoreId: line.counted < line.expected ? count.storeId : null,
+              toStoreId: line.counted > line.expected ? count.storeId : null,
               reason: dto.reason!.trim(),
             });
           }

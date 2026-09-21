@@ -1351,20 +1351,54 @@ model FactoryUnit {
 
 // Cantidades operativas; la ficha del producto sigue viviendo en Piece.
 model WarehouseStock {
-  lineNumber    String               @id @db.VarChar(50)
-  unit          FactoryUnit          @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
+  lineNumber    String                @id @db.VarChar(50)
+  unit          FactoryUnit           @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
   expectedParts Int?
-  inTransit     Int                  @default(0)
-  onHand        Int                  @default(0)
-  released      Int                  @default(0)
-  version       Int                  @default(0)
-  updatedAt     DateTime             @updatedAt
+  inTransit     Int                   @default(0)
+  onHand        Int                   @default(0)
+  unassigned    Int                   @default(0)
+  released      Int                   @default(0)
+  version       Int                   @default(0)
+  updatedAt     DateTime              @updatedAt
   movements     WarehouseMovement[]
   countLines    WarehouseCountLine[]
+  storeBalances WarehouseStoreStock[]
 
   @@index([onHand])
+  @@index([unassigned])
   @@index([inTransit])
   @@map("warehouse_stock")
+}
+
+// Los stores son ubicaciones internas, no almacenes con otra dirección.
+model WarehouseStore {
+  id            Int                   @id @default(autoincrement())
+  name          String                @unique @db.VarChar(80)
+  isActive      Boolean               @default(true)
+  version       Int                   @default(0)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  balances      WarehouseStoreStock[]
+  movementsFrom WarehouseMovement[]   @relation("WarehouseMovementFromStore")
+  movementsTo   WarehouseMovement[]   @relation("WarehouseMovementToStore")
+  counts        WarehouseCount[]
+
+  @@map("warehouse_stores")
+}
+
+// onHand global se conserva. La diferencia con la suma asignada es Unassigned.
+// Así las existencias anteriores no cambian ni reciben una ubicación inventada.
+model WarehouseStoreStock {
+  lineNumber String         @db.VarChar(50)
+  storeId    Int
+  onHand     Int            @default(0)
+  updatedAt  DateTime       @updatedAt
+  stock      WarehouseStock @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
+  store      WarehouseStore @relation(fields: [storeId], references: [id], onDelete: Restrict)
+
+  @@id([lineNumber, storeId])
+  @@index([storeId, onHand])
+  @@map("warehouse_store_stock")
 }
 
 enum WarehouseMovementType {
@@ -1376,6 +1410,7 @@ enum WarehouseMovementType {
   UNDO
   COUNT
   COUNT_UNDO
+  TRANSFER
 }
 
 model WarehouseMovement {
@@ -1388,6 +1423,11 @@ model WarehouseMovement {
   transitDelta        Int                   @default(0)
   onHandDelta         Int                   @default(0)
   releasedDelta       Int                   @default(0)
+  quantity            Int                   @default(0)
+  fromStoreId         Int?
+  fromStore           WarehouseStore?       @relation("WarehouseMovementFromStore", fields: [fromStoreId], references: [id], onDelete: Restrict)
+  toStoreId           Int?
+  toStore             WarehouseStore?       @relation("WarehouseMovementToStore", fields: [toStoreId], references: [id], onDelete: Restrict)
   transitAfter        Int
   onHandAfter         Int
   releasedAfter       Int
@@ -1406,6 +1446,8 @@ model WarehouseMovement {
   createdAt           DateTime              @default(now())
 
   @@index([lineNumber, id])
+  @@index([fromStoreId, id])
+  @@index([toStoreId, id])
   @@index([actorId])
   @@index([countId])
   @@index([createdAt])
@@ -1418,12 +1460,22 @@ enum WarehouseCountStatus {
   CANCELED
 }
 
+enum WarehouseCountScope {
+  ALL
+  STORE
+  UNASSIGNED
+}
+
 model WarehouseCount {
   id          Int                  @id @default(autoincrement())
   requestKey  String               @unique @db.VarChar(64)
   // Solo puede existir un conteo abierto; NULL permite conservar los cerrados.
   activeSlot  Int?                 @unique
   status      WarehouseCountStatus @default(OPEN)
+  // ALL conserva los conteos históricos. Los nuevos pueden limitarse a un store.
+  scope       WarehouseCountScope  @default(ALL)
+  storeId     Int?
+  store       WarehouseStore?      @relation(fields: [storeId], references: [id], onDelete: Restrict)
   startedById Int
   startedBy   User                 @relation("WarehouseCountStarted", fields: [startedById], references: [id], onDelete: Restrict)
   closedById  Int?
@@ -1436,6 +1488,7 @@ model WarehouseCount {
 
   @@index([startedById])
   @@index([closedById])
+  @@index([storeId])
   @@map("warehouse_counts")
 }
 

@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Param,
+  Patch,
   ParseIntPipe,
   Post,
   Query,
@@ -18,6 +19,11 @@ import {
   WarehousePartsDto,
   WarehouseCountScanDto,
   WarehouseCountCloseDto,
+  WarehouseCountStartDto,
+  WarehouseReceiptDto,
+  WarehouseTransferDto,
+  WarehouseStoreCreateDto,
+  WarehouseStoreUpdateDto,
 } from './warehouse.dto';
 
 @Controller('warehouse')
@@ -25,6 +31,29 @@ import {
 export class WarehouseController {
   constructor(private readonly warehouse: WarehouseService) {}
 
+  @Get('stores') stores(@Req() req: Request) {
+    return this.warehouse.stores(req.user as AuthUser);
+  }
+  @Post('stores')
+  @Roles('admin')
+  createStore(@Body() dto: WarehouseStoreCreateDto, @Req() req: Request) {
+    return this.warehouse.createStore(dto, req.user as AuthUser);
+  }
+  @Patch('stores/:id')
+  @Roles('admin')
+  updateStore(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: WarehouseStoreUpdateDto,
+    @Req() req: Request,
+  ) {
+    return this.warehouse.updateStore(id, dto, req.user as AuthUser);
+  }
+  @Post('receipts') receive(@Body() dto: WarehouseReceiptDto, @Req() req: Request) {
+    return this.warehouse.receive(dto, req.user as AuthUser);
+  }
+  @Post('transfers') transfer(@Body() dto: WarehouseTransferDto, @Req() req: Request) {
+    return this.warehouse.transfer(dto, req.user as AuthUser);
+  }
   @Get('inventory') inventory(
     @Query() query: Record<string, string>,
     @Req() req: Request,
@@ -66,7 +95,7 @@ export class WarehouseController {
     return this.warehouse.counts(req.user as AuthUser);
   }
   @Post('counts') startCount(
-    @Body() dto: WarehouseRequestDto,
+    @Body() dto: WarehouseCountStartDto,
     @Req() req: Request,
   ) {
     return this.warehouse.startCount(dto, req.user as AuthUser);
