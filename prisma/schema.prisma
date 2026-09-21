@@ -73,15 +73,15 @@ model User {
   username          String   @unique
   firstName         String
   lastName          String
-  email             String   @unique
-  phone             String   @unique
+  email             String?  @unique
+  phone             String?  @unique
   password          String
   passwordUpdatedAt DateTime @default(now())
 
-  street     String @db.VarChar(150)
-  city       String @db.VarChar(100)
-  state      String @db.VarChar(50)
-  postalCode String @db.VarChar(20)
+  street     String? @db.VarChar(150)
+  city       String? @db.VarChar(100)
+  state      String? @db.VarChar(50)
+  postalCode String? @db.VarChar(20)
 
   markupOverride Decimal? @db.Decimal(24, 18)
   isTaxExempt    Boolean  @default(false)

@@ -32,6 +32,7 @@ function record(value: unknown): value is Record<string, unknown> {
 export function presentApiResponse(value: unknown, user?: AuthUser): any {
   const staff = user?.role?.name === 'admin' || user?.role?.name === 'operator';
   const dealer = user?.role?.name === 'dealer';
+  const technician = user?.role?.name === 'technician';
   const source = staff ? value : presentInstallationPricing(value, user);
   const visit = (input: unknown): any => {
     if (Array.isArray(input)) return input.map(visit);
@@ -41,7 +42,7 @@ export function presentApiResponse(value: unknown, user?: AuthUser): any {
     return Object.fromEntries(Object.entries(input)
       .filter(([key]) => !credentials.has(key) && (!isUser || userFields.has(key)) &&
         (user?.role?.name === 'admin' || (key !== 'coverageSnapshot' && key !== 'estimatedMinutes' && key !== 'timeSnapshot')) &&
-        (staff || !companyFinancials.has(key)) &&
+        (staff || (technician && key === 'poNumber') || !companyFinancials.has(key)) &&
         (staff || dealer || !dealerFinancials.has(key)))
       .map(([key, child]) => [key, visit(child)]));
   };

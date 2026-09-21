@@ -22,10 +22,13 @@ export class RolesGuard implements CanActivate {
       context.getClass(),
     ]);
 
-    if (!requiredRoles || requiredRoles.length === 0) return true;
-
     const request = context.switchToHttp().getRequest();
     const user = request?.user as AuthUser | undefined;
+
+    // El rol técnico no hereda los endpoints generales de una sesión comercial.
+    // Se exige una autorización explícita, también cuando no hay @Roles.
+    if (!requiredRoles || requiredRoles.length === 0)
+      return user?.role?.name !== 'technician';
 
     if (!user?.role?.name) return false;
 

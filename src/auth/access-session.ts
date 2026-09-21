@@ -46,7 +46,7 @@ export async function validateAccessSession(prisma: PrismaService, payload: Sess
     throw new UnauthorizedException('Session expired due to inactivity.');
   }
   const role = user.role.name;
-  if (!['admin', 'operator', 'dealer', 'client'].includes(role)) {
+  if (!['admin', 'operator', 'dealer', 'client', 'technician'].includes(role)) {
     throw new UnauthorizedException('Invalid account role.');
   }
   return {

@@ -380,7 +380,7 @@ export class AuthService {
     });
 
     // No revelamos si el email existe o no.
-    if (!user || !user.isActive || user.deletedAt) {
+    if (!user || !user.email || !user.isActive || user.deletedAt) {
       return { message: genericMessage };
     }
 

@@ -16,6 +16,7 @@ import { Request } from 'express';
 import { UsersService, UserSafe } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { CreateTechnicianDto, UpdateTechnicianDto } from './dto/create-technician.dto';
 import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
 import { Roles } from '@/auth/roles.decorator';
 import { RolesGuard } from '@/auth/guards/roles/roles.guard';
@@ -31,6 +32,24 @@ export class UsersController {
   @UseGuards(RolesGuard)
   async createUser(@Body() userData: CreateUserDto, @Req() req: Request): Promise<UserSafe> {
     return this.usersService.createUserAsAdmin(userData, req.user as AuthUser);
+  }
+
+  @Post('technicians')
+  @Roles('admin')
+  @UseGuards(RolesGuard)
+  createTechnician(@Body() dto: CreateTechnicianDto, @Req() req: Request) {
+    return this.usersService.createTechnicianAsAdmin(dto, req.user as AuthUser);
+  }
+
+  @Patch('technicians/:id')
+  @Roles('admin')
+  @UseGuards(RolesGuard)
+  updateTechnician(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateTechnicianDto,
+    @Req() req: Request,
+  ) {
+    return this.usersService.updateTechnicianAsAdmin(id, dto, req.user as AuthUser);
   }
 
   @Get()

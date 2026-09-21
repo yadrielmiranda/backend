@@ -29,6 +29,9 @@ export class RolesService {
       throw new NotFoundException(`Role with ID #${id} not found.`);
     }
 
+    if (before.name === 'technician')
+      throw new BadRequestException('The technician role has no commercial pricing or payment settings.');
+
     if (dto.installationPriceProfileId != null) {
       const profile = await this.prisma.installationPriceProfile.findFirst({
         where: { id: dto.installationPriceProfileId, isActive: true },

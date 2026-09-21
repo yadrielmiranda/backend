@@ -276,6 +276,62 @@ export class WarehouseService {
         'Warehouse is available to authorized staff only.',
       );
   }
+  private receivingStaff(actor: AuthUser) {
+    if (actor?.role?.name !== 'technician') this.staff(actor);
+  }
+
+  private technician(actor: AuthUser) {
+    if (actor?.role?.name !== 'technician')
+      throw new ForbiddenException('Use an internal technician account.');
+  }
+
+  // Proyección mínima: sin cliente, precios, enlaces a órdenes o inventario general.
+  private technicianStock(stock: ReturnType<typeof presentStock>) {
+    return {
+      lineNumber: stock.lineNumber, barcode: stock.barcode, mark: stock.mark,
+      product: stock.product, system: stock.system, configuration: stock.configuration,
+      orderNumber: stock.orderNumber, poNumber: stock.poNumber,
+      expectedParts: stock.expectedParts, inTransit: stock.inTransit,
+      onHand: stock.onHand, pending: stock.pending, version: stock.version,
+    };
+  }
+
+  async technicianState(actor: AuthUser) {
+    this.technician(actor);
+    return this.prisma.$transaction(async (tx) => {
+      const stores = await tx.warehouseStore.findMany({
+        where: { isActive: true }, select: storeSelect, orderBy: { name: 'asc' },
+      });
+      const count = await tx.warehouseCount.findUnique({ where: { activeSlot: 1 }, select: { id: true } });
+      return { stores, countOpen: Boolean(count) };
+    });
+  }
+
+  async technicianPending(query: Query, actor: AuthUser) {
+    this.technician(actor);
+    const p = paging(query);
+    // El cliente no puede cambiar la vista ni pedir existencias o salidas.
+    const where: Prisma.WarehouseStockWhereInput = { ...stockSearch(query.search), inTransit: { gt: 0 } };
+    return this.prisma.$transaction(async (tx) => ({
+      items: (await tx.warehouseStock.findMany({
+        where, include: stockInclude, orderBy: { lineNumber: 'asc' }, skip: p.skip, take: p.take,
+      })).map((row) => this.technicianStock(presentStock(row))),
+      total: await tx.warehouseStock.count({ where }), page: p.page, pageSize: p.pageSize,
+    }));
+  }
+
+  async technicianScan(dto: WarehouseScanDto, actor: AuthUser) {
+    this.technician(actor);
+    const result = await this.scan(dto, actor);
+    return {
+      stock: this.technicianStock(result.stock), replayed: result.replayed,
+      movement: {
+        id: result.movement.id, type: result.movement.type, quantity: result.movement.quantity,
+        createdAt: result.movement.createdAt, toStore: result.movement.toStore,
+      },
+    };
+  }
+
   private async transaction<T>(work: (tx: Tx) => Promise<T>, timeout = 20000): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       try {
@@ -491,7 +547,7 @@ export class WarehouseService {
     });
   }
   async receive(dto: WarehouseReceiptDto, actor: AuthUser) {
-    this.staff(actor);
+    this.receivingStaff(actor);
     if (!Number.isSafeInteger(dto.storeId) || dto.storeId < 1)
       throw new BadRequestException('Choose a destination store.');
     if (!Array.isArray(dto.items) || !dto.items.length || dto.items.length > 500)
@@ -658,7 +714,10 @@ export class WarehouseService {
     }));
   }
   async scan(dto: WarehouseScanDto, actor: AuthUser) {
-    this.staff(actor);
+    this.receivingStaff(actor);
+    // Defensa en servicio: no basta con ocultar la salida en el teléfono.
+    if (actor.role?.name === 'technician' && !['COLLECT', 'RECEIVE'].includes(dto.action))
+      throw new ForbiddenException('Technicians can only collect or receive parts.');
     const lineNumber = barcodeLine(dto.barcode),
       requestHash = hash(dto.storeId === undefined
         ? [actor.id, dto.action, lineNumber]

@@ -69,6 +69,7 @@ describe('Admin-managed No installation deposit setting', () => {
       const saved = await f.service.createUser({
         idRole: 2,
         password: 'test',
+        email: 'dealer@example.test', phone: '+13055550101', street: '1 Test St', city: 'Miami', state: 'FL', postalCode: '33101',
         dealerMode,
         noInstallationDeposit: true,
       } as CreateUserDto);
@@ -116,6 +117,7 @@ describe('Admin-managed No installation deposit setting', () => {
       const saved = await f.service.createUser({
         idRole: 2,
         password: 'test',
+        email: 'dealer@example.test', phone: '+13055550101', street: '1 Test St', city: 'Miami', state: 'FL', postalCode: '33101',
         noInstallationDeposit: true,
       } as CreateUserDto);
       expect(saved.noInstallationDeposit).toBe(false);

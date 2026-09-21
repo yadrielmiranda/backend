@@ -23,6 +23,7 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { Public } from '@/auth/public.decorator';
+import { Roles } from '@/auth/roles.decorator';
 import { AuthUser } from './types/auth-user.type';
 import { UsersService, UserSafe } from '@/users/users.service';
 import { ACCESS_COOKIE, REFRESH_COOKIE } from './auth.tokens';
@@ -78,6 +79,29 @@ export class AuthController {
       loginDto.password,
     );
 
+    return this.completeLogin(user, res, req);
+  }
+
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @Post('technician-login')
+  async technicianLogin(
+    @Body() dto: LoginDto,
+    @Res({ passthrough: true }) res: Response,
+    @Req() req: Request,
+  ) {
+    const user = await this.authService.validateUser(dto.identifier, dto.password);
+    // Comprobar el rol antes de emitir cookies o crear una sesión.
+    if (user.role.name !== 'technician')
+      throw new UnauthorizedException('Use the internal technician account provided by your administrator.');
+    return this.completeLogin(user, res, req);
+  }
+
+  private async completeLogin(
+    user: Awaited<ReturnType<AuthService['validateUser']>>,
+    res: Response,
+    req: Request,
+  ) {
     const sessionId = this.authService.newSessionId();
     const accessToken = await this.authService.signAccessToken(user, sessionId);
     const refreshToken = await this.authService.signRefreshToken(
@@ -102,7 +126,7 @@ export class AuthController {
       this.cookieOptions(1000 * 60 * 60 * 24 * 30), // 30d
     );
 
-    return { message: 'Inicio de sesión exitoso' };
+    return { message: 'Inicio de sesión exitoso', role: user.role.name };
   }
 
   @Public()
@@ -144,6 +168,7 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Get('profile')
+  @Roles('admin', 'operator', 'dealer', 'client', 'technician')
   @AllowBeforePlatformTerms()
   async getProfile(@Req() req: Request): Promise<UserSafe> {
     const userId = (req.user as AuthUser).id;
@@ -153,6 +178,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('logout')
+  @Roles('admin', 'operator', 'dealer', 'client', 'technician')
   @AllowBeforePlatformTerms()
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const actor = req.user as AuthUser;
@@ -184,6 +210,7 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Patch('change-password')
+  @Roles('admin', 'operator', 'dealer', 'client', 'technician')
   @AllowBeforePlatformTerms()
   @HttpCode(HttpStatus.OK)
   async changePassword(

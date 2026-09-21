@@ -13,6 +13,7 @@ async function main() {
     { name: 'client', markup: 0.30 }, // 30%
     { name: 'dealer', markup: 0.15 }, // 15%
     { name: 'operator', markup: 0.0 }, // 0%
+    { name: 'technician', markup: 0.0 }, // Cuenta interna sin funciones comerciales
   ];
 
   console.log('Upserting roles...');

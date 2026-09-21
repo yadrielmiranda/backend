@@ -3,6 +3,7 @@ export function warehouseFixture() {
   const users = [
     { id: 1, firstName: 'Admin', lastName: 'Test' },
     { id: 2, firstName: 'Operator', lastName: 'Test' },
+    { id: 3, firstName: 'Technician', lastName: 'Test' },
   ];
   const order = {
     id: 1,

@@ -1,6 +1,7 @@
 import { assertPaymentPlanAvailable } from '@/payment-plans/payment-plans.module';
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,6 +10,7 @@ import { DealerMode, Prisma, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { CreateTechnicianDto, UpdateTechnicianDto } from './dto/create-technician.dto';
 import { LogsService } from '@/logs/logs.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { getRoleName } from '@/auth/utils/get-role-name';
@@ -231,6 +233,10 @@ export class UsersService {
       throw new BadRequestException('The selected role does not exist.');
     }
 
+    if (role.name === 'technician')
+      throw new BadRequestException('Create a separate technician account using New technician.');
+    this.assertCommercialContact(userData);
+
     const resolvedDealerMode = this.resolveDealerMode({
       roleName: role.name,
       dealerMode,
@@ -303,6 +309,18 @@ export class UsersService {
       throw new NotFoundException(`User with ID #${where.id} not found.`);
     }
 
+    if (existing.role.name === 'technician') {
+      const allowed = new Set(['username', 'firstName', 'lastName', 'password', 'isActive']);
+      if (Object.keys(userData).some((key) => !allowed.has(key)))
+        throw new BadRequestException('Technician accounts cannot have a commercial role, contact or pricing settings.');
+      Object.assign(rest, this.technicianFields(userData, true));
+      if (userData.isActive !== undefined && typeof userData.isActive !== 'boolean')
+        throw new BadRequestException('isActive must be a boolean.');
+    } else {
+      // PartialType omite null: la validación de servicio impide borrar contactos obligatorios.
+      this.assertCommercialContact(userData, true);
+    }
+
     const dataForPrisma: Prisma.UserUpdateInput = {
       ...rest,
     };
@@ -324,6 +342,8 @@ export class UsersService {
       if (!selectedRole) {
         throw new BadRequestException('The selected role does not exist.');
       }
+      if (selectedRole.name === 'technician')
+        throw new BadRequestException('Create a separate technician account instead of changing this account role.');
       nextRoleName = selectedRole.name;
       dataForPrisma.role = { connect: { id: idRole } };
     }
@@ -422,8 +442,8 @@ export class UsersService {
           isActive: false,
           deletedAt: now,
           username: `deleted_${user.id}_${user.username}`,
-          email: `deleted_${user.id}_${user.email}`,
-          phone: `+1000000${String(user.id).padStart(4, '0')}`,
+          email: user.email === null ? null : `deleted_${user.id}_${user.email}`,
+          phone: user.phone === null ? null : `+1000000${String(user.id).padStart(4, '0')}`,
         },
         select: this.safeSelect,
       });
@@ -432,6 +452,76 @@ export class UsersService {
 
       return deleted as UserSafe;
     });
+  }
+
+  private assertCommercialContact(data: Partial<CreateUserDto>, partial = false) {
+    for (const field of ['email', 'phone', 'street', 'city', 'state', 'postalCode'] as const) {
+      if (partial && !(field in data)) continue;
+      if (typeof data[field] !== 'string' || !data[field].trim())
+        throw new BadRequestException(`${field} is required for non-technician accounts.`);
+    }
+  }
+
+  private assertTechnicianPassword(password: string) {
+    if (typeof password !== 'string' || password.length < 8 || Buffer.byteLength(password, 'utf8') > 72)
+      throw new BadRequestException('Use a password with at least 8 characters and at most 72 UTF-8 bytes.');
+  }
+
+  private technicianFields(dto: CreateTechnicianDto | UpdateTechnicianDto, partial = false) {
+    const data: Partial<CreateTechnicianDto> = {};
+    for (const field of ['username', 'firstName', 'lastName'] as const) {
+      if (partial && dto[field] === undefined) continue;
+      const value = dto[field];
+      if (typeof value !== 'string' || !value.trim() || value.trim().length > (field === 'username' ? 50 : 100))
+        throw new BadRequestException(`Enter a valid ${field}.`);
+      if (field === 'username' && !/^[A-Za-z0-9][A-Za-z0-9._-]{2,49}$/.test(value.trim()))
+        throw new BadRequestException('Use a unique username of 3–50 letters, numbers, dots, underscores or hyphens.');
+      data[field] = value.trim();
+    }
+    if (!partial || dto.password !== undefined) {
+      this.assertTechnicianPassword(dto.password);
+      data.password = dto.password;
+    }
+    return data;
+  }
+
+  async createTechnicianAsAdmin(dto: CreateTechnicianDto, actor: AuthUser): Promise<UserSafe> {
+    const data = this.technicianFields(dto) as CreateTechnicianDto;
+    const role = await this.prisma.role.findUnique({ where: { name: 'technician' }, select: { id: true } });
+    if (!role) throw new BadRequestException('Apply the technician account migration before creating an account.');
+    let created: UserSafe;
+    try {
+      created = await this.prisma.user.create({
+        data: {
+          username: data.username, firstName: data.firstName, lastName: data.lastName,
+          password: await bcrypt.hash(data.password, 10),
+          email: null, phone: null, street: null, city: null, state: null, postalCode: null,
+          role: { connect: { id: role.id } },
+          dealerMode: null, isTaxExempt: false, noInstallationDeposit: false,
+        }, select: this.safeSelect,
+      }) as UserSafe;
+    } catch (error) {
+      if (error?.code === 'P2002') throw new ConflictException('This username is already in use. Choose another username.');
+      throw error;
+    }
+    await this.logs.log({
+      action: 'CREATE', entityType: 'User', entityId: created.id, userId: actor.id,
+      message: `Technician account created (#${created.id})`, after: this.userSnapshot(created),
+      meta: { source: 'UsersService.createTechnicianAsAdmin', actorUserId: actor.id, actorRole: getRoleName(actor) },
+    });
+    return created;
+  }
+
+  async updateTechnicianAsAdmin(id: number, dto: UpdateTechnicianDto, actor: AuthUser): Promise<UserSafe> {
+    const existing = await this.userSafe({ id });
+    if (existing.role.name !== 'technician')
+      throw new BadRequestException('This is not a technician account.');
+    const data = this.technicianFields(dto, true);
+    try { return await this.updateUserAsAdmin(id, data, actor); }
+    catch (error) {
+      if (error?.code === 'P2002') throw new ConflictException('This username is already in use. Choose another username.');
+      throw error;
+    }
   }
 
   async createUserAsAdmin(

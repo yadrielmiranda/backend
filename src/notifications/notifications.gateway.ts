@@ -67,6 +67,7 @@ export class NotificationsGateway
       });
 
       const user = await validateAccessSession(this.prisma, payload);
+      if (user.role?.name === 'technician') return null;
       this.sessions.set(client.id, { client, payload });
       return user.id;
     } catch {
@@ -105,7 +106,8 @@ export class NotificationsGateway
       if (!connection) continue;
       try {
         // Una conexión abierta no conserva acceso después de revocar la sesión.
-        await validateAccessSession(this.prisma, connection.payload);
+        const user = await validateAccessSession(this.prisma, connection.payload);
+        if (user.role?.name === 'technician') throw new Error('Notifications are not available to technicians.');
         if (!this.sessions.has(socketId)) continue;
         this.server.to(socketId).emit('new_notification', payload);
       } catch {
