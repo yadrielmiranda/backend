@@ -34,7 +34,6 @@ import {
   canCreateInstallationExtraCharge,
   nextManualOrderStatus,
 } from '@/installation/installation-flow-policy';
-import { calculateMaterialFinancials } from './order-material-financials';
 import { calculateEstimateDiscount, discountedInstallationTotal } from '@/estimates/discounts/estimate-discount';
 import { buildEstimateInstallationSummary, estimateInstallationSummarySelect } from '@/estimates/reporting/estimate-installation-summary';
 
@@ -156,6 +155,9 @@ export class OrdersService {
     updateOrderDto: UpdateOrderDto,
     actor: AuthUser,
   ): Promise<Order> {
+    if (updateOrderDto.poNumber !== undefined || updateOrderDto.rateReal !== undefined) {
+      throw new BadRequestException('Import the factory JSON to set the PO and real factory cost.');
+    }
     const current = await this.prisma.order.findUnique({
       where: { id },
       include: {
@@ -204,24 +206,6 @@ export class OrdersService {
         throw new NotFoundException(
           `OrderStatus with ID #${updateOrderDto.statusId} not found.`,
         );
-      }
-    }
-
-    const normalizedPo =
-      updateOrderDto.poNumber === undefined
-        ? undefined
-        : String(updateOrderDto.poNumber || '').trim() || null;
-
-    const normalizedRateReal =
-      updateOrderDto.rateReal === undefined
-        ? undefined
-        : updateOrderDto.rateReal === null
-          ? null
-          : new Prisma.Decimal(updateOrderDto.rateReal);
-
-    if (normalizedRateReal !== undefined && normalizedRateReal !== null) {
-      if (normalizedRateReal.lte(0)) {
-        throw new BadRequestException('Rate Real must be greater than zero.');
       }
     }
 
@@ -280,10 +264,7 @@ export class OrdersService {
       ].includes(nextStatus.name);
 
       if (requiresPO) {
-        const finalPo =
-          normalizedPo !== undefined
-            ? normalizedPo
-            : (current.poNumber?.trim() || null);
+        const finalPo = current.poNumber?.trim();
 
         if (!finalPo) {
           throw new BadRequestException(
@@ -293,43 +274,10 @@ export class OrdersService {
       }
     }
 
-    const finalRateReal =
-      normalizedRateReal !== undefined ? normalizedRateReal : current.rateReal;
-
-    const finalPoNumber =
-      normalizedPo !== undefined ? normalizedPo : current.poNumber?.trim() || null;
-    // Una orden que ya avanzó no puede perder su referencia del fabricante.
-    if (
-      normalizedPo === null &&
-      current.poNumber?.trim() &&
-      (nextStatus?.name ?? current.status.name) !== 'Pending'
-    ) {
-      throw new BadRequestException(
-        'The factory PO cannot be removed after the order leaves Pending.',
-      );
-    }
-    if (finalRateReal && !finalPoNumber) {
-      throw new BadRequestException(
-        'PO Number is required before recording the real factory cost.',
-      );
-    }
-
-    const realMaterialFinancials = finalRateReal
-      ? calculateMaterialFinancials({
-          saleSubtotal: current.saleSubtotal.toString(),
-          factoryRate: finalRateReal.toString(),
-        })
-      : null;
-
     const data: Prisma.OrderUpdateInput = {
       ...(updateOrderDto.statusId !== undefined && {
         statusId: updateOrderDto.statusId,
       }),
-      ...(normalizedPo !== undefined && { poNumber: normalizedPo }),
-      ...(normalizedRateReal !== undefined && { rateReal: normalizedRateReal }),
-      netProfitReal: realMaterialFinancials
-        ? new Prisma.Decimal(realMaterialFinancials.totalProfit.toFixed(2))
-        : null,
       ...(statusWillChange && { updateStatus: new Date() }),
       ...(statusWillChange &&
         nextStatus?.name === 'Ready to pick up' && {
@@ -381,14 +329,6 @@ export class OrdersService {
     // comentario en espanol: calculamos qué campos realmente cambiaron (para auditoría)
     const changedFields: string[] = [];
     if (statusWillChange) changedFields.push('statusId');
-    if (normalizedPo !== undefined && normalizedPo !== current.poNumber)
-      changedFields.push('poNumber');
-    if (normalizedRateReal !== undefined) {
-      const curr = current.rateReal?.toString() ?? null;
-      const next = normalizedRateReal?.toString() ?? null;
-      if (curr !== next) changedFields.push('rateReal');
-    }
-
     await this.logsService.log({
       action: 'UPDATE',
       entityType: 'Order',

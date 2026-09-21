@@ -117,6 +117,9 @@ model User {
   passwordResetTokens               PasswordResetToken[]
   dealerContracts                   DealerContract[]
   branding                          Branding?
+  warehouseMovements                WarehouseMovement[]
+  warehouseCountsStarted            WarehouseCount[]            @relation("WarehouseCountStarted")
+  warehouseCountsClosed             WarehouseCount[]            @relation("WarehouseCountClosed")
   eventLogs                         EventLog[]
   installationRequests              InstallationJob[]           @relation("InstallationRequestedBy")
   acceptedDealerMeasurements        InstallationJob[]           @relation("DealerMeasurementsAcceptedBy")
@@ -1320,6 +1323,7 @@ model Piece {
 
   pieceMuntin              PieceMuntin?
   installationMeasurements InstallationMeasurement[]
+  factoryUnits             FactoryUnit[]
 
   @@index([idEst])
   @@index([idProd])
@@ -1331,6 +1335,122 @@ model Piece {
   @@index([idPreparationOption])
   @@index([idSillOption])
   @@index([idReinforcementOption])
+}
+
+// Cada código identifica una unidad; su ficha se consulta desde Piece.
+model FactoryUnit {
+  lineNumber String @id @db.VarChar(50)
+  pieceId    Int
+  piece      Piece  @relation(fields: [pieceId], references: [id], onDelete: Restrict)
+
+  stock WarehouseStock?
+
+  @@index([pieceId])
+  @@map("factory_units")
+}
+
+// Cantidades operativas; la ficha del producto sigue viviendo en Piece.
+model WarehouseStock {
+  lineNumber    String               @id @db.VarChar(50)
+  unit          FactoryUnit          @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
+  expectedParts Int?
+  inTransit     Int                  @default(0)
+  onHand        Int                  @default(0)
+  released      Int                  @default(0)
+  version       Int                  @default(0)
+  updatedAt     DateTime             @updatedAt
+  movements     WarehouseMovement[]
+  countLines    WarehouseCountLine[]
+
+  @@index([onHand])
+  @@index([inTransit])
+  @@map("warehouse_stock")
+}
+
+enum WarehouseMovementType {
+  COLLECT
+  RECEIVE
+  RELEASE
+  ADJUST
+  PARTS
+  UNDO
+  COUNT
+  COUNT_UNDO
+}
+
+model WarehouseMovement {
+  id                  Int                   @id @default(autoincrement())
+  requestKey          String                @unique @db.VarChar(64)
+  requestHash         String                @db.Char(64)
+  lineNumber          String                @db.VarChar(50)
+  stock               WarehouseStock        @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
+  type                WarehouseMovementType
+  transitDelta        Int                   @default(0)
+  onHandDelta         Int                   @default(0)
+  releasedDelta       Int                   @default(0)
+  transitAfter        Int
+  onHandAfter         Int
+  releasedAfter       Int
+  expectedPartsBefore Int?
+  expectedPartsAfter  Int?
+  stockVersionAfter   Int
+  reason              String?               @db.VarChar(500)
+  actorId             Int
+  actor               User                  @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  reversalOfId        Int?                  @unique
+  reversalOf          WarehouseMovement?    @relation("WarehouseReversal", fields: [reversalOfId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  reversal            WarehouseMovement?    @relation("WarehouseReversal")
+  countId             Int?
+  count               WarehouseCount?       @relation(fields: [countId], references: [id], onDelete: Restrict)
+  countDelta          Int                   @default(0)
+  createdAt           DateTime              @default(now())
+
+  @@index([lineNumber, id])
+  @@index([actorId])
+  @@index([countId])
+  @@index([createdAt])
+  @@map("warehouse_movements")
+}
+
+enum WarehouseCountStatus {
+  OPEN
+  COMPLETED
+  CANCELED
+}
+
+model WarehouseCount {
+  id          Int                  @id @default(autoincrement())
+  requestKey  String               @unique @db.VarChar(64)
+  // Solo puede existir un conteo abierto; NULL permite conservar los cerrados.
+  activeSlot  Int?                 @unique
+  status      WarehouseCountStatus @default(OPEN)
+  startedById Int
+  startedBy   User                 @relation("WarehouseCountStarted", fields: [startedById], references: [id], onDelete: Restrict)
+  closedById  Int?
+  closedBy    User?                @relation("WarehouseCountClosed", fields: [closedById], references: [id], onDelete: Restrict)
+  startedAt   DateTime             @default(now())
+  closedAt    DateTime?
+  reason      String?              @db.VarChar(500)
+  lines       WarehouseCountLine[]
+  movements   WarehouseMovement[]
+
+  @@index([startedById])
+  @@index([closedById])
+  @@map("warehouse_counts")
+}
+
+model WarehouseCountLine {
+  countId      Int
+  count        WarehouseCount @relation(fields: [countId], references: [id], onDelete: Restrict)
+  lineNumber   String         @db.VarChar(50)
+  stock        WarehouseStock @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
+  expected     Int
+  counted      Int            @default(0)
+  stockVersion Int
+
+  @@id([countId, lineNumber])
+  @@index([lineNumber])
+  @@map("warehouse_count_lines")
 }
 
 model OrderStatus {
@@ -1372,7 +1492,7 @@ model Order {
 
   // datos reales luego de meter la orden en la fábrica
   poNumber      String?  @unique @db.VarChar(50) // PO real de fábrica (único). Nullable hasta que lo tengas.
-  rateReal      Decimal? @db.Decimal(12, 2) // costo real total que te cobra la fábrica
+  rateReal      Decimal? @db.Decimal(18, 8) // Conserva los decimales del costo exportado por fábrica.
   netProfitReal Decimal? @db.Decimal(12, 2) // total real material profit
 
   estimate Estimate @relation(fields: [idEst], references: [id])

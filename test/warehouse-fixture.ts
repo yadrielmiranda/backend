@@ -1,0 +1,289 @@
+// Almacén en memoria para verificar transacciones y el flujo HTTP sin datos reales.
+export function warehouseFixture() {
+  const users = [
+    { id: 1, firstName: 'Admin', lastName: 'Test' },
+    { id: 2, firstName: 'Operator', lastName: 'Test' },
+  ];
+  const order = {
+    id: 1,
+    idEst: 7,
+    number: '1001',
+    poNumber: '281374',
+    status: { name: 'Ready to pick up' },
+    fulfillmentMethod: 'CUSTOMER_PICKUP',
+    payment: { status: 'PAID' },
+    estimate: { installationJob: null, paymentPlanSnapshot: null },
+    deliveries: [],
+  };
+  const definitions = [
+    ['1029975', 'F3', 'French Door', 'FRENCH_DOOR', 'OX', 3],
+    ['1029967', 'B2', 'Sliding Glass Door', 'SLIDING_DOOR', 'XXX', 4],
+    ['1029968', 'B3', 'Horizontal Rolling', 'HORIZONTAL_SLIDER', 'OX', 1],
+    ['1096240', 'W1', 'Fixed Window', 'FIXED_SHAPE', 'PW', 1],
+  ];
+  const pieces = definitions.map((d, index) => ({
+    id: index + 10,
+    idEst: 7,
+    mark: d[1],
+    panelCount: null,
+    prod: { name: d[2], diagramFamily: d[3], kind: 'GLAZED_UNIT' },
+    conf: { conf: d[4], fixedPanelCount: null },
+    syst: { name: 'ECO' },
+    estim: {
+      name: 'Warehouse project',
+      customerFirstName: 'Pepe',
+      customerLastName: 'Test',
+      user: users[0],
+      order,
+    },
+  }));
+  const stocks: any[] = definitions.map((d, i) => ({
+    lineNumber: d[0],
+    expectedParts: d[5],
+    inTransit: 0,
+    onHand: 0,
+    released: 0,
+    version: 0,
+    updatedAt: new Date(),
+    pieceId: pieces[i].id,
+  }));
+  const movements: any[] = [],
+    counts: any[] = [],
+    countLines: any[] = [];
+  const clone = <T>(v: T): T => structuredClone(v);
+  const stockView = (s) =>
+    s
+      ? {
+          ...s,
+          unit: {
+            lineNumber: s.lineNumber,
+            pieceId: s.pieceId,
+            piece: clone(pieces.find((p) => p.id === s.pieceId)),
+          },
+        }
+      : null;
+  const movementView = (m) =>
+    m
+      ? {
+          ...m,
+          actor: users.find((u) => u.id === m.actorId),
+          reversal: movements.find((x) => x.reversalOfId === m.id) ?? null,
+          stock: stockView(stocks.find((s) => s.lineNumber === m.lineNumber)),
+        }
+      : null;
+  const countView = (c) =>
+    c
+      ? {
+          ...c,
+          startedBy: users.find((u) => u.id === c.startedById),
+          closedBy: users.find((u) => u.id === c.closedById) ?? null,
+        }
+      : null;
+  const countLineView = (l) =>
+    l
+      ? {
+          ...l,
+          stock: stockView(stocks.find((s) => s.lineNumber === l.lineNumber)),
+        }
+      : null;
+  const compare = (value, condition, row): boolean => {
+    if (condition === undefined) return true;
+    if (condition === null || typeof condition !== 'object')
+      return value === condition;
+    if ('_ref' in condition) return value === row[condition._ref];
+    if ('equals' in condition && !compare(value, condition.equals, row))
+      return false;
+    if ('not' in condition && compare(value, condition.not, row)) return false;
+    for (const op of ['gt', 'gte', 'lt', 'lte'])
+      if (op in condition) {
+        const operand =
+          typeof condition[op] === 'object'
+            ? row[condition[op]._ref]
+            : condition[op];
+        if (
+          value === null ||
+          operand === null ||
+          !(op === 'gt'
+            ? value > operand
+            : op === 'gte'
+              ? value >= operand
+              : op === 'lt'
+                ? value < operand
+                : value <= operand)
+        )
+          return false;
+      }
+    if ('in' in condition && !condition.in.includes(value)) return false;
+    if (
+      'contains' in condition &&
+      !String(value ?? '')
+        .toLowerCase()
+        .includes(condition.contains.toLowerCase())
+    )
+      return false;
+    if (
+      Object.keys(condition).some(
+        (k) =>
+          ![
+            'equals',
+            'not',
+            'gt',
+            'gte',
+            'lt',
+            'lte',
+            'in',
+            'contains',
+          ].includes(k),
+      )
+    )
+      return matches(value, condition);
+    return true;
+  };
+  const matches = (row, where): boolean =>
+    !where ||
+    Object.entries(where).every(([key, value]: [string, any]) => {
+      if (value === undefined) return true;
+      if (key === 'OR') return value.some((v) => matches(row, v));
+      if (key === 'AND')
+        return (Array.isArray(value) ? value : [value]).every((v) =>
+          matches(row, v),
+        );
+      if (key === 'NOT') return !matches(row, value);
+      if (key === 'countId_lineNumber')
+        return (
+          row?.countId === value.countId && row?.lineNumber === value.lineNumber
+        );
+      return compare(row?.[key], value, row);
+    });
+  const change = (row, data) => {
+    for (const [key, v] of Object.entries(data) as [string, any][]) {
+      if (v === undefined) continue;
+      row[key] =
+        v && typeof v === 'object' && ('increment' in v || 'decrement' in v)
+          ? row[key] + (v.increment ?? 0) - (v.decrement ?? 0)
+          : v;
+    }
+    if ('updatedAt' in row) row.updatedAt = new Date();
+  };
+  const model = (rows: any[], view, defaults: (data: any) => any) => ({
+    findUnique: async ({ where }) =>
+      clone(view(rows.find((r) => matches(view(r), where)))),
+    findUniqueOrThrow: async ({ where }) => {
+      const row = rows.find((r) => matches(view(r), where));
+      if (!row) throw new Error('Missing test record');
+      return clone(view(row));
+    },
+    findMany: async (
+      { where, orderBy, skip = 0, take = Infinity } = {} as any,
+    ) => {
+      let result = rows.map(view).filter((r) => matches(r, where));
+      if (orderBy) {
+        const [key, direction] = Object.entries(orderBy)[0];
+        result = [...result].sort(
+          (a, b) =>
+            (a[key] < b[key] ? -1 : a[key] > b[key] ? 1 : 0) *
+            (direction === 'desc' ? -1 : 1),
+        );
+      }
+      return clone(result.slice(skip, skip + take));
+    },
+    count: async ({ where } = {} as any) =>
+      rows.filter((r) => matches(view(r), where)).length,
+    aggregate: async ({ where, _sum }) => ({
+      _sum: Object.fromEntries(
+        Object.keys(_sum).map((k) => [
+          k,
+          rows
+            .filter((r) => matches(view(r), where))
+            .reduce((sum, r) => sum + (r[k] ?? 0), 0),
+        ]),
+      ),
+    }),
+    create: async ({ data }) => {
+      const row = defaults(data);
+      rows.push(row);
+      return clone(view(row));
+    },
+    createMany: async ({ data }) => {
+      rows.push(...data.map(defaults));
+      return { count: data.length };
+    },
+    update: async ({ where, data }) => {
+      const row = rows.find((r) => matches(view(r), where));
+      if (!row) throw new Error('Missing test record');
+      change(row, data);
+      return clone(view(row));
+    },
+    updateMany: async ({ where, data }) => {
+      const selected = rows.filter((r) => matches(view(r), where));
+      selected.forEach((r) => change(r, data));
+      return { count: selected.length };
+    },
+    upsert: async ({ where, create, update }) => {
+      let row = rows.find((r) => matches(view(r), where));
+      if (row) change(row, update);
+      else {
+        row = defaults(create);
+        rows.push(row);
+      }
+      return clone(view(row));
+    },
+  });
+  let queue: Promise<any> = Promise.resolve();
+  const db: any = {
+    warehouseStock: model(stocks, stockView, (d) => ({
+      inTransit: 0,
+      onHand: 0,
+      released: 0,
+      version: 0,
+      updatedAt: new Date(),
+      ...d,
+    })),
+    warehouseMovement: model(movements, movementView, (d) => ({
+      id: movements.length + 1,
+      transitDelta: 0,
+      onHandDelta: 0,
+      releasedDelta: 0,
+      countDelta: 0,
+      reversalOfId: null,
+      countId: null,
+      reason: null,
+      createdAt: new Date(),
+      ...d,
+    })),
+    warehouseCount: model(counts, countView, (d) => ({
+      id: counts.length + 1,
+      status: 'OPEN',
+      startedAt: new Date(),
+      closedAt: null,
+      closedById: null,
+      reason: null,
+      ...d,
+    })),
+    warehouseCountLine: model(countLines, countLineView, (d) => ({
+      counted: 0,
+      ...d,
+    })),
+    order: { findUnique: async () => clone(order) },
+    estimate: { findUnique: async () => null },
+    payment: { findMany: async () => [] },
+    $queryRaw: async () => [],
+    $transaction: (callback) => {
+      const result = queue.then(async () => {
+        const lists = [stocks, movements, counts, countLines],
+          before = lists.map(clone);
+        try {
+          return await callback(db);
+        } catch (e) {
+          lists.forEach((list, i) => list.splice(0, list.length, ...before[i]));
+          throw e;
+        }
+      });
+      queue = result.catch(() => undefined);
+      return result;
+    },
+  };
+  db.warehouseStock.fields = { expectedParts: { _ref: 'expectedParts' } };
+  db.warehouseCountLine.fields = { expected: { _ref: 'expected' } };
+  return { db, stocks, movements, counts, countLines, pieces, order };
+}
