@@ -25,6 +25,18 @@ export class DeliveriesController {
     return this.deliveries.selectPickup(orderId, req.user as AuthUser);
   }
 
+  @Post(':orderId/fulfillment/factory-pickup')
+  @Roles('admin', 'operator')
+  selectFactoryPickup(
+    @Param('orderId', ParseIntPipe) orderId: number,
+    @Req() req: Request,
+  ) {
+    return this.deliveries.selectFactoryPickup(
+      orderId,
+      req.user as AuthUser,
+    );
+  }
+
   @Post(':orderId/fulfillment/pickup/complete')
   @Roles('admin', 'operator')
   completePickup(

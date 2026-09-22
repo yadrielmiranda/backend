@@ -41,18 +41,24 @@ export async function assertWarehouseRelease(
       },
     },
   });
+  const preparingForCompanyFulfillment =
+    order?.status.name === 'Preparing for pickup' &&
+    ['COMPANY_DELIVERY', 'INSTALLATION_DELIVERY'].includes(
+      order.fulfillmentMethod,
+    );
   if (
     !order ||
-    ![
-      'Ready to pick up',
-      'Picked up',
-      'Delivered',
-      'Installation in progress',
-      'Installed',
-    ].includes(order.status.name)
+    (!preparingForCompanyFulfillment &&
+      ![
+        'Ready to pick up',
+        'Picked up',
+        'Delivered',
+        'Installation in progress',
+        'Installed',
+      ].includes(order.status.name))
   ) {
     throw new BadRequestException(
-      'The order must be ready for pickup or delivery before releasing parts.',
+      'The order must be ready for its selected pickup, delivery or installation workflow before releasing parts.',
     );
   }
   if (order.fulfillmentMethod === 'UNDECIDED')

@@ -116,6 +116,32 @@ describe('Delivery warehouse origin and coverage', () => {
     expect(f.db.orderDelivery.update).not.toHaveBeenCalled();
   });
 
+  it('allows standard delivery from Preparing for pickup', async () => {
+    const f = fixture(50000);
+    f.order.status.name = 'Preparing for pickup';
+    await expect(f.service.createDelivery(40, {}, actor)).resolves.toMatchObject({
+      id: 9,
+    });
+  });
+
+  it('allows company staff to select factory pickup from Preparing for pickup', async () => {
+    const f = fixture(50000);
+    f.order.status.name = 'Preparing for pickup';
+    const result = await f.service.selectFactoryPickup(40, actor);
+    expect(result.order.fulfillmentMethod).toBe('FACTORY_PICKUP');
+  });
+
+  it('does not let the customer select factory pickup', async () => {
+    const f = fixture(50000);
+    f.order.status.name = 'Preparing for pickup';
+    await expect(
+      f.service.selectFactoryPickup(40, {
+        id: 2,
+        role: { name: 'client' },
+      } as any),
+    ).rejects.toThrow('Only company staff');
+  });
+
   it('charges only the base price inside the included miles', async () => {
     const f = fixture(50000);
     const result = await f.service.createDelivery(40, {}, actor);
@@ -190,7 +216,7 @@ describe('Delivery warehouse origin and coverage', () => {
     const f = fixture();
     f.order.status.name = 'Pending';
     await expect(f.service.createDelivery(40, {}, actor)).rejects.toThrow(
-      'Ready to pick up',
+      'Preparing for pickup',
     );
     expect(f.warehouse.find).not.toHaveBeenCalled();
     expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();

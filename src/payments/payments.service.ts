@@ -25,6 +25,7 @@ import {
   InstallationJobStatus,
   InstallationPermitStatus,
   OrderExtraChargeStatus,
+  OrderFulfillmentMethod,
   PaymentMethod,
   PaymentPayerType,
   PaymentStatus,
@@ -312,6 +313,74 @@ export class PaymentsService {
     return session.payment_status === 'paid' || (session.status === 'complete' && session.payment_status === 'no_payment_required' && session.amount_total === 0);
   }
 
+  private async advanceAwaitingReleaseOrder(
+    tx: Prisma.TransactionClient,
+    estimateId: number,
+    actorId: number,
+  ): Promise<boolean> {
+    const order = await tx.order.findUnique({
+      where: { idEst: estimateId },
+      include: {
+        status: true,
+        estimate: {
+          select: {
+            idUser: true,
+            installationJob: { select: { status: true } },
+          },
+        },
+      },
+    });
+    if (!order || order.status.name !== 'Awaiting release') return false;
+
+    const schedule = await getPaymentSchedule(tx, estimateId);
+    if (!schedule?.canRelease) return false;
+
+    const preparing = await tx.orderStatus.findUnique({
+      where: { name: 'Preparing for pickup' },
+    });
+    if (!preparing) {
+      throw new Error('Order status "Preparing for pickup" is not seeded.');
+    }
+
+    const installationActive = Boolean(
+      order.estimate.installationJob &&
+        order.estimate.installationJob.status !== InstallationJobStatus.CANCELED,
+    );
+    const changedAt = new Date();
+    await tx.order.update({
+      where: { id: order.id },
+      data: {
+        statusId: preparing.id,
+        updateStatus: changedAt,
+        fulfillmentMethod: installationActive
+          ? OrderFulfillmentMethod.INSTALLATION_DELIVERY
+          : OrderFulfillmentMethod.UNDECIDED,
+        fulfillmentSelectedAt: installationActive ? changedAt : null,
+        pickupCompletedAt: null,
+      },
+    });
+    await tx.eventLog.create({
+      data: {
+        action: 'UPDATE',
+        entityType: 'Order',
+        entityId: order.id,
+        userId: actorId,
+        message: `Order status changed automatically: "Awaiting release" -> "Preparing for pickup" after the release installment was covered.`,
+      },
+    });
+    await this.notifications.createAndSend(
+      {
+        recipientId: order.estimate.idUser,
+        message: `The status of your order #${order.number} has changed to "Preparing for pickup".`,
+        actionUrl: `/orders/${order.id}`,
+        actionLabel: 'Open order',
+        dedupeKey: `order:${order.id}:status:${preparing.id}:${changedAt.toISOString()}`,
+      },
+      tx,
+    );
+    return true;
+  }
+
   private async ensurePaidPaymentEffects(
     tx: Prisma.TransactionClient,
     payment: PaymentWithEstimate,
@@ -352,7 +421,50 @@ export class PaymentsService {
     changed =
       (await this.installationWorkflow.markPaymentPaid(tx, payment)) || changed;
 
-    if (payment.type === PaymentType.INSTALLMENT) changed = (await refreshScheduledInstallation(tx, payment.idEst)) || changed;
+    const advancedToPreparing = await this.advanceAwaitingReleaseOrder(
+      tx,
+      payment.idEst,
+      payment.recordedById ?? payment.estimate.idUser,
+    );
+    changed = advancedToPreparing || changed;
+
+    if (payment.type === PaymentType.INSTALLMENT) {
+      changed =
+        (await refreshScheduledInstallation(tx, payment.idEst)) || changed;
+
+      // Si RELEASE llevo automaticamente la orden a Preparing for pickup,
+      // conserva el mismo aviso de la proxima cuota que el cambio manual.
+      if (advancedToPreparing) {
+        const orderAfterRelease = await tx.order.findUnique({
+          where: { idEst: payment.idEst },
+          select: {
+            id: true,
+            number: true,
+            estimate: {
+              select: {
+                idUser: true,
+                installationJob: { select: { status: true } },
+              },
+            },
+          },
+        });
+        if (
+          orderAfterRelease?.estimate.installationJob?.status ===
+          InstallationJobStatus.INSTALLATION_PAYMENT_PENDING
+        ) {
+          await this.notifications.createAndSend(
+            {
+              recipientId: orderAfterRelease.estimate.idUser,
+              message: `The next project installment is due for Order #${orderAfterRelease.number}.`,
+              actionUrl: `/orders/${orderAfterRelease.id}`,
+              actionLabel: 'Open payment',
+              dedupeKey: `order:${orderAfterRelease.id}:installation-balance-due`,
+            },
+            tx,
+          );
+        }
+      }
+    }
     await this.notifyPaymentConfirmed(tx, payment);
 
     return changed;

@@ -254,17 +254,28 @@ export function resolveApprovedPreOrderStage(
   return InstallationJobStatus.PERMIT_PROCESSING;
 }
 
-export function nextManualOrderStatus(currentStatus: string): string | null {
-  const transitions: Record<string, string | null> = {
-    Pending: "In production",
-    "In production": "Ready to pick up",
-    "Ready to pick up": null,
-    "Picked up": null,
-    Delivered: null,
-    "Installation in progress": null,
-    Installed: null,
-  };
-  return transitions[currentStatus] ?? null;
+export function nextManualOrderStatus(
+  currentStatus: string,
+  options?: {
+    releaseCovered?: boolean;
+    fulfillmentMethod?: string | null;
+  },
+): string | null {
+  if (currentStatus === "Pending") return "In production";
+  if (currentStatus === "In production") {
+    return options?.releaseCovered ? "Preparing for pickup" : "Awaiting release";
+  }
+  if (currentStatus === "Awaiting release") {
+    return options?.releaseCovered ? "Preparing for pickup" : null;
+  }
+  if (currentStatus === "Preparing for pickup") {
+    return ["CUSTOMER_PICKUP", "FACTORY_PICKUP"].includes(
+      options?.fulfillmentMethod ?? "",
+    )
+      ? "Ready to pick up"
+      : null;
+  }
+  return null;
 }
 
 export function canCreateInstallationExtraCharge(orderStatus: string): boolean {

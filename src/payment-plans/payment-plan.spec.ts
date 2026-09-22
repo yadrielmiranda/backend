@@ -308,7 +308,7 @@ describe('Configurable payment plans', () => {
     expect(buildPaymentSchedule(internal)?.total).toBe('11000.00');
   });
 
-  it('opens the release installment at Ready to pick up, blocks release until paid, and does not invent installation', async () => {
+  it('opens the release installment at Awaiting release, blocks release until paid, and does not invent installation', async () => {
     const est = {
       ...estimate(),
       installationJob: null,
@@ -317,7 +317,7 @@ describe('Configurable payment plans', () => {
       status: { name: 'Ordered' },
     };
     expect(buildPaymentSchedule(est)?.next).toBeNull();
-    est.order.status.name = 'Ready to pick up';
+    est.order.status.name = 'Awaiting release';
     expect(buildPaymentSchedule(est)?.next?.sequence).toBe(2);
     expect(buildPaymentSchedule(est)?.canRelease).toBe(false);
     const db: any = { estimate: { findUnique: jest.fn(async () => est) } };
@@ -331,7 +331,7 @@ describe('Configurable payment plans', () => {
 
   it('allows installation after 90% and opens the last 10% only after completion', () => {
     const est = estimate();
-    est.order = { id: 4, status: { name: 'Ready to pick up' } };
+    est.order = { id: 4, status: { name: 'Preparing for pickup' } };
     est.payments = [
       paid('INSTALLMENT', '5000.00'),
       paid('INSTALLMENT', '4000.00', 2),
@@ -345,7 +345,7 @@ describe('Configurable payment plans', () => {
 
   it('separates the release payment from the pre-installation payment in a split plan', () => {
     const est = estimate(split);
-    est.order = { id: 4, status: { name: 'Ready to pick up' } };
+    est.order = { id: 4, status: { name: 'Preparing for pickup' } };
     est.payments = [
       paid('INSTALLATION_DEPOSIT', '250.00'),
       paid('INSTALLMENT', '3750.00'),

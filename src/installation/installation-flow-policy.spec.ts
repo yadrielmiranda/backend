@@ -123,7 +123,30 @@ describe("installation flow policy", () => {
 
   it("keeps manual order transitions sequential and reserves installation states", () => {
     expect(nextManualOrderStatus("Pending")).toBe("In production");
-    expect(nextManualOrderStatus("In production")).toBe("Ready to pick up");
+    expect(
+      nextManualOrderStatus("In production", { releaseCovered: false }),
+    ).toBe("Awaiting release");
+    expect(
+      nextManualOrderStatus("In production", { releaseCovered: true }),
+    ).toBe("Preparing for pickup");
+    expect(
+      nextManualOrderStatus("Awaiting release", { releaseCovered: false }),
+    ).toBeNull();
+    expect(
+      nextManualOrderStatus("Awaiting release", { releaseCovered: true }),
+    ).toBe("Preparing for pickup");
+    expect(
+      nextManualOrderStatus("Preparing for pickup", {
+        releaseCovered: true,
+        fulfillmentMethod: "CUSTOMER_PICKUP",
+      }),
+    ).toBe("Ready to pick up");
+    expect(
+      nextManualOrderStatus("Preparing for pickup", {
+        releaseCovered: true,
+        fulfillmentMethod: "COMPANY_DELIVERY",
+      }),
+    ).toBeNull();
     expect(nextManualOrderStatus("Ready to pick up")).toBeNull();
     expect(nextManualOrderStatus("Picked up")).toBeNull();
     expect(nextManualOrderStatus("Delivered")).toBeNull();

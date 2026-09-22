@@ -221,16 +221,53 @@ export class OrdersService {
         );
       }
 
-      const expected = nextManualOrderStatus(current.status.name);
+      let releaseCovered = true;
+      if (
+        ['In production', 'Awaiting release', 'Preparing for pickup'].includes(
+          current.status.name,
+        )
+      ) {
+        const releaseSchedule = await getPaymentSchedule(
+          this.prisma,
+          current.idEst,
+        );
+        releaseCovered = releaseSchedule ? releaseSchedule.canRelease : true;
+      }
+      const expected = nextManualOrderStatus(current.status.name, {
+        releaseCovered,
+        fulfillmentMethod: current.fulfillmentMethod,
+      });
       if (expected !== nextStatus.name) {
+        if (current.status.name === 'Awaiting release' && !releaseCovered) {
+          throw new BadRequestException(
+            'The release installment must be covered before this order can advance.',
+          );
+        }
+        if (current.status.name === 'Preparing for pickup') {
+          throw new BadRequestException(
+            'Choose warehouse pickup or factory pickup before marking this order Ready to pick up. Delivery and installation continue from their own workflow.',
+          );
+        }
         if (current.status.name === 'Ready to pick up') {
           throw new BadRequestException(
             'Complete this order from its Pickup & Delivery workflow.',
           );
         }
         throw new BadRequestException(
-          `Order status must advance from "${current.status.name}" to ${expected ? `"${expected}"` : 'its installation workflow'}.`,
+          `Order status must advance from "${current.status.name}" to ${expected ? `"${expected}"` : 'its fulfillment workflow'}.`,
         );
+      }
+
+      if (nextStatus.name === 'Ready to pick up') {
+        if (
+          current.fulfillmentMethod !== OrderFulfillmentMethod.CUSTOMER_PICKUP &&
+          current.fulfillmentMethod !== OrderFulfillmentMethod.FACTORY_PICKUP
+        ) {
+          throw new BadRequestException(
+            'Ready to pick up is available only for warehouse pickup or factory pickup.',
+          );
+        }
+        await assertScheduleMilestone(this.prisma, current.idEst, 'RELEASE');
       }
 
       const installation = current.estimate.installationJob;
@@ -259,6 +296,8 @@ export class OrdersService {
 
       const requiresPO = [
         'In production',
+        'Awaiting release',
+        'Preparing for pickup',
         'Ready to pick up',
         'Delivered',
       ].includes(nextStatus.name);
@@ -280,7 +319,7 @@ export class OrdersService {
       }),
       ...(statusWillChange && { updateStatus: new Date() }),
       ...(statusWillChange &&
-        nextStatus?.name === 'Ready to pick up' && {
+        nextStatus?.name === 'Preparing for pickup' && {
           fulfillmentMethod:
             current.estimate.installationJob &&
             current.estimate.installationJob.status !==
@@ -381,7 +420,7 @@ export class OrdersService {
       });
     }
 
-    if (statusWillChange && updated.status.name === 'Ready to pick up') {
+    if (statusWillChange && updated.status.name === 'Preparing for pickup') {
       await this.prisma.$transaction((tx) =>
         this.installationWorkflow.markOrderReady(tx, updated.idEst),
       );

@@ -3922,7 +3922,7 @@ export class InstallationWorkflowService {
         if (!estimate?.order) {
           nextStatus = resolveApprovedPreOrderStage(permit, Boolean(estimate?.paymentPlanSnapshot));
         } else if (
-          ['Ready to pick up', 'Delivered'].includes(
+          ['Preparing for pickup', 'Ready to pick up', 'Delivered'].includes(
             estimate.order.status.name,
           ) ||
           paidInstallationBalanceTotal.gt(0)
@@ -4375,7 +4375,7 @@ export class InstallationWorkflowService {
     }
     const deliveredBeforeInstallation = order.status.name === 'Delivered';
     const deliveredWithInstallation =
-      order.status.name === 'Ready to pick up' &&
+      ['Preparing for pickup', 'Ready to pick up'].includes(order.status.name) &&
       order.fulfillmentMethod === OrderFulfillmentMethod.INSTALLATION_DELIVERY;
     if (!deliveredBeforeInstallation && !deliveredWithInstallation) {
       throw new BadRequestException(
@@ -4931,13 +4931,13 @@ export class InstallationWorkflowService {
         paidBalance.reduce((sum, p) => sum.add(paidPrincipal(p)).add(decimalAmount(p.refundCreditAmount)), new Decimal(0)),
       );
       if (
-        !['Ready to pick up', 'Delivered'].includes(
+        !['Preparing for pickup', 'Ready to pick up', 'Delivered'].includes(
           estimate.order.status.name,
         ) &&
         paidBalanceBase.eq(0)
       ) {
         throw new BadRequestException(
-          'Installation payment becomes available when the order is ready to pick up.',
+          'Installation payment becomes available after the material release stage.',
         );
       }
       baseAmount = calculateInstallationBalance(manualDiscount?.installation.total ?? quote.total.toString(), [

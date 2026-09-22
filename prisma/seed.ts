@@ -31,6 +31,8 @@ async function main() {
   const orderStatusesToCreate = [
     'Pending',
     'In production',
+    'Awaiting release',
+    'Preparing for pickup',
     'Ready to pick up',
     'Picked up',
     'Delivered',

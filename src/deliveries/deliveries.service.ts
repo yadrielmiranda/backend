@@ -214,11 +214,32 @@ export class DeliveriesService {
     }
   }
 
-  async selectPickup(orderId: number, actor: AuthUser) {
+  private async selectPickupMethod(
+    orderId: number,
+    actor: AuthUser,
+    method: 'CUSTOMER_PICKUP' | 'FACTORY_PICKUP',
+  ) {
     const order = await this.getOrder(orderId, actor);
-    if (order.status.name !== 'Ready to pick up') {
+    const role = getRoleName(actor);
+    if (
+      !['Preparing for pickup', 'Ready to pick up'].includes(order.status.name)
+    ) {
       throw new BadRequestException(
-        'Pickup can be selected only when the order is Ready to pick up.',
+        'Pickup can be selected only after the order reaches Preparing for pickup.',
+      );
+    }
+    if (method === OrderFulfillmentMethod.FACTORY_PICKUP && !isStaff(role)) {
+      throw new ForbiddenException(
+        'Only company staff can select factory pickup.',
+      );
+    }
+    if (
+      method === OrderFulfillmentMethod.CUSTOMER_PICKUP &&
+      order.fulfillmentMethod === OrderFulfillmentMethod.FACTORY_PICKUP &&
+      !isStaff(role)
+    ) {
+      throw new ForbiddenException(
+        'Factory pickup can be changed only by company staff.',
       );
     }
     if (hasActiveInstallation(order)) {
@@ -250,12 +271,12 @@ export class DeliveriesService {
       }
       if (blockReason === 'NOT_STANDARD') {
         throw new BadRequestException(
-          'Only an unpaid standard delivery can be replaced by customer pickup.',
+          'Only an unpaid standard delivery can be replaced by pickup.',
         );
       }
       if (blockReason === 'NOT_AWAITING_PAYMENT') {
         throw new BadRequestException(
-          'Only a delivery awaiting payment can be replaced by customer pickup.',
+          'Only a delivery awaiting payment can be replaced by pickup.',
         );
       }
     }
@@ -311,7 +332,7 @@ export class DeliveriesService {
         const updatedOrder = await tx.order.update({
           where: { id: orderId },
           data: {
-            fulfillmentMethod: OrderFulfillmentMethod.CUSTOMER_PICKUP,
+            fulfillmentMethod: method,
             fulfillmentSelectedAt: selectedAt,
             pickupCompletedAt: null,
           },
@@ -323,12 +344,14 @@ export class DeliveriesService {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       },
     );
+    const factoryPickup = method === OrderFulfillmentMethod.FACTORY_PICKUP;
+    const label = factoryPickup ? 'Factory pickup' : 'Customer pickup';
     await this.logs.log({
       action: 'UPDATE',
       entityType: 'Order',
       entityId: orderId,
       userId: actor.id,
-      message: `Customer pickup selected for Order #${order.number}.`,
+      message: `${label} selected for Order #${order.number}.`,
       before: {
         fulfillmentMethod: order.fulfillmentMethod,
         deliveryId: delivery?.id ?? null,
@@ -340,7 +363,7 @@ export class DeliveriesService {
         deliveryStatus: result.canceledDelivery?.status ?? null,
       },
     });
-    if (!isStaff(getRoleName(actor))) {
+    if (!isStaff(role)) {
       await this.notifications.createAndSendToRoles(['admin'], {
         message: `Customer pickup was selected for Order #${order.number}.`,
         actionUrl: `/orders/${order.id}`,
@@ -351,14 +374,31 @@ export class DeliveriesService {
     return result;
   }
 
+  async selectPickup(orderId: number, actor: AuthUser) {
+    return this.selectPickupMethod(
+      orderId,
+      actor,
+      OrderFulfillmentMethod.CUSTOMER_PICKUP,
+    );
+  }
+
+  async selectFactoryPickup(orderId: number, actor: AuthUser) {
+    return this.selectPickupMethod(
+      orderId,
+      actor,
+      OrderFulfillmentMethod.FACTORY_PICKUP,
+    );
+  }
+
   async completePickup(orderId: number, actor: AuthUser) {
     const order = await this.getOrder(orderId, actor);
     if (
       order.status.name !== 'Ready to pick up' ||
-      order.fulfillmentMethod !== OrderFulfillmentMethod.CUSTOMER_PICKUP
+      (order.fulfillmentMethod !== OrderFulfillmentMethod.CUSTOMER_PICKUP &&
+        order.fulfillmentMethod !== OrderFulfillmentMethod.FACTORY_PICKUP)
     ) {
       throw new BadRequestException(
-        'This order is not ready for customer-pickup completion.',
+        'This order is not ready for pickup completion.',
       );
     }
     const pickedUp = await this.prisma.orderStatus.findUnique({
@@ -380,12 +420,16 @@ export class DeliveriesService {
       include: { status: true },
       });
     });
+    const pickupLabel =
+      order.fulfillmentMethod === OrderFulfillmentMethod.FACTORY_PICKUP
+        ? 'Factory pickup'
+        : 'Customer pickup';
     await this.logs.log({
       action: 'UPDATE',
       entityType: 'Order',
       entityId: orderId,
       userId: actor.id,
-      message: `Customer pickup completed for Order #${order.number}.`,
+      message: `${pickupLabel} completed for Order #${order.number}.`,
       before: { status: order.status.name },
       after: { status: updated.status.name },
     });
@@ -411,6 +455,15 @@ export class DeliveriesService {
     const installationActive = hasActiveInstallation(order);
     const reason = dto.internalReason?.trim() || null;
 
+    if (
+      order.fulfillmentMethod === OrderFulfillmentMethod.FACTORY_PICKUP &&
+      !isStaff(role)
+    ) {
+      throw new ForbiddenException(
+        'Factory pickup can be changed only by company staff.',
+      );
+    }
+
     if (type !== DeliveryType.STANDARD && role !== 'admin') {
       throw new ForbiddenException(
         'Only an administrator can create special delivery charges.',
@@ -422,10 +475,15 @@ export class DeliveriesService {
       );
     }
 
+    const fulfillmentStage = [
+      'Preparing for pickup',
+      'Ready to pick up',
+    ].includes(order.status.name);
+
     if (type === DeliveryType.STANDARD) {
-      if (order.status.name !== 'Ready to pick up') {
+      if (!fulfillmentStage) {
         throw new BadRequestException(
-          'Delivery can be selected only when the order is Ready to pick up.',
+          'Delivery can be selected only after the order reaches Preparing for pickup.',
         );
       }
       if (installationActive) {
@@ -437,9 +495,9 @@ export class DeliveriesService {
       type === DeliveryType.INSTALLATION_OVERRIDE ||
       type === DeliveryType.PRE_DELIVERY
     ) {
-      if (!installationActive || order.status.name !== 'Ready to pick up') {
+      if (!installationActive || !fulfillmentStage) {
         throw new BadRequestException(
-          'This delivery type requires an active installation order that is Ready to pick up.',
+          'This delivery type requires an active installation order that has reached Preparing for pickup.',
         );
       }
     } else if (
@@ -711,7 +769,9 @@ export class DeliveriesService {
     }
 
     const order = delivery.order;
-    const shouldFulfillOrder = order.status.name === 'Ready to pick up';
+    const shouldFulfillOrder =
+      ['Preparing for pickup', 'Ready to pick up'].includes(order.status.name) &&
+      order.fulfillmentMethod === OrderFulfillmentMethod.COMPANY_DELIVERY;
     if (shouldFulfillOrder) await this.assertInstallationPaid(order);
     const deliveredStatus = shouldFulfillOrder
       ? await this.prisma.orderStatus.findUnique({

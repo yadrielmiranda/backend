@@ -110,6 +110,8 @@ export function buildPaymentSchedule(estimate: any) {
     available.push('ORDER');
     if (
       [
+        'Awaiting release',
+        'Preparing for pickup',
         'Ready to pick up',
         'Picked up',
         'Delivered',
@@ -118,7 +120,18 @@ export function buildPaymentSchedule(estimate: any) {
       ].includes(orderStatus)
     )
       available.push('RELEASE');
-    if (job && quote?.status === 'APPROVED' && available.includes('RELEASE'))
+    if (
+      job &&
+      quote?.status === 'APPROVED' &&
+      [
+        'Preparing for pickup',
+        'Ready to pick up',
+        'Picked up',
+        'Delivered',
+        'Installation in progress',
+        'Installed',
+      ].includes(orderStatus)
+    )
       available.push('INSTALL');
     if (
       job?.completedAt ||
@@ -412,6 +425,7 @@ export async function refreshScheduledInstallation(
   ];
   if (!mutable.includes(job.status)) return false;
   const ready = [
+    'Preparing for pickup',
     'Ready to pick up',
     'Delivered',
     'Picked up',
