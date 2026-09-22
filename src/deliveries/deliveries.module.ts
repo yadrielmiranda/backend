@@ -8,6 +8,7 @@ import { DeliveriesService } from './deliveries.service';
 import { GoogleRoutesService } from './google-routes.service';
 import { GoogleAddressValidationService } from './google-address-validation.service';
 import { WarehouseDeliveryModule } from '@/warehouse-delivery/warehouse-delivery.module';
+import { DeliveryCoverageService } from './delivery-coverage.service';
 
 @Module({
   imports: [HttpModule, PrismaModule, NotificationsModule, LogsModule, WarehouseDeliveryModule],
@@ -16,7 +17,8 @@ import { WarehouseDeliveryModule } from '@/warehouse-delivery/warehouse-delivery
     DeliveriesService,
     GoogleRoutesService,
     GoogleAddressValidationService,
+    DeliveryCoverageService,
   ],
-  exports: [DeliveriesService],
+  exports: [DeliveriesService, DeliveryCoverageService],
 })
 export class DeliveriesModule {}

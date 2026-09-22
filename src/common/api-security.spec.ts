@@ -69,7 +69,7 @@ describe('Real HTTP authorization and response boundaries (H01–H04)', () => {
       updateMany: jest.fn(async ({ where }) => ({ count: sessions.get(where.id)?.revokedAt ? 0 : 1 })),
     } };
     users = { updateUser: jest.fn(async ({ data }) => data), userSafe: jest.fn(async () => raw.user) };
-    const auth = new AuthService(users, db, signer, {} as any, {} as any, {} as any);
+    const auth = new AuthService(users, db, signer, {} as any, {} as any, {} as any, {} as any);
     categories = { findAll: jest.fn(async () => [{ id: 1, name: 'Windows' }]),
       create: jest.fn(async () => ({ id: 2 })), update: jest.fn(async () => ({ id: 2 })), remove: jest.fn(async () => ({ id: 2 })) };
     estimates = { findAllForUser: jest.fn(async () => [raw]), findOneForUser: jest.fn(async () => raw),

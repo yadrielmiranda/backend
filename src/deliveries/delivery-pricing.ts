@@ -2,6 +2,15 @@ import Decimal from 'decimal.js';
 
 export const METERS_PER_MILE = new Decimal('1609.344');
 
+export function isWithinDeliveryCoverage(
+  distanceMeters: number,
+  maxDeliveryMiles: Decimal.Value,
+) {
+  return new Decimal(distanceMeters).lte(
+    new Decimal(maxDeliveryMiles).mul(METERS_PER_MILE),
+  );
+}
+
 export type DeliveryPricingInput = {
   distanceMeters: number;
   basePrice: Decimal.Value;

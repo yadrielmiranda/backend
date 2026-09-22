@@ -33,7 +33,7 @@ async function fixture() {
       account.passwordUpdatedAt = new Date(); return account; }),
   };
   const jwt = new JwtService({ secret });
-  const service = new AuthService(users, db, jwt, { log: jest.fn() } as any, {} as any, {} as any);
+  const service = new AuthService(users, db, jwt, { log: jest.fn() } as any, {} as any, {} as any, {} as any);
   (service as any).bcryptRounds = 4;
   const sid = service.newSessionId();
   const refresh = await service.signRefreshToken(account.id, sid, account.passwordUpdatedAt);

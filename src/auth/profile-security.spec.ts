@@ -22,14 +22,14 @@ describe('Self-service field authorization (H01)', () => {
 
   it('does not let direct profile service calls bypass the whitelist', async () => {
     const users = { updateUser: jest.fn(async (args) => args.data) };
-    const service = new AuthService(users as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    const service = new AuthService(users as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     expect(await service.updateProfile(7, { ...personal, ...restricted } as any)).toEqual(personal);
     expect(users.updateUser).toHaveBeenCalledWith({ where: { id: 7 }, data: personal });
   });
 
   it('allows partial updates without resetting omitted fields', async () => {
     const users = { updateUser: jest.fn(async (args) => args.data) };
-    const service = new AuthService(users as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    const service = new AuthService(users as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     expect(await service.updateProfile(7, { firstName: 'Updated' })).toEqual({ firstName: 'Updated' });
   });
 
@@ -47,7 +47,8 @@ describe('Self-service field authorization (H01)', () => {
     db.$queryRaw = jest.fn(async () => [{ id: 1 }]);
     db.platformTermsState = { findUniqueOrThrow: jest.fn(async () => ({ currentVersion: null })) };
     const service = new AuthService({} as any, db, {} as any, {} as any, {} as any,
-      { getProgram: async () => ({ version: 'a'.repeat(64) }) } as any);
+      { getProgram: async () => ({ version: 'a'.repeat(64) }) } as any,
+      { checkAddress: async () => ({ available: true }) } as any);
     await service.registerUser({ ...personal, ...restricted, password: 'Example-password-123',
       serviceConsent: false, promotionsConsent: false } as any);
     const saved = db.user.create.mock.calls[0][0].data;

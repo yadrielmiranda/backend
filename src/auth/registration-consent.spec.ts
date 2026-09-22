@@ -60,7 +60,8 @@ function fixture() {
     },
   };
   const sms = new SmsConsentService(db);
-  const auth = new AuthService({} as any, db, {} as any, {} as any, {} as any, sms);
+  const coverage = { checkAddress: jest.fn(async () => ({ available: true })) };
+  const auth = new AuthService({} as any, db, {} as any, {} as any, {} as any, sms, coverage as any);
   const payload = async (extra: Record<string, unknown> = {}) => ({
     username: 'new-client', firstName: 'Test', lastName: 'Client',
     phone: '+13055551234', email: 'client@example.com', password: 'Example-only-123',
@@ -69,7 +70,7 @@ function fixture() {
     consentVersion: (await sms.getProgram()).version, ...extra,
   });
   const register = async (extra: Record<string, unknown> = {}) => auth.registerUser(await payload(extra) as any);
-  return { state, db, sms, auth, payload, register };
+  return { state, db, sms, auth, coverage, payload, register };
 }
 
 describe('Registration messaging consent', () => {
@@ -232,6 +233,32 @@ describe('Registration messaging consent', () => {
     assert.equal((await f.sms.getPreferences(user.id)).enabled, false);
     assert.equal((await f.sms.getPreferences(user.id)).promotionsEnabled, false);
     assert.deepEqual(f.state.registration[0], proof);
+  });
+
+  it('checks the public client home address before creating the account', async () => {
+    const f = fixture();
+    await f.register();
+    expect(f.coverage.checkAddress).toHaveBeenCalledWith({
+      street: '123 Example St',
+      city: 'Miami',
+      state: 'FL',
+      postalCode: '33172',
+    });
+  });
+
+  it('creates the account and reports when home delivery is unavailable', async () => {
+    const f = fixture();
+    f.coverage.checkAddress.mockResolvedValueOnce({ available: false });
+    const user = await f.register();
+    assert.equal(user.deliveryAvailable, false);
+    assert.equal(f.state.users.length, 1);
+  });
+
+  it('does not create the account when address coverage cannot be verified', async () => {
+    const f = fixture();
+    f.coverage.checkAddress.mockRejectedValueOnce(new Error('Coverage unavailable'));
+    await assert.rejects(f.register(), /Coverage unavailable/);
+    assert.equal(f.state.users.length, 0);
   });
 
   it('creates no records if the client role is unavailable', async () => {

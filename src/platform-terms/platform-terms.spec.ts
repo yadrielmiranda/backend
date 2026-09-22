@@ -88,7 +88,8 @@ function fixture() {
   const service = new PlatformTermsService(db);
   const publish = async (text = 'Example platform terms') => service.publishText(admin, text, state.currentId ?? 0);
   const auth = new AuthService({} as any, db, {} as any, {} as any, {} as any,
-    { getProgram: async () => ({ version: 'a'.repeat(64), registration: {} }) } as any);
+    { getProgram: async () => ({ version: 'a'.repeat(64), registration: {} }) } as any,
+    { checkAddress: async () => ({ available: true }) } as any);
   const registration = (extra = {}) => ({
     username: 'client-one', firstName: 'Test', lastName: 'Client', email: 'client@example.test',
     phone: '+13055550123', street: 'Example Street', city: 'Miami', state: 'FL', postalCode: '33101',

@@ -24,6 +24,7 @@ import { SmsConsentService } from '@/sms/sms-consent.service';
 import { pickProfileFields } from './dto/self-service-fields';
 import { assertTokenPurpose, SessionTokenPayload } from './access-session';
 import { lockCurrentPlatformTerms, requireCurrentAcceptance, savePlatformTermsAcceptance } from '@/platform-terms/platform-terms.policy';
+import { DeliveryCoverageService } from '@/deliveries/delivery-coverage.service';
 
 type JwtRolePayload = string | undefined;
 
@@ -38,6 +39,7 @@ export class AuthService {
     private logs: LogsService,
     private mail: MailService,
     private smsConsent: SmsConsentService,
+    private deliveryCoverage: DeliveryCoverageService,
   ) { }
 
   private accessTtl = process.env.JWT_ACCESS_TTL || '15m';
@@ -165,8 +167,6 @@ export class AuthService {
         message: 'The messaging terms changed. Review them and select your preferences again.',
       });
     }
-    const hashedPassword = await bcrypt.hash(password, this.bcryptRounds);
-
     const clientRole = await this.prisma.role.findUnique({
       where: { name: 'client' },
       select: { id: true },
@@ -178,8 +178,19 @@ export class AuthService {
       );
     }
 
+    // El registro público valida la dirección residencial contra la misma
+    // cobertura por carretera usada por Delivery. No se guarda el resultado:
+    // el delivery real se vuelve a validar cuando se solicite.
+    const coverage = await this.deliveryCoverage.checkAddress({
+      street: userData.street,
+      city: userData.city,
+      state: userData.state,
+      postalCode: userData.postalCode,
+    });
+    const hashedPassword = await bcrypt.hash(password, this.bcryptRounds);
+
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      const user = await this.prisma.$transaction(async (tx) => {
         const terms = await lockCurrentPlatformTerms(tx);
         requireCurrentAcceptance(terms, registerUserDto.platformTermsAccepted, registerUserDto.platformTermsVersionId);
         if (wantsSms) {
@@ -261,6 +272,7 @@ export class AuthService {
         }
         return user;
       });
+      return { ...user, deliveryAvailable: coverage.available };
     } catch (error: any) {
       if (error instanceof HttpException) throw error;
       if (error?.code === 'P2002') {

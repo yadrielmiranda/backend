@@ -24,7 +24,7 @@ import { NotificationsService } from '@/notifications/notifications.service';
 import { LogsService } from '@/logs/logs.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { getRoleName } from '@/auth/utils/get-role-name';
-import { calculateDeliveryPricing, METERS_PER_MILE } from './delivery-pricing';
+import { calculateDeliveryPricing, isWithinDeliveryCoverage } from './delivery-pricing';
 import { WarehouseDeliveryService } from '@/warehouse-delivery/warehouse-delivery.service';
 import {
   GoogleRoutesService,
@@ -504,7 +504,7 @@ export class DeliveriesService {
       );
     const route = await this.routes.calculateDrivingRoute(origin, destination);
     // El límite usa la distancia sin redondear; la tarifa mantiene el cálculo existente.
-    if (new Decimal(route.distanceMeters).gt(new Decimal(configuration.maxDeliveryMiles).mul(METERS_PER_MILE))) {
+    if (!isWithinDeliveryCoverage(route.distanceMeters, configuration.maxDeliveryMiles)) {
       throw new BadRequestException('This address is outside our delivery coverage area.');
     }
     let pricing;

@@ -11,6 +11,7 @@ import { JwtStrategy } from './guards/auth/jwt.strategy';
 import { LogsModule } from '@/logs/logs.module';
 import { MailModule } from '@/mail/mail.module';
 import { SmsConsentModule } from '@/sms/sms-consent.module';
+import { DeliveriesModule } from '@/deliveries/deliveries.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { SmsConsentModule } from '@/sms/sms-consent.module';
     UsersModule,
     MailModule,
     SmsConsentModule,
+    DeliveriesModule,
     PrismaModule,
     PassportModule,
     LogsModule, 
