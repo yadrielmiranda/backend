@@ -153,6 +153,9 @@ describe('warehouse movements', () => {
       await expect(f.service.inventory({}, actor)).rejects.toThrow(
         ForbiddenException,
       );
+      await expect(f.service.inventoryByPo({}, actor)).rejects.toThrow(
+        ForbiddenException,
+      );
       await expect(f.service.history({}, actor)).rejects.toThrow(
         ForbiddenException,
       );
@@ -327,6 +330,45 @@ describe('warehouse movements', () => {
     expect(f.stocks[0].onHand).toBe(1);
     expect(f.movements).toHaveLength(1);
   });
+  it('groups inventory by factory PO and paginates POs without losing their lines', async () => {
+    const f = fixture();
+    f.pieces[3].estim.order = {
+      ...f.pieces[3].estim.order,
+      id: 2,
+      number: '1002',
+      poNumber: '381922',
+    };
+    const first = await f.service.inventoryByPo(
+      { view: 'all', pageSize: '1', page: '1' },
+      admin,
+    );
+    expect(first.total).toBe(2);
+    expect(first.items).toHaveLength(1);
+    expect(first.items[0]).toMatchObject({
+      poNumber: '281374',
+      orderNumber: '1001',
+    });
+    expect(first.items[0].units.map((unit) => unit.lineNumber)).toEqual([
+      '1029967',
+      windowLine,
+      door,
+    ]);
+    const second = await f.service.inventoryByPo(
+      { view: 'all', pageSize: '1', page: '2' },
+      admin,
+    );
+    expect(second.items[0]).toMatchObject({
+      poNumber: '381922',
+      orderNumber: '1002',
+    });
+    expect(second.items[0].units.map((unit) => unit.lineNumber)).toEqual([
+      '1096240',
+    ]);
+    expect(JSON.stringify(first)).not.toMatch(
+      /rateReal|discounted_total|password|width|height/,
+    );
+  });
+
   it('filters and paginates inventory without exposing financial or product duplicates', async () => {
     const f = fixture();
     await f.scan('RECEIVE');

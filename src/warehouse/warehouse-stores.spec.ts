@@ -216,6 +216,21 @@ describe('configurable warehouse stores', () => {
     expect((await f.service.unit(door, admin)).stores[0]).toMatchObject({ id: 1, name: 'North area', onHand: 1 });
     await expect(f.service.updateStore(1, { name: 'Changed', isActive: true, version: 0 }, admin)).rejects.toThrow('Refresh'); f.invariant();
   });
+  it('keeps one PO grouped while a store filter returns only the pieces present there', async () => {
+    const f = fixture();
+    await f.scan('RECEIVE', 1, door);
+    await f.scan('RECEIVE', 2, fixed);
+    const all = await f.service.inventoryByPo({ view: 'all' }, admin);
+    expect(all).toMatchObject({ total: 1 });
+    expect(all.items[0].units).toHaveLength(4);
+    const main = await f.service.inventoryByPo({ view: 'all', storeId: '1' }, admin);
+    expect(main).toMatchObject({ total: 1 });
+    expect(main.items[0].units.map((unit) => unit.lineNumber)).toEqual([door]);
+    const overflow = await f.service.inventoryByPo({ view: 'all', storeId: '2' }, admin);
+    expect(overflow.items[0].units.map((unit) => unit.lineNumber)).toEqual([fixed]);
+    f.invariant();
+  });
+
   it('reports balances and filters Unassigned separately from assigned parts', async () => {
     const f = fixture(); f.stocks[0].onHand = 2; f.stocks[0].unassigned = 2;
     await f.service.transfer({ ...request(), barcode: door, fromStoreId: null, toStoreId: 1, quantity: 1, version: 0 }, admin);

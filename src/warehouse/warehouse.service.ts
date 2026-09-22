@@ -627,10 +627,8 @@ export class WarehouseService {
     });
   }
 
-  async inventory(query: Query, actor: AuthUser) {
-    this.staff(actor);
-    const pagination = paging(query),
-      view = query.view ?? 'on_hand';
+  private inventoryWhere(query: Query) {
+    const view = query.view ?? 'on_hand';
     const where: Prisma.WarehouseStockWhereInput = stockSearch(query.search);
     if (view === 'on_hand') where.onHand = { gt: 0 };
     else if (view === 'in_transit') where.inTransit = { gt: 0 };
@@ -657,34 +655,150 @@ export class WarehouseService {
         where.storeBalances = { some: { storeId, onHand: { gt: 0 } } };
       }
     }
-    return this.prisma.$transaction(async (tx) => {
-      const rows = await tx.warehouseStock.findMany({
+    return where;
+  }
+
+  private async inventoryMeta(tx: Tx, where: Prisma.WarehouseStockWhereInput) {
+    const [sum, activeCount] = await Promise.all([
+      tx.warehouseStock.aggregate({
         where,
-        include: stockInclude,
-        orderBy: { lineNumber: 'asc' },
-        skip: pagination.skip,
-        take: pagination.take,
-      });
-      const total = await tx.warehouseStock.count({ where });
-      const sum = await tx.warehouseStock.aggregate({
         _sum: { onHand: true, unassigned: true, inTransit: true, released: true },
-      });
-      const activeCount = await tx.warehouseCount.findUnique({
+      }),
+      tx.warehouseCount.findUnique({
         where: { activeSlot: 1 },
         select: { id: true },
-      });
+      }),
+    ]);
+    return {
+      summary: {
+        onHand: sum._sum.onHand ?? 0,
+        unassigned: sum._sum.unassigned ?? 0,
+        inTransit: sum._sum.inTransit ?? 0,
+        released: sum._sum.released ?? 0,
+      },
+      activeCountId: activeCount?.id ?? null,
+    };
+  }
+
+  async inventory(query: Query, actor: AuthUser) {
+    this.staff(actor);
+    const pagination = paging(query),
+      where = this.inventoryWhere(query);
+    return this.prisma.$transaction(async (tx) => {
+      const [rows, total, meta] = await Promise.all([
+        tx.warehouseStock.findMany({
+          where,
+          include: stockInclude,
+          orderBy: { lineNumber: 'asc' },
+          skip: pagination.skip,
+          take: pagination.take,
+        }),
+        tx.warehouseStock.count({ where }),
+        this.inventoryMeta(tx, where),
+      ]);
       return {
         items: rows.map(presentStock),
         total,
         page: pagination.page,
         pageSize: pagination.pageSize,
-        summary: {
-          onHand: sum._sum.onHand ?? 0,
-          unassigned: sum._sum.unassigned ?? 0,
-          inTransit: sum._sum.inTransit ?? 0,
-          released: sum._sum.released ?? 0,
+        ...meta,
+      };
+    });
+  }
+
+  async inventoryByPo(query: Query, actor: AuthUser) {
+    this.staff(actor);
+    const pagination = paging(query),
+      where = this.inventoryWhere(query);
+    return this.prisma.$transaction(async (tx) => {
+      const matching = await tx.warehouseStock.findMany({
+        where,
+        select: {
+          lineNumber: true,
+          unit: {
+            select: {
+              piece: {
+                select: {
+                  estim: {
+                    select: {
+                      name: true,
+                      customerFirstName: true,
+                      customerLastName: true,
+                      user: { select: actorSelect },
+                      order: { select: { id: true, number: true, poNumber: true } },
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
-        activeCountId: activeCount?.id ?? null,
+        orderBy: { lineNumber: 'asc' },
+      });
+      type Group = {
+        key: string;
+        orderId: number | null;
+        orderNumber: string;
+        poNumber: string;
+        customer: string;
+        project: string;
+        lineNumbers: string[];
+      };
+      const grouped = new Map<string, Group>();
+      for (const row of matching) {
+        const estimate = row.unit.piece.estim,
+          order = estimate.order,
+          key = order ? `order:${order.id}` : `line:${row.lineNumber}`;
+        let group = grouped.get(key);
+        if (!group) {
+          group = {
+            key,
+            orderId: order?.id ?? null,
+            orderNumber: order?.number ?? '',
+            poNumber: order?.poNumber ?? '',
+            customer:
+              [estimate.customerFirstName, estimate.customerLastName]
+                .filter(Boolean)
+                .join(' ') || name(estimate.user),
+            project: estimate.name,
+            lineNumbers: [],
+          };
+          grouped.set(key, group);
+        }
+        group.lineNumbers.push(row.lineNumber);
+      }
+      const groups = [...grouped.values()].sort((a, b) => {
+        const aKey = a.poNumber || a.orderNumber || a.key,
+          bKey = b.poNumber || b.orderNumber || b.key;
+        return aKey.localeCompare(bKey, undefined, { numeric: true, sensitivity: 'base' });
+      });
+      const pageGroups = groups.slice(pagination.skip, pagination.skip + pagination.take),
+        lineNumbers = pageGroups.flatMap((group) => group.lineNumbers),
+        rows = lineNumbers.length
+          ? await tx.warehouseStock.findMany({
+              where: { ...where, lineNumber: { in: lineNumbers } },
+              include: stockInclude,
+              orderBy: { lineNumber: 'asc' },
+            })
+          : [],
+        byLine = new Map(rows.map((row) => [row.lineNumber, presentStock(row)])),
+        meta = await this.inventoryMeta(tx, where);
+      return {
+        items: pageGroups.map((group) => ({
+          key: group.key,
+          orderId: group.orderId,
+          orderNumber: group.orderNumber,
+          poNumber: group.poNumber,
+          customer: group.customer,
+          project: group.project,
+          units: group.lineNumbers
+            .map((lineNumber) => byLine.get(lineNumber))
+            .filter((unit): unit is NonNullable<typeof unit> => Boolean(unit)),
+        })),
+        total: groups.length,
+        page: pagination.page,
+        pageSize: pagination.pageSize,
+        ...meta,
       };
     });
   }

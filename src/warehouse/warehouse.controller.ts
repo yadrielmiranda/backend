@@ -60,6 +60,12 @@ export class WarehouseController {
   ) {
     return this.warehouse.inventory(query, req.user as AuthUser);
   }
+  @Get('inventory/po') inventoryByPo(
+    @Query() query: Record<string, string>,
+    @Req() req: Request,
+  ) {
+    return this.warehouse.inventoryByPo(query, req.user as AuthUser);
+  }
   @Get('units/:barcode') unit(
     @Param('barcode') barcode: string,
     @Req() req: Request,
