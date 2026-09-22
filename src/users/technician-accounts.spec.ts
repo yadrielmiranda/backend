@@ -61,7 +61,8 @@ describe('Separate administrator-created technician accounts', () => {
     expect(f.db.user.create.mock.calls[0][0].data.password).not.toBe(dto().password);
   });
   it.each([
-    { username: 'ab' }, { username: 'staff@example.test' }, { username: 'a b' }, { username: 'x'.repeat(51) },
+    { username: 'abc' }, { username: 'staff@example.test' }, { username: 'a b' }, { username: 'x'.repeat(25) },
+    { username: '1staff' }, { username: 'staff__one' }, { username: 'staff-' },
     { firstName: null }, { firstName: '' }, { lastName: ' ' }, { password: 'short' }, { password: null },
     { password: 'a'.repeat(73) }, { password: '😀'.repeat(19) },
   ])('rejects invalid technician credentials %j', async (changes) => {

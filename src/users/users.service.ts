@@ -15,6 +15,10 @@ import { LogsService } from '@/logs/logs.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { getRoleName } from '@/auth/utils/get-role-name';
 import { revokeSmsConsent } from '@/sms/sms-consent.helpers';
+import {
+  isValidUsername,
+  USERNAME_VALIDATION_MESSAGE,
+} from '@/common/username-policy';
 
 export type UserSafe = Omit<User, 'password'> & {
   role: Prisma.RoleGetPayload<{
@@ -472,10 +476,14 @@ export class UsersService {
     for (const field of ['username', 'firstName', 'lastName'] as const) {
       if (partial && dto[field] === undefined) continue;
       const value = dto[field];
-      if (typeof value !== 'string' || !value.trim() || value.trim().length > (field === 'username' ? 50 : 100))
+      if (field === 'username') {
+        if (!isValidUsername(value))
+          throw new BadRequestException(USERNAME_VALIDATION_MESSAGE);
+        data.username = value.trim();
+        continue;
+      }
+      if (typeof value !== 'string' || !value.trim() || value.trim().length > 100)
         throw new BadRequestException(`Enter a valid ${field}.`);
-      if (field === 'username' && !/^[A-Za-z0-9][A-Za-z0-9._-]{2,49}$/.test(value.trim()))
-        throw new BadRequestException('Use a unique username of 3–50 letters, numbers, dots, underscores or hyphens.');
       data[field] = value.trim();
     }
     if (!partial || dto.password !== undefined) {

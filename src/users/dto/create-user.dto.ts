@@ -17,6 +17,10 @@ import { Transform, Type } from 'class-transformer';
 import { DealerMode } from '@prisma/client';
 import { US_STATE_CODES } from '@/common/us-states';
 import {
+  USERNAME_PATTERN,
+  USERNAME_VALIDATION_MESSAGE,
+} from '@/common/username-policy';
+import {
   trimOnly,
   normalizeEmailOrNull,
   normalizeUSPhoneE164OrNull,
@@ -27,7 +31,7 @@ import {
 export class CreateUserDto {
   @IsNotEmpty()
   @IsString()
-  @MaxLength(50)
+  @Matches(USERNAME_PATTERN, { message: USERNAME_VALIDATION_MESSAGE })
   @Transform(trimOnly)
   username: string;
 
