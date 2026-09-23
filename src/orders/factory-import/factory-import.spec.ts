@@ -121,6 +121,7 @@ function fixture() {
   const stocks: any[] = [];
   let otherPo = false;
   const db: any = {
+    factoryPickupRunOrder: { findFirst: jest.fn(async () => null as any) },
     order: {
       findUnique: jest.fn(async ({ where }) =>
         where.id === order.id
@@ -196,7 +197,18 @@ function fixture() {
       }),
     },
     eventLog: { create: jest.fn(async () => ({ id: 1 })) },
-    $transaction: jest.fn(async (callback) => callback(db)),
+    $transaction: jest.fn(async (callback) => {
+      const beforeUnits = units.map(unit => ({ ...unit }));
+      const beforeStocks = stocks.map(stock => ({ ...stock }));
+      const beforeOrder = { ...order };
+      try { return await callback(db); }
+      catch (error) {
+        units.splice(0, units.length, ...beforeUnits);
+        stocks.splice(0, stocks.length, ...beforeStocks);
+        Object.assign(order, beforeOrder);
+        throw error;
+      }
+    }),
   };
   const service = new FactoryImportService(db);
   const preview = (buffer = file()) => service.preview(1, buffer, admin);
@@ -567,6 +579,31 @@ describe('factory import transaction and authorization', () => {
 });
 
 describe('factory import expected physical parts', () => {
+  it('rolls back automatic parts corrections during an active pickup but allows an unchanged reimport', async () => {
+    const f = fixture(), doc = document();
+    Object.assign(doc.lines[0].product_details, { panels: 1 });
+    await f.confirm(file(doc));
+    f.db.factoryPickupRunOrder.findFirst.mockResolvedValue({ pickupRunId: 1 });
+    expect((await f.confirm(file(doc))).unchanged).toBe(true);
+    Object.assign(doc.lines[0].product_details, { panels: 2 });
+    f.db.order.update.mockClear(); f.db.eventLog.create.mockClear();
+    await expect(f.confirm(file(doc))).rejects.toThrow('Finish the active factory pickup');
+    expect(f.stocks[0].expectedParts).toBe(1);
+    expect(f.db.order.update).not.toHaveBeenCalled();
+    expect(f.db.eventLog.create).not.toHaveBeenCalled();
+    f.db.factoryPickupRunOrder.findFirst.mockResolvedValue(null);
+    await f.confirm(file(doc));
+    expect(f.stocks[0].expectedParts).toBe(2);
+  });
+  it('rolls back new factory lines while a pickup is active', async () => {
+    const f = fixture();
+    await f.confirm();
+    f.pieces[0].qty = 2;
+    f.db.factoryPickupRunOrder.findFirst.mockResolvedValue({ pickupRunId: 1 });
+    await expect(f.confirm(file(document([factoryLine(100), factoryLine(101)])))).rejects.toThrow('Finish the active factory pickup');
+    expect(f.units).toEqual([{ lineNumber: '100', pieceId: 10 }]);
+    expect(f.stocks).toHaveLength(1);
+  });
   it('uses structured panels plus one frame for an OX door without receiving stock', async () => {
     const f = fixture(),
       doc = document();

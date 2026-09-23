@@ -16,11 +16,22 @@ const allowed = (controller: any, method: string, role = 'technician') => new Ro
 } as any);
 
 describe('Technician authentication and default-deny authorization', () => {
-  it.each(['state', 'pending', 'scan', 'receive'])('allows the dedicated %s operation', (method) => {
+  it.each([
+    'state',
+    'pending',
+    'scan',
+    'receive',
+    'deliverToInstallation',
+    'currentPickup',
+    'pickupPo',
+    'startPickup',
+    'pickupScan',
+    'finishPickup',
+  ])('allows the dedicated %s operation', (method) => {
     expect(allowed(TechnicianController, method)).toBe(true);
     for (const role of ['admin', 'operator', 'dealer', 'client']) expect(allowed(TechnicianController, method, role)).toBe(false);
   });
-  it.each(['inventory', 'scan', 'receive', 'history', 'stores', 'counts', 'undo', 'transfer'])('denies the administrative warehouse %s endpoint', (method) => {
+  it.each(['inventory', 'scan', 'receive', 'deliverToInstallation', 'history', 'stores', 'counts', 'undo', 'transfer'])('denies the administrative warehouse %s endpoint', (method) => {
     expect(allowed(WarehouseController, method)).toBe(false);
   });
   it('denies undecorated authenticated routes while preserving the existing roles', () => {

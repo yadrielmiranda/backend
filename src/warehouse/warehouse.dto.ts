@@ -38,6 +38,42 @@ export class WarehouseReceiptDto extends WarehouseRequestDto {
   @ValidateNested({ each: true }) @Type(() => WarehouseReceiptItemDto)
   items: WarehouseReceiptItemDto[];
 }
+
+export class WarehouseInstallationDeliveryDto extends WarehouseRequestDto {
+  @IsInt() @Min(1) installationJobId: number;
+  @IsString() @Length(1, 500) installationAddress: string;
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500)
+  @ValidateNested({ each: true }) @Type(() => WarehouseReceiptItemDto)
+  items: WarehouseReceiptItemDto[];
+}
+
+export class FactoryPickupRunCreateDto {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50)
+  @IsString({ each: true })
+  poNumbers: string[];
+}
+
+export class FactoryPickupRunScanDto extends WarehouseRequestDto {
+  @IsString() @Length(1, 60) barcode: string;
+  @IsOptional() @IsBoolean() addPo?: boolean;
+}
+
+export class FactoryPickupRunFinishDto {
+  @IsOptional()
+  @IsIn([
+    'NOT_READY_AT_FACTORY',
+    'MANUFACTURER_HELD_MATERIAL',
+    'DAMAGED_NOT_ACCEPTED',
+    'OTHER',
+  ])
+  partialReason?:
+    | 'NOT_READY_AT_FACTORY'
+    | 'MANUFACTURER_HELD_MATERIAL'
+    | 'DAMAGED_NOT_ACCEPTED'
+    | 'OTHER';
+
+  @IsOptional() @IsString() @Length(0, 500) note?: string;
+}
 export class WarehouseTransferDto extends WarehouseRequestDto {
   @IsString() @Length(1, 60) barcode: string;
   @IsOptional() @IsInt() @Min(1) fromStoreId: number | null;

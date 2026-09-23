@@ -13,9 +13,10 @@ export function warehouseFixture() {
     status: { name: 'Ready to pick up' },
     fulfillmentMethod: 'CUSTOMER_PICKUP',
     payment: { status: 'PAID' },
-    estimate: { installationJob: null, paymentPlanSnapshot: null },
+    estimate: { installationJob: null as any, paymentPlanSnapshot: null },
     deliveries: [],
   };
+  const orders: any[] = [order];
   const definitions = [
     ['1029975', 'F3', 'French Door', 'FRENCH_DOOR', 'OX', 3],
     ['1029967', 'B2', 'Sliding Glass Door', 'SLIDING_DOOR', 'XXX', 4],
@@ -34,6 +35,7 @@ export function warehouseFixture() {
       name: 'Warehouse project',
       customerFirstName: 'Pepe',
       customerLastName: 'Test',
+      installationJob: null as any,
       user: users[0],
       order,
     },
@@ -56,7 +58,10 @@ export function warehouseFixture() {
   const balances: any[] = [];
   const movements: any[] = [],
     counts: any[] = [],
-    countLines: any[] = [];
+    countLines: any[] = [],
+    pickupRuns: any[] = [],
+    pickupRunOrders: any[] = [],
+    pickupRunLines: any[] = [];
   const clone = <T>(v: T): T => structuredClone(v);
   const stockView = (s) =>
     s
@@ -68,7 +73,11 @@ export function warehouseFixture() {
           unit: {
             lineNumber: s.lineNumber,
             pieceId: s.pieceId,
-            piece: clone(pieces.find((p) => p.id === s.pieceId)),
+            piece: (() => {
+              const piece = clone(pieces.find((p) => p.id === s.pieceId));
+              if (piece) piece.estim.installationJob = piece.estim.order?.estimate?.installationJob ?? null;
+              return piece;
+            })(),
           },
         }
       : null;
@@ -97,6 +106,20 @@ export function warehouseFixture() {
       ? {
           ...l,
           stock: stockView(stocks.find((s) => s.lineNumber === l.lineNumber)),
+        }
+      : null;
+  const pickupRunOrderView = (row) =>
+    row
+      ? {
+          ...row,
+          order: clone(orders.find((value) => value.id === row.orderId) ?? null),
+        }
+      : null;
+  const pickupRunLineView = (row) =>
+    row
+      ? {
+          ...row,
+          stock: stockView(stocks.find((s) => s.lineNumber === row.lineNumber)),
         }
       : null;
   const compare = (value, condition, row): boolean => {
@@ -169,6 +192,14 @@ export function warehouseFixture() {
         return (
           row?.countId === value.countId && row?.lineNumber === value.lineNumber
         );
+      if (key === 'technicianId_activeSlot')
+        return row?.technicianId === value.technicianId && row?.activeSlot === value.activeSlot;
+      if (key === 'pickupRunId_orderId')
+        return row?.pickupRunId === value.pickupRunId && row?.orderId === value.orderId;
+      if (key === 'orderId_activeSlot')
+        return row?.orderId === value.orderId && row?.activeSlot === value.activeSlot;
+      if (key === 'pickupRunId_lineNumber')
+        return row?.pickupRunId === value.pickupRunId && row?.lineNumber === value.lineNumber;
       return compare(row?.[key], value, row);
     });
   const change = (row, data) => {
@@ -183,6 +214,8 @@ export function warehouseFixture() {
   };
   const model = (rows: any[], view, defaults: (data: any) => any) => ({
     findUnique: async ({ where }) =>
+      clone(view(rows.find((r) => matches(view(r), where)))),
+    findFirst: async ({ where } = {} as any) =>
       clone(view(rows.find((r) => matches(view(r), where)))),
     findUniqueOrThrow: async ({ where }) => {
       const row = rows.find((r) => matches(view(r), where));
@@ -263,7 +296,9 @@ export function warehouseFixture() {
       id: Math.max(0, ...stores.map((s) => s.id)) + 1, isActive: true, version: 0,
       createdAt: new Date(), updatedAt: new Date(), ...d,
     })),
-    warehouseStoreStock: model(balances, (b) => b ?? null, (d) => ({
+    warehouseStoreStock: model(balances, (b) => b ? {
+      ...b, stock: stockView(stocks.find(s => s.lineNumber === b.lineNumber)),
+    } : null, (d) => ({
       onHand: 0, updatedAt: new Date(), ...d,
     })),
     warehouseStock: model(stocks, stockView, (d) => ({
@@ -284,6 +319,8 @@ export function warehouseFixture() {
       quantity: 0,
       fromStoreId: null,
       toStoreId: null,
+      installationJobId: null,
+      installationAddress: null,
       reversalOfId: null,
       countId: null,
       reason: null,
@@ -305,13 +342,37 @@ export function warehouseFixture() {
       counted: 0,
       ...d,
     })),
-    order: { findUnique: async () => clone(order) },
+    factoryPickupRun: model(pickupRuns, (r) => r ?? null, (d) => ({
+      id: pickupRuns.length + 1,
+      status: 'ACTIVE',
+      activeSlot: 1,
+      startedAt: new Date(),
+      finishedAt: null,
+      partialReason: null,
+      note: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...d,
+    })),
+    factoryPickupRunOrder: model(pickupRunOrders, pickupRunOrderView, (d) => ({
+      activeSlot: 1,
+      addedDuringPickup: false,
+      addedAt: new Date(),
+      ...d,
+    })),
+    factoryPickupRunLine: model(pickupRunLines, pickupRunLineView, (d) => ({
+      addedAt: new Date(),
+      ...d,
+    })),
+    order: {
+      findUnique: async ({ where }) => clone(orders.find((value) => matches(value, where)) ?? null),
+    },
     estimate: { findUnique: async () => null },
     payment: { findMany: async () => [] },
     $queryRaw: async () => [],
     $transaction: (callback) => {
       const result = queue.then(async () => {
-        const lists = [stocks, movements, counts, countLines, stores, balances],
+        const lists = [stocks, movements, counts, countLines, stores, balances, pickupRuns, pickupRunOrders, pickupRunLines],
           before = lists.map(clone);
         try {
           return await callback(db);
@@ -326,5 +387,8 @@ export function warehouseFixture() {
   };
   db.warehouseStock.fields = { expectedParts: { _ref: 'expectedParts' } };
   db.warehouseCountLine.fields = { expected: { _ref: 'expected' } };
-  return { db, stocks, movements, counts, countLines, pieces, order, stores, balances };
+  return {
+    db, stocks, movements, counts, countLines, pieces, order, orders, stores, balances,
+    pickupRuns, pickupRunOrders, pickupRunLines,
+  };
 }

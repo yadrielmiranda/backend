@@ -1,5 +1,6 @@
 import { decimalAmount, paidPrincipal, paymentIsCovered } from '@/payments/payment-accounting';
 import { assertScheduleMilestone } from '@/payment-plans/payment-schedule';
+import { assertDirectFactoryPickup, recordDirectFactoryPickup } from '@/warehouse/factory-fulfillment';
 import {
   BadRequestException,
   ConflictException,
@@ -284,6 +285,8 @@ export class DeliveriesService {
     const selectedAt = new Date();
     const result = await this.prisma.$transaction(
       async (tx) => {
+        if (method === OrderFulfillmentMethod.FACTORY_PICKUP)
+          await assertDirectFactoryPickup(tx, order.id, order.idEst);
         let canceledDelivery = null;
         if (delivery) {
           const currentDelivery = await tx.orderDelivery.findUnique({
@@ -409,17 +412,23 @@ export class DeliveriesService {
     const completedAt = new Date();
     const updated = await this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${order.idEst} FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM \`Order\` WHERE id = ${orderId} FOR UPDATE`;
+      const current = await tx.order.findUnique({ where: { id: orderId }, include: { status: true } });
+      if (!current || current.status.name !== 'Ready to pick up' || current.fulfillmentMethod !== order.fulfillmentMethod)
+        throw new ConflictException('The order changed. Refresh it before completing pickup.');
       await assertScheduleMilestone(tx, order.idEst, 'RELEASE');
+      if (current.fulfillmentMethod === OrderFulfillmentMethod.FACTORY_PICKUP)
+        await recordDirectFactoryPickup(tx, order.id, order.idEst, actor.id);
       return tx.order.update({
-      where: { id: orderId },
-      data: {
-        statusId: pickedUp.id,
-        updateStatus: completedAt,
-        pickupCompletedAt: completedAt,
-      },
-      include: { status: true },
+        where: { id: orderId },
+        data: {
+          statusId: pickedUp.id,
+          updateStatus: completedAt,
+          pickupCompletedAt: completedAt,
+        },
+        include: { status: true },
       });
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     const pickupLabel =
       order.fulfillmentMethod === OrderFulfillmentMethod.FACTORY_PICKUP
         ? 'Factory pickup'

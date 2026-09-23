@@ -240,6 +240,24 @@ describe('configurable warehouse stores', () => {
     expect((await f.service.inventory({ storeId: '1' }, admin)).total).toBe(1);
     expect((await f.service.inventory({ storeId: '2' }, admin)).total).toBe(0);
     expect((await f.service.inventory({}, admin)).summary).toMatchObject({ onHand: 2, unassigned: 1 }); f.invariant();
+    expect((await f.service.inventory({ storeId: 'unassigned' }, admin)).summary).toEqual({ onHand: 1, unassigned: 1, inTransit: null, released: null });
+    expect((await f.service.inventory({ storeId: '1' }, admin)).summary).toEqual({ onHand: 1, unassigned: 0, inTransit: null, released: null });
+  });
+  it('sums only selected-store quantities across matching units, independently of pagination and grouping', async () => {
+    const f = fixture();
+    await f.scan('RECEIVE', 1, door);
+    await f.scan('RECEIVE', 2, door);
+    await f.scan('RECEIVE', 2, door);
+    await f.scan('RECEIVE', 1, fixed);
+    for (const method of ['inventory', 'inventoryByPo'] as const) {
+      const main = await f.service[method]({ view: 'on_hand', storeId: '1', pageSize: '1' }, admin);
+      expect(main.summary).toEqual({ onHand: 2, unassigned: 0, inTransit: null, released: null });
+      expect((await f.service[method]({ storeId: '2' }, admin)).summary.onHand).toBe(2);
+      expect((await f.service[method]({ storeId: '1', search: door }, admin)).summary.onHand).toBe(1);
+      expect((await f.service[method]({ storeId: '1', search: 'missing' }, admin)).summary.onHand).toBe(0);
+      expect((await f.service[method]({}, admin)).summary.onHand).toBe(4);
+    }
+    f.invariant();
   });
   it('requires explicit source selection for releases and never consumes a different store', async () => {
     const f = fixture(); await f.scan('RECEIVE', 1);

@@ -24,6 +24,7 @@ function fixture(distanceMeters = 160934) {
   };
   const order: any = {
     id: 40,
+    idEst: 7,
     number: 'ORD-40',
     userId: 2,
     status: { name: 'Ready to pick up' },
@@ -40,6 +41,8 @@ function fixture(distanceMeters = 160934) {
     deliveries: [],
   };
   const db: any = {
+    factoryPickupRunOrder: { findFirst: jest.fn(async () => null) },
+    warehouseStock: { findMany: jest.fn(async () => []) },
     order: {
       findUnique: jest.fn(async () => order),
       update: jest.fn(async ({ data }) => ({ ...order, ...data })),

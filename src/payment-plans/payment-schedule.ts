@@ -190,6 +190,15 @@ export function buildPaymentSchedule(estimate: any) {
         : snapshot.locked
           ? 'Project total excludes the pending City Fee. It will be added as a separate adjustment; original installments remain unchanged.'
           : 'Amounts are preliminary until the City Fee is finalized.';
+  const canRelease =
+    Boolean(estimate.order) &&
+    allocation.rows.every(
+      (row) =>
+        // El City Fee independiente no condiciona la entrega ni la instalación.
+        row.kind === 'CITY_FEE' ||
+        !['ORDER', 'RELEASE'].includes(row.milestone) ||
+        (row.status !== 'REVIEW' && Number(row.balance) === 0),
+    );
   return {
     ...allocation,
     name: snapshot.name,
@@ -200,17 +209,10 @@ export function buildPaymentSchedule(estimate: any) {
     cityFeePending,
     provisional,
     provisionalMessage,
-    canRelease:
-      Boolean(estimate.order) &&
-      allocation.rows.every(
-        (row) =>
-          // El City Fee independiente sigue adeudado, pero no condiciona la entrega.
-          row.kind === 'CITY_FEE' ||
-          !['ORDER', 'RELEASE'].includes(row.milestone) ||
-          (row.status !== 'REVIEW' && Number(row.balance) === 0),
-      ),
+    canRelease,
     canInstall:
-      Boolean(estimate.order) &&
+      // Una devolución puede reabrir cuotas anteriores después de pagar INSTALL.
+      canRelease &&
       installationSequences.size > 0 &&
       allocation.rows.every(
         (row) => !installationSequences.has(row.sequence) || (Number(row.balance) === 0 && row.status !== 'REVIEW'),

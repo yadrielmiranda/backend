@@ -21,9 +21,13 @@ import {
   WarehouseCountCloseDto,
   WarehouseCountStartDto,
   WarehouseReceiptDto,
+  WarehouseInstallationDeliveryDto,
   WarehouseTransferDto,
   WarehouseStoreCreateDto,
   WarehouseStoreUpdateDto,
+  FactoryPickupRunCreateDto,
+  FactoryPickupRunFinishDto,
+  FactoryPickupRunScanDto,
 } from './warehouse.dto';
 
 @Controller('warehouse')
@@ -51,6 +55,11 @@ export class WarehouseController {
   @Post('receipts') receive(@Body() dto: WarehouseReceiptDto, @Req() req: Request) {
     return this.warehouse.receive(dto, req.user as AuthUser);
   }
+  @Post('installation-deliveries') deliverToInstallation(
+    @Body() dto: WarehouseInstallationDeliveryDto, @Req() req: Request,
+  ) {
+    return this.warehouse.deliverToInstallation(dto, req.user as AuthUser);
+  }
   @Post('transfers') transfer(@Body() dto: WarehouseTransferDto, @Req() req: Request) {
     return this.warehouse.transfer(dto, req.user as AuthUser);
   }
@@ -77,6 +86,35 @@ export class WarehouseController {
     @Req() req: Request,
   ) {
     return this.warehouse.history(query, req.user as AuthUser);
+  }
+  @Get('pickups/current') currentPickup(@Req() req: Request) {
+    return this.warehouse.factoryPickupCurrent(req.user as AuthUser);
+  }
+  @Get('pickups/po') pickupPo(
+    @Query('poNumber') poNumber: string,
+    @Req() req: Request,
+  ) {
+    return this.warehouse.factoryPickupPo(poNumber, req.user as AuthUser);
+  }
+  @Post('pickups') startPickup(
+    @Body() dto: FactoryPickupRunCreateDto,
+    @Req() req: Request,
+  ) {
+    return this.warehouse.startFactoryPickup(dto, req.user as AuthUser);
+  }
+  @Post('pickups/:id/scan') pickupScan(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: FactoryPickupRunScanDto,
+    @Req() req: Request,
+  ) {
+    return this.warehouse.factoryPickupScan(id, dto, req.user as AuthUser);
+  }
+  @Post('pickups/:id/finish') finishPickup(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: FactoryPickupRunFinishDto,
+    @Req() req: Request,
+  ) {
+    return this.warehouse.finishFactoryPickup(id, dto, req.user as AuthUser);
   }
   @Post('scan') scan(@Body() dto: WarehouseScanDto, @Req() req: Request) {
     return this.warehouse.scan(dto, req.user as AuthUser);

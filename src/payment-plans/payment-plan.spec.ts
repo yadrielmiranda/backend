@@ -372,6 +372,8 @@ describe('Configurable payment plans', () => {
     ];
     est.order = { id: 4, status: { name: 'Ready to pick up' } };
     est.payments = [paid('INSTALLMENT', originalRows[0].amount)];
+    if (definition === split)
+      est.payments.push(paid('INSTALLMENT', originalRows[1].amount, 2));
     expect(buildPaymentSchedule(est)?.canInstall).toBe(false);
     est.payments.push(paid('INSTALLMENT', String(Number(installment) - 0.01), sequence));
     expect(buildPaymentSchedule(est)?.canInstall).toBe(false);
@@ -380,9 +382,40 @@ describe('Configurable payment plans', () => {
     expect(schedule.canInstall).toBe(true);
     expect(schedule.rows.filter(row => [101, 102].includes(row.sequence)).map(row => row.status)).toEqual(['DUE', 'DUE']);
     expect(schedule.rows.find(row => row.milestone === 'COMPLETE')?.status).toBe('UPCOMING');
-    // Si existe INSTALL, pagar esa cuota es lo que habilita la instalación.
-    if (definition === split) expect(schedule.rows.find(row => row.sequence === 2)?.balance).toBe('4000.00');
+    // INSTALL conserva su hito y las cuotas anteriores deben seguir cubiertas.
+    if (definition === split) expect(schedule.rows.find(row => row.sequence === 2)?.balance).toBe('0.00');
     expect(est.paymentPlanSnapshot.locked.rows).toEqual(originalRows);
+  });
+
+  it.each([
+    { definition: project, refundedSequence: 1 },
+    { definition: split, refundedSequence: 1 },
+    { definition: split, refundedSequence: 2 },
+  ])('blocks installation when a refund reopens prior installment $refundedSequence', async ({ definition, refundedSequence }) => {
+    const est = estimate(definition);
+    est.order = { id: 4, status: { name: 'Preparing for pickup' } };
+    const originalRows = planRows(snapshot(definition), amounts, true);
+    est.payments = originalRows.filter(row => row.milestone !== 'COMPLETE')
+      .map(row => paid('INSTALLMENT', row.amount, row.sequence));
+    const refunded = est.payments.find(payment => payment.sequence === refundedSequence);
+    Object.assign(refunded, {
+      originalBaseAmount: refunded.baseAmount,
+      netPaidBaseAmount: String(Number(refunded.baseAmount) - 100),
+      refundedAmount: '100.00',
+      refundCreditAmount: '0.00',
+      refundReviewPending: false,
+      refundReviewBaseAmount: '100.00',
+    });
+    expect(buildPaymentSchedule(est)).toMatchObject({ canRelease: false, canInstall: false });
+    const db: any = { estimate: { findUnique: jest.fn(async () => est) } };
+    await expect(assertScheduleMilestone(db, est.id, 'INSTALL')).rejects.toThrow('before installation');
+    // El crédito comercial aprobado cubre el saldo, pero una revisión abierta lo bloquea.
+    refunded.refundCreditAmount = '100.00';
+    expect(buildPaymentSchedule(est)?.canInstall).toBe(true);
+    refunded.refundReviewPending = true;
+    expect(buildPaymentSchedule(est)?.canInstall).toBe(false);
+    refunded.refundReviewPending = false;
+    expect(buildPaymentSchedule(est)?.rows.find(row => row.milestone === 'COMPLETE')?.status).toBe('UPCOMING');
   });
 
   it('keeps a City Fee already included in the original plan inside its installment', () => {
@@ -591,11 +624,11 @@ describe('Refund balances and operational milestones', () => {
     expect(s.rows.find(r => r.sequence === 2)).toMatchObject({ balance: '500.00', status: 'REVIEW' });
     expect(s.next?.sequence).toBe(101); expect(s.fullBalance).toBeNull(); expect(s.canInstall).toBe(false);
   });
-  it('uses Before installation when present, even if Release materials has a refunded balance', () => {
+  it('blocks installation when Release materials has a refunded balance, even with Before installation paid', () => {
     const e = ready(split);
     e.payments = [paid('INSTALLMENT', '4000', 1), { ...paid('INSTALLMENT', '4000', 2), netPaidBaseAmount: '3900', refundedAmount: '100' }, paid('INSTALLMENT', '1000', 3)];
     const s = buildPaymentSchedule(e)!;
-    expect(s.canRelease).toBe(false); expect(s.canInstall).toBe(true);
+    expect(s.canRelease).toBe(false); expect(s.canInstall).toBe(false);
   });
   it('does not block installation because of a refund on the After installation installment', () => {
     const e = ready();

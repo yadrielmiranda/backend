@@ -8,6 +8,7 @@ import {
   paymentIsCovered,
 } from '@/payments/payment-accounting';
 import { discountedInstallationTotal } from '@/estimates/discounts/estimate-discount';
+import { installationDestination } from './warehouse-installation';
 
 // Una salida física conserva los requisitos comerciales de Pickup & Delivery.
 export async function assertWarehouseRelease(
@@ -98,4 +99,11 @@ export async function assertWarehouseRelease(
     throw new BadRequestException(
       'Delivery payment must be covered before releasing parts.',
     );
+  return {
+    fulfillmentMethod: order.fulfillmentMethod,
+    installationDeliveryCovered: order.deliveries.every((delivery) =>
+      delivery.type !== 'INSTALLATION_OVERRIDE' || delivery.status === 'CANCELED' || paymentIsCovered(delivery.payment)),
+    installation: ['INSTALLATION_DELIVERY', 'COMPANY_DELIVERY'].includes(order.fulfillmentMethod)
+      ? installationDestination(installation) : null,
+  };
 }

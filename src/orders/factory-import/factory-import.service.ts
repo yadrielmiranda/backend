@@ -367,6 +367,13 @@ export class FactoryImportService {
             });
             initializedParts += updated.count;
           }
+          // El objetivo de una recogida activa es una instantánea: se revierte
+          // toda la importación si cambia sus líneas o cantidades pendientes.
+          if ((initialized.count > 0 || initializedParts > 0 || additions.length > 0) &&
+              await tx.factoryPickupRunOrder.findFirst({ where: { orderId, activeSlot: 1 } }))
+            throw new ConflictException(
+              'Finish the active factory pickup before importing changes to its units or expected parts. Then preview the file again.',
+            );
           const cost = new Prisma.Decimal(document.factoryCost);
           const changed =
             initialized.count > 0 ||

@@ -118,6 +118,7 @@ model User {
   dealerContracts                   DealerContract[]
   branding                          Branding?
   warehouseMovements                WarehouseMovement[]
+  factoryPickupRuns                 FactoryPickupRun[]          @relation("FactoryPickupRunTechnician")
   warehouseCountsStarted            WarehouseCount[]            @relation("WarehouseCountStarted")
   warehouseCountsClosed             WarehouseCount[]            @relation("WarehouseCountClosed")
   eventLogs                         EventLog[]
@@ -1351,18 +1352,19 @@ model FactoryUnit {
 
 // Cantidades operativas; la ficha del producto sigue viviendo en Piece.
 model WarehouseStock {
-  lineNumber    String                @id @db.VarChar(50)
-  unit          FactoryUnit           @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
-  expectedParts Int?
-  inTransit     Int                   @default(0)
-  onHand        Int                   @default(0)
-  unassigned    Int                   @default(0)
-  released      Int                   @default(0)
-  version       Int                   @default(0)
-  updatedAt     DateTime              @updatedAt
-  movements     WarehouseMovement[]
-  countLines    WarehouseCountLine[]
-  storeBalances WarehouseStoreStock[]
+  lineNumber     String                 @id @db.VarChar(50)
+  unit           FactoryUnit            @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
+  expectedParts  Int?
+  inTransit      Int                    @default(0)
+  onHand         Int                    @default(0)
+  unassigned     Int                    @default(0)
+  released       Int                    @default(0)
+  version        Int                    @default(0)
+  updatedAt      DateTime               @updatedAt
+  movements      WarehouseMovement[]
+  countLines     WarehouseCountLine[]
+  storeBalances  WarehouseStoreStock[]
+  pickupRunLines FactoryPickupRunLine[]
 
   @@index([onHand])
   @@index([unassigned])
@@ -1411,6 +1413,8 @@ enum WarehouseMovementType {
   COUNT
   COUNT_UNDO
   TRANSFER
+  FACTORY_RELEASE
+  INSTALLATION_DELIVERY
 }
 
 model WarehouseMovement {
@@ -1442,6 +1446,11 @@ model WarehouseMovement {
   reversal            WarehouseMovement?    @relation("WarehouseReversal")
   countId             Int?
   count               WarehouseCount?       @relation(fields: [countId], references: [id], onDelete: Restrict)
+  pickupRunId         Int?
+  pickupRun           FactoryPickupRun?     @relation("WarehouseMovementPickupRun", fields: [pickupRunId], references: [id], onDelete: Restrict)
+  installationJobId   Int?
+  installationJob     InstallationJob?      @relation(fields: [installationJobId], references: [id], onDelete: Restrict)
+  installationAddress String?               @db.VarChar(500)
   countDelta          Int                   @default(0)
   createdAt           DateTime              @default(now())
 
@@ -1450,8 +1459,75 @@ model WarehouseMovement {
   @@index([toStoreId, id])
   @@index([actorId])
   @@index([countId])
+  @@index([pickupRunId, id])
+  @@index([installationJobId, id])
   @@index([createdAt])
   @@map("warehouse_movements")
+}
+
+enum FactoryPickupRunStatus {
+  ACTIVE
+  COMPLETED
+  PARTIAL
+}
+
+enum FactoryPickupPartialReason {
+  NOT_READY_AT_FACTORY
+  MANUFACTURER_HELD_MATERIAL
+  DAMAGED_NOT_ACCEPTED
+  OTHER
+}
+
+// Una visita a fábrica puede agrupar varios PO y recibirlos en cualquier orden.
+model FactoryPickupRun {
+  id            Int                         @id @default(autoincrement())
+  technicianId  Int
+  technician    User                        @relation("FactoryPickupRunTechnician", fields: [technicianId], references: [id], onDelete: Restrict)
+  status        FactoryPickupRunStatus      @default(ACTIVE)
+  activeSlot    Int?                        @default(1)
+  startedAt     DateTime                    @default(now())
+  finishedAt    DateTime?
+  partialReason FactoryPickupPartialReason?
+  note          String?                     @db.VarChar(500)
+  createdAt     DateTime                    @default(now())
+  updatedAt     DateTime                    @updatedAt
+  orders        FactoryPickupRunOrder[]
+  lines         FactoryPickupRunLine[]
+  movements     WarehouseMovement[]         @relation("WarehouseMovementPickupRun")
+
+  @@unique([technicianId, activeSlot])
+  @@index([status, startedAt])
+  @@map("factory_pickup_runs")
+}
+
+// Un mismo PO no puede estar simultáneamente en dos recogidas activas.
+model FactoryPickupRunOrder {
+  pickupRunId       Int
+  pickupRun         FactoryPickupRun @relation(fields: [pickupRunId], references: [id], onDelete: Restrict)
+  orderId           Int
+  order             Order            @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  activeSlot        Int?             @default(1)
+  addedDuringPickup Boolean          @default(false)
+  addedAt           DateTime         @default(now())
+
+  @@id([pickupRunId, orderId])
+  @@unique([orderId, activeSlot])
+  @@index([pickupRunId, addedAt])
+  @@map("factory_pickup_run_orders")
+}
+
+// Fotografía de las partes que quedaban por recoger al incorporar el PO.
+model FactoryPickupRunLine {
+  pickupRunId Int
+  pickupRun   FactoryPickupRun @relation(fields: [pickupRunId], references: [id], onDelete: Restrict)
+  lineNumber  String           @db.VarChar(50)
+  stock       WarehouseStock   @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
+  targetParts Int
+  addedAt     DateTime         @default(now())
+
+  @@id([pickupRunId, lineNumber])
+  @@index([lineNumber])
+  @@map("factory_pickup_run_lines")
 }
 
 enum WarehouseCountStatus {
@@ -1568,8 +1644,9 @@ model Order {
   payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   paymentId Int     @unique
 
-  extraCharges OrderExtraCharge[]
-  deliveries   OrderDelivery[]
+  extraCharges      OrderExtraCharge[]
+  deliveries        OrderDelivery[]
+  factoryPickupRuns FactoryPickupRunOrder[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1993,12 +2070,13 @@ model InstallationJob {
   requestedBy   User     @relation("InstallationRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
   requestedById Int
 
-  measurements InstallationMeasurement[]
-  quotes       InstallationQuote[]
-  permit       InstallationPermit?
-  payments     Payment[]
-  appointments InstallationAppointment[]
-  revisions    EstimateRevision[]
+  measurements       InstallationMeasurement[]
+  quotes             InstallationQuote[]
+  permit             InstallationPermit?
+  payments           Payment[]
+  appointments       InstallationAppointment[]
+  revisions          EstimateRevision[]
+  warehouseMovements WarehouseMovement[]
 
   requestedAt DateTime  @default(now())
   canceledAt  DateTime?

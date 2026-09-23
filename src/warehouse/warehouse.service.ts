@@ -9,12 +9,15 @@ import { Prisma, WarehouseMovementType } from '@prisma/client';
 import { createHash } from 'crypto';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
+import { assertScheduleMilestone } from '@/payment-plans/payment-schedule';
 import {
   barcodeLine,
   expectedPhysicalParts,
   assertBalances,
 } from './warehouse-parts';
 import { assertWarehouseRelease } from './warehouse-release';
+import { assertCompanyFactoryCollection } from './factory-fulfillment';
+import { installationDestination, installationDestinationSelect } from './warehouse-installation';
 import {
   WarehouseScanDto,
   WarehouseRequestDto,
@@ -23,9 +26,13 @@ import {
   WarehouseCountCloseDto,
   WarehouseCountStartDto,
   WarehouseReceiptDto,
+  WarehouseInstallationDeliveryDto,
   WarehouseTransferDto,
   WarehouseStoreCreateDto,
   WarehouseStoreUpdateDto,
+  FactoryPickupRunCreateDto,
+  FactoryPickupRunScanDto,
+  FactoryPickupRunFinishDto,
 } from './warehouse.dto';
 
 const actorSelect = {
@@ -53,7 +60,8 @@ const stockInclude = {
               customerFirstName: true,
               customerLastName: true,
               user: { select: actorSelect },
-              order: { select: { id: true, number: true, poNumber: true } },
+              order: { select: { id: true, number: true, poNumber: true, fulfillmentMethod: true } },
+              installationJob: { select: installationDestinationSelect },
             },
           },
         },
@@ -111,6 +119,8 @@ function presentStock(stock: Stock) {
       [e.customerFirstName, e.customerLastName].filter(Boolean).join(' ') ||
       name(e.user),
     project: e.name,
+    installation: ['INSTALLATION_DELIVERY', 'COMPANY_DELIVERY'].includes(e.order?.fulfillmentMethod ?? '')
+      ? installationDestination(e.installationJob) : null,
     expectedParts: expected,
     inTransit: stock.inTransit,
     onHand: stock.onHand,
@@ -148,6 +158,9 @@ function presentMovement(m: Movement) {
     quantity: m.quantity,
     fromStore: m.fromStore,
     toStore: m.toStore,
+    installation: m.installationJobId == null ? null : {
+      id: m.installationJobId, address: m.installationAddress ?? '',
+    },
     transitDelta: m.transitDelta,
     onHandDelta: m.onHandDelta,
     releasedDelta: m.releasedDelta,
@@ -261,6 +274,15 @@ function stockSearch(
   };
 }
 
+function pickupPoNumber(value: unknown) {
+  if (typeof value !== 'string')
+    throw new BadRequestException('Enter a factory PO number.');
+  const clean = value.trim();
+  if (!clean || clean.length > 50)
+    throw new BadRequestException('Enter a factory PO number (1–50 characters).');
+  return clean;
+}
+
 @Injectable()
 export class WarehouseService {
   constructor(private readonly prisma: PrismaService) {}
@@ -284,6 +306,10 @@ export class WarehouseService {
     if (actor?.role?.name !== 'technician')
       throw new ForbiddenException('Use an internal technician account.');
   }
+  private factoryPickupStaff(actor: AuthUser) {
+    if (actor?.role?.name === 'technician') return;
+    this.staff(actor);
+  }
 
   // Proyección mínima: sin cliente, precios, enlaces a órdenes o inventario general.
   private technicianStock(stock: ReturnType<typeof presentStock>) {
@@ -293,6 +319,7 @@ export class WarehouseService {
       orderNumber: stock.orderNumber, poNumber: stock.poNumber,
       expectedParts: stock.expectedParts, inTransit: stock.inTransit,
       onHand: stock.onHand, pending: stock.pending, version: stock.version,
+      installation: stock.installation,
     };
   }
 
@@ -303,7 +330,11 @@ export class WarehouseService {
         where: { isActive: true }, select: storeSelect, orderBy: { name: 'asc' },
       });
       const count = await tx.warehouseCount.findUnique({ where: { activeSlot: 1 }, select: { id: true } });
-      return { stores, countOpen: Boolean(count) };
+      const activePickup = await tx.factoryPickupRun.findUnique({
+        where: { technicianId_activeSlot: { technicianId: actor.id, activeSlot: 1 } },
+        select: { id: true, startedAt: true },
+      });
+      return { stores, countOpen: Boolean(count), activePickup };
     });
   }
 
@@ -322,6 +353,10 @@ export class WarehouseService {
 
   async technicianScan(dto: WarehouseScanDto, actor: AuthUser) {
     this.technician(actor);
+    if (dto.action === 'COLLECT')
+      throw new BadRequestException(
+        'Start or resume a factory pickup before collecting parts.',
+      );
     const result = await this.scan(dto, actor);
     return {
       stock: this.technicianStock(result.stock), replayed: result.replayed,
@@ -330,6 +365,458 @@ export class WarehouseService {
         createdAt: result.movement.createdAt, toStore: result.movement.toStore,
       },
     };
+  }
+
+  private async pickupOrderSnapshot(
+    tx: Tx,
+    poNumberValue: string,
+    currentRunId?: number,
+  ) {
+    const poNumber = pickupPoNumber(poNumberValue);
+    const order = await tx.order.findUnique({
+      where: { poNumber },
+      select: { id: true, number: true, poNumber: true, fulfillmentMethod: true },
+    });
+    if (!order?.poNumber)
+      throw new NotFoundException('PO not found. Check the factory PO number.');
+    assertCompanyFactoryCollection(order);
+
+    const active = await tx.factoryPickupRunOrder.findFirst({
+      where: { orderId: order.id, activeSlot: 1 },
+      select: { pickupRunId: true },
+    });
+    if (active && active.pickupRunId !== currentRunId)
+      throw new ConflictException(
+        'This PO is already included in another active factory pickup.',
+      );
+
+    const stocks = await tx.warehouseStock.findMany({
+      where: {
+        unit: { piece: { estim: { order: { id: order.id } } } },
+      },
+      include: stockInclude,
+      orderBy: { lineNumber: 'asc' },
+    });
+    if (!stocks.length)
+      throw new BadRequestException(
+        'This PO has no factory units. Import its factory JSON first.',
+      );
+
+    const lines = stocks.map((stock) => {
+      const expected = parts(stock);
+      if (!expected)
+        throw new BadRequestException(
+          `Expected physical parts are not configured for Line ${stock.lineNumber}.`,
+        );
+      return {
+        stock,
+        targetParts: Math.max(
+          0,
+          expected - stock.inTransit - stock.onHand - stock.released,
+        ),
+      };
+    }).filter((line) => line.targetParts > 0);
+
+    if (!lines.length)
+      throw new BadRequestException('This PO has already been fully collected.');
+
+    return { order, lines };
+  }
+
+  private async addPickupOrder(
+    tx: Tx,
+    pickupRunId: number,
+    poNumber: string,
+    addedDuringPickup: boolean,
+  ) {
+    const snapshot = await this.pickupOrderSnapshot(tx, poNumber, pickupRunId);
+    const existing = await tx.factoryPickupRunOrder.findUnique({
+      where: {
+        pickupRunId_orderId: {
+          pickupRunId,
+          orderId: snapshot.order.id,
+        },
+      },
+    });
+    if (existing) return snapshot;
+
+    await tx.factoryPickupRunOrder.create({
+      data: {
+        pickupRunId,
+        orderId: snapshot.order.id,
+        addedDuringPickup,
+      },
+    });
+    await tx.factoryPickupRunLine.createMany({
+      data: snapshot.lines.map(({ stock, targetParts }) => ({
+        pickupRunId,
+        lineNumber: stock.lineNumber,
+        targetParts,
+      })),
+    });
+    return snapshot;
+  }
+
+  private async pickupRunSummary(
+    tx: Tx,
+    pickupRunId: number,
+    collectorId: number,
+  ) {
+    const run = await tx.factoryPickupRun.findUnique({
+      where: { id: pickupRunId },
+      select: {
+        id: true,
+        technicianId: true,
+        status: true,
+        startedAt: true,
+        finishedAt: true,
+        partialReason: true,
+        note: true,
+      },
+    });
+    if (!run || run.technicianId !== collectorId)
+      throw new NotFoundException('Factory pickup not found.');
+
+    const [orders, lines, movements] = await Promise.all([
+      tx.factoryPickupRunOrder.findMany({
+        where: { pickupRunId },
+        include: { order: { select: { id: true, number: true, poNumber: true } } },
+        orderBy: { addedAt: 'asc' },
+      }),
+      tx.factoryPickupRunLine.findMany({
+        where: { pickupRunId },
+        include: { stock: { include: stockInclude } },
+        orderBy: { lineNumber: 'asc' },
+      }),
+      tx.warehouseMovement.findMany({
+        // Una lectura COLLECT revertida deja de contar para el progreso del pickup.
+        where: { pickupRunId, type: 'COLLECT', reversal: null },
+        select: { lineNumber: true, quantity: true },
+      }),
+    ]);
+
+    const collectedByLine = new Map<string, number>();
+    for (const movement of movements)
+      collectedByLine.set(
+        movement.lineNumber,
+        (collectedByLine.get(movement.lineNumber) ?? 0) + movement.quantity,
+      );
+
+    const presentedLines = lines.map((line) => {
+      const unit = this.technicianStock(presentStock(line.stock));
+      const collected = Math.min(
+        line.targetParts,
+        collectedByLine.get(line.lineNumber) ?? 0,
+      );
+      const remaining = Math.max(0, line.targetParts - collected);
+      return {
+        ...unit,
+        orderId: line.stock.unit.piece.estim.order?.id ?? null,
+        targetParts: line.targetParts,
+        collected,
+        remaining,
+        collectionState:
+          remaining === 0
+            ? 'COMPLETE'
+            : collected > 0
+              ? 'PARTIAL'
+              : 'PENDING',
+      };
+    });
+
+    const orderItems = orders.map((entry) => {
+      const orderLines = presentedLines.filter(
+        (line) => line.orderId === entry.orderId,
+      );
+      const expectedParts = orderLines.reduce(
+        (sum, line) => sum + line.targetParts,
+        0,
+      );
+      const collectedParts = orderLines.reduce(
+        (sum, line) => sum + line.collected,
+        0,
+      );
+      return {
+        orderId: entry.orderId,
+        orderNumber: entry.order.number,
+        poNumber: entry.order.poNumber ?? '',
+        addedDuringPickup: entry.addedDuringPickup,
+        addedAt: entry.addedAt,
+        pieces: orderLines.length,
+        expectedParts,
+        collectedParts,
+        remainingParts: Math.max(0, expectedParts - collectedParts),
+      };
+    });
+    const expectedParts = presentedLines.reduce(
+      (sum, line) => sum + line.targetParts,
+      0,
+    );
+    const collectedParts = presentedLines.reduce(
+      (sum, line) => sum + line.collected,
+      0,
+    );
+
+    return {
+      id: run.id,
+      status: run.status,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      partialReason: run.partialReason,
+      note: run.note,
+      poCount: orders.length,
+      expectedParts,
+      collectedParts,
+      remainingParts: Math.max(0, expectedParts - collectedParts),
+      orders: orderItems,
+      lines: presentedLines,
+    };
+  }
+
+  async factoryPickupCurrent(actor: AuthUser) {
+    this.factoryPickupStaff(actor);
+    return this.prisma.$transaction(async (tx) => {
+      const run = await tx.factoryPickupRun.findUnique({
+        where: {
+          technicianId_activeSlot: { technicianId: actor.id, activeSlot: 1 },
+        },
+        select: { id: true },
+      });
+      return run ? this.pickupRunSummary(tx, run.id, actor.id) : null;
+    });
+  }
+
+  async factoryPickupPo(poNumber: string, actor: AuthUser) {
+    this.factoryPickupStaff(actor);
+    return this.prisma.$transaction(async (tx) => {
+      const snapshot = await this.pickupOrderSnapshot(tx, poNumber);
+      return {
+        orderId: snapshot.order.id,
+        orderNumber: snapshot.order.number,
+        poNumber: snapshot.order.poNumber!,
+        pieces: snapshot.lines.length,
+        parts: snapshot.lines.reduce((sum, line) => sum + line.targetParts, 0),
+      };
+    });
+  }
+
+  async startFactoryPickup(dto: FactoryPickupRunCreateDto, actor: AuthUser) {
+    this.factoryPickupStaff(actor);
+    if (!Array.isArray(dto.poNumbers) || !dto.poNumbers.length || dto.poNumbers.length > 50)
+      throw new BadRequestException('Add between 1 and 50 POs to this pickup.');
+    const poNumbers = dto.poNumbers.map(pickupPoNumber);
+    if (new Set(poNumbers.map((po) => po.toLocaleLowerCase())).size !== poNumbers.length)
+      throw new BadRequestException('Add each PO only once.');
+
+    return this.transaction(async (tx) => {
+      await this.noCount(tx);
+      const active = await tx.factoryPickupRun.findUnique({
+        where: {
+          technicianId_activeSlot: { technicianId: actor.id, activeSlot: 1 },
+        },
+        select: { id: true },
+      });
+      if (active)
+        throw new ConflictException(
+          'You already have an active factory pickup. Resume it before starting another.',
+        );
+      const run = await tx.factoryPickupRun.create({
+        data: { technicianId: actor.id },
+        select: { id: true },
+      });
+      for (const poNumber of poNumbers)
+        await this.addPickupOrder(tx, run.id, poNumber, false);
+      return this.pickupRunSummary(tx, run.id, actor.id);
+    }, 60000);
+  }
+
+  private async lockPickupRun(tx: Tx, pickupRunId: number, actor: AuthUser, requireActive = true) {
+    await tx.$queryRaw`SELECT id FROM factory_pickup_runs WHERE id = ${pickupRunId} FOR UPDATE`;
+    const run = await tx.factoryPickupRun.findUnique({ where: { id: pickupRunId } });
+    if (!run || run.technicianId !== actor.id)
+      throw new NotFoundException('Factory pickup not found.');
+    if (requireActive && (run.status !== 'ACTIVE' || run.activeSlot !== 1))
+      throw new ConflictException('This factory pickup is already closed.');
+    return run;
+  }
+
+  async factoryPickupScan(
+    pickupRunId: number,
+    dto: FactoryPickupRunScanDto,
+    actor: AuthUser,
+  ) {
+    this.factoryPickupStaff(actor);
+    const lineNumber = barcodeLine(dto.barcode);
+    const requestHash = hash([
+      actor.id,
+      'PICKUP_COLLECT',
+      pickupRunId,
+      lineNumber,
+    ]);
+
+    return this.transaction(async (tx) => {
+      await this.lockPickupRun(tx, pickupRunId, actor);
+      const replay = await this.replay(tx, dto.requestKey, requestHash);
+      if (replay)
+        return {
+          kind: 'COLLECTED' as const,
+          stock: this.technicianStock(replay.stock),
+          movement: {
+            id: replay.movement.id,
+            type: replay.movement.type,
+            quantity: replay.movement.quantity,
+            createdAt: replay.movement.createdAt,
+            toStore: replay.movement.toStore,
+          },
+          replayed: true,
+          pickup: await this.pickupRunSummary(tx, pickupRunId, actor.id),
+        };
+      await this.noCount(tx);
+      const stock = await this.load(tx, lineNumber);
+      const order = stock.unit.piece.estim.order!;
+      assertCompanyFactoryCollection(order);
+      const expected = parts(stock);
+      if (!expected)
+        throw new BadRequestException(
+          `Expected physical parts are not configured for Line ${lineNumber}.`,
+        );
+      const globallyRemaining =
+        expected - stock.inTransit - stock.onHand - stock.released;
+      if (globallyRemaining <= 0)
+        throw new BadRequestException(
+          'All expected parts for this line have already been collected.',
+        );
+
+      let runOrder = await tx.factoryPickupRunOrder.findUnique({
+        where: {
+          pickupRunId_orderId: { pickupRunId, orderId: order.id },
+        },
+      });
+      if (!runOrder && !dto.addPo) {
+        const snapshot = await this.pickupOrderSnapshot(
+          tx,
+          order.poNumber ?? '',
+          pickupRunId,
+        );
+        return {
+          kind: 'PO_NOT_INCLUDED' as const,
+          candidate: {
+            orderId: order.id,
+            orderNumber: order.number,
+            poNumber: order.poNumber ?? '',
+            pieces: snapshot.lines.length,
+            parts: snapshot.lines.reduce(
+              (sum, line) => sum + line.targetParts,
+              0,
+            ),
+            lineNumber,
+            barcode: `I${lineNumber}`,
+            mark: stock.unit.piece.mark,
+            product: stock.unit.piece.prod.name,
+            system: stock.unit.piece.syst.name,
+            configuration: stock.unit.piece.conf.conf,
+          },
+        };
+      }
+      if (!runOrder) {
+        if (!order.poNumber)
+          throw new BadRequestException('This order does not have a factory PO number.');
+        await this.addPickupOrder(tx, pickupRunId, order.poNumber, true);
+        runOrder = await tx.factoryPickupRunOrder.findUnique({
+          where: {
+            pickupRunId_orderId: { pickupRunId, orderId: order.id },
+          },
+        });
+      }
+
+      let runLine = await tx.factoryPickupRunLine.findUnique({
+        where: {
+          pickupRunId_lineNumber: { pickupRunId, lineNumber },
+        },
+      });
+      if (!runLine) {
+        runLine = await tx.factoryPickupRunLine.create({
+          data: {
+            pickupRunId,
+            lineNumber,
+            targetParts: globallyRemaining,
+          },
+        });
+      }
+      const collected = await tx.warehouseMovement.aggregate({
+        where: { pickupRunId, lineNumber, type: 'COLLECT', reversal: null },
+        _sum: { quantity: true },
+      });
+      if ((collected._sum.quantity ?? 0) >= runLine.targetParts)
+        throw new BadRequestException(
+          'All expected parts for this line have already been collected in this pickup.',
+        );
+
+      const result = await this.move(tx, stock, {
+        type: 'COLLECT',
+        actorId: actor.id,
+        requestKey: dto.requestKey,
+        requestHash,
+        transitDelta: 1,
+        quantity: 1,
+        pickupRunId,
+      });
+      return {
+        kind: 'COLLECTED' as const,
+        stock: this.technicianStock(result.stock),
+        movement: {
+          id: result.movement.id,
+          type: result.movement.type,
+          quantity: result.movement.quantity,
+          createdAt: result.movement.createdAt,
+          toStore: result.movement.toStore,
+        },
+        replayed: result.replayed,
+        pickup: await this.pickupRunSummary(tx, pickupRunId, actor.id),
+      };
+    }, 60000);
+  }
+
+  async finishFactoryPickup(
+    pickupRunId: number,
+    dto: FactoryPickupRunFinishDto,
+    actor: AuthUser,
+  ) {
+    this.factoryPickupStaff(actor);
+    return this.transaction(async (tx) => {
+      const run = await this.lockPickupRun(tx, pickupRunId, actor, false);
+      const note = dto.note?.trim() || null;
+      if (note && note.length > 500)
+        throw new BadRequestException('Pickup note must be 500 characters or fewer.');
+      // Un reintento recupera el cierre guardado, sin sobrescribirlo ni liberar otro PO.
+      if (run.status !== 'ACTIVE') {
+        const partialReason = run.status === 'PARTIAL' ? dto.partialReason ?? null : null;
+        if (run.note !== note || run.partialReason !== partialReason)
+          throw new ConflictException('This factory pickup was already closed with different details.');
+        return this.pickupRunSummary(tx, pickupRunId, actor.id);
+      }
+      const summary = await this.pickupRunSummary(tx, pickupRunId, actor.id);
+      const partial = summary.remainingParts > 0;
+      if (partial && !dto.partialReason)
+        throw new BadRequestException(
+          'Choose why this pickup is being finished with parts remaining.',
+        );
+      await tx.factoryPickupRun.update({
+        where: { id: pickupRunId },
+        data: {
+          status: partial ? 'PARTIAL' : 'COMPLETED',
+          activeSlot: null,
+          finishedAt: new Date(),
+          partialReason: partial ? dto.partialReason : null,
+          note,
+        },
+      });
+      await tx.factoryPickupRunOrder.updateMany({
+        where: { pickupRunId },
+        data: { activeSlot: null },
+      });
+      return this.pickupRunSummary(tx, pickupRunId, actor.id);
+    });
   }
 
   private async transaction<T>(work: (tx: Tx) => Promise<T>, timeout = 20000): Promise<T> {
@@ -424,6 +911,9 @@ export class WarehouseService {
       quantity?: number;
       fromStoreId?: number | null;
       toStoreId?: number | null;
+      pickupRunId?: number;
+      installationJobId?: number | null;
+      installationAddress?: string | null;
     },
   ) {
     const { transitDelta = 0, onHandDelta = 0, releasedDelta = 0,
@@ -488,6 +978,9 @@ export class WarehouseService {
         reason: data.reason,
         reversalOfId: data.reversalOfId,
         countId: data.countId,
+        pickupRunId: data.pickupRunId,
+        installationJobId: data.installationJobId,
+        installationAddress: data.installationAddress,
       },
       include: movementInclude,
     });
@@ -598,6 +1091,68 @@ export class WarehouseService {
       return { ...summary, storeName: store.name, replayed: false };
     }, 60000);
   }
+  async deliverToInstallation(dto: WarehouseInstallationDeliveryDto, actor: AuthUser) {
+    this.receivingStaff(actor);
+    if (!Number.isSafeInteger(dto.installationJobId) || dto.installationJobId < 1 ||
+        typeof dto.installationAddress !== 'string' || !dto.installationAddress.trim() || dto.installationAddress.length > 500)
+      throw new BadRequestException('Choose an installation and confirm its delivery address.');
+    if (!Array.isArray(dto.items) || !dto.items.length || dto.items.length > 500 ||
+        dto.items.some((item) => !item || typeof item !== 'object'))
+      throw new BadRequestException('Select between 1 and 500 units per installation delivery.');
+    const items = dto.items.map((item) => ({
+      lineNumber: barcodeLine(item.barcode), quantity: item.quantity, version: item.version,
+    })).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
+    if (new Set(items.map((i) => i.lineNumber)).size !== items.length ||
+        items.some((i) => !Number.isInteger(i.quantity) || i.quantity < 1 || i.quantity > 200 ||
+          !Number.isSafeInteger(i.version) || i.version < 0))
+      throw new BadRequestException('Choose each unit once and enter valid quantities and versions.');
+    const requestHash = hash([actor.id, 'INSTALLATION_DELIVERY', dto.installationJobId, dto.installationAddress, items]);
+    return this.transaction(async (tx) => {
+      const prior = await tx.warehouseMovement.findUnique({
+        where: { requestKey: dto.requestKey }, include: movementInclude,
+      });
+      const summary = { units: items.length, parts: items.reduce((sum, item) => sum + item.quantity, 0) };
+      if (prior) {
+        if (prior.requestHash !== requestHash)
+          throw new ConflictException('This request identifier was already used for another operation.');
+        return { ...summary, installation: { id: prior.installationJobId!, address: prior.installationAddress ?? '' }, replayed: true };
+      }
+      await this.noCount(tx);
+      const first = await this.load(tx, items[0].lineNumber);
+      const estimateId = first.unit.piece.idEst;
+      // Las mismas validaciones comerciales que Release; recoger y recibir siguen independientes.
+      const release = await assertWarehouseRelease(tx, estimateId);
+      const destination = release.installation;
+      if (!destination || destination.id !== dto.installationJobId)
+        throw new BadRequestException('The selected order is not assigned to this installation.');
+      if (release.fulfillmentMethod === 'INSTALLATION_DELIVERY') {
+        // Entregar con la cuadrilla conserva las cuotas previas al trabajo y cualquier cargo de entrega.
+        await assertScheduleMilestone(tx, estimateId, 'INSTALL');
+        if (!release.installationDeliveryCovered)
+          throw new BadRequestException('The delivery charge must be paid before delivering parts to the installation.');
+      }
+      if (!destination.address || destination.address !== dto.installationAddress)
+        throw new ConflictException('The installation address changed. Refresh and confirm the destination again.');
+      // Una confirmación corresponde a una obra. El lote completo se revierte ante cualquier conflicto.
+      for (const [index, item] of items.entries()) {
+        const stock = await this.load(tx, item.lineNumber);
+        if (stock.unit.piece.idEst !== estimateId)
+          throw new BadRequestException('Select parts for one installation at a time. No parts were delivered by this request.');
+        if (stock.version !== item.version)
+          throw new ConflictException(`Unit I${item.lineNumber} changed. Refresh the selection before delivering. No parts were delivered by this request.`);
+        if (stock.inTransit < item.quantity)
+          throw new BadRequestException(`Unit I${item.lineNumber} does not have that many parts in transit. No parts were delivered by this request.`);
+        await this.move(tx, stock, {
+          type: 'INSTALLATION_DELIVERY', actorId: actor.id,
+          requestKey: index === 0 ? dto.requestKey : hash([dto.requestKey, item.lineNumber]),
+          requestHash, quantity: item.quantity,
+          transitDelta: -item.quantity, releasedDelta: item.quantity,
+          installationJobId: destination.id, installationAddress: destination.address,
+        });
+      }
+      return { ...summary, installation: destination, replayed: false };
+    }, 60000);
+  }
   async transfer(dto: WarehouseTransferDto, actor: AuthUser) {
     this.staff(actor);
     const lineNumber = barcodeLine(dto.barcode);
@@ -658,8 +1213,9 @@ export class WarehouseService {
     return where;
   }
 
-  private async inventoryMeta(tx: Tx, where: Prisma.WarehouseStockWhereInput) {
-    const [sum, activeCount] = await Promise.all([
+  private async inventoryMeta(tx: Tx, where: Prisma.WarehouseStockWhereInput, storeId = 'all') {
+    const selectedStore = storeId !== 'all' && storeId !== 'unassigned';
+    const [sum, activeCount, storeSum] = await Promise.all([
       tx.warehouseStock.aggregate({
         where,
         _sum: { onHand: true, unassigned: true, inTransit: true, released: true },
@@ -668,13 +1224,19 @@ export class WarehouseService {
         where: { activeSlot: 1 },
         select: { id: true },
       }),
+      selectedStore ? tx.warehouseStoreStock.aggregate({
+        where: { storeId: Number(storeId), stock: where },
+        _sum: { onHand: true },
+      }) : null,
     ]);
     return {
       summary: {
-        onHand: sum._sum.onHand ?? 0,
-        unassigned: sum._sum.unassigned ?? 0,
-        inTransit: sum._sum.inTransit ?? 0,
-        released: sum._sum.released ?? 0,
+        onHand: selectedStore ? storeSum?._sum.onHand ?? 0
+          : storeId === 'unassigned' ? sum._sum.unassigned ?? 0 : sum._sum.onHand ?? 0,
+        unassigned: selectedStore ? 0 : sum._sum.unassigned ?? 0,
+        // Estas cantidades no tienen ubicación actual; no se atribuyen a un Store.
+        inTransit: storeId === 'all' ? sum._sum.inTransit ?? 0 : null,
+        released: storeId === 'all' ? sum._sum.released ?? 0 : null,
       },
       activeCountId: activeCount?.id ?? null,
     };
@@ -694,7 +1256,7 @@ export class WarehouseService {
           take: pagination.take,
         }),
         tx.warehouseStock.count({ where }),
-        this.inventoryMeta(tx, where),
+        this.inventoryMeta(tx, where, query.storeId || 'all'),
       ]);
       return {
         items: rows.map(presentStock),
@@ -782,7 +1344,7 @@ export class WarehouseService {
             })
           : [],
         byLine = new Map(rows.map((row) => [row.lineNumber, presentStock(row)])),
-        meta = await this.inventoryMeta(tx, where);
+        meta = await this.inventoryMeta(tx, where, query.storeId || 'all');
       return {
         items: pageGroups.map((group) => ({
           key: group.key,
@@ -850,7 +1412,11 @@ export class WarehouseService {
         await this.lockStores(tx, [dto.storeId], dto.action === 'RECEIVE' ? [dto.storeId] : []);
       const stock = await this.load(tx, lineNumber);
       const deltas = { transitDelta: 0, onHandDelta: 0, releasedDelta: 0 };
-      if (dto.action === 'COLLECT') deltas.transitDelta = 1;
+      let installation: ReturnType<typeof installationDestination> = null;
+      if (dto.action === 'COLLECT') {
+        assertCompanyFactoryCollection(stock.unit.piece.estim.order!);
+        deltas.transitDelta = 1;
+      }
       else if (dto.action === 'RECEIVE') {
         // Recibir permite llegada directa; si hay partes en tránsito, consume una.
         deltas.transitDelta = stock.inTransit > 0 ? -1 : 0;
@@ -860,7 +1426,7 @@ export class WarehouseService {
           throw new BadRequestException(
             'There are no parts of this unit in the warehouse.',
           );
-        await assertWarehouseRelease(tx, stock.unit.piece.idEst);
+        installation = (await assertWarehouseRelease(tx, stock.unit.piece.idEst))?.installation ?? null;
         deltas.onHandDelta = -1;
         deltas.releasedDelta = 1;
       } else throw new BadRequestException('Invalid warehouse action.');
@@ -873,6 +1439,8 @@ export class WarehouseService {
         quantity: 1,
         fromStoreId: dto.action === 'RELEASE' ? dto.storeId : null,
         toStoreId: dto.action === 'RECEIVE' ? dto.storeId : null,
+        installationJobId: installation?.id,
+        installationAddress: installation?.address,
       });
     });
   }
@@ -903,6 +1471,12 @@ export class WarehouseService {
         throw new ConflictException(
           'This unit changed. Refresh before editing expected parts.',
         );
+      if (dto.expectedParts !== parts(stock) && await tx.factoryPickupRunOrder.findFirst({
+        where: { orderId: stock.unit.piece.estim.order!.id, activeSlot: 1 },
+      }))
+        throw new ConflictException(
+          'Finish the active factory pickup before changing expected parts. Then start a new pickup for any remaining parts.',
+        );
       return this.move(tx, stock, {
         type: 'PARTS',
         actorId: actor.id,
@@ -928,7 +1502,7 @@ export class WarehouseService {
         throw new ForbiddenException('You can undo only your own readings.');
       if (
         m.reversal ||
-        !['COLLECT', 'RECEIVE', 'RELEASE', 'TRANSFER', 'COUNT'].includes(m.type)
+        !['COLLECT', 'RECEIVE', 'RELEASE', 'INSTALLATION_DELIVERY', 'TRANSFER', 'COUNT'].includes(m.type)
       )
         throw new BadRequestException('This reading cannot be undone.');
       const stock = await this.load(tx, m.lineNumber);
@@ -976,6 +1550,8 @@ export class WarehouseService {
         fromStoreId: m.toStoreId,
         toStoreId: m.fromStoreId,
         reversalOfId: m.id,
+        installationJobId: m.installationJobId,
+        installationAddress: m.installationAddress,
       });
     });
   }
