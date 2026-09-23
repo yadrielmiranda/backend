@@ -23,8 +23,8 @@ describe('Technician authentication and default-deny authorization', () => {
     'receive',
     'deliverToInstallation',
     'currentPickup',
-    'pickupPo',
-    'startPickup',
+    'pickups',
+    'pickup',
     'pickupScan',
     'finishPickup',
   ])('allows the dedicated %s operation', (method) => {
@@ -34,6 +34,12 @@ describe('Technician authentication and default-deny authorization', () => {
   it.each(['inventory', 'scan', 'receive', 'deliverToInstallation', 'history', 'stores', 'counts', 'undo', 'transfer'])('denies the administrative warehouse %s endpoint', (method) => {
     expect(allowed(WarehouseController, method)).toBe(false);
   });
+  it.each(['pickups', 'pickup', 'pickupTechnicians', 'pickupPo', 'startPickup', 'assignPickup', 'pickupScan', 'finishPickup', 'reopenPickup'])(
+    'restricts warehouse pickup endpoint %s to admins', (method) => {
+      expect(allowed(WarehouseController, method, 'admin')).toBe(true);
+      for (const role of ['technician', 'operator', 'dealer', 'client']) expect(allowed(WarehouseController, method, role)).toBe(false);
+    },
+  );
   it('denies undecorated authenticated routes while preserving the existing roles', () => {
     class Existing { endpoint() {} }
     expect(allowed(Existing, 'endpoint')).toBe(false);

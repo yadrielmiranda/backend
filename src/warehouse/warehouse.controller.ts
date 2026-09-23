@@ -26,6 +26,8 @@ import {
   WarehouseStoreCreateDto,
   WarehouseStoreUpdateDto,
   FactoryPickupRunCreateDto,
+  FactoryPickupAssignmentsDto,
+  FactoryPickupRunCycleDto,
   FactoryPickupRunFinishDto,
   FactoryPickupRunScanDto,
 } from './warehouse.dto';
@@ -87,29 +89,59 @@ export class WarehouseController {
   ) {
     return this.warehouse.history(query, req.user as AuthUser);
   }
-  @Get('pickups/current') currentPickup(@Req() req: Request) {
+  @Get('pickups')
+  @Roles('admin')
+  pickups(@Query() query: Record<string, string>, @Req() req: Request) {
+    return this.warehouse.factoryPickups(query, req.user as AuthUser);
+  }
+  @Get('pickups/technicians')
+  @Roles('admin')
+  pickupTechnicians(@Req() req: Request) {
+    return this.warehouse.factoryPickupTechnicians(req.user as AuthUser);
+  }
+  @Get('pickups/current')
+  @Roles('admin')
+  currentPickup(@Req() req: Request) {
     return this.warehouse.factoryPickupCurrent(req.user as AuthUser);
   }
-  @Get('pickups/po') pickupPo(
+  @Get('pickups/po')
+  @Roles('admin')
+  pickupPo(
     @Query('poNumber') poNumber: string,
     @Req() req: Request,
   ) {
     return this.warehouse.factoryPickupPo(poNumber, req.user as AuthUser);
   }
-  @Post('pickups') startPickup(
+  @Get('pickups/:id')
+  @Roles('admin')
+  pickup(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.warehouse.factoryPickup(id, req.user as AuthUser);
+  }
+  @Patch('pickups/:id/technicians')
+  @Roles('admin')
+  assignPickup(@Param('id', ParseIntPipe) id: number, @Body() dto: FactoryPickupAssignmentsDto, @Req() req: Request) {
+    return this.warehouse.assignFactoryPickup(id, dto, req.user as AuthUser);
+  }
+  @Post('pickups')
+  @Roles('admin')
+  startPickup(
     @Body() dto: FactoryPickupRunCreateDto,
     @Req() req: Request,
   ) {
     return this.warehouse.startFactoryPickup(dto, req.user as AuthUser);
   }
-  @Post('pickups/:id/scan') pickupScan(
+  @Post('pickups/:id/scan')
+  @Roles('admin')
+  pickupScan(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: FactoryPickupRunScanDto,
     @Req() req: Request,
   ) {
     return this.warehouse.factoryPickupScan(id, dto, req.user as AuthUser);
   }
-  @Post('pickups/:id/finish') finishPickup(
+  @Post('pickups/:id/finish')
+  @Roles('admin')
+  finishPickup(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: FactoryPickupRunFinishDto,
     @Req() req: Request,
@@ -118,6 +150,11 @@ export class WarehouseController {
   }
   @Post('scan') scan(@Body() dto: WarehouseScanDto, @Req() req: Request) {
     return this.warehouse.scan(dto, req.user as AuthUser);
+  }
+  @Post('pickups/:id/reopen')
+  @Roles('admin')
+  reopenPickup(@Param('id', ParseIntPipe) id: number, @Body() dto: FactoryPickupRunCycleDto, @Req() req: Request) {
+    return this.warehouse.reopenFactoryPickup(id, dto, req.user as AuthUser);
   }
   @Post('movements/:id/undo') undo(
     @Param('id', ParseIntPipe) id: number,

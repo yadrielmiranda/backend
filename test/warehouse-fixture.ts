@@ -1,9 +1,12 @@
 // Almacén en memoria para verificar transacciones y el flujo HTTP sin datos reales.
 export function warehouseFixture() {
   const users = [
-    { id: 1, firstName: 'Admin', lastName: 'Test' },
-    { id: 2, firstName: 'Operator', lastName: 'Test' },
-    { id: 3, firstName: 'Technician', lastName: 'Test' },
+    { id: 1, firstName: 'Admin', lastName: 'Test', role: { name: 'admin' }, isActive: true, deletedAt: null },
+    { id: 2, firstName: 'Operator', lastName: 'Test', role: { name: 'operator' }, isActive: true, deletedAt: null },
+    { id: 3, firstName: 'Technician', lastName: 'Test', role: { name: 'technician' }, isActive: true, deletedAt: null },
+    { id: 4, firstName: 'Second', lastName: 'Technician', role: { name: 'technician' }, isActive: true, deletedAt: null },
+    { id: 5, firstName: 'Other', lastName: 'Admin', role: { name: 'admin' }, isActive: true, deletedAt: null },
+    { id: 6, firstName: 'Unassigned', lastName: 'Technician', role: { name: 'technician' }, isActive: true, deletedAt: null },
   ];
   const order = {
     id: 1,
@@ -61,7 +64,9 @@ export function warehouseFixture() {
     countLines: any[] = [],
     pickupRuns: any[] = [],
     pickupRunOrders: any[] = [],
-    pickupRunLines: any[] = [];
+    pickupRunLines: any[] = [],
+    pickupRunTechnicians: any[] = [],
+    pickupRunEvents: any[] = [];
   const clone = <T>(v: T): T => structuredClone(v);
   const stockView = (s) =>
     s
@@ -115,6 +120,13 @@ export function warehouseFixture() {
           order: clone(orders.find((value) => value.id === row.orderId) ?? null),
         }
       : null;
+  const pickupRunView = (row) => row ? {
+    ...row,
+    createdBy: users.find((u) => u.id === row.createdById),
+    closedBy: users.find((u) => u.id === row.closedById) ?? null,
+    technicians: pickupRunTechnicians.filter((a) => a.pickupRunId === row.id).map((a) => ({ ...a, technician: users.find((u) => u.id === a.technicianId) })),
+    events: pickupRunEvents.filter((e) => e.pickupRunId === row.id).map((e) => ({ ...e, actor: users.find((u) => u.id === e.actorId) })),
+  } : null;
   const pickupRunLineView = (row) =>
     row
       ? {
@@ -192,8 +204,8 @@ export function warehouseFixture() {
         return (
           row?.countId === value.countId && row?.lineNumber === value.lineNumber
         );
-      if (key === 'technicianId_activeSlot')
-        return row?.technicianId === value.technicianId && row?.activeSlot === value.activeSlot;
+      if (key === 'pickupRunId_technicianId')
+        return row?.pickupRunId === value.pickupRunId && row?.technicianId === value.technicianId;
       if (key === 'pickupRunId_orderId')
         return row?.pickupRunId === value.pickupRunId && row?.orderId === value.orderId;
       if (key === 'orderId_activeSlot')
@@ -227,7 +239,7 @@ export function warehouseFixture() {
     ) => {
       let result = rows.map(view).filter((r) => matches(r, where));
       if (orderBy) {
-        const [key, direction] = Object.entries(orderBy)[0];
+        const [key, direction] = Object.entries(Array.isArray(orderBy) ? orderBy[0] : orderBy)[0];
         result = [...result].sort(
           (a, b) =>
             (a[key] < b[key] ? -1 : a[key] > b[key] ? 1 : 0) *
@@ -280,6 +292,11 @@ export function warehouseFixture() {
       selected.forEach((r) => change(r, data));
       return { count: selected.length };
     },
+    deleteMany: async ({ where }) => {
+      const selected = rows.filter((r) => matches(view(r), where));
+      for (const row of selected) rows.splice(rows.indexOf(row), 1);
+      return { count: selected.length };
+    },
     upsert: async ({ where, create, update }) => {
       let row = rows.find((r) => matches(view(r), where));
       if (row) change(row, update);
@@ -292,6 +309,7 @@ export function warehouseFixture() {
   });
   let queue: Promise<any> = Promise.resolve();
   const db: any = {
+    user: model(users, (u) => u ?? null, (d) => d),
     warehouseStore: model(stores, (s) => s ?? null, (d) => ({
       id: Math.max(0, ...stores.map((s) => s.id)) + 1, isActive: true, version: 0,
       createdAt: new Date(), updatedAt: new Date(), ...d,
@@ -342,9 +360,11 @@ export function warehouseFixture() {
       counted: 0,
       ...d,
     })),
-    factoryPickupRun: model(pickupRuns, (r) => r ?? null, (d) => ({
+    factoryPickupRun: model(pickupRuns, pickupRunView, (d) => ({
       id: pickupRuns.length + 1,
       status: 'ACTIVE',
+      cycle: 0,
+      closedById: null,
       activeSlot: 1,
       startedAt: new Date(),
       finishedAt: null,
@@ -364,6 +384,10 @@ export function warehouseFixture() {
       addedAt: new Date(),
       ...d,
     })),
+    factoryPickupRunTechnician: model(pickupRunTechnicians, (r) => r ?? null, (d) => ({ assignedAt: new Date(), ...d })),
+    factoryPickupRunEvent: model(pickupRunEvents, (r) => r ?? null, (d) => ({
+      id: pickupRunEvents.length + 1, partialReason: null, note: null, createdAt: new Date(), ...d,
+    })),
     order: {
       findUnique: async ({ where }) => clone(orders.find((value) => matches(value, where)) ?? null),
     },
@@ -372,7 +396,7 @@ export function warehouseFixture() {
     $queryRaw: async () => [],
     $transaction: (callback) => {
       const result = queue.then(async () => {
-        const lists = [stocks, movements, counts, countLines, stores, balances, pickupRuns, pickupRunOrders, pickupRunLines],
+        const lists = [stocks, movements, counts, countLines, stores, balances, pickupRuns, pickupRunOrders, pickupRunLines, pickupRunTechnicians, pickupRunEvents],
           before = lists.map(clone);
         try {
           return await callback(db);
@@ -389,6 +413,6 @@ export function warehouseFixture() {
   db.warehouseCountLine.fields = { expected: { _ref: 'expected' } };
   return {
     db, stocks, movements, counts, countLines, pieces, order, orders, stores, balances,
-    pickupRuns, pickupRunOrders, pickupRunLines,
+    pickupRuns, pickupRunOrders, pickupRunLines, pickupRunTechnicians, pickupRunEvents, users,
   };
 }

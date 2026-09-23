@@ -33,7 +33,7 @@ function fixture() {
   const item = (barcode = door, quantity = 1) => ({ barcode, quantity, version: stock(barcode).version });
   const dto = (items = [item()]) => ({ ...request(), installationJobId: job.id, installationAddress: address, items });
   const collect = async (quantity = 1, barcode = door) => {
-    pickupId ??= (await service.startFactoryPickup({ poNumbers: ['281374'] }, tech)).id;
+    pickupId ??= (await service.startFactoryPickup({ poNumbers: ['281374'], technicianIds: [3] }, admin)).id;
     for (let i = 0; i < quantity; i++) await service.factoryPickupScan(pickupId, { ...request(), barcode }, tech);
   };
   const snapshot = () => structuredClone({ stocks: f.stocks, movements: f.movements, balances: f.balances });

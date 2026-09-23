@@ -1,6 +1,7 @@
 import {
   ArrayMaxSize,
   ArrayMinSize,
+  ArrayUnique,
   IsArray,
   IsBoolean,
   IsIn,
@@ -47,7 +48,13 @@ export class WarehouseInstallationDeliveryDto extends WarehouseRequestDto {
   items: WarehouseReceiptItemDto[];
 }
 
-export class FactoryPickupRunCreateDto {
+export class FactoryPickupAssignmentsDto {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50) @ArrayUnique()
+  @IsInt({ each: true }) @Min(1, { each: true })
+  technicianIds: number[];
+}
+
+export class FactoryPickupRunCreateDto extends FactoryPickupAssignmentsDto {
   @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50)
   @IsString({ each: true })
   poNumbers: string[];
@@ -58,7 +65,11 @@ export class FactoryPickupRunScanDto extends WarehouseRequestDto {
   @IsOptional() @IsBoolean() addPo?: boolean;
 }
 
-export class FactoryPickupRunFinishDto {
+export class FactoryPickupRunCycleDto {
+  @IsInt() @Min(0) cycle: number;
+}
+
+export class FactoryPickupRunFinishDto extends FactoryPickupRunCycleDto {
   @IsOptional()
   @IsIn([
     'NOT_READY_AT_FACTORY',

@@ -112,28 +112,31 @@ model User {
   smsConsentEvents                  SmsConsentEvent[]
   registrationConsent               RegistrationConsent?
   platformTermsAcceptances          PlatformTermsAcceptance[]
-  platformTermsPublished            PlatformTermsVersion[]      @relation("PlatformTermsPublisher")
+  platformTermsPublished            PlatformTermsVersion[]       @relation("PlatformTermsPublisher")
   sessions                          Session[]
   passwordResetTokens               PasswordResetToken[]
   dealerContracts                   DealerContract[]
   branding                          Branding?
   warehouseMovements                WarehouseMovement[]
-  factoryPickupRuns                 FactoryPickupRun[]          @relation("FactoryPickupRunTechnician")
-  warehouseCountsStarted            WarehouseCount[]            @relation("WarehouseCountStarted")
-  warehouseCountsClosed             WarehouseCount[]            @relation("WarehouseCountClosed")
+  factoryPickupRunsCreated          FactoryPickupRun[]           @relation("FactoryPickupRunCreator")
+  factoryPickupRunsClosed           FactoryPickupRun[]           @relation("FactoryPickupRunCloser")
+  factoryPickupAssignments          FactoryPickupRunTechnician[]
+  factoryPickupEvents               FactoryPickupRunEvent[]
+  warehouseCountsStarted            WarehouseCount[]             @relation("WarehouseCountStarted")
+  warehouseCountsClosed             WarehouseCount[]             @relation("WarehouseCountClosed")
   eventLogs                         EventLog[]
-  installationRequests              InstallationJob[]           @relation("InstallationRequestedBy")
-  acceptedDealerMeasurements        InstallationJob[]           @relation("DealerMeasurementsAcceptedBy")
-  installationMeasurements          InstallationMeasurement[]   @relation("InstallationMeasuredBy")
-  installationQuotesCreated         InstallationQuote[]         @relation("InstallationQuoteCreatedBy")
+  installationRequests              InstallationJob[]            @relation("InstallationRequestedBy")
+  acceptedDealerMeasurements        InstallationJob[]            @relation("DealerMeasurementsAcceptedBy")
+  installationMeasurements          InstallationMeasurement[]    @relation("InstallationMeasuredBy")
+  installationQuotesCreated         InstallationQuote[]          @relation("InstallationQuoteCreatedBy")
   installationQuoteApprovals        InstallationQuoteApproval[]
-  estimateRevisionsCreated          EstimateRevision[]          @relation("EstimateRevisionCreatedBy")
-  installationAppointmentsProposed  InstallationAppointment[]   @relation("InstallationAppointmentProposedBy")
-  installationAppointmentsResponded InstallationAppointment[]   @relation("InstallationAppointmentRespondedBy")
-  orderExtraChargesCreated          OrderExtraCharge[]          @relation("OrderExtraChargeCreatedBy")
-  orderExtraChargesResponded        OrderExtraCharge[]          @relation("OrderExtraChargeRespondedBy")
-  orderDeliveriesCreated            OrderDelivery[]             @relation("OrderDeliveryCreatedBy")
-  manualPaymentsRecorded            Payment[]                   @relation("PaymentRecordedBy")
+  estimateRevisionsCreated          EstimateRevision[]           @relation("EstimateRevisionCreatedBy")
+  installationAppointmentsProposed  InstallationAppointment[]    @relation("InstallationAppointmentProposedBy")
+  installationAppointmentsResponded InstallationAppointment[]    @relation("InstallationAppointmentRespondedBy")
+  orderExtraChargesCreated          OrderExtraCharge[]           @relation("OrderExtraChargeCreatedBy")
+  orderExtraChargesResponded        OrderExtraCharge[]           @relation("OrderExtraChargeRespondedBy")
+  orderDeliveriesCreated            OrderDelivery[]              @relation("OrderDeliveryCreatedBy")
+  manualPaymentsRecorded            Payment[]                    @relation("PaymentRecordedBy")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1480,24 +1483,61 @@ enum FactoryPickupPartialReason {
 
 // Una visita a fábrica puede agrupar varios PO y recibirlos en cualquier orden.
 model FactoryPickupRun {
-  id            Int                         @id @default(autoincrement())
-  technicianId  Int
-  technician    User                        @relation("FactoryPickupRunTechnician", fields: [technicianId], references: [id], onDelete: Restrict)
-  status        FactoryPickupRunStatus      @default(ACTIVE)
-  activeSlot    Int?                        @default(1)
-  startedAt     DateTime                    @default(now())
+  id            Int                          @id @default(autoincrement())
+  // Conserva la columna histórica: ahora identifica al creador, no al único recolector.
+  createdById   Int                          @map("technicianId")
+  createdBy     User                         @relation("FactoryPickupRunCreator", fields: [createdById], references: [id], onDelete: Restrict, map: "factory_pickup_runs_technicianId_fkey")
+  closedById    Int?
+  closedBy      User?                        @relation("FactoryPickupRunCloser", fields: [closedById], references: [id], onDelete: Restrict)
+  status        FactoryPickupRunStatus       @default(ACTIVE)
+  cycle         Int                          @default(0)
+  activeSlot    Int?                         @default(1)
+  startedAt     DateTime                     @default(now())
   finishedAt    DateTime?
+  partialReason FactoryPickupPartialReason?
+  note          String?                      @db.VarChar(500)
+  createdAt     DateTime                     @default(now())
+  updatedAt     DateTime                     @updatedAt
+  orders        FactoryPickupRunOrder[]
+  lines         FactoryPickupRunLine[]
+  movements     WarehouseMovement[]          @relation("WarehouseMovementPickupRun")
+  technicians   FactoryPickupRunTechnician[]
+  events        FactoryPickupRunEvent[]
+
+  @@index([createdById], map: "factory_pickup_runs_createdById_idx")
+  @@index([closedById])
+  @@index([status, startedAt])
+  @@map("factory_pickup_runs")
+}
+
+model FactoryPickupRunTechnician {
+  pickupRunId  Int
+  pickupRun    FactoryPickupRun @relation(fields: [pickupRunId], references: [id], onDelete: Restrict)
+  technicianId Int
+  technician   User             @relation(fields: [technicianId], references: [id], onDelete: Restrict)
+  assignedAt   DateTime         @default(now())
+
+  @@id([pickupRunId, technicianId])
+  @@index([technicianId, pickupRunId])
+  @@map("factory_pickup_run_technicians")
+}
+
+// Cada cierre y reapertura conserva su autor y los detalles de ese momento.
+model FactoryPickupRunEvent {
+  id            Int                         @id @default(autoincrement())
+  pickupRunId   Int
+  pickupRun     FactoryPickupRun            @relation(fields: [pickupRunId], references: [id], onDelete: Restrict)
+  actorId       Int
+  actor         User                        @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  status        FactoryPickupRunStatus
+  cycle         Int
   partialReason FactoryPickupPartialReason?
   note          String?                     @db.VarChar(500)
   createdAt     DateTime                    @default(now())
-  updatedAt     DateTime                    @updatedAt
-  orders        FactoryPickupRunOrder[]
-  lines         FactoryPickupRunLine[]
-  movements     WarehouseMovement[]         @relation("WarehouseMovementPickupRun")
 
-  @@unique([technicianId, activeSlot])
-  @@index([status, startedAt])
-  @@map("factory_pickup_runs")
+  @@unique([pickupRunId, cycle, status])
+  @@index([actorId])
+  @@map("factory_pickup_run_events")
 }
 
 // Un mismo PO no puede estar simultáneamente en dos recogidas activas.

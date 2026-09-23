@@ -31,6 +31,8 @@ import {
   WarehouseStoreCreateDto,
   WarehouseStoreUpdateDto,
   FactoryPickupRunCreateDto,
+  FactoryPickupAssignmentsDto,
+  FactoryPickupRunCycleDto,
   FactoryPickupRunScanDto,
   FactoryPickupRunFinishDto,
 } from './warehouse.dto';
@@ -308,7 +310,11 @@ export class WarehouseService {
   }
   private factoryPickupStaff(actor: AuthUser) {
     if (actor?.role?.name === 'technician') return;
-    this.staff(actor);
+    this.staff(actor, true);
+  }
+
+  private pickupAccess(actor: AuthUser): Prisma.FactoryPickupRunWhereInput {
+    return actor.role.name === 'admin' ? {} : { technicians: { some: { technicianId: actor.id } } };
   }
 
   // Proyección mínima: sin cliente, precios, enlaces a órdenes o inventario general.
@@ -330,11 +336,13 @@ export class WarehouseService {
         where: { isActive: true }, select: storeSelect, orderBy: { name: 'asc' },
       });
       const count = await tx.warehouseCount.findUnique({ where: { activeSlot: 1 }, select: { id: true } });
-      const activePickup = await tx.factoryPickupRun.findUnique({
-        where: { technicianId_activeSlot: { technicianId: actor.id, activeSlot: 1 } },
+      const where = { ...this.pickupAccess(actor), status: 'ACTIVE' as const };
+      const activePickup = await tx.factoryPickupRun.findFirst({
+        where, orderBy: { id: 'asc' },
         select: { id: true, startedAt: true },
       });
-      return { stores, countOpen: Boolean(count), activePickup };
+      const activePickupCount = await tx.factoryPickupRun.count({ where });
+      return { stores, countOpen: Boolean(count), activePickup, activePickupCount };
     });
   }
 
@@ -460,21 +468,25 @@ export class WarehouseService {
   private async pickupRunSummary(
     tx: Tx,
     pickupRunId: number,
-    collectorId: number,
+    actor: AuthUser,
   ) {
-    const run = await tx.factoryPickupRun.findUnique({
-      where: { id: pickupRunId },
+    const run = await tx.factoryPickupRun.findFirst({
+      where: { id: pickupRunId, ...this.pickupAccess(actor) },
       select: {
         id: true,
-        technicianId: true,
+        createdBy: { select: actorSelect },
+        closedBy: { select: actorSelect },
+        technicians: { select: { technician: { select: actorSelect } }, orderBy: { technicianId: 'asc' } },
         status: true,
+        cycle: true,
+        events: { include: { actor: { select: actorSelect } }, orderBy: { id: 'asc' } },
         startedAt: true,
         finishedAt: true,
         partialReason: true,
         note: true,
       },
     });
-    if (!run || run.technicianId !== collectorId)
+    if (!run)
       throw new NotFoundException('Factory pickup not found.');
 
     const [orders, lines, movements] = await Promise.all([
@@ -491,7 +503,8 @@ export class WarehouseService {
       tx.warehouseMovement.findMany({
         // Una lectura COLLECT revertida deja de contar para el progreso del pickup.
         where: { pickupRunId, type: 'COLLECT', reversal: null },
-        select: { lineNumber: true, quantity: true },
+        select: { lineNumber: true, quantity: true, actor: { select: actorSelect }, createdAt: true },
+        orderBy: { id: 'asc' },
       }),
     ]);
 
@@ -557,8 +570,28 @@ export class WarehouseService {
       0,
     );
 
+    const collectors = new Map<number, { id: number; name: string; parts: number; firstScanAt: Date; lastScanAt: Date }>();
+    for (const movement of movements) {
+      const collector = collectors.get(movement.actor.id) ?? {
+        id: movement.actor.id, name: name(movement.actor), parts: 0,
+        firstScanAt: movement.createdAt, lastScanAt: movement.createdAt,
+      };
+      collector.parts += movement.quantity;
+      collector.lastScanAt = movement.createdAt;
+      collectors.set(collector.id, collector);
+    }
+
     return {
       id: run.id,
+      cycle: run.cycle,
+      events: run.events.map((event) => ({
+        id: event.id, status: event.status, cycle: event.cycle, createdAt: event.createdAt,
+        actor: { id: event.actor.id, name: name(event.actor) }, partialReason: event.partialReason, note: event.note,
+      })),
+      createdBy: { id: run.createdBy.id, name: name(run.createdBy) },
+      closedBy: run.closedBy ? { id: run.closedBy.id, name: name(run.closedBy) } : null,
+      technicians: run.technicians.map(({ technician }) => ({ id: technician.id, name: name(technician) })),
+      collectors: [...collectors.values()],
       status: run.status,
       startedAt: run.startedAt,
       finishedAt: run.finishedAt,
@@ -576,18 +609,75 @@ export class WarehouseService {
   async factoryPickupCurrent(actor: AuthUser) {
     this.factoryPickupStaff(actor);
     return this.prisma.$transaction(async (tx) => {
-      const run = await tx.factoryPickupRun.findUnique({
-        where: {
-          technicianId_activeSlot: { technicianId: actor.id, activeSlot: 1 },
-        },
+      const run = await tx.factoryPickupRun.findFirst({
+        where: { ...this.pickupAccess(actor), status: 'ACTIVE' },
+        orderBy: { id: 'asc' },
         select: { id: true },
       });
-      return run ? this.pickupRunSummary(tx, run.id, actor.id) : null;
+      return run ? this.pickupRunSummary(tx, run.id, actor) : null;
+    });
+  }
+
+  async factoryPickups(query: Query, actor: AuthUser) {
+    this.factoryPickupStaff(actor);
+    const p = paging(query);
+    if (p.pageSize > 50) throw new BadRequestException('Pickup pages are limited to 50 items.');
+    const where: Prisma.FactoryPickupRunWhereInput = {
+      ...this.pickupAccess(actor),
+      status: query.status === 'CLOSED' ? { in: ['COMPLETED', 'PARTIAL'] } : 'ACTIVE',
+    };
+    return this.prisma.$transaction(async (tx) => {
+      const runs = await tx.factoryPickupRun.findMany({
+        where, select: { id: true }, orderBy: { id: 'desc' }, skip: p.skip, take: Math.min(p.take, 50),
+      });
+      const items = await Promise.all(runs.map(async (run) => {
+        const { lines: _lines, ...summary } = await this.pickupRunSummary(tx, run.id, actor);
+        return summary;
+      }));
+      return { items, total: await tx.factoryPickupRun.count({ where }), page: p.page, pageSize: Math.min(p.take, 50) };
+    });
+  }
+
+  async factoryPickup(id: number, actor: AuthUser) {
+    this.factoryPickupStaff(actor);
+    return this.prisma.$transaction((tx) => this.pickupRunSummary(tx, id, actor));
+  }
+
+  async factoryPickupTechnicians(actor: AuthUser) {
+    this.staff(actor, true);
+    const technicians = await this.prisma.user.findMany({
+      where: { role: { name: 'technician' }, isActive: true, deletedAt: null },
+      select: actorSelect, orderBy: [{ firstName: 'asc' }, { id: 'asc' }],
+    });
+    return technicians.map((user) => ({ id: user.id, name: name(user) }));
+  }
+
+  private async validatePickupTechnicians(tx: Tx, ids: number[]) {
+    if (!Array.isArray(ids) || !ids.length || ids.length > 50 ||
+        ids.some((id) => !Number.isSafeInteger(id) || id < 1) || new Set(ids).size !== ids.length)
+      throw new BadRequestException('Assign between 1 and 50 different technicians.');
+    const count = await tx.user.count({
+      where: { id: { in: ids }, role: { name: 'technician' }, isActive: true, deletedAt: null },
+    });
+    if (count !== ids.length)
+      throw new BadRequestException('Assign active technician accounts only. Refresh the technician list.');
+  }
+
+  async assignFactoryPickup(id: number, dto: FactoryPickupAssignmentsDto, actor: AuthUser) {
+    this.staff(actor, true);
+    return this.transaction(async (tx) => {
+      await this.lockPickupRun(tx, id, actor);
+      await this.validatePickupTechnicians(tx, dto.technicianIds);
+      await tx.factoryPickupRunTechnician.deleteMany({ where: { pickupRunId: id } });
+      await tx.factoryPickupRunTechnician.createMany({
+        data: dto.technicianIds.map((technicianId) => ({ pickupRunId: id, technicianId })),
+      });
+      return this.pickupRunSummary(tx, id, actor);
     });
   }
 
   async factoryPickupPo(poNumber: string, actor: AuthUser) {
-    this.factoryPickupStaff(actor);
+    this.staff(actor, true);
     return this.prisma.$transaction(async (tx) => {
       const snapshot = await this.pickupOrderSnapshot(tx, poNumber);
       return {
@@ -601,7 +691,7 @@ export class WarehouseService {
   }
 
   async startFactoryPickup(dto: FactoryPickupRunCreateDto, actor: AuthUser) {
-    this.factoryPickupStaff(actor);
+    this.staff(actor, true);
     if (!Array.isArray(dto.poNumbers) || !dto.poNumbers.length || dto.poNumbers.length > 50)
       throw new BadRequestException('Add between 1 and 50 POs to this pickup.');
     const poNumbers = dto.poNumbers.map(pickupPoNumber);
@@ -610,30 +700,24 @@ export class WarehouseService {
 
     return this.transaction(async (tx) => {
       await this.noCount(tx);
-      const active = await tx.factoryPickupRun.findUnique({
-        where: {
-          technicianId_activeSlot: { technicianId: actor.id, activeSlot: 1 },
-        },
+      await this.validatePickupTechnicians(tx, dto.technicianIds);
+      const run = await tx.factoryPickupRun.create({
+        data: { createdById: actor.id },
         select: { id: true },
       });
-      if (active)
-        throw new ConflictException(
-          'You already have an active factory pickup. Resume it before starting another.',
-        );
-      const run = await tx.factoryPickupRun.create({
-        data: { technicianId: actor.id },
-        select: { id: true },
+      await tx.factoryPickupRunTechnician.createMany({
+        data: dto.technicianIds.map((technicianId) => ({ pickupRunId: run.id, technicianId })),
       });
       for (const poNumber of poNumbers)
         await this.addPickupOrder(tx, run.id, poNumber, false);
-      return this.pickupRunSummary(tx, run.id, actor.id);
+      return this.pickupRunSummary(tx, run.id, actor);
     }, 60000);
   }
 
   private async lockPickupRun(tx: Tx, pickupRunId: number, actor: AuthUser, requireActive = true) {
     await tx.$queryRaw`SELECT id FROM factory_pickup_runs WHERE id = ${pickupRunId} FOR UPDATE`;
-    const run = await tx.factoryPickupRun.findUnique({ where: { id: pickupRunId } });
-    if (!run || run.technicianId !== actor.id)
+    const run = await tx.factoryPickupRun.findFirst({ where: { id: pickupRunId, ...this.pickupAccess(actor) } });
+    if (!run)
       throw new NotFoundException('Factory pickup not found.');
     if (requireActive && (run.status !== 'ACTIVE' || run.activeSlot !== 1))
       throw new ConflictException('This factory pickup is already closed.');
@@ -655,7 +739,7 @@ export class WarehouseService {
     ]);
 
     return this.transaction(async (tx) => {
-      await this.lockPickupRun(tx, pickupRunId, actor);
+      const run = await this.lockPickupRun(tx, pickupRunId, actor, false);
       const replay = await this.replay(tx, dto.requestKey, requestHash);
       if (replay)
         return {
@@ -669,8 +753,11 @@ export class WarehouseService {
             toStore: replay.movement.toStore,
           },
           replayed: true,
-          pickup: await this.pickupRunSummary(tx, pickupRunId, actor.id),
+          pickup: await this.pickupRunSummary(tx, pickupRunId, actor),
         };
+      // Permite recuperar una respuesta perdida después del cierre, sin aceptar lecturas nuevas.
+      if (run.status !== 'ACTIVE' || run.activeSlot !== 1)
+        throw new ConflictException('This factory pickup is already closed.');
       await this.noCount(tx);
       const stock = await this.load(tx, lineNumber);
       const order = stock.unit.piece.estim.order!;
@@ -772,7 +859,7 @@ export class WarehouseService {
           toStore: result.movement.toStore,
         },
         replayed: result.replayed,
-        pickup: await this.pickupRunSummary(tx, pickupRunId, actor.id),
+        pickup: await this.pickupRunSummary(tx, pickupRunId, actor),
       };
     }, 60000);
   }
@@ -785,6 +872,8 @@ export class WarehouseService {
     this.factoryPickupStaff(actor);
     return this.transaction(async (tx) => {
       const run = await this.lockPickupRun(tx, pickupRunId, actor, false);
+      if (dto.cycle !== run.cycle)
+        throw new ConflictException('This pickup was reopened. Refresh it before closing again.');
       const note = dto.note?.trim() || null;
       if (note && note.length > 500)
         throw new BadRequestException('Pickup note must be 500 characters or fewer.');
@@ -793,9 +882,9 @@ export class WarehouseService {
         const partialReason = run.status === 'PARTIAL' ? dto.partialReason ?? null : null;
         if (run.note !== note || run.partialReason !== partialReason)
           throw new ConflictException('This factory pickup was already closed with different details.');
-        return this.pickupRunSummary(tx, pickupRunId, actor.id);
+        return this.pickupRunSummary(tx, pickupRunId, actor);
       }
-      const summary = await this.pickupRunSummary(tx, pickupRunId, actor.id);
+      const summary = await this.pickupRunSummary(tx, pickupRunId, actor);
       const partial = summary.remainingParts > 0;
       if (partial && !dto.partialReason)
         throw new BadRequestException(
@@ -807,6 +896,7 @@ export class WarehouseService {
           status: partial ? 'PARTIAL' : 'COMPLETED',
           activeSlot: null,
           finishedAt: new Date(),
+          closedById: actor.id,
           partialReason: partial ? dto.partialReason : null,
           note,
         },
@@ -815,7 +905,44 @@ export class WarehouseService {
         where: { pickupRunId },
         data: { activeSlot: null },
       });
-      return this.pickupRunSummary(tx, pickupRunId, actor.id);
+      await tx.factoryPickupRunEvent.create({ data: {
+        pickupRunId, actorId: actor.id, cycle: run.cycle,
+        status: partial ? 'PARTIAL' : 'COMPLETED', partialReason: partial ? dto.partialReason : null, note,
+      } });
+      return this.pickupRunSummary(tx, pickupRunId, actor);
+    });
+  }
+
+  async reopenFactoryPickup(id: number, dto: FactoryPickupRunCycleDto, actor: AuthUser) {
+    this.staff(actor, true);
+    return this.transaction(async (tx) => {
+      const run = await this.lockPickupRun(tx, id, actor, false);
+      // La repetición de una reapertura no crea otro ciclo ni afecta al trabajo posterior.
+      if (run.status === 'ACTIVE' && run.cycle === dto.cycle + 1)
+        return this.pickupRunSummary(tx, id, actor);
+      if (run.status === 'ACTIVE' || run.cycle !== dto.cycle)
+        throw new ConflictException('This pickup has changed. Refresh it before reopening.');
+      await this.noCount(tx);
+      const summary = await this.pickupRunSummary(tx, id, actor);
+      const other = await tx.factoryPickupRunOrder.findFirst({
+        where: { orderId: { in: summary.orders.map((order) => order.orderId) }, activeSlot: 1, pickupRunId: { not: id } },
+        include: { order: { select: { poNumber: true } } },
+      });
+      if (other)
+        throw new ConflictException(`PO ${other.order.poNumber} is already in active pickup #${other.pickupRunId}. Close that pickup before reopening this one.`);
+      for (const line of summary.lines) {
+        const stock = await this.load(tx, line.lineNumber);
+        const available = (parts(stock) ?? 0) - stock.inTransit - stock.onHand - stock.released;
+        if (line.remaining > Math.max(0, available))
+          throw new ConflictException('Some remaining parts have already been collected or received outside this pickup. Create a new pickup for the parts still at the factory.');
+      }
+      await tx.factoryPickupRunOrder.updateMany({ where: { pickupRunId: id }, data: { activeSlot: 1 } });
+      await tx.factoryPickupRun.update({ where: { id }, data: {
+        status: 'ACTIVE', activeSlot: 1, cycle: { increment: 1 }, finishedAt: null,
+        closedById: null, partialReason: null, note: null,
+      } });
+      await tx.factoryPickupRunEvent.create({ data: { pickupRunId: id, actorId: actor.id, cycle: run.cycle + 1, status: 'ACTIVE' } });
+      return this.pickupRunSummary(tx, id, actor);
     });
   }
 
@@ -1415,6 +1542,11 @@ export class WarehouseService {
       let installation: ReturnType<typeof installationDestination> = null;
       if (dto.action === 'COLLECT') {
         assertCompanyFactoryCollection(stock.unit.piece.estim.order!);
+        const activePickup = await tx.factoryPickupRunOrder.findFirst({
+          where: { orderId: stock.unit.piece.estim.order!.id, activeSlot: 1 }, select: { pickupRunId: true },
+        });
+        if (activePickup)
+          throw new ConflictException('Open the assigned factory pickup to collect parts for this PO.');
         deltas.transitDelta = 1;
       }
       else if (dto.action === 'RECEIVE') {
@@ -1505,6 +1637,8 @@ export class WarehouseService {
         !['COLLECT', 'RECEIVE', 'RELEASE', 'INSTALLATION_DELIVERY', 'TRANSFER', 'COUNT'].includes(m.type)
       )
         throw new BadRequestException('This reading cannot be undone.');
+      if (m.type === 'COLLECT' && m.pickupRunId)
+        await this.lockPickupRun(tx, m.pickupRunId, actor);
       const stock = await this.load(tx, m.lineNumber);
       if (m.type === 'COUNT') {
         await this.openCount(tx, m.countId!);

@@ -12,7 +12,6 @@ import type { Request } from 'express';
 import { Roles } from '@/auth/roles.decorator';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import {
-  FactoryPickupRunCreateDto,
   FactoryPickupRunFinishDto,
   FactoryPickupRunScanDto,
   WarehouseReceiptDto,
@@ -39,18 +38,12 @@ export class TechnicianController {
     return this.warehouse.factoryPickupCurrent(req.user as AuthUser);
   }
 
-  @Get('pickups/po') pickupPo(
-    @Query('poNumber') poNumber: string,
-    @Req() req: Request,
-  ) {
-    return this.warehouse.factoryPickupPo(poNumber, req.user as AuthUser);
+  @Get('pickups') pickups(@Query() query: Record<string, string>, @Req() req: Request) {
+    return this.warehouse.factoryPickups(query, req.user as AuthUser);
   }
 
-  @Post('pickups') startPickup(
-    @Body() dto: FactoryPickupRunCreateDto,
-    @Req() req: Request,
-  ) {
-    return this.warehouse.startFactoryPickup(dto, req.user as AuthUser);
+  @Get('pickups/:id') pickup(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.warehouse.factoryPickup(id, req.user as AuthUser);
   }
 
   @Post('pickups/:id/scan') pickupScan(

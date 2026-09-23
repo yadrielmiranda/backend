@@ -15,7 +15,7 @@ function fixture() {
   return { ...f, service: new WarehouseService(f.db) };
 }
 const startPickup = (f: ReturnType<typeof fixture>) =>
-  f.service.startFactoryPickup({ poNumbers: ['281374'] }, tech);
+  f.service.startFactoryPickup({ poNumbers: ['281374'], technicianIds: [3] }, admin);
 
 describe('Technician receiving scope', () => {
   it('collects in transit without choosing a store and retains the existing audit', async () => {
@@ -99,11 +99,11 @@ describe('Technician receiving scope', () => {
     ).rejects.toThrow('factory pickup');
     expect(f.movements).toHaveLength(0);
   });
-  it.each([['admin', admin], ['operator', operator]] as const)(
+  it.each([['admin', admin]] as const)(
     'allows %s to use the same factory pickup run and keeps the actor audit',
     async (_role, actor) => {
       const f = fixture();
-      const pickup = await f.service.startFactoryPickup({ poNumbers: ['281374'] }, actor);
+      const pickup = await f.service.startFactoryPickup({ poNumbers: ['281374'], technicianIds: [3] }, actor);
       const saved = await f.service.factoryPickupScan(
         pickup.id,
         { ...request(), barcode: door },
@@ -115,16 +115,16 @@ describe('Technician receiving scope', () => {
       expect((await f.service.factoryPickupCurrent(actor))?.id).toBe(pickup.id);
     },
   );
-  it.each(['dealer', 'client'])('does not allow a %s to start a factory pickup run', async (name) => {
+  it.each(['technician', 'operator', 'dealer', 'client'])('does not allow a %s to start a factory pickup run', async (name) => {
     const f = fixture(), actor: any = { id: 20, role: { name } };
     await expect(
-      f.service.startFactoryPickup({ poNumbers: ['281374'] }, actor),
+      f.service.startFactoryPickup({ poNumbers: ['281374'], technicianIds: [3] }, actor),
     ).rejects.toThrow(ForbiddenException);
     expect(f.movements).toHaveLength(0);
   });
   it('keeps warehouse undo compatible with an active admin pickup run', async () => {
     const f = fixture();
-    const pickup = await f.service.startFactoryPickup({ poNumbers: ['281374'] }, admin);
+    const pickup = await f.service.startFactoryPickup({ poNumbers: ['281374'], technicianIds: [3] }, admin);
     const saved = await f.service.factoryPickupScan(
       pickup.id,
       { ...request(), barcode: door },
@@ -153,7 +153,7 @@ describe('Technician receiving scope', () => {
     await expect(f.service.setParts(fixed, dto, admin)).rejects.toThrow('Finish the active factory pickup');
     expect(f.stocks[3].expectedParts).toBe(1);
     expect(f.movements).toHaveLength(0);
-    await f.service.finishFactoryPickup(pickup.id, { partialReason: 'NOT_READY_AT_FACTORY' }, tech);
+    await f.service.finishFactoryPickup(pickup.id, { cycle: 0, partialReason: 'NOT_READY_AT_FACTORY' }, tech);
     await f.service.setParts(fixed, dto, admin);
     const next = await startPickup(f);
     expect(next.lines.find(line => line.lineNumber === fixed)?.targetParts).toBe(2);
@@ -194,10 +194,10 @@ describe('Technician receiving scope', () => {
   it('finishes a partial pickup explicitly and carries only the remaining factory parts into a later run', async () => {
     const f = fixture(), pickup = await startPickup(f);
     await f.service.factoryPickupScan(pickup.id, { ...request(), barcode: door }, tech);
-    await expect(f.service.finishFactoryPickup(pickup.id, {}, tech)).rejects.toThrow('Choose why');
+    await expect(f.service.finishFactoryPickup(pickup.id, { cycle: 0 }, tech)).rejects.toThrow('Choose why');
     const closed = await f.service.finishFactoryPickup(
       pickup.id,
-      { partialReason: 'NOT_READY_AT_FACTORY', note: 'Remaining parts were not ready.' },
+      { cycle: 0, partialReason: 'NOT_READY_AT_FACTORY', note: 'Remaining parts were not ready.' },
       tech,
     );
     expect(closed).toMatchObject({ status: 'PARTIAL', collectedParts: 1, remainingParts: 8 });
@@ -220,17 +220,17 @@ describe('Technician receiving scope', () => {
     const f = fixture(); f.stocks.splice(0, 3);
     const pickup = await startPickup(f);
     await f.service.factoryPickupScan(pickup.id, { ...request(), barcode: fixed }, tech);
-    const closed = await f.service.finishFactoryPickup(pickup.id, { note: 'All loaded' }, tech);
-    const again = await f.service.finishFactoryPickup(pickup.id, { note: ' All loaded ' }, tech);
+    const closed = await f.service.finishFactoryPickup(pickup.id, { cycle: 0, note: 'All loaded' }, tech);
+    const again = await f.service.finishFactoryPickup(pickup.id, { cycle: 0, note: ' All loaded ' }, tech);
     expect(again).toEqual(closed);
     expect(again.status).toBe('COMPLETED');
     expect(f.movements).toHaveLength(1);
-    await expect(f.service.finishFactoryPickup(pickup.id, { note: 'Different' }, tech)).rejects.toThrow('different details');
-    await expect(f.service.finishFactoryPickup(pickup.id, { note: 'All loaded' }, admin)).rejects.toThrow('not found');
+    await expect(f.service.finishFactoryPickup(pickup.id, { cycle: 0, note: 'Different' }, tech)).rejects.toThrow('different details');
+    expect(await f.service.finishFactoryPickup(pickup.id, { cycle: 0, note: 'All loaded' }, admin)).toEqual(closed);
   });
   it('replays a partial finish after a new pickup starts without freeing its PO', async () => {
     const f = fixture(), pickup = await startPickup(f);
-    const dto = { partialReason: 'NOT_READY_AT_FACTORY' as const, note: 'Return tomorrow' };
+    const dto = { cycle: 0, partialReason: 'NOT_READY_AT_FACTORY' as const, note: 'Return tomorrow' };
     const [first, retry] = await Promise.all([
       f.service.finishFactoryPickup(pickup.id, dto, tech),
       f.service.finishFactoryPickup(pickup.id, dto, tech),
@@ -240,7 +240,7 @@ describe('Technician receiving scope', () => {
     expect(await f.service.finishFactoryPickup(pickup.id, dto, tech)).toEqual(first);
     expect((await f.service.factoryPickupCurrent(tech))?.id).toBe(next.id);
     expect(f.pickupRunOrders.find(row => row.pickupRunId === next.id)?.activeSlot).toBe(1);
-    await expect(f.service.finishFactoryPickup(pickup.id, { partialReason: 'OTHER', note: dto.note }, tech)).rejects.toThrow('different details');
+    await expect(f.service.finishFactoryPickup(pickup.id, { cycle: 0, partialReason: 'OTHER', note: dto.note }, tech)).rejects.toThrow('different details');
   });
   it.each([undefined, null, 0, 99])('rejects an unavailable receipt destination (%s)', async (storeId) => {
     const f = fixture();
