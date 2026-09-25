@@ -1,4 +1,5 @@
 import { PaymentPlansModule } from './payment-plans/payment-plans.module';
+import { EarningsPlansModule } from './earnings-plans/earnings-plans.module';
 import { ContractsModule } from './contracts/contracts.module';
 import { PlatformTermsModule } from './platform-terms/platform-terms.module';
 import { PlatformTermsGuard } from './platform-terms/platform-terms.guard';
@@ -84,6 +85,7 @@ import { SmsConsentModule } from './sms/sms-consent.module';
     BrandingsModule,
     PaymentsModule,
     PaymentPlansModule,
+    EarningsPlansModule,
     LogsModule,
     MuntinPatternsModule,
     MuntinTypesModule,

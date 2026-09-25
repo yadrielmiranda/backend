@@ -1,4 +1,5 @@
 import { decimalAmount, hasRefundHistory, paidPrincipal, remainingRefundBalance } from '@/payments/payment-accounting';
+import { buildDealerEarningsReport } from '@/common/dealer-earnings';
 import { assertScheduleMilestone, buildPaymentSchedule, getPaymentSchedule } from '@/payment-plans/payment-schedule';
 // @/orders/orders.service.ts
 import {
@@ -110,6 +111,7 @@ function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof or
   }
   return {
     ...order,
+    ...buildDealerEarningsReport(order.estimate, order),
     paymentAnchor,
     estimate: {
       ...estimate,
@@ -143,7 +145,7 @@ export class OrdersService {
     });
 
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
-    return { ...order, paymentSchedule: await getPaymentSchedule(this.prisma, order.idEst), estimate: { ...order.estimate, manualDiscountSummary: calculateEstimateDiscount(order.estimate) } };
+    return { ...order, ...buildDealerEarningsReport(order.estimate, order), paymentSchedule: await getPaymentSchedule(this.prisma, order.idEst), estimate: { ...order.estimate, manualDiscountSummary: calculateEstimateDiscount(order.estimate) } };
   }
 
   async findAllStatuses(): Promise<OrderStatus[]> {
@@ -722,7 +724,8 @@ export class OrdersService {
 
     const paymentSchedule = await getPaymentSchedule(this.prisma, order.idEst);
     const estimate = { ...order.estimate, manualDiscountSummary: calculateEstimateDiscount(order.estimate) };
-    if (roleName === 'admin' || roleName === 'operator') return { ...order, estimate, paymentSchedule };
+    const earnings = buildDealerEarningsReport(order.estimate, order);
+    if (roleName === 'admin' || roleName === 'operator') return { ...order, ...earnings, estimate, paymentSchedule };
 
     if (order.userId !== user.id) {
       throw new NotFoundException(`Order with ID #${id} not found.`);
@@ -730,6 +733,7 @@ export class OrdersService {
 
     return {
       ...order,
+      ...earnings,
       estimate,
       paymentSchedule,
       deliveries: order.deliveries.map((delivery) => ({

@@ -18,6 +18,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { refreshDraftEarningsPlan } from '@/earnings-plans/estimate-earnings-plan';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   DealerMode,
@@ -1171,6 +1172,8 @@ export class PaymentsService {
         fee = cumulativeFee;
       }
     }
+    // Guarda el plan vigente antes del primer cobro/checkout, dentro de su misma transacción.
+    if (!preview && contexts[0]) await refreshDraftEarningsPlan(tx, contexts[0].estimate, { freeze: true });
     return contexts;
   }
 

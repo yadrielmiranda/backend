@@ -1,5 +1,6 @@
 import { calculateEstimateDiscount, estimateDiscountConfig } from '../discounts/estimate-discount';
 import type { Branding } from '@prisma/client';
+import { buildDealerEarningsReport } from '@/common/dealer-earnings';
 
 import type { EstimateInstallationReportSummary } from '../reporting/estimate-installation-summary';
 import type { EstimateWithRelations, PdfView } from '../estimates.service';
@@ -429,6 +430,9 @@ export class EstimatePdfHtmlBuilder {
     const comparisonView =
       reportKind === 'dealer' || (reportKind === 'admin' && ownerIsDealer);
     const internalReport = reportKind === 'dealer' || reportKind === 'admin';
+    const earningsReport = internalReport ? buildDealerEarningsReport(estimate) : null;
+    const dealerEarnings = earningsReport?.dealerEarnings;
+    const materialProfits = earningsReport?.materialProfits;
     const branding = (estimate.branding ?? null) as Branding | null;
     const brandingName = branding?.name?.trim() || '';
     const brandingColor = normalizeBrandingColor(branding?.brandingColor);
@@ -858,7 +862,14 @@ export class EstimatePdfHtmlBuilder {
           ${notices}
         </div>`;
     const dealerProfitHtml = comparisonView
-      ? `
+      ? dealerEarnings ? `
+        <section class="dealer-profit keep-together" aria-label="Dealer material earnings">
+          <div class="dealer-profit-heading">
+            <strong>Dealer material earnings</strong>
+            <span class="dealer-profit-total${Number(dealerEarnings.amount) < 0 ? ' loss' : ''}">${dealerEarnings.amount == null ? 'Pending real factory cost' : formatMoney(dealerEarnings.amount)}</span>
+          </div>
+          <p>Sales tax, installation and services excluded.</p>
+        </section>` : `
         <section class="dealer-profit keep-together" aria-label="Dealer Profit">
           <div class="dealer-profit-heading">
             <strong>Dealer Profit</strong>
@@ -884,9 +895,14 @@ export class EstimatePdfHtmlBuilder {
             <div class="profit-heading"><strong>Material financial summary</strong><small>Installation profit is not included in these figures.</small></div>
             <div class="profit-grid">
               <div class="profit-metric"><span>Sale channel</span><strong>${escapeHtml(profitability.saleChannel)}</strong></div>
-              <div class="profit-metric"><span>Material sale subtotal</span><strong>${formatMoney(profitability.saleSubtotal)}</strong></div>
-              <div class="profit-metric"><span>Estimated factory cost</span><strong>${formatMoney(estimate.rateT)}</strong></div>
-              <div class="profit-metric"><span>Estimated material profit</span><strong>${formatMoney(profitability.estimatedProfit)}</strong></div>
+              <div class="profit-metric"><span>Material sale subtotal</span><strong>${formatMoney(materialProfits ? estimate.order?.saleSubtotal ?? profitability.saleSubtotal : profitability.saleSubtotal)}</strong></div>
+              <div class="profit-metric"><span>${materialProfits ? 'App base price (before markups)' : 'Estimated factory cost'}</span><strong>${formatMoney(materialProfits ? estimate.order?.rate ?? estimate.rateT : estimate.rateT)}</strong></div>
+              <div class="profit-metric"><span>${materialProfits ? 'Expected material profit' : 'Estimated material profit'}</span><strong>${formatMoney(materialProfits?.expectedProfit ?? profitability.estimatedProfit)}</strong></div>
+              ${materialProfits ? `
+                <div class="profit-metric"><span>Real material profit</span><strong>${materialProfits.realProfit == null ? 'Pending real factory cost' : formatMoney(materialProfits.realProfit)}</strong></div>
+                <div class="profit-metric"><span>Company expected profit after dealer earnings</span><strong>${materialProfits.authenticExpectedProfit == null ? 'Pending dealer earnings' : formatMoney(materialProfits.authenticExpectedProfit)}</strong></div>
+                <div class="profit-metric"><span>Company real profit after dealer earnings</span><strong>${materialProfits.authenticRealProfit == null ? 'Pending real factory cost' : formatMoney(materialProfits.authenticRealProfit)}</strong></div>
+              ` : ''}
             </div>
           </div>`
         : '';

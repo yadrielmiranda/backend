@@ -8,18 +8,20 @@ const credentials = new Set([
   'sessions', 'passwordUpdatedAt',
 ]);
 const companyFinancials = new Set([
+  'materialProfits',
   'rate', 'rateT', 'rateReal', 'netProfit', 'netProfitReal', 'markup',
   'markupOverride', 'ownerMarkupSnapshot', 'poNumber',
   'costoA', 'costoB', 'costoC', 'costPerInch',
   'installationPriceProfileId', 'installationPriceProfile',
 ]);
-const dealerFinancials = new Set(['netProfitD', 'dealerMarkup', 'dealerMarkupDecimal']);
+const dealerFinancials = new Set(['netProfitD', 'dealerMarkup', 'dealerMarkupDecimal', 'dealerEarnings', 'dealerEarningsPlanSnapshot', 'dealerEarningsPlanId', 'dealerEarningsPlan', 'dealerEarningsType', 'dealerEarningsPercent']);
 const userFields = new Set([
   'id', 'username', 'firstName', 'lastName', 'email', 'phone', 'street',
   'city', 'state', 'postalCode', 'role', 'idRole', 'dealerMode',
   'isActive', 'deletedAt', 'isTaxExempt', 'noInstallationDeposit',
   'createdAt', 'updatedAt',
   'markupOverride', 'paymentPlanId', 'paymentPlan',
+  'dealerEarningsPlanId', 'dealerEarningsPlan',
   'installationPriceProfileId', 'installationPriceProfile',
 ]);
 

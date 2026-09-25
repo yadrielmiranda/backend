@@ -48,6 +48,24 @@ enum DealerMode {
   INTERNAL
 }
 
+enum DealerEarningsBasis {
+  DEALER_MARKUP
+  EXPECTED_PROFIT
+  REAL_PROFIT
+}
+
+model DealerEarningsPlan {
+  id        Int                 @id @default(autoincrement())
+  name      String              @unique @db.VarChar(100)
+  basis     DealerEarningsBasis
+  percent   Decimal             @db.Decimal(7, 4)
+  revision  Int                 @default(1)
+  isActive  Boolean             @default(true)
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+  users     User[]
+}
+
 enum EstimateCustomerChargeOrigin {
   SYSTEM
   DEALER
@@ -88,6 +106,10 @@ model User {
 
   // Only dealer accounts use this commercial classification.
   dealerMode DealerMode?
+
+  // Solo los dealers internos usan un plan de ganancias de materiales.
+  dealerEarningsPlanId Int?
+  dealerEarningsPlan   DealerEarningsPlan? @relation(fields: [dealerEarningsPlanId], references: [id], onDelete: Restrict)
 
   // Omite depósito y remedición en nuevas solicitudes del dealer.
   noInstallationDeposit Boolean @default(false)
@@ -145,6 +167,7 @@ model User {
   @@index([deletedAt])
   @@index([installationPriceProfileId])
   @@index([dealerMode])
+  @@index([dealerEarningsPlanId])
 }
 
 // Cada publicación conserva su texto y sus aceptaciones por versión.
@@ -1128,6 +1151,8 @@ model Promotion {
 }
 
 model Estimate {
+  // El borrador actualiza su plan; el primer checkout, pago u orden conserva la copia guardada.
+  dealerEarningsPlanSnapshot Json?
   // Definición acordada y cuotas fijadas al iniciar el primer pago de orden.
   paymentPlanSnapshot    Json?
   manualDiscount         Json?

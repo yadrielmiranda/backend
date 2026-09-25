@@ -57,8 +57,11 @@ export class LogsService {
   // =====================================================
   // Helper "pro": crea event y (si quieres) temp en 1 llamada
   // =====================================================
-  async log(params: EventLogInput & { before?: unknown; after?: unknown; meta?: Record<string, unknown> | null }) {
-    return this.prisma.$transaction(async (tx) => {
+  async log(
+    params: EventLogInput & { before?: unknown; after?: unknown; meta?: Record<string, unknown> | null },
+    transaction?: Prisma.TransactionClient,
+  ) {
+    const write = async (tx: Prisma.TransactionClient) => {
       const ev = await tx.eventLog.create({
         data: {
           action: params.action,
@@ -86,6 +89,9 @@ export class LogsService {
       }
 
       return ev;
-    });
+    };
+
+    // Reutiliza la transacción del cambio para confirmar o revertir también su auditoría.
+    return transaction ? write(transaction) : this.prisma.$transaction(write);
   }
 }

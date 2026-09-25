@@ -11,6 +11,7 @@ export class EstimateAuditSnapshotBuilder {
       statusName: est.status?.name ?? null,
       orderId: est.order?.id ?? null,
       dealerModeSnapshot: est.dealerModeSnapshot ?? null,
+      dealerEarningsPlanSnapshot: est.dealerEarningsPlanSnapshot ?? null,
       ownerMarkupSnapshot: est.ownerMarkupSnapshot ?? null,
 
       units: est.units,

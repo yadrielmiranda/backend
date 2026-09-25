@@ -20,7 +20,9 @@ function fixture(roleName = 'dealer') {
     phone: '+13055550111',
   };
   const tx = {
-    $queryRaw: jest.fn(),
+    $queryRaw: jest.fn(async strings => strings.join(' ').includes('FROM DealerEarningsPlan')
+      ? [{ id: 1, name: 'Dealer markup', revision: 1, basis: 'DEALER_MARKUP', percent: '100', isActive: true }] : []),
+    dealerEarningsPlan: { findUnique: jest.fn(async () => ({ id: 1, name: 'Dealer markup', revision: 1, basis: 'DEALER_MARKUP', percent: '100', isActive: true })) },
     user: {
       findFirst: jest.fn(async () => ({ ...account })),
       findUniqueOrThrow: jest.fn(async () => account),
@@ -71,6 +73,7 @@ describe('Admin-managed No installation deposit setting', () => {
         password: 'test',
         email: 'dealer@example.test', phone: '+13055550101', street: '1 Test St', city: 'Miami', state: 'FL', postalCode: '33101',
         dealerMode,
+        ...(dealerMode === 'INTERNAL' ? { dealerEarningsPlanId: 1 } : {}),
         noInstallationDeposit: true,
       } as CreateUserDto);
       expect(saved.noInstallationDeposit).toBe(true);

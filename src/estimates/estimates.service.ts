@@ -1,4 +1,7 @@
 import { resolveNewPlan, getPaymentSchedule } from '@/payment-plans/payment-schedule';
+import { buildDealerEarningsReport, type DealerEarningsSummary, type MaterialProfitsSummary } from '@/common/dealer-earnings';
+import { loadActiveEarningsPlan } from '@/earnings-plans/earnings-plan';
+import { canRefreshDraftEarningsPlan, refreshDraftEarningsPlan } from '@/earnings-plans/estimate-earnings-plan';
 import { ContractStorageService } from '@/contracts/contract-storage.service';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
 import { calculateEstimateDiscount, estimateDiscountConfig, hasDiscountableInstallation, type EstimateDiscountSummary } from './discounts/estimate-discount';
@@ -114,6 +117,8 @@ type PieceWithRelations = Piece & {
 
 // incluyo order para que el front sepa si ya fue ordenado
 export type EstimateWithRelations = Estimate & {
+  dealerEarnings?: DealerEarningsSummary | null;
+  materialProfits?: MaterialProfitsSummary | null;
   manualDiscountSummary?: EstimateDiscountSummary | null;
   paymentSchedule?: Awaited<ReturnType<typeof getPaymentSchedule>>;
   user: Prisma.UserGetPayload<{
@@ -317,7 +322,13 @@ export class EstimatesService {
         status: true,
         order: true,
         payments: true,
-        installationJob: { select: { id: true, status: true } },
+        installationJob: {
+          select: {
+            id: true, status: true,
+            quotes: { orderBy: { version: 'desc' }, select: { status: true, total: true } },
+            permit: { select: { permitFeeSnapshot: true, cityFee: true } },
+          },
+        },
         pieces: {
           orderBy: { id: 'asc' },
           include: {
@@ -353,7 +364,15 @@ export class EstimatesService {
         },
       },
     });
-    return estimate ? { ...estimate, paymentSchedule: await getPaymentSchedule(tx, estimateId) } : null;
+    if (estimate) await refreshDraftEarningsPlan(tx, estimate);
+    return estimate ? {
+      ...estimate,
+      ...buildDealerEarningsReport(estimate),
+      installationJob: estimate.installationJob
+        ? { id: estimate.installationJob.id, status: estimate.installationJob.status }
+        : null,
+      paymentSchedule: await getPaymentSchedule(tx, estimateId),
+    } : null;
   }
 
   /**
@@ -881,6 +900,10 @@ export class EstimatesService {
 
     if (!estimate) return null;
 
+    if (canRefreshDraftEarningsPlan(estimate)) {
+      await this.prisma.$transaction(tx => refreshDraftEarningsPlan(tx, estimate));
+    }
+
     const [branding, companyBranding, pieces] = await Promise.all([
       this.resolveBrandingForEstimate(
         estimate,
@@ -909,6 +932,7 @@ export class EstimatesService {
 
     return {
       ...(estimateResult as any),
+      ...buildDealerEarningsReport(estimate),
       paymentSchedule: await getPaymentSchedule(this.prisma, estimate.id),
       pieces,
       installationJob,
@@ -1047,27 +1071,30 @@ export class EstimatesService {
     dto: CreateEstimateHeaderDto,
     userId: number,
   ): Promise<EstimateWithRelations> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        isTaxExempt: true,
-        markupOverride: true,
-        dealerMode: true,
-        role: {
-          select: {
-            name: true,
-            markup: true,
+    return this.prisma.$transaction(async (tx) => {
+      // Ordena la creación con los cambios administrativos del plan de ganancias.
+      await tx.$queryRaw`SELECT id FROM User WHERE id = ${userId} FOR UPDATE`;
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          isTaxExempt: true,
+          markupOverride: true,
+          dealerMode: true,
+          dealerEarningsPlanId: true,
+          role: {
+            select: {
+              name: true,
+              markup: true,
+            },
           },
         },
-      },
-    });
+      });
 
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
 
-    return this.prisma.$transaction(async (tx) => {
       const taxParameter = await tx.globalParameter.findUnique({
         where: {
           key: GlobalParameterKey.SALES_TAX,
@@ -1105,6 +1132,8 @@ export class EstimatesService {
 
       const ownerMarkupSnapshot = this.resolveBaseMarkupForUser(user);
       const ownerIsDealer = user.role.name === 'dealer';
+      const earningsPlan = ownerIsDealer && user.dealerMode === DealerMode.INTERNAL
+        ? await loadActiveEarningsPlan(tx, user.dealerEarningsPlanId) : null;
 
       const estimateTotals = this.pieceCalculator.calculateEstimateTotals(
         [],
@@ -1122,6 +1151,7 @@ export class EstimatesService {
       const createdBase = await tx.estimate.create({
         data: {
           paymentPlanSnapshot: paymentPlanSnapshot as unknown as Prisma.InputJsonValue,
+          ...(earningsPlan ? { dealerEarningsPlanSnapshot: earningsPlan } : {}),
           number: nextNumber,
           name: dto.name,
           expiresAt,
@@ -1198,7 +1228,7 @@ export class EstimatesService {
         meta: {
           source: 'EstimatesService.createEmptyEstimate',
         },
-      });
+      }, tx);
 
       return createdEstimate as EstimateWithRelations;
     });

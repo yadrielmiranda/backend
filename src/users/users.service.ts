@@ -1,4 +1,5 @@
 import { assertPaymentPlanAvailable } from '@/payment-plans/payment-plans.module';
+import { loadActiveEarningsPlan } from '@/earnings-plans/earnings-plan';
 import {
   BadRequestException,
   ConflictException,
@@ -76,6 +77,8 @@ export class UsersService {
     markupOverride: true,
     isTaxExempt: true,
     dealerMode: true,
+    dealerEarningsPlanId: true,
+    dealerEarningsPlan: true,
     noInstallationDeposit: true,
     isActive: true,
     deletedAt: true,
@@ -110,6 +113,7 @@ export class UsersService {
       markupOverride: u.markupOverride ?? null,
       isTaxExempt: u.isTaxExempt ?? null,
       dealerMode: u.dealerMode ?? null,
+      dealerEarningsPlanId: u.dealerEarningsPlanId ?? null,
       noInstallationDeposit: u.noInstallationDeposit,
       isActive: u.isActive ?? null,
       deletedAt: u.deletedAt ?? null,
@@ -164,6 +168,7 @@ export class UsersService {
     if ('dealerMode' in dto && cmp(before.dealerMode, after.dealerMode)) {
       changed.push('dealerMode');
     }
+    if (cmp(before.dealerEarningsPlanId, after.dealerEarningsPlanId)) changed.push('dealerEarningsPlanId');
 
     if (cmp(before.noInstallationDeposit, after.noInstallationDeposit)) {
       changed.push('noInstallationDeposit');
@@ -225,7 +230,7 @@ export class UsersService {
   }
 
   async createUser(userData: CreateUserDto): Promise<UserSafe> {
-    const { idRole, installationPriceProfileId, paymentPlanId, dealerMode, noInstallationDeposit, ...rest } =
+    const { idRole, installationPriceProfileId, paymentPlanId, dealerMode, noInstallationDeposit, dealerEarningsPlanId, ...rest } =
       userData;
     const hashedPassword = await bcrypt.hash(rest.password, 10);
 
@@ -246,6 +251,9 @@ export class UsersService {
       dealerMode,
     });
 
+    if (resolvedDealerMode !== DealerMode.INTERNAL && dealerEarningsPlanId != null)
+      throw new BadRequestException('Earnings plans are only available for internal dealers.');
+
     if (installationPriceProfileId != null) {
       const profile = await this.prisma.installationPriceProfile.findFirst({
         where: { id: installationPriceProfileId, isActive: true },
@@ -259,23 +267,24 @@ export class UsersService {
     }
 
     await assertPaymentPlanAvailable(this.prisma, paymentPlanId);
-    const created = await this.prisma.user.create({
-      data: {
-        ...rest,
-        password: hashedPassword,
-        ...(paymentPlanId ? { paymentPlan: { connect: { id: paymentPlanId } } } : {}),
-        dealerMode: resolvedDealerMode,
-        noInstallationDeposit: role.name === 'dealer' && noInstallationDeposit === true,
-        role: { connect: { id: idRole } },
-        ...(installationPriceProfileId
-          ? {
-              installationPriceProfile: {
-                connect: { id: installationPriceProfileId },
-              },
-            }
-          : {}),
-      },
-      select: this.safeSelect,
+    const created = await this.prisma.$transaction(async tx => {
+      const earningsPlan = resolvedDealerMode === DealerMode.INTERNAL
+        ? await loadActiveEarningsPlan(tx, dealerEarningsPlanId) : null;
+      return tx.user.create({
+        data: {
+          ...rest,
+          password: hashedPassword,
+          ...(paymentPlanId ? { paymentPlan: { connect: { id: paymentPlanId } } } : {}),
+          dealerMode: resolvedDealerMode,
+          ...(earningsPlan ? { dealerEarningsPlan: { connect: { id: earningsPlan.planId } } } : {}),
+          noInstallationDeposit: role.name === 'dealer' && noInstallationDeposit === true,
+          role: { connect: { id: idRole } },
+          ...(installationPriceProfileId
+            ? { installationPriceProfile: { connect: { id: installationPriceProfileId } } }
+            : {}),
+        },
+        select: this.safeSelect,
+      });
     });
 
     return created as UserSafe;
@@ -293,6 +302,7 @@ export class UsersService {
       markupOverride,
       dealerMode,
       noInstallationDeposit,
+      dealerEarningsPlanId,
       ...rest
     } = userData;
 
@@ -305,6 +315,7 @@ export class UsersService {
         id: true,
         idRole: true,
         dealerMode: true,
+        dealerEarningsPlanId: true,
         role: { select: { name: true } },
       },
     });
@@ -391,8 +402,24 @@ export class UsersService {
       await tx.$queryRaw`SELECT id FROM User WHERE id = ${existing.id} FOR UPDATE`;
       const current = await tx.user.findUniqueOrThrow({
         where: { id: existing.id },
-        select: { phone: true },
+        select: { phone: true, dealerEarningsPlanId: true, dealerMode: true, role: { select: { name: true } } },
       });
+      dataForPrisma.dealerMode = this.resolveDealerMode({
+        roleName: idRole ? nextRoleName : current.role.name,
+        dealerMode, fallbackMode: current.dealerMode,
+      });
+      const internalDealer = dataForPrisma.dealerMode === DealerMode.INTERNAL;
+      if (!internalDealer && dealerEarningsPlanId != null)
+        throw new BadRequestException('Earnings plans are only available for internal dealers.');
+      const planId = internalDealer
+        ? dealerEarningsPlanId !== undefined ? dealerEarningsPlanId : current.dealerEarningsPlanId
+        : null;
+      const earningsChanged = planId !== (current.dealerEarningsPlanId ?? null);
+      const needsPlan = internalDealer && (earningsChanged || dealerEarningsPlanId !== undefined || current.dealerMode !== DealerMode.INTERNAL);
+      if (needsPlan) await loadActiveEarningsPlan(tx, planId);
+      if (earningsChanged || dealerEarningsPlanId !== undefined) {
+        dataForPrisma.dealerEarningsPlan = planId == null ? { disconnect: true } : { connect: { id: planId } };
+      }
       const saved = await tx.user.update({ where, data: dataForPrisma, select: this.safeSelect });
       if (rest.isActive === false) {
         await revokeSmsConsent(tx, existing.id, 'ACCOUNT_DISABLED');

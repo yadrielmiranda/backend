@@ -124,6 +124,12 @@ export class CreateUserDto {
   dealerMode?: DealerMode;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @IsPositive()
+  dealerEarningsPlanId?: number | null;
+
+  @IsOptional()
   @IsBoolean()
   noInstallationDeposit?: boolean;
 }

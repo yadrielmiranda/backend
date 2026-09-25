@@ -28,6 +28,7 @@ const estimateFixture = (installationIncluded = true) =>
     netProfit: '29.71',
     netProfitD: '34.17',
     dealerModeSnapshot: 'EXTERNAL',
+    dealerEarningsPlanSnapshot: { version: 2, planId: 1, name: 'Markup team', revision: 1, basis: 'DEALER_MARKUP', percent: '100' },
     ownerMarkupSnapshot: '0.15',
     status: { name: 'Active' },
     user: {
@@ -489,7 +490,7 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).not.toContain('Not included');
   });
 
-  it('shows one complete company profit for an internal dealer in the admin PDF', () => {
+  it('shows the material profit bases and the internal dealer earnings in the admin PDF', () => {
     const estimate = estimateFixture();
     Object.assign(estimate, {
       dealerModeSnapshot: 'INTERNAL',
@@ -498,12 +499,46 @@ describe('EstimatePdfHtmlBuilder', () => {
     const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
 
     expect(html).toContain('INTERNAL DEALER');
-    expect(html).toContain('Estimated material profit');
+    expect(html).toContain('Expected material profit');
+    expect(html).toContain('App base price (before markups)');
+    expect(html).toContain('Dealer material earnings');
+    expect(html).toContain('Company expected profit after dealer earnings');
     expect(html).toContain('$63.88');
     expect(html).not.toContain('Estimated Configured Company profit');
     expect(html).not.toContain('Estimated Impact profit');
     expect(html).not.toContain('Estimated Authentic profit');
     expect(html).not.toContain('Dealer profit');
+  });
+
+  it.each([
+    ['DEALER_MARKUP', '100', null, '$300.00'],
+    ['EXPECTED_PROFIT', '20', null, '$100.00'],
+    ['REAL_PROFIT', '20', null, 'Pending real factory cost'],
+    ['REAL_PROFIT', '20', '900', '$120.00'],
+  ])('renders the saved %s plan consistently and keeps it out of customer PDFs', (basis, percent, realCost, amount) => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate, {
+      dealerModeSnapshot: 'INTERNAL', rateT: '1000', priceT: '1200', customerPriceT: '1500', netProfitD: '300',
+      dealerEarningsPlanSnapshot: { version: 2, planId: 15, name: 'Sales team', revision: 1, basis, percent },
+      order: { saleSubtotal: '1500', rate: '1000', rateReal: realCost },
+    });
+    for (const view of ['admin', 'dealer_internal'] as const) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, view);
+      const card = html.match(/<section class="dealer-profit[\s\S]*?<\/section>/)?.[0];
+      expect(card).toContain('Dealer material earnings');
+      expect(card).toContain(amount);
+      if (view === 'dealer_internal') {
+        expect(html).not.toContain('Company expected profit after dealer earnings');
+        expect(html).not.toContain('App base price (before markups)');
+      }
+    }
+    for (const view of ['dealer_public', 'dealer_public_total', 'client'] as const) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, view);
+      expect(html).not.toContain('Dealer material earnings');
+      expect(html).not.toContain('of real material profit');
+      expect(html).not.toContain('of expected material profit');
+      expect(html).not.toContain('Company expected profit after dealer earnings');
+    }
   });
 
   it('uses the dealer subtotal for an external dealer in the admin PDF', () => {
@@ -514,6 +549,39 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).toContain('Estimated material profit');
     expect(html).toContain('$29.71');
     expect(html).not.toContain('Estimated Configured Company profit');
+  });
+
+  it('omits the saved plan name and formula from earnings summaries', () => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate, {
+      dealerModeSnapshot: 'INTERNAL', rateT: '1000', priceT: '1200', customerPriceT: '1500', netProfitD: '300',
+      dealerEarningsPlanSnapshot: { version: 2, planId: 42, name: 'Team <A>', revision: 3, basis: 'REAL_PROFIT', percent: '20' },
+      order: { saleSubtotal: '1500', rate: '1000', rateReal: '900' },
+    });
+    for (const view of ['admin', 'dealer_internal'] as const) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, view);
+      expect(html).not.toContain('Team &lt;A&gt;');
+      expect(html).not.toContain('20% of real material profit');
+      expect(html).toContain('$120.00');
+    }
+    for (const view of ['dealer_public', 'dealer_public_total'] as const)
+      expect(EstimatePdfHtmlBuilder.build(estimate, view)).not.toContain('Team &lt;A&gt;');
+  });
+
+  it('shows zero historical earnings when no plan was assigned before the sale', () => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate, {
+      dealerModeSnapshot: 'INTERNAL', rateT: '1000', priceT: '1200', customerPriceT: '1500', netProfitD: '300',
+      dealerEarningsPlanSnapshot: { version: 2, planId: null, name: 'No earnings plan assigned', revision: null, basis: 'DEALER_MARKUP', percent: '0' },
+      order: { saleSubtotal: '1500', rate: '1000', rateReal: '900' },
+    });
+    for (const view of ['admin', 'dealer_internal'] as const) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, view);
+      const card = html.match(/<section class="dealer-profit[\s\S]*?<\/section>/)?.[0];
+      expect(card).toContain('$0.00');
+      expect(card).not.toContain('No earnings plan assigned');
+      expect(card).not.toContain('$300.00');
+    }
   });
 
   it('uses a neutral material-profit label for a direct client', () => {

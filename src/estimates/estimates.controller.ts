@@ -54,6 +54,7 @@ export class EstimatesController {
     return {
       config: estimate.manualDiscount ?? null,
       summary: estimate.manualDiscountSummary ?? null,
+      dealerEarnings: estimate.dealerEarnings ?? null,
       paymentSchedule: estimate.paymentSchedule ?? null,
     };
   }

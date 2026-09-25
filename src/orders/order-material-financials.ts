@@ -1,5 +1,6 @@
 import { DealerMode } from '@prisma/client';
 import Decimal from 'decimal.js';
+import { calculateMaterialProfitBases } from '@/common/material-profit-bases';
 
 const money = (value: Decimal.Value) =>
   new Decimal(value).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
@@ -22,10 +23,11 @@ export function calculateMaterialFinancials(params: {
 }) {
   const saleSubtotal = money(params.saleSubtotal);
   const factoryRate = money(params.factoryRate);
+  const profits = calculateMaterialProfitBases({ customerPrice: saleSubtotal, appBasePrice: factoryRate, dealerPrice: saleSubtotal });
 
   return {
     saleSubtotal,
     factoryRate,
-    totalProfit: money(saleSubtotal.minus(factoryRate)),
+    totalProfit: profits.expectedProfit,
   };
 }
