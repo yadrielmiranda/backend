@@ -5,8 +5,10 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { MaterialRevisionsService } from '@/estimates/material-revisions/material-revisions.service';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
@@ -41,6 +43,7 @@ const agreementSummarySelect = {
   pricingMode: true,
   contractId: true,
   contentHash: true,
+  materialRevisionId: true,
   materialHash: true,
   baseAgreementId: true,
   changeOrderNumber: true,
@@ -67,6 +70,7 @@ export class ContractsService {
     private readonly prisma: PrismaService,
     private readonly storage: ContractStorageService,
     private readonly pdf: ContractPdfService,
+    @Optional() private readonly materialRevisions?: MaterialRevisionsService,
   ) {}
 
   private transaction<T>(
@@ -193,6 +197,7 @@ export class ContractsService {
           changeOrderNumber: agreement.changeOrderNumber,
           pricingMode: agreement.pricingMode,
           contentHash: agreement.contentHash,
+          materialRevisionId: agreement.materialRevisionId ?? null,
           contract: this.contractInfo(agreement.contract),
           signedAt: agreement.signedAt,
           signedAtLabel: agreement.signedAt
@@ -304,7 +309,13 @@ export class ContractsService {
         select: agreementSummarySelect,
         orderBy: { revision: 'desc' },
       });
-      let nextSignatureKind: 'AGREEMENT' | 'CHANGE_ORDER' | null = null;
+      const pendingMaterial = await db.estimate.findUnique({
+        where: { id: estimateId },
+        select: { materialRevisions: { where: { activeSlot: 1, status: 'AWAITING_SIGNATURE' }, select: { id: true }, take: 1 } },
+      });
+      const pendingMaterialRevisionId = pendingMaterial?.materialRevisions?.[0]?.id ?? null;
+      let nextSignatureKind: 'AGREEMENT' | 'CHANGE_ORDER' | null =
+        pendingMaterialRevisionId && agreements[0]?.materialRevisionId !== pendingMaterialRevisionId ? 'AGREEMENT' : null;
       if (agreements[0]?.invalidatedAt) {
         nextSignatureKind = 'AGREEMENT';
         const base = agreements.find((item) => item.signedAt);
@@ -324,6 +335,7 @@ export class ContractsService {
         defaultContract: this.contractInfo(contract),
         current: this.agreementInfo(agreements[0]),
         nextSignatureKind,
+        pendingMaterialRevisionId,
         history: agreements
           .filter((item) => item.signedAt)
           .map((item) => this.agreementInfo(item)),
@@ -364,7 +376,9 @@ export class ContractsService {
       if (!token || !content.estimate.publicTokenEnabled)
         throw new BadRequestException('Create an enabled customer link first.');
       const active = await db.estimateAgreement.findFirst({
-        where: { estimateId, pricingMode: mode, invalidatedAt: null },
+        where: { estimateId, pricingMode: mode, invalidatedAt: null,
+          ...(content.materialRevisionId ? { materialRevisionId: content.materialRevisionId } : {}),
+        },
         select: agreementSummarySelect,
         orderBy: { revision: 'desc' },
       });
@@ -386,6 +400,7 @@ export class ContractsService {
         where: {
           estimateId,
           invalidatedAt: null,
+          ...(content.materialRevisionId ? { materialRevisionId: content.materialRevisionId } : {}),
           ...(useLatestContract && last?.contractId !== contract.id
             ? {}
             : { pricingMode: mode }),
@@ -454,6 +469,7 @@ export class ContractsService {
           id: randomUUID(),
           estimateId,
           revision: counter.agreementRevision,
+          materialRevisionId: content.materialRevisionId,
           contractId: contract.id,
           pricingMode: mode,
           contentHash: content.contentHash,
@@ -730,6 +746,14 @@ export class ContractsService {
         },
         include: includeContract,
       });
+      if (agreement.materialRevisionId) {
+        if (!this.materialRevisions)
+          throw new ConflictException('Material revision processing is unavailable. No signature or changes were saved.');
+        await this.materialRevisions.applySignedRevision(db, estimate.id, agreement.materialRevisionId, agreement.id);
+        const applied = await loadAgreementContent(db, estimate.id, pricingMode);
+        if (!agreementMatches(signed, applied))
+          throw new ConflictException('The revised project does not match the signed document. No changes were applied.');
+      }
       await db.eventLog.create({
         data: {
           action: 'CREATE',

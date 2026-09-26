@@ -21,6 +21,7 @@ import {
   AddInstallationMeasurementDto,
   CancelInstallationDto,
   InstallationApprovalDto,
+  InstallationRevisionPieceDto,
   ProposeInstallationMeasurementPieceDto,
   ProposeInstallationAppointmentDto,
   RequestInstallationDto,
@@ -100,6 +101,36 @@ export class InstallationWorkflowController {
       dto,
       req.user as AuthUser,
     );
+  }
+
+  @Roles('admin', 'operator')
+  @Post('installations/:id/revision-pieces/calculate')
+  calculateAddedPiece(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: InstallationRevisionPieceDto,
+    @Req() req: Request,
+  ) {
+    return this.workflow.calculateAddedPiece(id, dto, req.user as AuthUser);
+  }
+
+  @Roles('admin', 'operator')
+  @Post('installations/:id/revision-pieces')
+  saveAddedPiece(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: InstallationRevisionPieceDto,
+    @Req() req: Request,
+  ) {
+    return this.workflow.saveAddedPiece(id, dto, req.user as AuthUser);
+  }
+
+  @Roles('admin', 'operator')
+  @Delete('installations/:id/revision-pieces/:measurementId')
+  removeAddedPiece(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('measurementId', ParseIntPipe) measurementId: number,
+    @Req() req: Request,
+  ) {
+    return this.workflow.removeAddedPiece(id, measurementId, req.user as AuthUser);
   }
 
   @Roles('admin', 'operator')

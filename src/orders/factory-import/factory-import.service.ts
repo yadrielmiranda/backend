@@ -1,3 +1,4 @@
+import { assertMaterialReadyForFactory } from '@/estimates/material-revisions/material-revision-policy';
 import {
   BadRequestException,
   ConflictException,
@@ -208,6 +209,7 @@ export class FactoryImportService {
     this.assertAdmin(actor);
     const document = parseFactoryDocument(file);
     const data = await this.load(this.prisma, orderId);
+    await assertMaterialReadyForFactory(this.prisma, data.order.idEst);
     await this.validateDocument(this.prisma, data, document);
     return {
       ...this.context(data),
@@ -269,6 +271,10 @@ export class FactoryImportService {
     try {
       return await this.prisma.$transaction(
         async (tx) => {
+          const order = await tx.order.findUnique({ where: { id: orderId }, select: { idEst: true } });
+          if (!order) throw new NotFoundException('Order not found.');
+          await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${order.idEst} FOR UPDATE`;
+          await assertMaterialReadyForFactory(tx, order.idEst);
           const data = await this.load(tx, orderId);
           if (fields.revision !== hash([data.version, document]))
             throw new ConflictException(

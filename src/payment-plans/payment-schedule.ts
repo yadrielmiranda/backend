@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { calculateEstimateDiscount } from '@/estimates/discounts/estimate-discount';
 import {
   allocateSchedule,
+  paymentsForSchedule,
   defaultPlan,
   Milestone,
   money,
@@ -18,6 +19,7 @@ import {
 
 export const scheduleInclude = {
   status: true,
+  materialRevisions: { where: { activeSlot: 1 }, select: { id: true }, take: 1 },
   payments: true,
   order: { include: { status: true } },
   installationJob: {
@@ -142,7 +144,7 @@ export function buildPaymentSchedule(estimate: any) {
   }
   const allocation = allocateSchedule(
     rows,
-    estimate.payments ?? [],
+    paymentsForSchedule(snapshot, estimate.payments ?? []),
     available,
     Boolean(estimate.order),
   );
@@ -199,18 +201,22 @@ export function buildPaymentSchedule(estimate: any) {
         !['ORDER', 'RELEASE'].includes(row.milestone) ||
         (row.status !== 'REVIEW' && Number(row.balance) === 0),
     );
+  const materialRevisionPending = Boolean(estimate.materialRevisions?.some((revision: any) => revision.activeSlot == null || revision.activeSlot === 1));
   return {
     ...allocation,
+    ...(materialRevisionPending ? { next: null } : {}),
+    materialRevisionPending,
     name: snapshot.name,
     requiresOrderReview: Boolean(job && !estimate.order),
     orderReviewPending,
-    orderReviewBlockedReason,
-    fullBalance,
+    orderReviewBlockedReason: materialRevisionPending ? 'Finish or cancel the pending material revision before continuing.' : orderReviewBlockedReason,
+    fullBalance: materialRevisionPending ? null : fullBalance,
     cityFeePending,
     provisional,
     provisionalMessage,
-    canRelease,
+    canRelease: canRelease && !materialRevisionPending,
     canInstall:
+      !materialRevisionPending &&
       // Una devolución puede reabrir cuotas anteriores después de pagar INSTALL.
       canRelease &&
       installationSequences.size > 0 &&
@@ -249,6 +255,8 @@ export async function installmentContext(
       'This estimate uses its original payment terms.',
     );
   const schedule = buildPaymentSchedule(estimate)!;
+  if (!preview && schedule.materialRevisionPending)
+    throw new ConflictException('Finish or cancel the pending material revision before paying an installment.');
   const row =
     sequence == null
       ? schedule.next
@@ -285,6 +293,7 @@ export async function installmentContext(
 export async function synchronizeScheduleChanges(
   db: Prisma.TransactionClient,
   estimateId: number,
+  options: { approvedMaterialRevision?: boolean } = {},
 ) {
   const estimate = await db.estimate.findUnique({
     where: { id: estimateId },
@@ -296,7 +305,7 @@ export async function synchronizeScheduleChanges(
     estimate.installationJob?.status === 'CANCELED'
       ? null
       : estimate.installationJob;
-  if (job && job.quotes[0]?.status !== 'APPROVED') return;
+  if (job && job.quotes[0]?.status !== 'APPROVED' && !options.approvedMaterialRevision) return;
   const current = scheduleAmounts(estimate);
   const previous =
     snapshot.adjustments?.at(-1)?.amounts ?? snapshot.locked.amounts;

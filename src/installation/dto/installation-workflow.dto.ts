@@ -307,3 +307,21 @@ export class CancelInstallationDto {
   @MaxLength(1000)
   reason?: string;
 }
+
+// Las piezas nuevas y las medidas comparten la revisión de la cotización vigente.
+export class InstallationRevisionPieceDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  measurementId?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  quoteId?: number;
+
+  @IsDefined()
+  @ValidateNested()
+  @Type(() => CreatePieceDto)
+  piece: CreatePieceDto;
+}

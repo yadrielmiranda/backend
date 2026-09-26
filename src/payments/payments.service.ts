@@ -1,3 +1,4 @@
+import { assertNoPendingMaterialRevision } from '@/estimates/material-revisions/material-revision-policy';
 import { cents, hasRefundHistory, paidPrincipal, paymentIsCovered, remainingRefundBalance } from './payment-accounting';
 import { reconcileChargeRefunds, recordManualReceipt, recordStripeReceipt, refreshPaymentAccounting } from './payment-ledger';
 import { stripePaymentMethod } from './stripe-payment-method';
@@ -279,6 +280,7 @@ export class PaymentsService {
       const estimate = await tx.estimate.findUnique({ where: { id: estimateId }, include: scheduleInclude });
       if (!estimate) throw new NotFoundException('Estimate not found.');
       if (estimate.order) return estimate.order;
+      await assertNoPendingMaterialRevision(tx, estimateId);
       if (estimate.status.name !== PENDING_ORDER_REVIEW) throw new ConflictException('This estimate is not pending order review.');
       if (estimate.units <= 0) throw new ConflictException('At least one material unit is required to create an order.');
       const job = estimate.installationJob?.status === InstallationJobStatus.CANCELED ? null : estimate.installationJob;

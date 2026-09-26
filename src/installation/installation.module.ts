@@ -3,6 +3,7 @@ import { GoogleAddressValidationService } from '@/deliveries/google-address-vali
 import { GoogleRoutesService } from '@/deliveries/google-routes.service';
 import { InstallationCoverageCalculationService } from './installation-coverage-calculation.service';
 import { Module } from '@nestjs/common';
+import { PromotionsModule } from '@/promotions/promotions.module';
 import { PrismaModule } from '@/prisma/prisma.module';
 import { LogsModule } from '@/logs/logs.module';
 import { InstallationCatalogController } from './installation-catalog.controller';
@@ -18,7 +19,7 @@ import { InstallationCoverageController } from './installation-coverage.controll
 import { InstallationCoverageService } from './installation-coverage.service';
 
 @Module({
-  imports: [HttpModule, PrismaModule, LogsModule, NotificationsModule],
+  imports: [HttpModule, PrismaModule, LogsModule, NotificationsModule, PromotionsModule],
   controllers: [InstallationCatalogController, InstallationWorkflowController, InstallationCoverageController],
   providers: [
     GoogleAddressValidationService,

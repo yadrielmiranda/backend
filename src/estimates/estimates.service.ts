@@ -3,6 +3,7 @@ import { buildDealerEarningsReport, type DealerEarningsSummary, type MaterialPro
 import { loadActiveEarningsPlan } from '@/earnings-plans/earnings-plan';
 import { canRefreshDraftEarningsPlan, refreshDraftEarningsPlan } from '@/earnings-plans/estimate-earnings-plan';
 import { ContractStorageService } from '@/contracts/contract-storage.service';
+import { assertNoPendingMaterialRevision } from './material-revisions/material-revision-policy';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
 import { calculateEstimateDiscount, estimateDiscountConfig, hasDiscountableInstallation, type EstimateDiscountSummary } from './discounts/estimate-discount';
 import { UpdateEstimateDiscountDto } from './dto/estimate-discount.dto';
@@ -419,6 +420,7 @@ export class EstimatesService {
       throw new NotFoundException(`Estimate #${estimateId} not found/denied.`);
     }
 
+    await assertNoPendingMaterialRevision(tx, estimateId);
     if (estimateDiscountConfig((estimate as any).manualDiscount)?.lockedAt) throw new BadRequestException('This estimate preserves a paid additional discount. Use the measured revision workflow for material changes.');
     if (estimate.promotionLockedAt) throw new BadRequestException('This estimate preserves paid promotion terms. Material changes must use the measured Estimate revision workflow.');
     if (!recalculating && promotionExpired(estimate)) throw new BadRequestException(expiredPromotionMessage);

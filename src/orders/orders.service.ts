@@ -1,3 +1,4 @@
+import { assertMaterialReadyForFactory } from '@/estimates/material-revisions/material-revision-policy';
 import { decimalAmount, hasRefundHistory, paidPrincipal, remainingRefundBalance } from '@/payments/payment-accounting';
 import { buildDealerEarningsReport } from '@/common/dealer-earnings';
 import { assertScheduleMilestone, buildPaymentSchedule, getPaymentSchedule } from '@/payment-plans/payment-schedule';
@@ -6,6 +7,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import {
   GlobalParameterKey,
@@ -338,7 +340,13 @@ export class OrdersService {
         }),
     };
 
-    const updated = await this.prisma.order.update({
+    const updated = await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${current.idEst} FOR UPDATE`;
+      const live = await tx.order.findUnique({ where: { id }, select: { statusId: true, updatedAt: true } });
+      if (!live || live.statusId !== current.statusId || live.updatedAt.getTime() !== current.updatedAt.getTime())
+        throw new ConflictException('This order changed. Refresh it before updating its status.');
+      if (statusWillChange) await assertMaterialReadyForFactory(tx, current.idEst);
+      return tx.order.update({
       where: { id },
       data,
       include: {
@@ -358,6 +366,7 @@ export class OrdersService {
           include: { payment: true },
         },
       },
+      });
     });
 
     // =====================================================

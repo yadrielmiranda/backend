@@ -1,5 +1,6 @@
 import { synchronizeScheduleChanges, refreshScheduledInstallation } from '@/payment-plans/payment-schedule';
 import { createHash } from 'crypto';
+import { projectMaterialRevision } from '@/estimates/material-revisions/material-revision-snapshot';
 import Decimal from 'decimal.js';
 import { BrandingType, Prisma } from '@prisma/client';
 import { buildPublicEstimateData } from '@/estimates/public-share/public-estimate-data';
@@ -414,12 +415,22 @@ export async function loadAgreementContent(
   estimateId: number,
   pricingMode: AgreementPricingMode,
   withSnapshot = false,
+  options: { ignorePendingMaterialRevision?: boolean } = {},
 ) {
-  const estimate = await db.estimate.findUnique({
+  const persisted = await db.estimate.findUnique({
     where: { id: estimateId },
-    include: agreementEstimateInclude,
+    include: {
+      ...agreementEstimateInclude,
+      materialRevisions: {
+        where: { activeSlot: 1, status: 'AWAITING_SIGNATURE' },
+        take: 1,
+      },
+    },
   });
-  if (!estimate) return null;
+  if (!persisted) return null;
+  const revision = !options.ignorePendingMaterialRevision ? persisted.materialRevisions?.[0] : null;
+  const materialRevisionId = revision?.id ?? null;
+  const estimate = projectMaterialRevision(persisted, revision);
   // Se comparan los precios del cliente en ambas vistas, sin divulgar el desglose de la vista total.
   const detailed = buildPublicEstimateData(
     estimate,
@@ -435,6 +446,7 @@ export async function loadAgreementContent(
   if (!withSnapshot)
     return {
       estimate,
+      materialRevisionId,
       contentHash,
       legacyContentHash,
       ...scopes,
@@ -461,7 +473,7 @@ export async function loadAgreementContent(
       buildPublicEstimateData(estimate, branding, pieces, pricingMode),
     ),
   );
-  return { estimate, contentHash, legacyContentHash, ...scopes, snapshot };
+  return { estimate, materialRevisionId, contentHash, legacyContentHash, ...scopes, snapshot };
 }
 
 // La invalidación es permanente: volver de A a B y luego a A no reactiva una aceptación anterior.
@@ -471,13 +483,20 @@ export async function invalidateChangedAgreements(
 ) {
   const pending = await db.estimateAgreement.findMany({
     where: { estimateId, invalidatedAt: null },
-    select: { id: true, contentHash: true },
+    select: { id: true, contentHash: true, materialRevisionId: true },
   });
   if (!pending.length) return;
   const current = await loadAgreementContent(db, estimateId, 'detailed');
+  // Preparar una propuesta no invalida lo ya contratado. Cada documento se
+  // compara con el contenido al que pertenece hasta aplicar la nueva firma.
+  const persisted = current?.materialRevisionId
+    ? await loadAgreementContent(db, estimateId, 'detailed', false, { ignorePendingMaterialRevision: true })
+    : current;
   const changedIds: string[] = [];
   for (const agreement of pending) {
-    if (!agreementMatches(await agreementComparison(db, agreement.id), current))
+    const target = current?.materialRevisionId && agreement.materialRevisionId !== current.materialRevisionId
+      ? persisted : current;
+    if (!agreementMatches(await agreementComparison(db, agreement.id), target))
       changedIds.push(agreement.id);
   }
   if (changedIds.length)

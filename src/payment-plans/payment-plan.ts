@@ -143,6 +143,9 @@ export type PlanSnapshot = {
   definition: PlanDefinition;
   locked?: { amounts: ScheduleAmounts; rows: ScheduleRow[]; at: string };
   adjustments?: Array<ScheduleRow & { amounts: ScheduleAmounts }>;
+  // Solo para una revisión aprobada de una orden anterior a los planes.
+  // Referencias a recibos originales; los importes se leen del pago, no se duplican.
+  legacyPaymentCredits?: Array<{ paymentId: number; type: 'MATERIAL' | 'INSTALLATION'; sequence: number }>;
 };
 export function planSnapshot(value: unknown): PlanSnapshot | null {
   const snapshot = value as PlanSnapshot;
@@ -221,6 +224,7 @@ export function planRows(
 }
 
 export type SchedulePayment = AccountedPayment & {
+  id?: number;
   type: string;
   status: string;
   sequence: number;
@@ -228,6 +232,19 @@ export type SchedulePayment = AccountedPayment & {
   stripeSessionId?: string | null;
   paidAt?: any;
 };
+
+// Los recibos anteriores conservan su identidad y tipo en la base de datos.
+// Esta proyección permite descontarlos de la revisión sin cobrar material dos veces.
+export function paymentsForSchedule(snapshot: PlanSnapshot, payments: SchedulePayment[]): SchedulePayment[] {
+  if (!snapshot.legacyPaymentCredits?.length) return payments;
+  const credits = new Map(snapshot.legacyPaymentCredits.map(credit => [credit.paymentId, credit]));
+  return payments.map(payment => {
+    const credit = payment.id == null ? undefined : credits.get(payment.id);
+    return credit && credit.type === payment.type
+      ? { ...payment, type: 'INSTALLMENT', sequence: credit.sequence }
+      : payment;
+  });
+}
 
 // Los anticipos se aplican en orden. El recargo de tarjeta nunca cuenta como capital pagado.
 export function allocateSchedule(

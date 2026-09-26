@@ -1154,21 +1154,21 @@ model Estimate {
   // El borrador actualiza su plan; el primer checkout, pago u orden conserva la copia guardada.
   dealerEarningsPlanSnapshot Json?
   // Definición acordada y cuotas fijadas al iniciar el primer pago de orden.
-  paymentPlanSnapshot    Json?
-  manualDiscount         Json?
-  standardExpiresAt      DateTime?
-  promotionExpiresAt     DateTime?
-  promotionLockedAt      DateTime?
-  promotionContext       Json?
-  originalPriceT         Decimal   @default(0) @db.Decimal(12, 2)
-  originalCustomerPriceT Decimal   @default(0) @db.Decimal(12, 2)
-  discountAmount         Decimal   @default(0) @db.Decimal(12, 2)
-  customerDiscountAmount Decimal   @default(0) @db.Decimal(12, 2)
-  id                     Int       @id @default(autoincrement())
-  number                 String    @unique
-  name                   String
-  date                   DateTime  @default(now())
-  expiresAt              DateTime?
+  paymentPlanSnapshot        Json?
+  manualDiscount             Json?
+  standardExpiresAt          DateTime?
+  promotionExpiresAt         DateTime?
+  promotionLockedAt          DateTime?
+  promotionContext           Json?
+  originalPriceT             Decimal   @default(0) @db.Decimal(12, 2)
+  originalCustomerPriceT     Decimal   @default(0) @db.Decimal(12, 2)
+  discountAmount             Decimal   @default(0) @db.Decimal(12, 2)
+  customerDiscountAmount     Decimal   @default(0) @db.Decimal(12, 2)
+  id                         Int       @id @default(autoincrement())
+  number                     String    @unique
+  name                       String
+  date                       DateTime  @default(now())
+  expiresAt                  DateTime?
 
   publicToken          String?   @unique @db.VarChar(64)
   publicTotalToken     String?   @unique @db.VarChar(64)
@@ -1217,6 +1217,7 @@ model Estimate {
   agreements        EstimateAgreement[]
   agreementRevision Int                      @default(0)
   revisions         EstimateRevision[]
+  materialRevisions MaterialRevision[]
   customerCharges   EstimateCustomerCharge[]
 
   // --- CUSTOMER (dealer fills; not a relation) ---
@@ -1950,6 +1951,7 @@ enum EstimateRevisionItemAction {
   UPDATE
   REPLACE
   REMOVE
+  ADD
 }
 
 enum EstimateRevisionChangeReason {
@@ -2842,34 +2844,77 @@ model DealerContract {
   @@index([dealerId, sha256])
 }
 
+enum MaterialRevisionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  AWAITING_SIGNATURE
+  APPLIED
+  REJECTED
+  CANCELED
+}
+
+// Revisiones comerciales independientes de la instalación. Solo una puede estar abierta.
+model MaterialRevision {
+  id                        Int                    @id @default(autoincrement())
+  estimateId                Int
+  version                   Int
+  activeSlot                Int?                   @default(1)
+  status                    MaterialRevisionStatus @default(DRAFT)
+  reason                    String                 @db.VarChar(1000)
+  baseHash                  String                 @db.Char(64)
+  items                     Json
+  proposal                  Json?
+  originalSummary           Json
+  revisedSummary            Json?
+  requiresSignature         Boolean                @default(false)
+  factoryNotSentConfirmedAt DateTime?
+  createdById               Int
+  approvedById              Int?
+  submittedAt               DateTime?
+  approvedAt                DateTime?
+  appliedAt                 DateTime?
+  closedAt                  DateTime?
+  createdAt                 DateTime               @default(now())
+  updatedAt                 DateTime               @updatedAt
+  estimate                  Estimate               @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  agreements                EstimateAgreement[]
+
+  @@unique([estimateId, version])
+  @@unique([estimateId, activeSlot])
+  @@index([estimateId, status])
+  @@map("material_revisions")
+}
+
 model EstimateAgreement {
-  id                String              @id @db.VarChar(36)
-  estimateId        Int
-  revision          Int
-  contractId        String              @db.VarChar(36)
-  pricingMode       String              @db.VarChar(8)
-  contentHash       String              @db.Char(64)
-  materialHash      String?             @db.Char(64)
-  chargesSnapshot   Json?
-  baseAgreementId   String?             @db.VarChar(36)
-  changeOrderNumber Int?
-  snapshot          Json
-  quoteFileKey      String?             @db.VarChar(100)
-  quoteHash         String?             @db.Char(64)
-  receiptFileKey    String?             @db.VarChar(100)
-  receiptHash       String?             @db.Char(64)
-  signerName        String?             @db.VarChar(150)
-  signature         Json?
-  consentText       String?             @db.Text
-  signedAt          DateTime?
-  invalidatedAt     DateTime?
-  ipAddress         String?             @db.VarChar(45)
-  userAgent         String?             @db.VarChar(512)
-  createdAt         DateTime            @default(now())
-  estimate          Estimate            @relation(fields: [estimateId], references: [id], onDelete: Restrict)
-  contract          DealerContract      @relation(fields: [contractId], references: [id], onDelete: Restrict)
-  baseAgreement     EstimateAgreement?  @relation("AgreementChanges", fields: [baseAgreementId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  changeOrders      EstimateAgreement[] @relation("AgreementChanges")
+  id                 String              @id @db.VarChar(36)
+  estimateId         Int
+  materialRevisionId Int?
+  materialRevision   MaterialRevision?   @relation(fields: [materialRevisionId], references: [id], onDelete: Restrict)
+  revision           Int
+  contractId         String              @db.VarChar(36)
+  pricingMode        String              @db.VarChar(8)
+  contentHash        String              @db.Char(64)
+  materialHash       String?             @db.Char(64)
+  chargesSnapshot    Json?
+  baseAgreementId    String?             @db.VarChar(36)
+  changeOrderNumber  Int?
+  snapshot           Json
+  quoteFileKey       String?             @db.VarChar(100)
+  quoteHash          String?             @db.Char(64)
+  receiptFileKey     String?             @db.VarChar(100)
+  receiptHash        String?             @db.Char(64)
+  signerName         String?             @db.VarChar(150)
+  signature          Json?
+  consentText        String?             @db.Text
+  signedAt           DateTime?
+  invalidatedAt      DateTime?
+  ipAddress          String?             @db.VarChar(45)
+  userAgent          String?             @db.VarChar(512)
+  createdAt          DateTime            @default(now())
+  estimate           Estimate            @relation(fields: [estimateId], references: [id], onDelete: Restrict)
+  contract           DealerContract      @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  baseAgreement      EstimateAgreement?  @relation("AgreementChanges", fields: [baseAgreementId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  changeOrders       EstimateAgreement[] @relation("AgreementChanges")
 
   @@unique([estimateId, revision])
   @@index([estimateId, pricingMode, invalidatedAt])
