@@ -757,6 +757,27 @@ export class InstallationWorkflowService {
     return cache;
   }
 
+  private async calculateReplacementPiece(
+    estimateId: number,
+    originalPiece: RevisionPieceRecord,
+    input: CreatePieceDto,
+    tx: PrismaTransactionClient,
+  ) {
+    // Calculate y Submit usan la misma unidad, markup y promoción de origen.
+    const replacementInput: CreatePieceDto = {
+      ...input,
+      mark: input.mark.trim() || originalPiece.mark,
+      qty: 1,
+    };
+    const calculated = await this.pieceCalculator.calculatePieceMetrics(
+      replacementInput,
+      await this.resolveEstimateOwnerMarkup(estimateId, tx),
+      tx,
+      await this.promotionRevisionCache(estimateId, tx, originalPiece),
+    );
+    return { replacementInput, calculated };
+  }
+
   private originalRevisionSnapshot(piece: RevisionPieceRecord) {
     const source = this.sourceSnapshot(piece) as Prisma.InputJsonObject;
     return this.jsonValue({
@@ -2744,6 +2765,84 @@ export class InstallationWorkflowService {
     return result;
   }
 
+  async calculateMeasurementPiece(
+    jobId: number,
+    measurementId: number,
+    dto: CreatePieceDto,
+    user: AuthUser,
+  ) {
+    if (!isPrivileged(user)) {
+      throw new ForbiddenException(
+        'Only company staff can preview material changes.',
+      );
+    }
+
+    // Solo lectura: no crea cotizaciones/revisiones ni modifica pagos o firmas.
+    return this.prisma.$transaction(async (tx) => {
+      const job = await tx.installationJob.findUnique({
+        where: { id: jobId },
+        select: {
+          estimateId: true,
+          estimate: {
+            select: { idUser: true, order: { select: { id: true } } },
+          },
+        },
+      });
+      if (!job) throw new NotFoundException('Installation job not found.');
+      this.assertAccess(job, user);
+      if (job.estimate.order) {
+        throw new BadRequestException(
+          'Estimate material cannot be revised after the Order is created.',
+        );
+      }
+      await this.assertRemeasurementCanBeRecorded(jobId, tx);
+      const measurement = await tx.installationMeasurement.findFirst({
+        where: {
+          id: measurementId,
+          jobId,
+          isManual: false,
+          piece: { idEst: job.estimateId },
+        },
+        include: { piece: { include: revisionPieceInclude } },
+      });
+      if (!measurement?.piece) {
+        throw new NotFoundException(
+          'The selected Estimate Piece occurrence was not found.',
+        );
+      }
+
+      const { calculated } = await this.calculateReplacementPiece(
+        job.estimateId,
+        measurement.piece,
+        dto,
+        tx,
+      );
+      return {
+        ...calculated,
+        muntin: calculated.muntin ?? null,
+        highBottom: calculated.highBottom,
+        highBottomPercent: calculated.highBottomPercent
+          ? new Prisma.Decimal(calculated.highBottomPercent.toFixed(4))
+          : null,
+        rate: new Prisma.Decimal(calculated.rate.toFixed(2)),
+        price: new Prisma.Decimal(calculated.price.toFixed(2)),
+        netProfit: new Prisma.Decimal(calculated.netProfit.toFixed(2)),
+        markup: new Prisma.Decimal(calculated.markup.toFixed(18)),
+        subtotal: new Prisma.Decimal(calculated.subtotal.toFixed(2)),
+        dealerMarkup: new Prisma.Decimal(
+          calculated.dealerMarkupDecimal.toFixed(4),
+        ),
+        netProfitD: new Prisma.Decimal(calculated.netProfitD.toFixed(2)),
+        customerPrice: new Prisma.Decimal(calculated.customerPrice.toFixed(2)),
+        customerSubtotal: new Prisma.Decimal(
+          calculated.customerSubtotal.toFixed(2),
+        ),
+        dpPosPsf: new Prisma.Decimal(calculated.dpPosPsf.toFixed(2)),
+        dpNegPsf: new Prisma.Decimal(calculated.dpNegPsf.toFixed(2)),
+      };
+    });
+  }
+
   async proposeMeasurementPiece(
     jobId: number,
     measurementId: number,
@@ -2846,21 +2945,13 @@ export class InstallationWorkflowService {
             },
           });
         } else {
-          const replacementInput: CreatePieceDto = {
-            ...dto.piece!,
-            mark: dto.piece!.mark.trim() || measurement.piece.mark,
-            qty: 1,
-          };
-          const effectiveMarkup = await this.resolveEstimateOwnerMarkup(
-            revision.estimateId,
-            tx,
-          );
-          const calculated = await this.pieceCalculator.calculatePieceMetrics(
-            replacementInput,
-            effectiveMarkup,
-            tx,
-            await this.promotionRevisionCache(revision.estimateId, tx, measurement.piece),
-          );
+          const { replacementInput, calculated } =
+            await this.calculateReplacementPiece(
+              revision.estimateId,
+              measurement.piece,
+              dto.piece!,
+              tx,
+            );
           const pricing = await this.calculatedRevisionSnapshot(calculated, tx);
           const product = await tx.product.findUnique({
             where: { id: calculated.idProd },

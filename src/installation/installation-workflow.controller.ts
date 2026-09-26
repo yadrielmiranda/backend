@@ -14,6 +14,7 @@ import {
 import { Request } from 'express';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { Roles } from '@/auth/roles.decorator';
+import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 import { InstallationWorkflowService } from './installation-workflow.service';
 import {
   AddInstallationLineDto,
@@ -120,6 +121,22 @@ export class InstallationWorkflowController {
     @Req() req: Request,
   ) {
     return this.workflow.updateMeasurement(
+      id,
+      measurementId,
+      dto,
+      req.user as AuthUser,
+    );
+  }
+
+  @Roles('admin', 'operator')
+  @Post('installations/:id/measurements/:measurementId/calculate-piece')
+  calculateMeasurementPiece(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('measurementId', ParseIntPipe) measurementId: number,
+    @Body() dto: CreatePieceDto,
+    @Req() req: Request,
+  ) {
+    return this.workflow.calculateMeasurementPiece(
       id,
       measurementId,
       dto,
