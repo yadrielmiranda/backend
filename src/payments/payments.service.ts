@@ -53,6 +53,7 @@ type UnavailablePublicPaymentContext = {
   enabled: boolean; status: 'not_applicable' | 'expired'; payment: null;
   payments?: never; fullBalance?: never; checkouts?: never;
   installmentCheckouts?: never; schedule?: never; agreement?: never;
+  materialRevisionPending?: never;
 };
 
 type PaymentSelection = { type: PaymentType; sequence: number };
@@ -863,6 +864,7 @@ export class PaymentsService {
         },
         installationJob: { select: { id: true, status: true } },
         payments: true,
+        materialRevisions: { where: { activeSlot: 1 }, select: { id: true }, take: 1 },
       },
     });
 
@@ -931,6 +933,7 @@ export class PaymentsService {
     estimate: Awaited<ReturnType<PaymentsService['findPublicEstimateForPayment']>>['estimate'],
     schedule: Awaited<ReturnType<typeof getPaymentSchedule>>,
   ) {
+    const materialRevisionPending = Boolean(schedule?.materialRevisionPending || estimate.materialRevisions?.length);
     const requests = new Map<string, { type: PaymentType; sequence?: number; advanceOnly: boolean }>();
     const add = (type: PaymentType, sequence?: number, advanceOnly = false) => {
       const item = { type, sequence, advanceOnly };
@@ -1006,7 +1009,7 @@ export class PaymentsService {
       !estimate.payments.some(p => p.refundReviewPending) && payments.length === requests.size && total.gt(0)
       ? { amount: total.toFixed(2), items: payments.map(({ type, sequence }) => ({ type, sequence })) }
       : null;
-    return { payments, fullBalance };
+    return { payments, fullBalance, materialRevisionPending };
   }
 
   async getPublicPaymentContext(token: string) {
@@ -1107,6 +1110,7 @@ export class PaymentsService {
     )) throw new BadRequestException('Select one or more distinct installments that are due.');
     const sequences = params.sequences ? [...params.sequences].sort((a, b) => a - b) : [params.sequence];
     let selections: Array<{ type: PaymentType; sequence?: number }> = sequences.map(sequence => ({ type: params.type, sequence }));
+    const advanceSelectionKeys = new Set<string>();
     if (params.items !== undefined) {
       if (!params.publicToken || params.payFullBalance || params.sequence !== undefined || params.sequences !== undefined ||
           !Array.isArray(params.items) || !params.items.length || params.items.length > 50 ||
@@ -1119,8 +1123,14 @@ export class PaymentsService {
       const { estimate } = await this.findPublicEstimateForPayment(params.publicToken, tx);
       if (estimate.id !== params.estimateId || estimate.idUser !== user.id || estimate.dealerModeSnapshot !== DealerMode.INTERNAL) throw new NotFoundException('Customer payment link not found.');
       const options = await this.publicPaymentOptions(tx, estimate, await getPaymentSchedule(tx, estimate.id));
-      if (params.items.some(item => !options.payments.some(p => !p.advanceOnly && paymentSelectionKey(p) === paymentSelectionKey(item)))) {
+      if (params.items.some(item => !options.payments.some(p => paymentSelectionKey(p) === paymentSelectionKey(item)))) {
         throw new ConflictException('A selected payment is no longer available. Refresh the payment list.');
+      }
+      // Una cuota futura ya habilitada para adelanto puede pagarse sola. Se
+      // validan los mismos límites de saldo, firma, revisión y titular del total.
+      for (const item of params.items) {
+        if (options.payments.find(p => paymentSelectionKey(p) === paymentSelectionKey(item))?.advanceOnly)
+          advanceSelectionKeys.add(paymentSelectionKey(item));
       }
       selections = [...params.items];
     }
@@ -1154,7 +1164,7 @@ export class PaymentsService {
     for (const item of selections) {
       const context = await this.installationWorkflow.getPaymentContext(
         params.estimateId, item.type, item.sequence, params.installationDepositTermsAccepted, user, tx,
-        { preview, ...(params.payFullBalance ? { allowAdvance: true } : {}) },
+        { preview, ...((params.payFullBalance || advanceSelectionKeys.has(paymentSelectionKey(item))) ? { allowAdvance: true } : {}) },
       );
       contexts.push({ ...context, type: item.type });
     }

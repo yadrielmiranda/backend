@@ -294,7 +294,7 @@ export class MaterialRevisionsService {
     return changes.length ? changes : ['Updated piece specifications.'];
   }
 
-  private async buildProposal(db: Prisma.TransactionClient, estimate: any, items: MaterialRevisionItemSnapshot[], actorId: number) {
+  private async buildProposal(db: Prisma.TransactionClient, estimate: any, items: MaterialRevisionItemSnapshot[], actorId: number, revisionId: number) {
     // Se invoca exclusivamente en simulation(), cuya transacción SIEMPRE se revierte.
     // La propuesta se guarda después en otra transacción, con verificación de concurrencia.
       const changes: Array<{ key: string; piece: RevisionPieceRecord; original?: RevisionPieceRecord }> = [];
@@ -328,7 +328,7 @@ export class MaterialRevisionsService {
       } });
       // La simulación de cuotas también se revierte. La firma ve el mismo
       // ajuste que luego se aplica, conservando intactas las cuotas anteriores.
-      await synchronizeScheduleChanges(db, estimate.id, { approvedMaterialRevision: true });
+      await synchronizeScheduleChanges(db, estimate.id, { approvedMaterialRevision: true, materialRevisionId: revisionId });
       const terms = await db.estimate.findUniqueOrThrow({ where: { id: estimate.id }, select: { paymentPlanSnapshot: true } });
       if (terms.paymentPlanSnapshot) proposal.paymentPlanSnapshot = revisionJson(terms.paymentPlanSnapshot);
       return { proposal: revisionJson<MaterialRevisionProposal>(proposal), summary };
@@ -348,7 +348,7 @@ export class MaterialRevisionsService {
         label: '', originalLabel: null, changeDescription: [] };
       const index = items.findIndex(candidate => candidate.key === item.key);
       if (index < 0) items.push(item); else items[index] = item;
-      const result = await this.buildProposal(db, estimate, items, actor.id);
+      const result = await this.buildProposal(db, estimate, items, actor.id, revisionId);
       return { items, result, editToken: this.revisionEditToken(revision), message: `${item.action === 'ADD' ? 'Added' : 'Updated'} pending revision item: ${item.label}.` };
     });
     await this.transaction(estimateId, async db => {
@@ -373,7 +373,7 @@ export class MaterialRevisionsService {
       this.assertEditable(estimate, revision, actor);
       const items = revisionJson<MaterialRevisionItemSnapshot[]>(revision.items).filter(item => item.key !== key);
       if (items.length === (revision.items as any[]).length) throw new NotFoundException('Revision item not found.');
-      return { items, editToken: this.revisionEditToken(revision), result: await this.buildProposal(db, estimate, items, actor.id) };
+      return { items, editToken: this.revisionEditToken(revision), result: await this.buildProposal(db, estimate, items, actor.id, revisionId) };
     });
     await this.transaction(estimateId, async db => {
       const estimate = await this.load(db, estimateId, actor);

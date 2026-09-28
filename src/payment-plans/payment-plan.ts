@@ -123,6 +123,11 @@ export function validatePlan(input: unknown): PlanDefinition {
 }
 
 export type ScheduleRow = {
+  // Ajuste distribuido por el plan guardado, distinto de ajustes históricos de etapa única.
+  planAdjustment?: boolean;
+  // Identifica cuotas adicionales sin cambiar su tipo de cobro.
+  materialRevision?: boolean;
+  materialRevisionId?: number;
   kind?: 'CITY_FEE';
   sequence: number;
   milestone: Milestone;

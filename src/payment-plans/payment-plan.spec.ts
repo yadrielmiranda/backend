@@ -466,13 +466,11 @@ describe('Configurable payment plans', () => {
     };
     await synchronizeScheduleChanges(db, est.id);
     expect(est.paymentPlanSnapshot.locked.rows).toEqual(originalRows);
-    expect(est.paymentPlanSnapshot.adjustments[0]).toMatchObject({
-      sequence: 101,
-      amount: '1000.00',
-      milestone: 'RELEASE',
-    });
+    expect(est.paymentPlanSnapshot.adjustments.map(row => [row.sequence, row.milestone, row.amount])).toEqual([
+      [101, 'ORDER', '500.00'], [102, 'RELEASE', '400.00'], [103, 'COMPLETE', '100.00'],
+    ]);
     await synchronizeScheduleChanges(db, est.id);
-    expect(est.paymentPlanSnapshot.adjustments).toHaveLength(1);
+    expect(est.paymentPlanSnapshot.adjustments).toHaveLength(3);
     expect(buildPaymentSchedule(est)?.balance).toBe('6000.00');
   });
 
@@ -582,14 +580,16 @@ describe('Identified City Fee changes', () => {
     est.installationJob.permit = { status: 'APPROVED', permitFeeSnapshot: '0.00', cityFee: '200.00' };
     const db: any = { estimate: { findUnique: jest.fn(async () => est), update: jest.fn(async ({ data }) => Object.assign(est, data)) } };
     await synchronizeScheduleChanges(db, est.id);
-    expect(est.paymentPlanSnapshot.adjustments).toHaveLength(2);
-    expect(est.paymentPlanSnapshot.adjustments[0]).toMatchObject({ amount: '300.00', milestone: 'RELEASE' });
-    expect(est.paymentPlanSnapshot.adjustments[1]).toMatchObject({ kind: 'CITY_FEE', amount: '200.00', milestone: 'ORDER' });
+    expect(est.paymentPlanSnapshot.adjustments).toHaveLength(4);
+    expect(est.paymentPlanSnapshot.adjustments.slice(0, 3).map(row => [row.milestone, row.amount])).toEqual([
+      ['ORDER', '150.00'], ['RELEASE', '120.00'], ['COMPLETE', '30.00'],
+    ]);
+    expect(est.paymentPlanSnapshot.adjustments[3]).toMatchObject({ kind: 'CITY_FEE', amount: '200.00', milestone: 'ORDER' });
     await synchronizeScheduleChanges(db, est.id);
-    expect(est.paymentPlanSnapshot.adjustments).toHaveLength(2);
+    expect(est.paymentPlanSnapshot.adjustments).toHaveLength(4);
     est.installationJob.permit.cityFee = '180.00';
     await synchronizeScheduleChanges(db, est.id);
-    expect(est.paymentPlanSnapshot.adjustments[2]).toMatchObject({ kind: 'CITY_FEE', amount: '-20.00' });
+    expect(est.paymentPlanSnapshot.adjustments[4]).toMatchObject({ kind: 'CITY_FEE', amount: '-20.00' });
     expect(buildPaymentSchedule(est)?.total).toBe('10480.00');
     expect(buildPaymentSchedule(est)?.paid).toBe('5000.00');
   });

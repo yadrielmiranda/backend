@@ -1,3 +1,4 @@
+import { changeOrderInstallments } from './change-order-installments';
 import { hasRefundHistory, paymentIsCovered } from '@/payments/payment-accounting';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -13,7 +14,6 @@ import {
   planRows,
   planSnapshot,
   ScheduleAmounts,
-  sumAmounts,
   validatePlan,
 } from './payment-plan';
 
@@ -88,8 +88,8 @@ export function buildPaymentSchedule(estimate: any) {
   const amounts = scheduleAmounts(estimate);
   const installments = snapshot.locked?.rows ?? planRows(snapshot, amounts, Boolean(job));
   const rows = [...installments, ...(snapshot.adjustments ?? [])];
-  // La instalación depende del hito del plan, no de los ajustes pendientes.
-  // Los planes cobrados por completo al ordenar no necesitan una cuota nueva.
+  // La instalación exige las cuotas originales y los ajustes previos al trabajo.
+  // La etapa COMPLETE no bloquea su inicio ni se cobra antes obligatoriamente.
   const installationMilestone = installments.some(row => row.milestone === 'INSTALL')
     ? 'INSTALL'
     : installments.some(row => row.milestone === 'RELEASE') ? 'RELEASE' : 'ORDER';
@@ -201,7 +201,7 @@ export function buildPaymentSchedule(estimate: any) {
         !['ORDER', 'RELEASE'].includes(row.milestone) ||
         (row.status !== 'REVIEW' && Number(row.balance) === 0),
     );
-  const materialRevisionPending = Boolean(estimate.materialRevisions?.some((revision: any) => revision.activeSlot == null || revision.activeSlot === 1));
+  const materialRevisionPending = Boolean(estimate.materialRevisions?.some((revision: any) => revision.activeSlot === undefined || revision.activeSlot === 1));
   return {
     ...allocation,
     ...(materialRevisionPending ? { next: null } : {}),
@@ -221,7 +221,7 @@ export function buildPaymentSchedule(estimate: any) {
       canRelease &&
       installationSequences.size > 0 &&
       allocation.rows.every(
-        (row) => !installationSequences.has(row.sequence) || (Number(row.balance) === 0 && row.status !== 'REVIEW'),
+        (row) => !(installationSequences.has(row.sequence) || ((row.materialRevision || row.planAdjustment) && row.milestone === 'INSTALL')) || (Number(row.balance) === 0 && row.status !== 'REVIEW'),
       ),
     initialSequence: rows[0]?.sequence ?? 1,
   };
@@ -293,7 +293,7 @@ export async function installmentContext(
 export async function synchronizeScheduleChanges(
   db: Prisma.TransactionClient,
   estimateId: number,
-  options: { approvedMaterialRevision?: boolean } = {},
+  options: { approvedMaterialRevision?: boolean; materialRevisionId?: number } = {},
 ) {
   const estimate = await db.estimate.findUnique({
     where: { id: estimateId },
@@ -345,30 +345,27 @@ export async function synchronizeScheduleChanges(
   // Se registra por separado incluso si también cambió otro importe del proyecto.
   const cityDelta = new Prisma.Decimal(current.city).minus(previous.city);
   const withoutCityChange = { ...current, city: previous.city };
-  const delta = sumAmounts(withoutCityChange).minus(sumAmounts(previous));
   const adjustments = [...(snapshot.adjustments ?? [])];
-  const orderStatus = estimate.order?.status.name;
-  const milestone: Milestone = !estimate.order
-    ? 'ORDER'
-    : orderStatus === 'Installed'
-      ? 'COMPLETE'
-      : ['Delivered', 'Picked up', 'Installation in progress'].includes(
-            orderStatus ?? '',
-          )
-        ? 'INSTALL'
-        : 'RELEASE';
-  if (!delta.eq(0) || cityDelta.eq(0)) {
-    const sequence = 101 + adjustments.length;
-    adjustments.push({
-      sequence, milestone,
-      title: `Change order adjustment #${sequence - 100}`,
-      description: 'Approved change to the project. Previous payments remain credited.',
-      amount: money(delta), amounts: withoutCityChange,
-    });
+  const nextSequence = () => Math.max(100, ...adjustments.map(row => row.sequence)) + 1;
+  const changedBases = (['material', 'installation', 'permit'] as const)
+    .some(key => current[key] !== previous[key]);
+  if (changedBases) {
+    // No se elige una sola etapa por el estado de la orden. Cada diferencia
+    // conserva las bases, porcentajes y etapas del plan ya contratado.
+    // Si se canceló la instalación, su reducción aún usa la variante original.
+    const withInstallation = Boolean(job) || new Prisma.Decimal(previous.installation).gt(0);
+    const firstSequence = nextSequence();
+    adjustments.push(...changeOrderInstallments(
+      snapshot, previous, withoutCityChange, withInstallation, firstSequence,
+      firstSequence - 100,
+      options.approvedMaterialRevision
+        ? { materialRevision: true, materialRevisionId: options.materialRevisionId }
+        : {},
+    ));
   }
   if (!cityDelta.eq(0)) {
     adjustments.push({
-      sequence: 101 + adjustments.length,
+      sequence: nextSequence(),
       kind: 'CITY_FEE', milestone: 'ORDER', title: 'City Fee adjustment',
       description: cityDelta.lt(0) ? 'City Fee reduced. The difference is credited to the project balance.' : 'City Fee added after the first installment. Review and accept this amount before payment. Original installments remain unchanged.',
       amount: money(cityDelta.toString()), amounts: current,

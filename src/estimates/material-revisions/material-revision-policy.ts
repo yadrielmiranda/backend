@@ -1,3 +1,4 @@
+import { getPaymentSchedule } from '@/payment-plans/payment-schedule';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { paidPrincipal, paymentIsCovered } from '@/payments/payment-accounting';
@@ -61,4 +62,10 @@ export async function assertMaterialReadyForFactory(db: Prisma.TransactionClient
   if (estimate?.materialRevisions?.some(revision => revision.status === 'APPLIED') &&
       estimate.installationJob?.status !== 'CANCELED' && estimate.installationJob?.measurements?.length)
     throw new ConflictException('The added or revised units still require field measurement before the order can be sent to the manufacturer.');
+  if (estimate?.materialRevisions?.some(revision => revision.status === 'APPLIED')) {
+    const schedule = await getPaymentSchedule(db, estimateId);
+    if (schedule?.rows.some(row => row.materialRevision && row.milestone === 'ORDER' &&
+      (row.status === 'REVIEW' || Number(row.balance) > 0)))
+      throw new ConflictException('Pay the additional initial installment for the approved material change before sending the order to the manufacturer.');
+  }
 }

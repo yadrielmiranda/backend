@@ -354,7 +354,9 @@ describe('Installment payment workflow', () => {
     await withAgreementTransaction(f.tx, 1, async () => {
       f.estimate.installationJob.quotes[0].total = decimal(2300);
     });
-    expect(f.estimate.paymentPlanSnapshot.adjustments[0].amount).toBe('300.00');
+    expect(f.estimate.paymentPlanSnapshot.adjustments.map(row => [row.milestone, row.amount])).toEqual([
+      ['ORDER', '150.00'], ['RELEASE', '120.00'], ['COMPLETE', '30.00'],
+    ]);
     expect(buildPaymentSchedule(f.estimate)?.balance).toBe('5300.00');
   });
   it('creates one order after administrative review, collects 90% before work, then closes the final balance', async () => {
@@ -891,11 +893,11 @@ describe('Selectable due installments', () => {
       expect(f.delivery.status).toBe('PAYMENT_DUE');
     });
 
-    it('rejects changed amounts, duplicates, unknown items and partial advance payments', async () => {
+    it('rejects changed amounts, duplicates and unknown items', async () => {
       const f = await mixedFixture();
       for (const [items, amount] of [
         [[delivery, delivery], 300], [[{ ...delivery, sequence: 999 }], 150],
-        [[{ type: PaymentType.INSTALLMENT, sequence: 3 }], 238.51], [[delivery], 149.99],
+        [[delivery], 149.99],
       ] as Array<[Array<{ type: PaymentType; sequence: number }>, number]>) {
         await expect(f.select(items, amount)).rejects.toThrow();
       }
@@ -904,6 +906,18 @@ describe('Selectable due installments', () => {
       await expect(f.select([delivery], 150)).rejects.toThrow('balance changed');
       await expect(f.service.createCheckoutSessionForPublicToken({ token: 'customer-link', payFullBalance: true, expectedBalance: 1617.53, cityFeeAccepted: true })).rejects.toThrow('balance changed');
       expect(f.createSession).not.toHaveBeenCalled();
+    });
+
+    it('allows one approved upcoming installment through an individual public selection', async () => {
+      const f = await mixedFixture();
+      await f.select([{ type: PaymentType.INSTALLMENT, sequence: 3 }], 238.51);
+      expect(f.sessions.get('cs_selection_1').amount_total).toBe(23851);
+      expect(f.estimate.payments.filter(p => p.stripeSessionId === 'cs_selection_1').map(p => p.sequence)).toEqual([3]);
+      await f.confirm('cs_selection_1');
+      const schedule = buildPaymentSchedule(f.estimate)!;
+      expect(schedule.rows.find(row => row.sequence === 3)?.status).toBe('PAID');
+      expect(schedule.rows.find(row => row.sequence === 2)?.balance).toBe('954.02');
+      expect(f.delivery.status).toBe('PAYMENT_DUE');
     });
 
     it('keeps unrelated charges available while one refund is under review', async () => {
@@ -1121,19 +1135,21 @@ describe('Selectable due installments', () => {
     expect(f.tx.order.create).toHaveBeenCalledTimes(1);
   });
 
-  it.each([[102], [2, 102], [101, 102], [2, 101, 102]].map(sequences => ({ sequences })))('supports a third due adjustment and any combination: $sequences', async ({ sequences }) => {
+  it.each([[102], [103], [102, 103], [2, 102], [101, 102], [2, 101, 102, 103]].map(sequences => ({ sequences })))('supports plan-based installation adjustments and any due combination: $sequences', async ({ sequences }) => {
     const f = await readyFixture();
     f.estimate.installationJob.quotes[0].total = decimal(750);
     await synchronizeScheduleChanges(f.tx, 1);
-    expect(buildPaymentSchedule(f.estimate)?.rows.filter(r => r.status === 'DUE')).toHaveLength(3);
-    const balances = { 2: 95402, 101: 20000, 102: 30000 };
+    expect(buildPaymentSchedule(f.estimate)?.rows.filter(r => r.status === 'DUE')).toHaveLength(4);
+    const balances = { 2: 95402, 101: 20000, 102: 15000, 103: 12000 };
     await f.checkout(sequences, sequences.includes(101));
     expect(f.sessions.get('cs_selection_1').amount_total).toBe(sequences.reduce((sum, seq) => sum + balances[seq], 0));
     await f.confirm('cs_selection_1');
-    for (const sequence of [2, 101, 102]) {
+    for (const sequence of [2, 101, 102, 103]) {
       expect(buildPaymentSchedule(f.estimate)?.rows.find(r => r.sequence === sequence)?.status).toBe(sequences.includes(sequence) ? 'PAID' : 'DUE');
     }
-    expect(buildPaymentSchedule(f.estimate)?.rows.find(r => r.sequence === 3)?.status).toBe('UPCOMING');
+    for (const sequence of [3, 104]) {
+      expect(buildPaymentSchedule(f.estimate)?.rows.find(r => r.sequence === sequence)?.status).toBe('UPCOMING');
+    }
   });
 
   it('requires City Fee acceptance only when that adjustment is selected', async () => {

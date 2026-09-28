@@ -1,3 +1,5 @@
+import { materialChangePreview } from './material-change-preview';
+import { changeOrderPaymentPreview } from './change-order-payment-preview';
 import {
   BadRequestException,
   ConflictException,
@@ -582,6 +584,13 @@ export class ContractsService {
         current: this.agreementInfo(selected),
         history,
         changeOrder: (document?.snapshot as any)?.changeOrder ?? null,
+        changeOrderPaymentPreview: selected.baseAgreementId && !selected.materialRevisionId &&
+          !selected.invalidatedAt && !selected.signedAt
+          ? await changeOrderPaymentPreview(db, estimate.id, estimate.dealerModeSnapshot === 'INTERNAL')
+          : null,
+        materialChange: selected.materialRevisionId && !selected.invalidatedAt
+          ? await materialChangePreview(db, estimate.id, selected.materialRevisionId, estimate.dealerModeSnapshot === 'INTERNAL')
+          : null,
         paymentsEnabled: estimate.dealerModeSnapshot === 'INTERNAL',
         consentText: selected.consentText ?? AGREEMENT_CONSENT,
       };
