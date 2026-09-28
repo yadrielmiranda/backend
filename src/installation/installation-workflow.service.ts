@@ -3,6 +3,7 @@ import { CANCELED_ESTIMATE, assertEstimateNotCanceled } from '@/estimates/estima
 import { randomUUID } from 'crypto';
 import { PromotionsService } from '@/promotions/promotions.service';
 import { installationAddress } from './installation-address';
+import type { InstallationDuplicationSource } from './installation-duplication';
 import { Inject } from '@nestjs/common';
 import { InstallationCoverageCalculationService, installationSurchargeCalculation, installationBaseForSurcharge, type CoverageSnapshot } from './installation-coverage-calculation.service';
 import { decimalAmount, hasRefundHistory, paidPrincipal, paymentIsCovered, remainingRefundBalance } from '@/payments/payment-accounting';
@@ -1791,6 +1792,215 @@ export class InstallationWorkflowService {
     });
   }
 
+  async prepareDuplicateInstallation(source: InstallationDuplicationSource) {
+    const address = installationAddress(source.installationAddress);
+    if (!address) {
+      throw new BadRequestException(
+        'The original installation address is incomplete. Duplicate materials only and enter an installation address in the new estimate.',
+      );
+    }
+    return this.coverage.prepare(address);
+  }
+
+  async duplicateInstallationInTransaction(
+    estimateId: number,
+    source: InstallationDuplicationSource,
+    user: AuthUser,
+    coverage: Awaited<ReturnType<InstallationCoverageCalculationService['prepare']>>,
+    tx: PrismaTransactionClient,
+  ) {
+    return this.createRequestedInstallation(estimateId, {
+      installationAddress: coverage.address,
+      installationAddressConfirmed: true,
+      permitRequested: source.permit !== null,
+    }, user, coverage, tx, source);
+  }
+
+  private async createRequestedInstallation(
+    estimateId: number,
+    dto: RequestInstallationDto,
+    user: AuthUser,
+    coverage: Awaited<ReturnType<InstallationCoverageCalculationService['prepare']>>,
+    tx: PrismaTransactionClient,
+    duplicateSource?: InstallationDuplicationSource,
+  ) {
+    await this.coverage.assertCurrent(coverage.snapshot, tx);
+    const estimate = await tx.estimate.findUnique({
+      where: { id: estimateId },
+      include: {
+        status: true,
+        order: true,
+        payments: true,
+        installationJob: true,
+        user: { include: { role: true } },
+        pieces: {
+          orderBy: { id: 'asc' },
+          include: revisionPieceInclude,
+        },
+      },
+    });
+
+    if (
+      !estimate ||
+      (!canViewAllInstallations(user.role?.name) &&
+        !(duplicateSource && isPrivileged(user)) && estimate.idUser !== user.id)
+    ) {
+      throw new NotFoundException(`Estimate #${estimateId} not found.`);
+    }
+    if (promotionExpired(estimate)) throw new BadRequestException(expiredPromotionMessage);
+    if (estimate.installationJob) {
+      throw new ConflictException(
+        'Installation has already been requested for this estimate.',
+      );
+    }
+    if (estimate.status.name !== 'Active' || estimate.order) {
+      throw new BadRequestException(
+        'Installation can only be requested for an active unpaid estimate.',
+      );
+    }
+    if (
+      estimate.payments.some(
+        (payment) =>
+          payment.status === PaymentStatus.PAID || payment.stripeSessionId,
+      )
+    ) {
+      throw new BadRequestException(
+        'Installation cannot be requested after checkout has started.',
+      );
+    }
+    if (estimate.pieces.length === 0) {
+      throw new BadRequestException(
+        'Add at least one piece before requesting installation.',
+      );
+    }
+
+    const noDeposit = estimate.user.role.name === 'dealer' &&
+      estimate.user.noInstallationDeposit === true;
+    const profile = await this.pricing.resolveProfileForUser(
+      estimate.idUser,
+      tx,
+    );
+    const depositParameter = await tx.globalParameter.findUnique({
+      where: { key: GlobalParameterKey.INSTALLATION_DEPOSIT },
+    });
+    const depositAmount = new Decimal(
+      depositParameter?.value.toString() ?? 0,
+    );
+    if (!noDeposit && depositAmount.lte(0)) {
+      throw new BadRequestException(
+        'Configure a positive Installation Deposit before accepting installation requests.',
+      );
+    }
+
+    let permitFee: Prisma.Decimal | null = null;
+    if (dto.permitRequested) {
+      const parameter = await tx.globalParameter.findUnique({
+        where: { key: GlobalParameterKey.INSTALLATION_PERMIT_FEE },
+      });
+      if (!parameter || new Decimal(parameter.value.toString()).lte(0)) {
+        throw new BadRequestException(
+          'Configure a positive Installation Permit Fee before requesting a permit.',
+        );
+      }
+      permitFee = parameter.value;
+    }
+
+    const job = await tx.installationJob.create({
+      data: {
+        estimateId,
+        installationAddress: coverage.address,
+        installationAddressConfirmedAt: new Date(),
+        requestedById: user.id,
+        status: InstallationJobStatus.DEPOSIT_PAYMENT_PENDING,
+        depositAmountSnapshot: new Prisma.Decimal(depositAmount.toFixed(2)),
+        depositTermsSnapshot: estimate.paymentPlanSnapshot ? SCHEDULE_DEPOSIT_TERMS : INSTALLATION_DEPOSIT_TERMS,
+        measurements: {
+          create: estimate.pieces.flatMap((piece) =>
+            Array.from({ length: piece.qty }, (_, index) =>
+              this.measurementCreateFromPiece(piece, index + 1),
+            ),
+          ),
+        },
+        ...(permitFee
+          ? {
+              permit: {
+                create: {
+                  status: InstallationPermitStatus.PAYMENT_PENDING,
+                  permitFeeSnapshot: permitFee,
+                },
+              },
+            }
+          : {}),
+        quotes: {
+          create: {
+            version: 1,
+            notes: duplicateSource?.quotes[0]?.notes ?? null,
+            coverageSnapshot: { create: { data: coverage.snapshot as unknown as Prisma.InputJsonValue } },
+            status: InstallationQuoteStatus.DRAFT,
+            approvalReason: InstallationQuoteReason.REMEASUREMENT,
+            profileId: profile.id,
+            profileNameSnapshot: profile.name,
+            profileAdjustmentPercent: new Prisma.Decimal(
+              profile.adjustmentPercent.toFixed(4),
+            ),
+            profileMinimumSnapshot: new Prisma.Decimal(
+              profile.minimumCharge.toFixed(2),
+            ),
+            createdById: user.id,
+          },
+        },
+      },
+      include: { quotes: true, measurements: true },
+    });
+
+    const quote = job.quotes[0];
+    await this.rebuildAutomaticLines(job.id, quote.id, tx);
+
+    for (const selected of dto.selectedServices ?? []) {
+      await this.addLineInTransaction(
+        quote.id,
+        requestedLineForEstimateOwner(selected, estimate.user.role.name),
+        InstallationLineOrigin.USER_SELECTED,
+        tx,
+      );
+    }
+
+    // Las líneas automáticas se reconstruyen; los adicionales conservan solo sus entradas.
+    for (const line of duplicateSource?.quotes[0]?.lines ?? []) {
+      if (line.origin === InstallationLineOrigin.AUTO) continue;
+      await this.addLineInTransaction(
+        quote.id,
+        requestedLineForEstimateOwner(additionalServiceInputFromStoredLine(line), estimate.user.role.name),
+        line.origin,
+        tx,
+      );
+    }
+
+    const preliminaryQuote = await this.recalculateQuoteTotals(quote.id, tx);
+    const lineCount = await tx.installationQuoteLine.count({
+      where: { quoteId: quote.id },
+    });
+    if (
+      lineCount === 0 ||
+      new Decimal(preliminaryQuote.total.toString()).lte(0)
+    ) {
+      throw new BadRequestException(
+        'No installation price could be calculated for this estimate. Review the installation-service mappings.',
+      );
+    }
+    if (!noDeposit && depositAmount.gt(preliminaryQuote.total.toString())) {
+      throw new BadRequestException(
+        'The Installation Deposit cannot exceed the preliminary installation total.',
+      );
+    }
+    if (noDeposit) {
+      const current = await this.getJobRecord(job.id, tx);
+      if (!current) throw new NotFoundException('Installation job not found.');
+      await this.finalizeDealerMeasurements(current, user.id, tx, true);
+    }
+    return job;
+  }
+
   async requestInstallation(
     estimateId: number,
     dto: RequestInstallationDto,
@@ -1798,171 +2008,9 @@ export class InstallationWorkflowService {
   ) {
     // La consulta externa ocurre antes de abrir la transacción de la cotización.
     const coverage = await this.prepareInstallationCoverage(estimateId, dto, user);
-    const createdJob = await withAgreementTransaction(this.prisma, estimateId, async (tx) => {
-      await this.coverage.assertCurrent(coverage.snapshot, tx);
-      const estimate = await tx.estimate.findUnique({
-        where: { id: estimateId },
-        include: {
-          status: true,
-          order: true,
-          payments: true,
-          installationJob: true,
-          user: { include: { role: true } },
-          pieces: {
-            orderBy: { id: 'asc' },
-            include: revisionPieceInclude,
-          },
-        },
-      });
-
-      if (
-        !estimate ||
-        (!canViewAllInstallations(user.role?.name) &&
-          estimate.idUser !== user.id)
-      ) {
-        throw new NotFoundException(`Estimate #${estimateId} not found.`);
-      }
-      if (promotionExpired(estimate)) throw new BadRequestException(expiredPromotionMessage);
-      if (estimate.installationJob) {
-        throw new ConflictException(
-          'Installation has already been requested for this estimate.',
-        );
-      }
-      if (estimate.status.name !== 'Active' || estimate.order) {
-        throw new BadRequestException(
-          'Installation can only be requested for an active unpaid estimate.',
-        );
-      }
-      if (
-        estimate.payments.some(
-          (payment) =>
-            payment.status === PaymentStatus.PAID || payment.stripeSessionId,
-        )
-      ) {
-        throw new BadRequestException(
-          'Installation cannot be requested after checkout has started.',
-        );
-      }
-      if (estimate.pieces.length === 0) {
-        throw new BadRequestException(
-          'Add at least one piece before requesting installation.',
-        );
-      }
-
-      const noDeposit = estimate.user.role.name === 'dealer' &&
-        estimate.user.noInstallationDeposit === true;
-      const profile = await this.pricing.resolveProfileForUser(
-        estimate.idUser,
-        tx,
-      );
-      const depositParameter = await tx.globalParameter.findUnique({
-        where: { key: GlobalParameterKey.INSTALLATION_DEPOSIT },
-      });
-      const depositAmount = new Decimal(
-        depositParameter?.value.toString() ?? 0,
-      );
-      if (!noDeposit && depositAmount.lte(0)) {
-        throw new BadRequestException(
-          'Configure a positive Installation Deposit before accepting installation requests.',
-        );
-      }
-
-      let permitFee: Prisma.Decimal | null = null;
-      if (dto.permitRequested) {
-        const parameter = await tx.globalParameter.findUnique({
-          where: { key: GlobalParameterKey.INSTALLATION_PERMIT_FEE },
-        });
-        if (!parameter || new Decimal(parameter.value.toString()).lte(0)) {
-          throw new BadRequestException(
-            'Configure a positive Installation Permit Fee before requesting a permit.',
-          );
-        }
-        permitFee = parameter.value;
-      }
-
-      const job = await tx.installationJob.create({
-        data: {
-          estimateId,
-          installationAddress: coverage.address,
-          installationAddressConfirmedAt: new Date(),
-          requestedById: user.id,
-          status: InstallationJobStatus.DEPOSIT_PAYMENT_PENDING,
-          depositAmountSnapshot: new Prisma.Decimal(depositAmount.toFixed(2)),
-          depositTermsSnapshot: estimate.paymentPlanSnapshot ? SCHEDULE_DEPOSIT_TERMS : INSTALLATION_DEPOSIT_TERMS,
-          measurements: {
-            create: estimate.pieces.flatMap((piece) =>
-              Array.from({ length: piece.qty }, (_, index) =>
-                this.measurementCreateFromPiece(piece, index + 1),
-              ),
-            ),
-          },
-          ...(permitFee
-            ? {
-                permit: {
-                  create: {
-                    status: InstallationPermitStatus.PAYMENT_PENDING,
-                    permitFeeSnapshot: permitFee,
-                  },
-                },
-              }
-            : {}),
-          quotes: {
-            create: {
-              version: 1,
-              coverageSnapshot: { create: { data: coverage.snapshot as unknown as Prisma.InputJsonValue } },
-              status: InstallationQuoteStatus.DRAFT,
-              approvalReason: InstallationQuoteReason.REMEASUREMENT,
-              profileId: profile.id,
-              profileNameSnapshot: profile.name,
-              profileAdjustmentPercent: new Prisma.Decimal(
-                profile.adjustmentPercent.toFixed(4),
-              ),
-              profileMinimumSnapshot: new Prisma.Decimal(
-                profile.minimumCharge.toFixed(2),
-              ),
-              createdById: user.id,
-            },
-          },
-        },
-        include: { quotes: true, measurements: true },
-      });
-
-      const quote = job.quotes[0];
-      await this.rebuildAutomaticLines(job.id, quote.id, tx);
-
-      for (const selected of dto.selectedServices ?? []) {
-        await this.addLineInTransaction(
-          quote.id,
-          requestedLineForEstimateOwner(selected, estimate.user.role.name),
-          InstallationLineOrigin.USER_SELECTED,
-          tx,
-        );
-      }
-
-      const preliminaryQuote = await this.recalculateQuoteTotals(quote.id, tx);
-      const lineCount = await tx.installationQuoteLine.count({
-        where: { quoteId: quote.id },
-      });
-      if (
-        lineCount === 0 ||
-        new Decimal(preliminaryQuote.total.toString()).lte(0)
-      ) {
-        throw new BadRequestException(
-          'No installation price could be calculated for this estimate. Review the installation-service mappings.',
-        );
-      }
-      if (!noDeposit && depositAmount.gt(preliminaryQuote.total.toString())) {
-        throw new BadRequestException(
-          'The Installation Deposit cannot exceed the preliminary installation total.',
-        );
-      }
-      if (noDeposit) {
-        const current = await this.getJobRecord(job.id, tx);
-        if (!current) throw new NotFoundException('Installation job not found.');
-        await this.finalizeDealerMeasurements(current, user.id, tx, true);
-      }
-      return job;
-    });
+    const createdJob = await withAgreementTransaction(this.prisma, estimateId, (tx) =>
+      this.createRequestedInstallation(estimateId, dto, user, coverage, tx),
+    );
 
     await this.logs.log({
       action: 'CREATE',

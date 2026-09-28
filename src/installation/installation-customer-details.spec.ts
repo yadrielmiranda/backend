@@ -70,6 +70,7 @@ function fixture(role: 'dealer' | 'client' = 'dealer') {
       },
     ],
     measurements: [],
+    revisions: [],
   };
   const tx: any = {
     $queryRaw: jest.fn(),

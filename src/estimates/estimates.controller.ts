@@ -1,3 +1,4 @@
+import { DuplicateEstimateDto } from './dto/duplicate-estimate.dto';
 // @/estimates/estimates.controller.ts
 import {
   Controller,
@@ -47,6 +48,11 @@ export class EstimatesController {
     private readonly installationWorkflowService: InstallationWorkflowService,
     private readonly estimateCustomerChargesService: EstimateCustomerChargesService,
   ) {}
+
+  @Post(':id/duplicate')
+  duplicate(@Param('id', ParseIntPipe) id: number, @Body() dto: DuplicateEstimateDto, @Req() req: Request) {
+    return this.estimatesService.duplicateEstimate(id, dto, req.user as AuthUser);
+  }
 
   @Get(':id/discount')
   async getDiscount(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {

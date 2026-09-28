@@ -162,7 +162,10 @@ export class InstallationCoverageCalculationService {
     // Se rechaza antes de consultar a Google, incluso si se invoca el servicio directamente.
     address.state = address.state.toUpperCase();
     if (address.state !== 'FL') {
-      throw new BadRequestException('Installation is available only in Florida.');
+      throw new BadRequestException({
+        code: 'INSTALLATION_OUTSIDE_COVERAGE',
+        message: 'Installation is available only in Florida.',
+      });
     }
     const policy = await this.prisma.installationCoverage.findUnique({
       where: { id: 1 },
@@ -202,9 +205,10 @@ export class InstallationCoverageCalculationService {
     }
     const miles = new Decimal(distanceMeters).div('1609.344');
     if (miles.gt(policy.maxDistanceMiles.toString()))
-      throw new BadRequestException(
-        'Installation is not available at this address.',
-      );
+      throw new BadRequestException({
+        code: 'INSTALLATION_OUTSIDE_COVERAGE',
+        message: 'Installation is not available at this address.',
+      });
     const ranges = policy.ranges as Array<{
       fromMiles: string;
       upToMiles: string;

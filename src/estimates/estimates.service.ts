@@ -1,3 +1,5 @@
+import { DuplicateEstimateDto } from './dto/duplicate-estimate.dto';
+import { assertEstimateDuplicationAccess, estimateDuplicationInclude } from './estimate-duplication';
 import { resolveNewPlan, getPaymentSchedule } from '@/payment-plans/payment-schedule';
 import { PaymentsService } from '@/payments/payments.service';
 import { CANCELED_ESTIMATE, assertEstimateLifecycleAccess, assertEstimateNotCanceled, assertNoEstimatePaymentHistory } from './estimate-lifecycle-policy';
@@ -18,6 +20,7 @@ import {
   NotFoundException,
   InternalServerErrorException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import {
   Estimate,
@@ -538,7 +541,7 @@ export class EstimatesService {
    * requerido por el calculador.
    */
   private buildPieceDtoFromPersistedPiece(
-    piece: PieceWithRelations,
+    piece: Piece & { pieceMuntin: Prisma.PieceMuntinGetPayload<{ include: { panels: true } }> | null },
     dealerMarkupPercent: number,
   ): CreatePieceDto {
     const extendedPiece = piece as PieceWithRelations & {
@@ -1237,6 +1240,136 @@ export class EstimatesService {
 
       return createdEstimate as EstimateWithRelations;
     });
+  }
+
+  async duplicateEstimate(id: number, dto: DuplicateEstimateDto, actor: AuthUser) {
+    // No usar findOneForUser: sus sincronizaciones modificarían el original.
+    const readSource = (db: PrismaTransactionClient) => db.estimate.findUnique({
+      where: { id }, include: estimateDuplicationInclude,
+    });
+    const before = await readSource(this.prisma);
+    assertEstimateDuplicationAccess(before, actor);
+    if (typeof dto.includeInstallation !== 'boolean') {
+      throw new BadRequestException('Choose whether to include installation.');
+    }
+    if (dto.includeInstallation && (!before.installationJob ||
+        before.installationJob.status === InstallationJobStatus.CANCELED)) {
+      throw new ConflictException('This estimate does not include installation. Duplicate materials only.');
+    }
+    // La validación externa se hace antes de abrir la transacción y antes de crear datos.
+    const coverage = dto.includeInstallation
+      ? await this.installationWorkflow.prepareDuplicateInstallation(before.installationJob!)
+      : null;
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${id} FOR UPDATE`;
+      const source = await readSource(tx);
+      assertEstimateDuplicationAccess(source, actor);
+      if (coverage && JSON.stringify(source.installationJob) !== JSON.stringify(before.installationJob)) {
+        throw new ConflictException('The installation changed while preparing the copy. Please try again.');
+      }
+      await assertNoPendingMaterialRevision(tx, id);
+      await tx.$queryRaw`SELECT id FROM User WHERE id = ${source.idUser} FOR UPDATE`;
+      const owner = await tx.user.findUniqueOrThrow({
+        where: { id: source.idUser }, include: { role: true },
+      });
+      assertEstimateDuplicationAccess({ ...source, user: owner }, actor);
+      const ownerMarkup = this.resolveBaseMarkupForUser(owner);
+      const ownerIsDealer = owner.role.name === 'dealer';
+      const earningsPlan = ownerIsDealer && owner.dealerMode === DealerMode.INTERNAL
+        ? await loadActiveEarningsPlan(tx, owner.dealerEarningsPlanId) : null;
+      const paymentPlan = await resolveNewPlan(tx, owner.id);
+      const activeStatus = await tx.estimateStatus.findUnique({ where: { name: 'Active' } });
+      if (!activeStatus) throw new InternalServerErrorException('EstimateStatus "Active" not seeded.');
+      const taxParameter = await tx.globalParameter.findUnique({ where: { key: GlobalParameterKey.SALES_TAX } });
+      if (!taxParameter) throw new InternalServerErrorException('SALES_TAX config missing.');
+
+      const cache = this.pieceCalculator.createCalculationCache();
+      cache.promotions = await this.promotions.eligible(owner.id, tx);
+      const calculated: CalculatedPieceCombined[] = [];
+      for (const piece of source.pieces) {
+        calculated.push(await this.pieceCalculator.calculatePieceMetrics(
+          this.buildPieceDtoFromPersistedPiece(piece, Number(piece.dealerMarkup) * 100),
+          ownerMarkup, tx, cache,
+        ));
+      }
+      const totals = this.pieceCalculator.calculateEstimateTotals(
+        calculated,
+        new Decimal(owner.isTaxExempt ? 0 : taxParameter.value.toString()),
+        new Decimal(source.customerTaxRate.toString()),
+      );
+      const standardExpiresAt = await this.getEstimateExpirationDate(tx);
+      const promotionExpiresAt = promotionDeadline(calculated);
+      const sequence = await tx.estimateSequence.create({ data: {} });
+      // Lista explícita: firmas, pagos, descuentos aprobados y estados anteriores no se heredan.
+      const created = await tx.estimate.create({
+        data: {
+          ...totals,
+          number: String(190909 + sequence.id),
+          name: dto.name?.trim() || `${source.name.slice(0, 248)} (copy)`,
+          idUser: owner.id,
+          statusId: activeStatus.id,
+          units: calculated.reduce((total, piece) => total + piece.qty, 0),
+          customerFirstName: source.customerFirstName,
+          customerLastName: source.customerLastName,
+          customerEmail: source.customerEmail,
+          customerPhone: source.customerPhone,
+          customerStreet: source.customerStreet,
+          customerCity: source.customerCity,
+          customerState: source.customerState,
+          customerPostalCode: source.customerPostalCode,
+          dealerModeSnapshot: ownerIsDealer ? owner.dealerMode : null,
+          ownerMarkupSnapshot: new Prisma.Decimal(ownerMarkup.toFixed(18)),
+          paymentPlanSnapshot: paymentPlan as unknown as Prisma.InputJsonValue,
+          ...(earningsPlan ? { dealerEarningsPlanSnapshot: earningsPlan } : {}),
+          standardExpiresAt,
+          promotionExpiresAt,
+          expiresAt: effectiveExpiry(standardExpiresAt, promotionExpiresAt),
+          promotionContext: calculated.flatMap(piece => piece.promotionSnapshot ? [piece.promotionSnapshot] : []) as Prisma.InputJsonValue,
+        },
+        select: { id: true, number: true },
+      });
+      for (const piece of calculated) {
+        const saved = await tx.piece.create({
+          data: { ...this.buildCalculatedPiecePersistenceData(piece), idEst: created.id },
+          select: { id: true },
+        });
+        await this.replacePieceMuntin(tx, saved.id, piece.muntin);
+      }
+      if (coverage) {
+        await this.installationWorkflow.duplicateInstallationInTransaction(
+          created.id, source.installationJob!, actor, coverage, tx,
+        );
+      }
+      if (ownerIsDealer && owner.dealerMode === DealerMode.EXTERNAL) {
+        // CITY_FEE pertenece al trámite anterior; los cargos CUSTOM son del dealer.
+        const charges = source.customerCharges.filter(charge =>
+          charge.source === 'CUSTOM' || (coverage && charge.source !== 'CITY_FEE'),
+        );
+        if (charges.length) await tx.estimateCustomerCharge.createMany({
+          data: charges.map(charge => ({
+            estimateId: created.id,
+            origin: charge.origin,
+            source: charge.source,
+            sourceKey: charge.sourceKey,
+            sourceRefId: charge.sourceRefId,
+            description: charge.description,
+            pricingMode: charge.pricingMode,
+            pricingValue: charge.pricingValue,
+            usedInCustomerQuote: charge.usedInCustomerQuote,
+            systemAmountSnapshot: charge.systemAmountSnapshot,
+            sortOrder: charge.sortOrder,
+          })),
+        });
+      }
+      await this.logs.log({
+        action: 'CREATE', entityType: 'Estimate', entityId: created.id, userId: actor.id,
+        message: `Estimate #${created.number} duplicated from #${source.number}.`,
+        after: { ...created, idUser: owner.id, units: calculated.reduce((total, piece) => total + piece.qty, 0) },
+        meta: { source: 'EstimatesService.duplicateEstimate', sourceEstimateId: id, includeInstallation: dto.includeInstallation },
+      }, tx);
+      return created;
+    }, { timeout: 90000, isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
   }
 
   /**
