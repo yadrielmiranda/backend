@@ -51,6 +51,7 @@ function recalcFixture(promotions: PromotionTerms[] = [offer]) {
     ],
   };
   const tx: any = {
+    estimateAgreement: { findMany: jest.fn().mockResolvedValue([]) },
     $queryRaw: jest.fn(),
     estimate: {
       findUnique: jest.fn().mockImplementation(async () => quote),
@@ -104,6 +105,7 @@ function recalcFixture(promotions: PromotionTerms[] = [offer]) {
     );
   const eligible = jest.fn().mockResolvedValue(promotions);
   const workflow = {
+    refreshUnpaidDealerMeasurements: jest.fn(),
     assertEstimateEditAllowed: jest.fn().mockResolvedValue(undefined),
   };
   const service = new EstimatesService(
@@ -115,7 +117,7 @@ function recalcFixture(promotions: PromotionTerms[] = [offer]) {
     {} as any,
     workflow as any,
     {} as any,
-    { eligible } as any,
+    { eligible } as any, {} as any,
   );
   return { quote, tx, service, eligible, workflow, calculate };
 }

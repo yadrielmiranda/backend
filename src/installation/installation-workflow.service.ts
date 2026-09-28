@@ -1,4 +1,5 @@
 import { assertNoOpenMaterialCheckout, assertNoPendingMaterialRevision } from '@/estimates/material-revisions/material-revision-policy';
+import { CANCELED_ESTIMATE, assertEstimateNotCanceled } from '@/estimates/estimate-lifecycle-policy';
 import { randomUUID } from 'crypto';
 import { PromotionsService } from '@/promotions/promotions.service';
 import { installationAddress } from './installation-address';
@@ -394,12 +395,15 @@ export class InstallationWorkflowService {
     job: Prisma.InstallationJobGetPayload<{ include: typeof jobInclude }>,
   ) {
     if (
+      job.estimate.status?.name === CANCELED_ESTIMATE ||
       job.status !== InstallationJobStatus.INSTALLATION_PAYMENT_PENDING ||
       !job.estimate.paymentPlanSnapshot
     ) return job;
     // Reevalúa los trabajos bloqueados con la regla anterior sin exigir otro pago.
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${job.estimateId} FOR UPDATE`;
+      const estimate = await tx.estimate.findUnique({ where: { id: job.estimateId }, include: { status: true } });
+      if (estimate?.status.name === CANCELED_ESTIMATE) return;
       await refreshScheduledInstallation(tx, job.estimateId);
     });
     return (await this.getJobRecord(job.id)) ?? job;
@@ -434,6 +438,10 @@ export class InstallationWorkflowService {
       filters.push({ estimate: { idUser: user.id } });
     }
 
+    if (scope === 'active') {
+      filters.push({ estimate: { status: { name: { not: CANCELED_ESTIMATE } } } });
+    }
+
     if (query.status) {
       filters.push({ status: query.status });
     } else if (scope === 'active') {
@@ -448,7 +456,10 @@ export class InstallationWorkflowService {
     } else if (scope === 'completed') {
       filters.push({ status: InstallationJobStatus.COMPLETED });
     } else if (scope === 'canceled') {
-      filters.push({ status: InstallationJobStatus.CANCELED });
+      filters.push({ OR: [
+        { status: InstallationJobStatus.CANCELED },
+        { estimate: { status: { name: CANCELED_ESTIMATE } } },
+      ] });
     }
 
     for (const token of installationSearchTokens(query.search)) {
@@ -1993,6 +2004,7 @@ export class InstallationWorkflowService {
     job: Prisma.InstallationJobGetPayload<{ include: typeof jobInclude }>,
     user: AuthUser,
   ): void {
+    assertEstimateNotCanceled(job.estimate);
     const internalOwner = user.role?.name === 'dealer' &&
       job.estimate.idUser === user.id &&
       job.estimate.user.role.name === 'dealer' &&
@@ -4610,8 +4622,9 @@ export class InstallationWorkflowService {
     }
 
     const appointment = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${job.estimateId} FOR UPDATE`;
+      assertEstimateNotCanceled(await tx.estimate.findUnique({ where: { id: job.estimateId }, include: { status: true } }));
       if (dto.type === InstallationAppointmentType.INSTALLATION) {
-        await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${job.estimateId} FOR UPDATE`;
         await assertScheduleMilestone(tx, job.estimateId, 'INSTALL');
       }
       const activeAppointments = await tx.installationAppointment.findMany({
@@ -4707,6 +4720,8 @@ export class InstallationWorkflowService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${appointment.job.estimateId} FOR UPDATE`;
+      assertEstimateNotCanceled(await tx.estimate.findUnique({ where: { id: appointment.job.estimateId }, include: { status: true } }));
       const accepted = dto.response === InstallationAppointmentResponse.ACCEPT;
       await tx.installationAppointment.update({
         where: { id: appointmentId },
@@ -5099,8 +5114,9 @@ export class InstallationWorkflowService {
   async refreshAfterEstimateChange(
     estimateId: number,
     actor: AuthUser,
+    transaction?: PrismaTransactionClient,
   ): Promise<void> {
-    const existingJob = await this.prisma.installationJob.findUnique({
+    const existingJob = await (transaction ?? this.prisma).installationJob.findUnique({
       where: { estimateId },
       select: { id: true, status: true, dealerMeasurementsAcceptedAt: true },
     });
@@ -5109,7 +5125,7 @@ export class InstallationWorkflowService {
       return;
     }
 
-    await withAgreementTransaction(this.prisma, estimateId, async (tx) => {
+    const refresh = async (tx: PrismaTransactionClient) => {
       const estimate = await tx.estimate.findUnique({
         where: { id: estimateId },
         include: {
@@ -5215,7 +5231,9 @@ export class InstallationWorkflowService {
         where: { id: existingJob.id },
         data: { status: nextStatus },
       });
-    });
+    };
+    if (transaction) await refresh(transaction);
+    else await withAgreementTransaction(this.prisma, estimateId, refresh);
   }
 
   async getPaymentContext(
@@ -5264,6 +5282,7 @@ export class InstallationWorkflowService {
     if (!estimate || estimate.idUser !== user.id) {
       throw new NotFoundException(`Estimate #${estimateId} not found.`);
     }
+    assertEstimateNotCanceled(estimate);
 
     if (!options.preview && [PaymentType.MATERIAL, PaymentType.INSTALLMENT, PaymentType.INSTALLATION, PaymentType.PERMIT].includes(type as any))
       await assertNoPendingMaterialRevision(tx, estimateId);

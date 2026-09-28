@@ -45,7 +45,7 @@ function fixture() {
     {} as any,
     workflow as any,
     {} as any,
-    {} as any,
+    {} as any, {} as any,
   );
   jest.spyOn(service, 'findOneForUser').mockResolvedValue(estimate);
   const save = (value = 10, type = 'PERCENTAGE', scope = 'MATERIAL') =>

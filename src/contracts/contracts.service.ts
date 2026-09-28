@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { MaterialRevisionsService } from '@/estimates/material-revisions/material-revisions.service';
+import { CANCELED_ESTIMATE } from '@/estimates/estimate-lifecycle-policy';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
@@ -313,7 +314,7 @@ export class ContractsService {
       });
       const pendingMaterial = await db.estimate.findUnique({
         where: { id: estimateId },
-        select: { materialRevisions: { where: { activeSlot: 1, status: 'AWAITING_SIGNATURE' }, select: { id: true }, take: 1 } },
+        select: { status: { select: { name: true } }, materialRevisions: { where: { activeSlot: 1, status: 'AWAITING_SIGNATURE' }, select: { id: true }, take: 1 } },
       });
       const pendingMaterialRevisionId = pendingMaterial?.materialRevisions?.[0]?.id ?? null;
       let nextSignatureKind: 'AGREEMENT' | 'CHANGE_ORDER' | null =
@@ -334,6 +335,7 @@ export class ContractsService {
           nextSignatureKind = 'CHANGE_ORDER';
       }
       return {
+        estimateCanceled: pendingMaterial?.status?.name === CANCELED_ESTIMATE,
         defaultContract: this.contractInfo(contract),
         current: this.agreementInfo(agreements[0]),
         nextSignatureKind,
@@ -551,6 +553,8 @@ export class ContractsService {
     const { estimate, pricingMode } = await this.publicAccess(token);
     return this.transaction(estimate.id, async (db) => {
       await invalidateChangedAgreements(db, estimate.id);
+      const currentEstimate = await db.estimate.findUnique({ where: { id: estimate.id }, select: { status: { select: { name: true } } } });
+      const estimateCanceled = currentEstimate?.status?.name === CANCELED_ESTIMATE;
       const selected = await db.estimateAgreement.findFirst({
         where: { id: agreementId, estimateId: estimate.id, pricingMode },
         select: { ...agreementSummarySelect, consentText: true },
@@ -581,10 +585,11 @@ export class ContractsService {
           })
         : null;
       return {
+        estimateCanceled,
         current: this.agreementInfo(selected),
         history,
         changeOrder: (document?.snapshot as any)?.changeOrder ?? null,
-        changeOrderPaymentPreview: selected.baseAgreementId && !selected.materialRevisionId &&
+        changeOrderPaymentPreview: !estimateCanceled && selected.baseAgreementId && !selected.materialRevisionId &&
           !selected.invalidatedAt && !selected.signedAt
           ? await changeOrderPaymentPreview(db, estimate.id, estimate.dealerModeSnapshot === 'INTERNAL')
           : null,

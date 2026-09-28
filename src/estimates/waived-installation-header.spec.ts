@@ -29,6 +29,7 @@ function fixture() {
     user: { findUnique: jest.fn(async () => actor) },
     installationJob: { findUnique: jest.fn(async () => job) },
     estimate: {
+      findUnique: jest.fn(async () => estimate),
       update: jest.fn(async ({ data }) => Object.assign(estimate, data)),
     },
   };
@@ -53,7 +54,7 @@ function fixture() {
     {} as never,
     workflow,
     {} as never,
-    {} as never,
+    {} as never, {} as any,
   );
   jest
     .spyOn(service as any, 'getEstimateWithRelationsInTransaction')

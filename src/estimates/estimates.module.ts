@@ -1,4 +1,5 @@
 import { PromotionsModule } from '@/promotions/promotions.module';
+import { PaymentsModule } from '@/payments/payments.module';
 import { Module } from '@nestjs/common';
 import { MaterialRevisionsModule } from './material-revisions/material-revisions.module';
 import { EstimatesService } from './estimates.service';
@@ -26,6 +27,7 @@ import { EstimateCustomerChargesService } from './estimate-customer-charges.serv
     NotificationsModule,
     InstallationModule,
     MaterialRevisionsModule,
+    PaymentsModule,
   ],
   controllers: [EstimatesController, PublicEstimatesController],
   providers: [

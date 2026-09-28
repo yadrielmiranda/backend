@@ -1,4 +1,6 @@
 import { resolveNewPlan, getPaymentSchedule } from '@/payment-plans/payment-schedule';
+import { PaymentsService } from '@/payments/payments.service';
+import { CANCELED_ESTIMATE, assertEstimateLifecycleAccess, assertEstimateNotCanceled, assertNoEstimatePaymentHistory } from './estimate-lifecycle-policy';
 import { buildDealerEarningsReport, type DealerEarningsSummary, type MaterialProfitsSummary } from '@/common/dealer-earnings';
 import { loadActiveEarningsPlan } from '@/earnings-plans/earnings-plan';
 import { canRefreshDraftEarningsPlan, refreshDraftEarningsPlan } from '@/earnings-plans/estimate-earnings-plan';
@@ -159,6 +161,7 @@ export class EstimatesService {
     private installationWorkflow: InstallationWorkflowService,
     private customerChargesService: EstimateCustomerChargesService,
     private promotions: PromotionsService,
+    private paymentsService: PaymentsService,
   ) {}
 
   private decimalOrNull(value: string | number | null | undefined) {
@@ -1660,6 +1663,7 @@ export class EstimatesService {
     userId: number,
   ): Promise<EstimateWithRelations> {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
       const beforeEstimate = await this.getEstimateWithRelationsInTransaction(
         tx as PrismaTransactionClient,
         estimateId,
@@ -2132,10 +2136,42 @@ export class EstimatesService {
     });
   }
 
-  // Recalcula un Estimate activo editable o reactiva uno vencido.
+  async cancelEstimate(estimateId: number, actor: AuthUser) {
+    return this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
+      const estimate = await tx.estimate.findUnique({
+        where: { id: estimateId }, include: { status: true, order: true },
+      });
+      assertEstimateLifecycleAccess(estimate, actor);
+      if (!estimate) throw new NotFoundException('Estimate not found.');
+      if (estimate.order) throw new BadRequestException('An estimate with an order cannot be canceled here.');
+      if (estimate.status.name === CANCELED_ESTIMATE) return { id: estimate.id, status: estimate.status };
+      if (!['Active', 'Expired'].includes(estimate.status.name))
+        throw new BadRequestException('Only active or expired estimates without payments can be canceled.');
+      await assertNoPendingMaterialRevision(tx, estimateId);
+      const canceledStatus = await tx.estimateStatus.findUnique({ where: { name: CANCELED_ESTIMATE } });
+      if (!canceledStatus) throw new InternalServerErrorException('EstimateStatus "Canceled" not seeded. Apply the pending migration.');
+      await this.paymentsService.closeCheckoutsForEstimateCancellation(tx, estimateId);
+      await tx.estimate.update({ where: { id: estimateId }, data: { statusId: canceledStatus.id } });
+      await this.logs.log({
+        action: 'UPDATE', entityType: 'Estimate', entityId: estimate.id, userId: actor.id,
+        message: `Estimate canceled (#${estimate.number})`,
+        before: { status: estimate.status.name }, after: { status: CANCELED_ESTIMATE },
+        meta: { source: 'EstimatesService.cancelEstimate' },
+      }, tx);
+      return { id: estimate.id, status: canceledStatus };
+    }, { timeout: 30_000 });
+  }
+
+  reactivateEstimate(estimateId: number, user: AuthUser) {
+    return this.recalculateEstimate(estimateId, user, true);
+  }
+
+  // Reactivar nunca es solo cambiar el estado: usa el recálculo completo.
   async recalculateEstimate(
     estimateId: number,
     user: AuthUser,
+    reactivating = false,
   ): Promise<EstimateWithRelations> {
     const dbUser = await this.prisma.user.findUnique({
       where: { id: user.id },
@@ -2152,7 +2188,7 @@ export class EstimatesService {
           user: { include: { role: true } },
           status: true,
           order: true,
-          payments: true,
+          payments: { include: { receipts: { select: { id: true }, take: 1 } } },
           pieces: {
             orderBy: { id: 'asc' },
             include: {
@@ -2186,7 +2222,16 @@ export class EstimatesService {
       if (beforeEstimate.promotionLockedAt) throw new BadRequestException('Paid promotion terms cannot be recalculated.');
       const statusName = beforeEstimate.status?.name ?? 'UNKNOWN';
 
-      if (statusName === 'Active') {
+      if (reactivating) {
+        assertEstimateLifecycleAccess(beforeEstimate, user);
+        if (statusName !== CANCELED_ESTIMATE)
+          throw new BadRequestException('Only canceled estimates can be reactivated.');
+        if (beforeEstimate.order) throw new BadRequestException('An estimate with an order cannot be reactivated.');
+        assertNoEstimatePaymentHistory(beforeEstimate.payments);
+        if (beforeEstimate.payments.some(payment => payment.status === PaymentStatus.PENDING || payment.stripeSessionId || payment.stripePaymentIntentId))
+          throw new BadRequestException('Reconcile the pending payment before reactivating this estimate.');
+        await assertNoPendingMaterialRevision(tx, estimateId);
+      } else if (statusName === 'Active') {
         // Mantiene el recálculo manual bajo las mismas restricciones que
         // cualquier otra modificación de un Estimate activo.
         await this.assertEstimateCanBeEdited(
@@ -2357,6 +2402,16 @@ export class EstimatesService {
         0,
       );
 
+      // El checkout abandonado pudo congelar cuotas. Sin cobros ni recibos,
+      // las cuotas vuelven a calcularse sobre el total vigente, conservando el plan.
+      const reactivatedPlan = reactivating && beforeEstimate.paymentPlanSnapshot
+        ? { ...(beforeEstimate.paymentPlanSnapshot as Prisma.JsonObject) } : null;
+      if (reactivatedPlan) {
+        delete reactivatedPlan.locked;
+        delete reactivatedPlan.adjustments;
+        delete reactivatedPlan.legacyPaymentCredits;
+      }
+
       for (const p of calculatedPieces) {
         const pieceId = (p as UpsertPieceDto).id;
 
@@ -2476,6 +2531,7 @@ export class EstimatesService {
           promotionExpiresAt: promotionDeadline(calculatedPieces),
           expiresAt: effectiveExpiry(expiresAt, promotionDeadline(calculatedPieces)),
           promotionContext: calculatedPieces.flatMap((p) => p.promotionSnapshot ? [p.promotionSnapshot] : []) as unknown as Prisma.InputJsonValue,
+          ...(reactivatedPlan ? { paymentPlanSnapshot: reactivatedPlan as Prisma.InputJsonValue } : {}),
           status: {
             connect: { id: activeStatus.id },
           },
@@ -2483,6 +2539,7 @@ export class EstimatesService {
       });
 
       await this.installationWorkflow.refreshUnpaidDealerMeasurements(estimateId, tx as PrismaTransactionClient);
+      if (reactivating) await this.installationWorkflow.refreshAfterEstimateChange(estimateId, user, tx);
 
       const refreshedEstimate = await tx.estimate.findUnique({
         where: { id: estimateId },
@@ -2535,14 +2592,14 @@ export class EstimatesService {
         entityType: 'Estimate',
         entityId: refreshedEstimate.id,
         userId: user.id,
-        message: `Estimate recalculated (#${refreshedEstimate.number})`,
+        message: `Estimate ${reactivating ? 'reactivated and recalculated' : 'recalculated'} (#${refreshedEstimate.number})`,
         before: EstimateAuditSnapshotBuilder.build(beforeEstimate),
         after: EstimateAuditSnapshotBuilder.build(refreshedEstimate),
-        meta: { source: 'EstimatesService.recalculateEstimate' },
-      });
+        meta: { source: reactivating ? 'EstimatesService.reactivateEstimate' : 'EstimatesService.recalculateEstimate' },
+      }, tx);
 
       return refreshedEstimate;
-    });
+    }, { allowCanceled: reactivating, timeout: 30_000 });
 
     return result as EstimateWithRelations;
   }
@@ -2554,6 +2611,7 @@ export class EstimatesService {
   ): Promise<Estimate> {
     const discardedFiles: string[] = [];
     const deleted = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${where.id} FOR UPDATE`;
       const estimate = await tx.estimate.findUnique({
         where,
         include: {
@@ -2568,6 +2626,7 @@ export class EstimatesService {
       if (!estimate) {
         throw new NotFoundException(`Estimate #${where.id} not found.`);
       }
+      assertEstimateNotCanceled(estimate);
 
       if (estimate.order) {
         throw new BadRequestException(

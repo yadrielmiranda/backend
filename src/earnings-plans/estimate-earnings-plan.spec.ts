@@ -31,7 +31,7 @@ function fixture() {
   };
   db.$transaction = jest.fn(async work => work(db));
   const service = new EstimatesService(db, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
-    { buildSummary: jest.fn(() => null) } as any, {} as any);
+    { buildSummary: jest.fn(() => null) } as any, {} as any, {} as any);
   jest.spyOn(service as any, 'resolveBrandingForEstimate').mockResolvedValue(null);
   jest.spyOn(service as any, 'resolveCompanyBranding').mockResolvedValue(null);
   return { db, service, stored, assigned, owner, copy };

@@ -458,6 +458,47 @@ describe('Agreement acceptance, access and history', () => {
     accepted: true,
   });
 
+  it('keeps canceled signed documents readable and byte-for-byte unchanged', async () => {
+    const agreement = await ready();
+    await service.sign(token, agreement.id, input(agreement), {});
+    const signed = await service.publicDocument(token, agreement.id, 'signed');
+    f.state().estimate[0].status = { name: 'Canceled' };
+    const status = await service.publicInfo(token, agreement.id);
+    expect(status.estimateCanceled).toBe(true);
+    expect(status.current.state).toBe('SIGNED');
+    expect((await service.estimateInfo(1, 'detailed', dealer)).estimateCanceled).toBe(true);
+    expect(await service.publicDocument(token, agreement.id, 'signed')).toEqual(signed);
+    await expect(service.prepare(1, 'detailed', false, dealer)).rejects.toThrow('Only active');
+  });
+
+  it('blocks signing from an already open link after cancellation', async () => {
+    const agreement = await ready();
+    f.state().estimate[0].status = { name: 'Canceled' };
+    await expect(service.sign(token, agreement.id, input(agreement), {})).rejects.toThrow('Only active');
+    expect(pdf.receipt).not.toHaveBeenCalled();
+    expect((await service.publicInfo(token, agreement.id)).estimateCanceled).toBe(true);
+  });
+
+  it('renewing expiry requires a fresh signature even at the same price and keeps the previous PDF', async () => {
+    const agreement = await ready();
+    await service.sign(token, agreement.id, input(agreement), {});
+    const signed = await service.publicDocument(token, agreement.id, 'signed');
+    f.state().estimate[0].status = { name: 'Canceled' };
+    await withAgreementTransaction(f.db, 1, async () => {
+      f.state().estimate[0].status = { name: 'Active' };
+      f.state().estimate[0].expiresAt = new Date('2099-12-01');
+    }, { allowCanceled: true });
+    const old = await service.publicInfo(token, agreement.id);
+    expect(old.estimateCanceled).toBe(false);
+    expect(old.current.state).toBe('REQUIRES_NEW_SIGNATURE');
+    expect(await service.publicDocument(token, agreement.id, 'signed')).toEqual(signed);
+    const next = await ready();
+    expect(next.id).not.toBe(agreement.id);
+    expect(next.state).toBe('AWAITING_SIGNATURE');
+    await service.sign(token, next.id, input(next), {});
+    expect((await service.estimateInfo(1, 'detailed', dealer)).history).toHaveLength(2);
+  });
+
   function paymentHarness(type: PaymentType = PaymentType.MATERIAL, amount = 1370) {
     f.db.payment = {
       findUnique: jest.fn().mockResolvedValue(null),

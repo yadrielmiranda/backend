@@ -84,6 +84,7 @@ function fixture(
       data.promotionSnapshot === Prisma.DbNull ? null : data.promotionSnapshot,
   });
   const tx: any = {
+    estimateAgreement: { findMany: jest.fn().mockResolvedValue([]) },
     $queryRaw: jest.fn(),
     user: { findUnique: jest.fn().mockResolvedValue(actor) },
     estimate: {
@@ -151,6 +152,7 @@ function fixture(
     );
   const eligible = jest.fn().mockResolvedValue(active);
   const workflow = {
+    refreshUnpaidDealerMeasurements: jest.fn(),
     assertEstimateEditAllowed: jest.fn().mockResolvedValue(undefined),
   };
   const service = new EstimatesService(
@@ -162,7 +164,7 @@ function fixture(
     {} as any,
     workflow as any,
     {} as any,
-    { eligible } as any,
+    { eligible } as any, {} as any,
   );
   return { quote, tx, prisma, service, eligible, calculate, workflow };
 }

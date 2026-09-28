@@ -35,7 +35,7 @@ describe('Earnings conditions on a new estimate', () => {
     const prisma: any = { $transaction: jest.fn(async work => work(db)) };
     const logs = new LogsService(prisma);
     const calculator = new EstimatePieceCalculatorService({} as any, {} as any);
-    const service = new EstimatesService(prisma, logs, {} as any, {} as any, calculator, {} as any, {} as any, {} as any, {} as any);
+    const service = new EstimatesService(prisma, logs, {} as any, {} as any, calculator, {} as any, {} as any, {} as any, {} as any, {} as any);
     const created = await service.createEmptyEstimate({ name: 'Test earnings' }, 7);
     // La auditoría debe confirmarse con el estimado, sin otra transacción que espere el bloqueo del usuario.
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);

@@ -482,6 +482,16 @@ export class EstimatesController {
     return result;
   }
 
+  @Post(':id/cancel')
+  cancel(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.estimatesService.cancelEstimate(id, req.user as AuthUser);
+  }
+
+  @Post(':id/reactivate')
+  reactivate(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.estimatesService.reactivateEstimate(id, req.user as AuthUser);
+  }
+
   @Get(':id/customer-charges')
   customerCharges(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.estimateCustomerChargesService.findForEstimate(

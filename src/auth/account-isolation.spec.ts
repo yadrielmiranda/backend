@@ -14,7 +14,7 @@ function fixture() {
     id, idUser: id, userId: id, status: { name: 'Active' },
     estimate: { idUser: id, payments: [], installationJob: null },
     installationJob: null, payments: [], deliveries: [], extraCharges: [],
-    quotes: [], appointments: [], _count: { measurements: 0 },
+    quotes: [], appointments: [], revisions: [], measurements: [], _count: { measurements: 0 },
   }));
   const select = (owner?: number) => records.filter(item => owner === undefined || item.idUser === owner);
   const db: any = {
@@ -31,7 +31,7 @@ function fixture() {
     },
   };
   const unused: any = {};
-  const estimates = new EstimatesService(db, unused, unused, unused, unused, unused, unused, unused, unused);
+  const estimates = new EstimatesService(db, unused, unused, unused, unused, unused, unused, unused, unused, {} as any);
   jest.spyOn(estimates, 'estimate').mockResolvedValue(records[1] as any);
   return {
     estimates,

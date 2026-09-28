@@ -1,4 +1,5 @@
 import { changeOrderInstallments } from './change-order-installments';
+import { CANCELED_ESTIMATE, assertEstimateNotCanceled } from '@/estimates/estimate-lifecycle-policy';
 import { hasRefundHistory, paymentIsCovered } from '@/payments/payment-accounting';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -202,21 +203,23 @@ export function buildPaymentSchedule(estimate: any) {
         (row.status !== 'REVIEW' && Number(row.balance) === 0),
     );
   const materialRevisionPending = Boolean(estimate.materialRevisions?.some((revision: any) => revision.activeSlot === undefined || revision.activeSlot === 1));
+  const estimateCanceled = estimate.status?.name === CANCELED_ESTIMATE;
   return {
     ...allocation,
-    ...(materialRevisionPending ? { next: null } : {}),
+    ...((materialRevisionPending || estimateCanceled) ? { next: null } : {}),
+    estimateCanceled,
     materialRevisionPending,
     name: snapshot.name,
     requiresOrderReview: Boolean(job && !estimate.order),
     orderReviewPending,
     orderReviewBlockedReason: materialRevisionPending ? 'Finish or cancel the pending material revision before continuing.' : orderReviewBlockedReason,
-    fullBalance: materialRevisionPending ? null : fullBalance,
+    fullBalance: materialRevisionPending || estimateCanceled ? null : fullBalance,
     cityFeePending,
     provisional,
     provisionalMessage,
-    canRelease: canRelease && !materialRevisionPending,
+    canRelease: canRelease && !materialRevisionPending && !estimateCanceled,
     canInstall:
-      !materialRevisionPending &&
+      !materialRevisionPending && !estimateCanceled &&
       // Una devolución puede reabrir cuotas anteriores después de pagar INSTALL.
       canRelease &&
       installationSequences.size > 0 &&
@@ -249,6 +252,7 @@ export async function installmentContext(
     where: { id: estimateId },
     include: scheduleInclude,
   });
+  assertEstimateNotCanceled(estimate);
   const snapshot = planSnapshot(estimate.paymentPlanSnapshot);
   if (!snapshot)
     throw new BadRequestException(

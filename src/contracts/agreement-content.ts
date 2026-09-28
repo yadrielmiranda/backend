@@ -1,4 +1,5 @@
 import { synchronizeScheduleChanges, refreshScheduledInstallation } from '@/payment-plans/payment-schedule';
+import { assertEstimateNotCanceled } from '@/estimates/estimate-lifecycle-policy';
 import { createHash } from 'crypto';
 import { projectMaterialRevision } from '@/estimates/material-revisions/material-revision-snapshot';
 import Decimal from 'decimal.js';
@@ -512,13 +513,18 @@ export function withAgreementTransaction<T>(
   estimateId: number,
   work: (db: Prisma.TransactionClient) => Promise<T>,
   options?: {
+    allowCanceled?: boolean;
     maxWait?: number;
     timeout?: number;
     isolationLevel?: Prisma.TransactionIsolationLevel;
   },
 ): Promise<T> {
+  const { allowCanceled = false, ...transactionOptions } = options ?? {};
   return prisma.$transaction(async (db: Prisma.TransactionClient) => {
     const locked = await db.$queryRaw<Array<{ id: number; paymentPlanSnapshot: unknown }>>`SELECT id, paymentPlanSnapshot FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
+    if (!allowCanceled) assertEstimateNotCanceled(await db.estimate.findUnique({
+      where: { id: estimateId }, select: { status: { select: { name: true } } },
+    }));
     const result = await work(db);
     if (locked?.[0]?.paymentPlanSnapshot) {
       await synchronizeScheduleChanges(db, estimateId);
@@ -526,5 +532,5 @@ export function withAgreementTransaction<T>(
     }
     await invalidateChangedAgreements(db, estimateId);
     return result;
-  }, options);
+  }, transactionOptions);
 }

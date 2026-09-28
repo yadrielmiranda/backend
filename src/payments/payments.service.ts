@@ -1,4 +1,5 @@
 import { assertNoPendingMaterialRevision } from '@/estimates/material-revisions/material-revision-policy';
+import { CANCELED_ESTIMATE, assertNoEstimatePaymentHistory } from '@/estimates/estimate-lifecycle-policy';
 import { cents, hasRefundHistory, paidPrincipal, paymentIsCovered, remainingRefundBalance } from './payment-accounting';
 import { reconcileChargeRefunds, recordManualReceipt, recordStripeReceipt, refreshPaymentAccounting } from './payment-ledger';
 import { stripePaymentMethod } from './stripe-payment-method';
@@ -50,7 +51,7 @@ const MATERIAL_ACCEPTANCE_TEXT =
   'I have reviewed and accept the products, dimensions, configurations and prices in this estimate.';
 
 type UnavailablePublicPaymentContext = {
-  enabled: boolean; status: 'not_applicable' | 'expired'; payment: null;
+  enabled: boolean; status: 'not_applicable' | 'expired' | 'canceled'; payment: null;
   payments?: never; fullBalance?: never; checkouts?: never;
   installmentCheckouts?: never; schedule?: never; agreement?: never;
   materialRevisionPending?: never;
@@ -748,6 +749,47 @@ export class PaymentsService {
     });
   }
 
+  // El llamador mantiene bloqueado Estimate: un checkout nuevo o un registro
+  // manual no puede aparecer entre la comprobación de Stripe y la cancelación.
+  async closeCheckoutsForEstimateCancellation(tx: Prisma.TransactionClient, estimateId: number) {
+    const payments = await tx.payment.findMany({
+      where: { idEst: estimateId }, include: { receipts: { select: { id: true }, take: 1 } },
+    });
+    assertNoEstimatePaymentHistory(payments);
+    if (payments.some(payment => payment.stripePaymentIntentId && !payment.stripeSessionId))
+      throw new ConflictException('A payment needs reconciliation before this estimate can be canceled.');
+    const sessions: Stripe.Checkout.Session[] = [];
+    const assertUnpaid = (session: Stripe.Checkout.Session) => {
+      if (this.isCompletedCheckout(session) || session.status === 'complete')
+        throw new ConflictException('A payment has completed or is processing. Reconcile it before canceling this estimate.');
+      if (session.status !== 'open' && session.status !== 'expired')
+        throw new ConflictException('The payment status could not be confirmed. Try again before canceling this estimate.');
+    };
+    for (const id of new Set(payments.flatMap(payment => payment.stripeSessionId ? [payment.stripeSessionId] : []))) {
+      // Un error de Stripe nunca se interpreta como prueba de que no se pagó.
+      const session = await this.stripe.checkout.sessions.retrieve(id);
+      assertUnpaid(session);
+      sessions.push(session);
+    }
+    for (const session of sessions) {
+      if (session.status !== 'open') continue;
+      let closed: Stripe.Checkout.Session;
+      try {
+        closed = await this.stripe.checkout.sessions.expire(session.id);
+      } catch (error) {
+        closed = await this.stripe.checkout.sessions.retrieve(session.id);
+        assertUnpaid(closed);
+        if (closed.status !== 'expired') throw error;
+      }
+      assertUnpaid(closed);
+      if (closed.status !== 'expired') throw new ConflictException('The checkout is still open. Try canceling again.');
+    }
+    await tx.payment.updateMany({
+      where: { idEst: estimateId, status: { notIn: [PaymentStatus.PAID, PaymentStatus.REFUNDED] } },
+      data: { status: PaymentStatus.CANCELED, stripeSessionId: null, stripePaymentIntentId: null },
+    });
+  }
+
   @Cron(CronExpression.EVERY_5_MINUTES)
   async reconcilePendingCheckoutSessions(): Promise<void> {
     if (this.reconciliationInProgress) return;
@@ -934,6 +976,8 @@ export class PaymentsService {
     schedule: Awaited<ReturnType<typeof getPaymentSchedule>>,
   ) {
     const materialRevisionPending = Boolean(schedule?.materialRevisionPending || estimate.materialRevisions?.length);
+    if (estimate.status.name === CANCELED_ESTIMATE)
+      return { payments: [], fullBalance: null, materialRevisionPending };
     const requests = new Map<string, { type: PaymentType; sequence?: number; advanceOnly: boolean }>();
     const add = (type: PaymentType, sequence?: number, advanceOnly = false) => {
       const item = { type, sequence, advanceOnly };
@@ -1018,6 +1062,8 @@ export class PaymentsService {
       if (estimate.dealerModeSnapshot !== DealerMode.INTERNAL) {
         return { enabled: false, status: 'not_applicable', payment: null } as UnavailablePublicPaymentContext;
       }
+      if (estimate.status.name === CANCELED_ESTIMATE)
+        return { enabled: true, status: 'canceled', payment: null } as UnavailablePublicPaymentContext;
       if (promotionExpired(estimate)) return { enabled: true, status: 'expired', payment: null } as UnavailablePublicPaymentContext;
       const agreement = await getAgreementPaymentRequirement(tx, estimate.id, token);
       const schedule = await getPaymentSchedule(tx, estimate.id);

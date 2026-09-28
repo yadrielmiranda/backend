@@ -51,7 +51,7 @@ async function main() {
   console.log('Order statuses are up to date.');
 
   // 2.b Crear los estados de los estimates
-  const estimateStatusesToCreate = ['Active', 'Ordered', 'Expired', 'Pending order review'];
+  const estimateStatusesToCreate = ['Active', 'Ordered', 'Expired', 'Pending order review', 'Canceled'];
 
   console.log('Upserting estimate statuses...');
   for (const statusName of estimateStatusesToCreate) {
