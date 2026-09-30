@@ -9,7 +9,8 @@ const personal = { username: 'review-user', firstName: 'Test', lastName: 'User',
 const restricted = { idRole: 1, dealerMode: 'INTERNAL', noInstallationDeposit: true,
   dealerEarningsPlanId: 1, dealerEarningsPlan: { connect: { id: 1 } },
   paymentPlanId: 1, installationPriceProfileId: 1, markupOverride: '-0.99',
-  isTaxExempt: true, isActive: false, password: 'Unexpected-change',
+  isTaxExempt: true, networkTaxRate: 0, isActive: false, networkSuspended: false, networkSuspendedByAdmin: false,
+  networkBusinessActions: { create: { status: 'APPLIED' } }, password: 'Unexpected-change',
   passwordUpdatedAt: new Date(), role: { connect: { id: 1 } } };
 
 describe('Self-service field authorization (H01)', () => {
@@ -55,7 +56,7 @@ describe('Self-service field authorization (H01)', () => {
     const saved = db.user.create.mock.calls[0][0].data;
     expect(saved).toMatchObject({ ...personal, isTaxExempt: false, role: { connect: { id: 4 } } });
     expect(saved.password).not.toBe('Example-password-123');
-    for (const key of ['dealerEarningsPlanId', 'dealerEarningsPlan', 'markupOverride', 'installationPriceProfileId', 'paymentPlanId', 'dealerMode', 'noInstallationDeposit', 'isActive', 'idRole']) {
+    for (const key of ['dealerEarningsPlanId', 'dealerEarningsPlan', 'markupOverride', 'networkTaxRate', 'installationPriceProfileId', 'paymentPlanId', 'dealerMode', 'noInstallationDeposit', 'isActive', 'networkSuspended', 'networkSuspendedByAdmin', 'networkBusinessActions', 'idRole']) {
       expect(saved).not.toHaveProperty(key);
     }
   });

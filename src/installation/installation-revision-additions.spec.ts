@@ -183,7 +183,7 @@ function fixture() {
   // Los helpers de acuerdos y pagos son externos a la operación que se está probando.
   engine.findJob = async (id: number, user: AuthUser) => {
     const found = await engine.getJobRecord(id, db);
-    if (!found) throw new Error('Installation job not found.'); engine.assertAccess(found, user); return found;
+    if (!found) throw new Error('Installation job not found.'); await engine.assertAccess(found, user); return found;
   };
   engine.withAgreementJobTransaction = async (_id: number, work: any) => db.$transaction(work);
   Object.assign(state.estimate, calculator.calculateEstimateTotalsFromPersistedPieces(state.pieces, d('.07') as never, d('.07') as never));

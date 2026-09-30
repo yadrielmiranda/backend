@@ -1,3 +1,4 @@
+import { billingEstimate } from '@/dealer-network/dealer-network';
 import { changeOrderInstallments } from './change-order-installments';
 import { CANCELED_ESTIMATE, assertEstimateNotCanceled } from '@/estimates/estimate-lifecycle-policy';
 import { hasRefundHistory, paymentIsCovered } from '@/payments/payment-accounting';
@@ -54,6 +55,7 @@ export async function resolveNewPlan(
 }
 
 export function scheduleAmounts(estimate: any): ScheduleAmounts {
+  estimate = billingEstimate(estimate);
   const job =
     estimate.installationJob?.status === 'CANCELED'
       ? null

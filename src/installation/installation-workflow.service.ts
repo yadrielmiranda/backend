@@ -1,3 +1,5 @@
+import { networkSnapshot, networkPieceTotals, billingAccountId, billingEstimate, canAccessOwner, descendantIds } from '@/dealer-network/dealer-network';
+import { assertNetworkEstimateCanProceed } from '@/dealer-network/network-access';
 import { assertNoOpenMaterialCheckout, assertNoPendingMaterialRevision } from '@/estimates/material-revisions/material-revision-policy';
 import { CANCELED_ESTIMATE, assertEstimateNotCanceled } from '@/estimates/estimate-lifecycle-policy';
 import { randomUUID } from 'crypto';
@@ -187,6 +189,7 @@ export type RevisionPieceRecord = Prisma.PieceGetPayload<{
 }>;
 
 export type RevisionPiecePricingSnapshot = {
+  networkPricing?: import("@/dealer-network/dealer-network").NetworkPiecePricing;
   regularPrice?: string;
   regularCustomerPrice?: string;
   promotionSnapshot?: unknown;
@@ -300,7 +303,7 @@ export class InstallationWorkflowService {
   private async prepareInstallationCoverage(estimateId: number, dto: RequestInstallationDto, user: AuthUser) {
     if (dto.installationAddressConfirmed !== true) throw new BadRequestException('Confirm the installation address.');
     const estimate = await this.prisma.estimate.findUnique({ where: { id: estimateId }, select: { idUser: true } });
-    if (!estimate || (!canViewAllInstallations(user.role?.name) && estimate.idUser !== user.id)) throw new NotFoundException('Estimate not found.');
+    if (!estimate || (!canViewAllInstallations(user.role?.name) && (estimate.idUser !== user.id && (user.role?.name !== 'dealer' || !await canAccessOwner(this.prisma, estimate.idUser, user))))) throw new NotFoundException('Estimate not found.');
     return this.coverage.prepare(dto.installationAddress);
   }
 
@@ -354,13 +357,13 @@ export class InstallationWorkflowService {
     );
   }
 
-  private assertAccess(
+  private async assertAccess(
     job: { estimate: { idUser: number } },
     user: AuthUser,
-  ): void {
+  ): Promise<void> {
     if (
       !canViewAllInstallations(user.role?.name) &&
-      job.estimate.idUser !== user.id
+      (job.estimate.idUser !== user.id && (user.role?.name !== 'dealer' || !await canAccessOwner(this.prisma, job.estimate.idUser, user)))
     ) {
       throw new NotFoundException('Installation job not found.');
     }
@@ -413,7 +416,7 @@ export class InstallationWorkflowService {
   async findJob(id: number, user: AuthUser) {
     let job = await this.getJobRecord(id);
     if (!job) throw new NotFoundException(`Installation job #${id} not found.`);
-    this.assertAccess(job, user);
+    await this.assertAccess(job, user);
     job = await this.refreshBlockedInstallation(job);
     return { ...job, paymentSchedule: await getPaymentSchedule(this.prisma, job.estimateId), manualDiscountSummary: calculateEstimateDiscount(job.estimate, job), revisionComparison: buildInstallationRevisionComparison(job) };
   }
@@ -424,7 +427,7 @@ export class InstallationWorkflowService {
       include: jobInclude,
     });
     if (!job) return null;
-    this.assertAccess(job, user);
+    await this.assertAccess(job, user);
     job = await this.refreshBlockedInstallation(this.currentRevisionMeasurements(job));
     return { ...job, paymentSchedule: await getPaymentSchedule(this.prisma, job.estimateId), manualDiscountSummary: calculateEstimateDiscount(job.estimate, job), revisionComparison: buildInstallationRevisionComparison(job) };
   }
@@ -436,7 +439,7 @@ export class InstallationWorkflowService {
     const filters: Prisma.InstallationJobWhereInput[] = [];
 
     if (!canViewAllInstallations(user.role?.name)) {
-      filters.push({ estimate: { idUser: user.id } });
+      filters.push({ estimate: { idUser: { in: await descendantIds(this.prisma, user) } } });
     }
 
     if (scope === 'active') {
@@ -778,6 +781,7 @@ export class InstallationWorkflowService {
   private async promotionRevisionCache(estimateId: number, tx: PrismaTransactionClient, piece: RevisionPieceRecord) {
     const estimate = await tx.estimate.findUniqueOrThrow({where:{id:estimateId}});
     const cache = this.pieceCalculator.createCalculationCache();
+    cache.networkSnapshot = networkSnapshot(estimate);
     // Cada pieza conserva su propio porcentaje, incluso si comparten la promoción.
     cache.promotions = savedPromotions({
       promotionLockedAt: estimate.promotionLockedAt,
@@ -813,6 +817,7 @@ export class InstallationWorkflowService {
       ...source,
       pieceInput: this.pieceInputFromPersisted(piece, 1),
       pricing: {
+        networkPricing: piece.networkPricing,
         rate: piece.rate.toString(),
         price: piece.price.toString(),
         regularPrice: piece.regularPrice.toString(), regularCustomerPrice: piece.regularCustomerPrice.toString(), promotionSnapshot: piece.promotionSnapshot,
@@ -862,6 +867,7 @@ export class InstallationWorkflowService {
     ]);
 
     return {
+      networkPricing: calculated.networkPricing,
       rate: calculated.rate.toFixed(2),
       price: calculated.price.toFixed(2),
       regularPrice: (calculated.regularPrice ?? calculated.price).toFixed(2), regularCustomerPrice: (calculated.regularCustomerPrice ?? calculated.customerPrice).toFixed(2), promotionSnapshot: calculated.promotionSnapshot,
@@ -1073,6 +1079,7 @@ export class InstallationWorkflowService {
     }
 
     const rows: Array<{
+      networkPricing?: unknown;
       original: Decimal; originalCustomer: Decimal;
       rate: Decimal;
       price: Decimal;
@@ -1089,6 +1096,7 @@ export class InstallationWorkflowService {
           | (RevisionPiecePricingSnapshot & Prisma.JsonObject)
           | null;
         rows.push({
+          networkPricing: pricing?.networkPricing ?? piece.networkPricing,
           original: new Decimal(pricing?.regularPrice ?? pricing?.price ?? piece.regularPrice.toString()), originalCustomer: new Decimal(pricing?.regularCustomerPrice ?? pricing?.customerPrice ?? piece.regularCustomerPrice.toString()),
           rate: new Decimal(pricing?.rate ?? piece.rate.toString()),
           price: new Decimal(pricing?.price ?? piece.price.toString()),
@@ -1100,6 +1108,7 @@ export class InstallationWorkflowService {
 
       for (let index = measurements.length; index < piece.qty; index += 1) {
         rows.push({
+          networkPricing: piece.networkPricing,
           original: new Decimal(piece.regularPrice.toString()), originalCustomer: new Decimal(piece.regularCustomerPrice.toString()),
           rate: new Decimal(piece.rate.toString()),
           price: new Decimal(piece.price.toString()),
@@ -1115,6 +1124,7 @@ export class InstallationWorkflowService {
         throw new BadRequestException('An added piece is missing its specifications or saved price.');
       }
       rows.push({
+        networkPricing: pricing.networkPricing,
         original: new Decimal(pricing.regularPrice ?? pricing.price),
         originalCustomer: new Decimal(pricing.regularCustomerPrice ?? pricing.customerPrice),
         rate: new Decimal(pricing.rate), price: new Decimal(pricing.price),
@@ -1141,6 +1151,7 @@ export class InstallationWorkflowService {
     const original = rows.reduce((s,r)=>s.add(r.original),new Decimal(0));
     const originalCustomer = rows.reduce((s,r)=>s.add(r.originalCustomer),new Decimal(0));
     const revisedTotals: Prisma.InputJsonValue = {
+      ...Object.fromEntries(Object.entries(networkPieceTotals(rows.map(row => ({ qty: 1, networkPricing: row.networkPricing })))).map(([key, value]) => [key, value.toString()])),
       originalPriceT:original.toFixed(2), originalCustomerPriceT:originalCustomer.toFixed(2), discountAmount:original.sub(priceT).toFixed(2), customerDiscountAmount:originalCustomer.sub(customerPriceT).toFixed(2),
       units: rows.length,
       rateT: rateT.toFixed(2),
@@ -1843,10 +1854,11 @@ export class InstallationWorkflowService {
     if (
       !estimate ||
       (!canViewAllInstallations(user.role?.name) &&
-        !(duplicateSource && isPrivileged(user)) && estimate.idUser !== user.id)
+        !(duplicateSource && isPrivileged(user)) && (estimate.idUser !== user.id && (user.role?.name !== 'dealer' || !await canAccessOwner(tx, estimate.idUser, user))))
     ) {
       throw new NotFoundException(`Estimate #${estimateId} not found.`);
     }
+    await assertNetworkEstimateCanProceed(tx, estimate);
     if (promotionExpired(estimate)) throw new BadRequestException(expiredPromotionMessage);
     if (estimate.installationJob) {
       throw new ConflictException(
@@ -1874,10 +1886,11 @@ export class InstallationWorkflowService {
       );
     }
 
-    const noDeposit = estimate.user.role.name === 'dealer' &&
-      estimate.user.noInstallationDeposit === true;
+    const paymentAccount = billingAccountId(estimate) === estimate.idUser ? estimate.user
+      : await tx.user.findUniqueOrThrow({ where: { id: billingAccountId(estimate) }, select: { noInstallationDeposit: true, role: { select: { name: true } } } });
+    const noDeposit = paymentAccount.role.name === 'dealer' && paymentAccount.noInstallationDeposit === true;
     const profile = await this.pricing.resolveProfileForUser(
-      estimate.idUser,
+      billingAccountId(estimate),
       tx,
     );
     const depositParameter = await tx.globalParameter.findUnique({
@@ -2296,7 +2309,7 @@ export class InstallationWorkflowService {
       if (!job) {
         throw new NotFoundException(`Installation job #${jobId} not found.`);
       }
-      this.assertAccess(job, user);
+      await this.assertAccess(job, user);
       const editableWaiver = canEditUnpaidWaivedInstallation(job);
       if (
         (!editableWaiver && job.status !== InstallationJobStatus.DEPOSIT_PAYMENT_PENDING) ||
@@ -2687,7 +2700,7 @@ export class InstallationWorkflowService {
     if (!isPrivileged(user)) throw new ForbiddenException('Only company staff can add pieces during remeasurement.');
     const job = await this.getJobRecord(jobId, tx);
     if (!job) throw new NotFoundException('Installation job not found.');
-    this.assertAccess(job, user);
+    await this.assertAccess(job, user);
     if (job.estimate.order) throw new ConflictException('Use Revise order after an order has been created.');
     if ([InstallationJobStatus.CANCELED, InstallationJobStatus.COMPLETED].includes(job.status as never))
       throw new ConflictException('This installation is closed.');
@@ -2744,6 +2757,7 @@ export class InstallationWorkflowService {
     const previousInput = existing?.proposedPieceInput as unknown as CreatePieceDto | undefined;
     const previous = existing?.calculatedSnapshot as RevisionPiecePricingSnapshot | undefined;
     const cache = this.pieceCalculator.createCalculationCache();
+    cache.networkSnapshot = networkSnapshot(job.estimate);
     // Una adición nueva usa promociones elegibles actuales; la unidad ya propuesta
     // conserva su promoción al corregirla, aunque otra pieza tenga una distinta.
     cache.promotions = previous ? savedPromotions({ promotionLockedAt: new Date(),
@@ -2754,7 +2768,7 @@ export class InstallationWorkflowService {
     if (previous && previousInput && createEstimateRevisionPieceFingerprint(previousInput) === createEstimateRevisionPieceFingerprint(input)) {
       // Confirmar las mismas medidas no cambia el precio ya mostrado.
       const price = new Decimal(previous.price), customerPrice = new Decimal(previous.customerPrice);
-      calculated = { ...input, rate: new Decimal(previous.rate), price, customerPrice, markup,
+      calculated = { ...input, networkPricing: previous.networkPricing, rate: new Decimal(previous.rate), price, customerPrice, markup,
         regularPrice: new Decimal(previous.regularPrice ?? previous.price),
         regularCustomerPrice: new Decimal(previous.regularCustomerPrice ?? previous.customerPrice),
         promotionSnapshot: previous.promotionSnapshot as CalculatedPieceCombined['promotionSnapshot'],
@@ -3136,7 +3150,7 @@ export class InstallationWorkflowService {
         },
       });
       if (!job) throw new NotFoundException('Installation job not found.');
-      this.assertAccess(job, user);
+      await this.assertAccess(job, user);
       if (job.estimate.order) {
         throw new BadRequestException(
           'Estimate material cannot be revised after the Order is created.',
@@ -3171,7 +3185,8 @@ export class InstallationWorkflowService {
         highBottomPercent: calculated.highBottomPercent
           ? new Prisma.Decimal(calculated.highBottomPercent.toFixed(4))
           : null,
-        rate: new Prisma.Decimal(calculated.rate.toFixed(2)),
+        ...(calculated.networkPricing ? { networkPricing: calculated.networkPricing as unknown as Prisma.InputJsonValue } : {}),
+      rate: new Prisma.Decimal(calculated.rate.toFixed(2)),
         price: new Prisma.Decimal(calculated.price.toFixed(2)),
         netProfit: new Prisma.Decimal(calculated.netProfit.toFixed(2)),
         markup: new Prisma.Decimal(calculated.markup.toFixed(18)),
@@ -3912,6 +3927,7 @@ export class InstallationWorkflowService {
         ? this.jsonValue(input.horizontalHeights)
         : Prisma.JsonNull,
       qty,
+      ...(pricing.networkPricing ? { networkPricing: pricing.networkPricing as unknown as Prisma.InputJsonValue } : {}),
       rate: new Prisma.Decimal(pricing.rate),
       price: new Prisma.Decimal(pricing.price),
       netProfit: new Prisma.Decimal(pricing.netProfit),
@@ -4197,6 +4213,7 @@ export class InstallationWorkflowService {
         price: true,
         customerPrice: true,
         regularPrice: true, regularCustomerPrice: true, promotionSnapshot: true,
+        networkPricing: true,
         dealerMarkup: true,
       },
     });
@@ -5301,6 +5318,10 @@ export class InstallationWorkflowService {
         user: {
           select: {
             id: true,
+            parentDealerId: true,
+            networkSuspended: true,
+            isActive: true,
+            deletedAt: true,
             firstName: true,
             lastName: true,
             email: true,
@@ -5327,10 +5348,12 @@ export class InstallationWorkflowService {
         },
       },
     });
-    if (!estimate || estimate.idUser !== user.id) {
+    if (!estimate || billingAccountId(estimate) !== user.id) {
       throw new NotFoundException(`Estimate #${estimateId} not found.`);
     }
+    const billing = billingEstimate(estimate);
     assertEstimateNotCanceled(estimate);
+    await assertNetworkEstimateCanProceed(tx, estimate);
 
     if (!options.preview && [PaymentType.MATERIAL, PaymentType.INSTALLMENT, PaymentType.INSTALLATION, PaymentType.PERMIT].includes(type as any))
       await assertNoPendingMaterialRevision(tx, estimateId);
@@ -5484,9 +5507,9 @@ export class InstallationWorkflowService {
         }
       }
       const materialTotal =
-        estimate.dealerModeSnapshot === 'INTERNAL'
-          ? estimate.customerTotalPayable
-          : estimate.totalPayable;
+        billing.dealerModeSnapshot === 'INTERNAL'
+          ? billing.customerTotalPayable
+          : billing.totalPayable;
       baseAmount = new Decimal(manualDiscount?.material.total ?? materialTotal.toString()).add(cityFee);
       description = job
         ? `Material${cityFee.gt(0) ? ' + City Fee' : ''} — Estimate #${estimate.number}`

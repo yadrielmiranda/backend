@@ -1,3 +1,4 @@
+import { networkSnapshot } from '@/dealer-network/dealer-network';
 import { BadRequestException } from '@nestjs/common';
 import { DealerEarningsBasis } from '@prisma/client';
 import Decimal from 'decimal.js';
@@ -44,10 +45,61 @@ export function calculateDealerEarnings(plan: EarningsPlanSnapshot, profits: Mat
   };
 }
 
-export type DealerEarningsSummary = ReturnType<typeof calculateDealerEarnings>;
+export type DealerEarningsSummary = Omit<ReturnType<typeof calculateDealerEarnings>, 'basis'> & { basis: DealerEarningsBasis | 'AVAILABLE_PROFIT' };
 
 /** Proyección común para estimados, órdenes y PDF. Solo remunera materiales de dealers internos. */
 export function buildDealerEarningsReport(estimate: any, order = estimate?.order) {
+  const network = networkSnapshot(estimate);
+  if (network) {
+    const discount = calculateEstimateDiscount(estimate);
+    const sale = new Decimal(String(order?.saleSubtotal ?? estimate.networkBillingPriceT ?? 0));
+    const netSale = order ? sale : sale.minus(discount?.material.netDiscount ?? 0);
+    const rootPrice = new Decimal(String(estimate.networkRootPriceT ?? 0));
+    const subdealerPrice = new Decimal(String(estimate.networkSubdealerPriceT ?? 0));
+    const appBasePrice = String(order?.rate ?? estimate.rateT);
+    const realFactoryCost = order?.rateReal == null ? null : String(order.rateReal);
+    // La participación original se calcula sobre el precio ofrecido al subdealer.
+    if (network.rootMode !== 'INTERNAL') {
+      const expected = netSale.minus(appBasePrice);
+      const real = realFactoryCost == null ? null : netSale.minus(realFactoryCost);
+      return { dealerEarnings: null, subdealerEarnings: null, materialProfits: {
+        expectedProfit: expected.toFixed(2), realProfit: real?.toFixed(2) ?? null, netProfitD: '0.00',
+        authenticExpectedProfit: expected.toFixed(2), authenticRealProfit: real?.toFixed(2) ?? null,
+      } };
+    }
+    const rootProfits = calculateMaterialProfitBases({
+      customerPrice: network.subdealerPlan ? subdealerPrice : netSale,
+      appBasePrice, dealerPrice: rootPrice, realFactoryCost,
+    });
+    const earnings = calculateDealerEarnings(savedPlan(network.earningsPlan), rootProfits);
+    let subdealerEarnings: DealerEarningsSummary | null = null;
+    let totalEarnings = earnings.amount == null ? null : new Decimal(earnings.amount);
+    if (network.subdealerPlan) {
+      const markup = netSale.minus(subdealerPrice);
+      const pool = totalEarnings?.plus(markup) ?? null;
+      // MARKUP se conoce aunque el plan del superior espere el costo real de fábrica.
+      const amount = network.subdealerPlan.mode === 'MARKUP' ? markup
+        : pool?.mul(network.subdealerPlan.percent).div(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP) ?? null;
+      const remaining = pool == null || amount == null ? null : pool.minus(amount);
+      earnings.amount = remaining?.toFixed(2) ?? null;
+      earnings.status = remaining == null ? 'PENDING_REAL_COST' : 'CALCULATED';
+      totalEarnings = pool;
+      subdealerEarnings = {
+        planId: null, planName: '', label: '',
+        basis: network.subdealerPlan.mode === 'MARKUP' ? 'DEALER_MARKUP' : 'AVAILABLE_PROFIT',
+        percent: network.subdealerPlan.percent,
+        status: amount == null ? 'PENDING_REAL_COST' : 'CALCULATED', amount: amount?.toFixed(2) ?? null,
+      };
+    }
+    const profits = calculateMaterialProfitBases({ customerPrice: netSale, appBasePrice, dealerPrice: rootPrice, realFactoryCost });
+    return { dealerEarnings: earnings, subdealerEarnings, materialProfits: {
+      expectedProfit: profits.expectedProfit.toFixed(2), realProfit: profits.realProfit?.toFixed(2) ?? null,
+      netProfitD: profits.netProfitD.toFixed(2),
+      authenticExpectedProfit: totalEarnings == null ? null : profits.expectedProfit.minus(totalEarnings).toFixed(2),
+      authenticRealProfit: totalEarnings == null || profits.realProfit == null ? null : profits.realProfit.minus(totalEarnings).toFixed(2),
+    } };
+  }
+
   const mode = order?.dealerModeSnapshot ?? estimate?.dealerModeSnapshot;
   if (mode !== 'INTERNAL') return { dealerEarnings: null, materialProfits: null };
 

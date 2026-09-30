@@ -1,6 +1,7 @@
 import { UnauthorizedException } from '@nestjs/common';
 import type { PrismaService } from '@/prisma/prisma.service';
 import type { AuthUser, RoleName } from './types/auth-user.type';
+import { accountNetworkBlocked } from '@/dealer-network/network-access';
 
 export type SessionTokenPayload = {
   sub: number;
@@ -30,6 +31,7 @@ export async function validateAccessSession(prisma: PrismaService, payload: Sess
     include: { user: { select: {
       id: true, username: true, firstName: true, lastName: true, email: true,
       isActive: true, deletedAt: true, passwordUpdatedAt: true,
+      parentDealerId: true, networkSuspended: true,
       role: { select: { name: true } },
     } } },
   });
@@ -40,6 +42,9 @@ export async function validateAccessSession(prisma: PrismaService, payload: Sess
   const user = session.user;
   if (!user.isActive || user.deletedAt || user.passwordUpdatedAt.getTime() !== payload.passwordVersion) {
     throw new UnauthorizedException('This session is no longer valid. Sign in again.');
+  }
+  if (await accountNetworkBlocked(prisma, user)) {
+    throw new UnauthorizedException('This account is suspended. Contact your dealer or administrator.');
   }
   const idleMinutes = Number(process.env.SESSION_IDLE_MINUTES ?? 0);
   if (idleMinutes > 0 && now - session.lastUsedAt.getTime() > idleMinutes * 60_000) {

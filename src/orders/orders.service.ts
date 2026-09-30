@@ -1,3 +1,4 @@
+import { canAccessOwner, descendantIds, networkPresentation } from '@/dealer-network/dealer-network';
 import { assertMaterialReadyForFactory } from '@/estimates/material-revisions/material-revision-policy';
 import { decimalAmount, hasRefundHistory, paidPrincipal, remainingRefundBalance } from '@/payments/payment-accounting';
 import { buildDealerEarningsReport } from '@/common/dealer-earnings';
@@ -117,7 +118,7 @@ function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof or
     paymentAnchor,
     estimate: {
       ...estimate,
-      manualDiscountSummary: calculateEstimateDiscount(order.estimate),
+      dealerNetwork: networkPresentation(order.estimate), manualDiscountSummary: calculateEstimateDiscount(order.estimate),
       installationSummary,
     },
   };
@@ -147,7 +148,7 @@ export class OrdersService {
     });
 
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
-    return { ...order, ...buildDealerEarningsReport(order.estimate, order), paymentSchedule: await getPaymentSchedule(this.prisma, order.idEst), estimate: { ...order.estimate, manualDiscountSummary: calculateEstimateDiscount(order.estimate) } };
+    return { ...order, ...buildDealerEarningsReport(order.estimate, order), paymentSchedule: await getPaymentSchedule(this.prisma, order.idEst), estimate: { ...order.estimate, dealerNetwork: networkPresentation(order.estimate), manualDiscountSummary: calculateEstimateDiscount(order.estimate) } };
   }
 
   async findAllStatuses(): Promise<OrderStatus[]> {
@@ -708,7 +709,7 @@ export class OrdersService {
     }
 
     const orders = await this.prisma.order.findMany({
-      where: { userId: user.id },
+      where: { userId: { in: await descendantIds(this.prisma, user) } },
       include: orderListInclude,
       orderBy: { date: 'desc' },
     });
@@ -732,11 +733,11 @@ export class OrdersService {
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
 
     const paymentSchedule = await getPaymentSchedule(this.prisma, order.idEst);
-    const estimate = { ...order.estimate, manualDiscountSummary: calculateEstimateDiscount(order.estimate) };
+    const estimate = { ...order.estimate, dealerNetwork: networkPresentation(order.estimate), manualDiscountSummary: calculateEstimateDiscount(order.estimate) };
     const earnings = buildDealerEarningsReport(order.estimate, order);
     if (roleName === 'admin' || roleName === 'operator') return { ...order, ...earnings, estimate, paymentSchedule };
 
-    if (order.userId !== user.id) {
+    if (!await canAccessOwner(this.prisma, order.userId, user)) {
       throw new NotFoundException(`Order with ID #${id} not found.`);
     }
 

@@ -1,3 +1,4 @@
+import { networkSnapshot, networkMaterialProfit, billingEstimate } from '@/dealer-network/dealer-network';
 import { calculateEstimateDiscount, estimateDiscountConfig } from '../discounts/estimate-discount';
 import type { Branding } from '@prisma/client';
 import { buildDealerEarningsReport } from '@/common/dealer-earnings';
@@ -103,6 +104,7 @@ const estimatedMaterialProfitability = (
   estimate: EstimateWithRelations,
   ownerIsDealer: boolean,
 ) => {
+  estimate = billingEstimate(estimate);
   const dealerMode = ownerIsDealer ? estimate.dealerModeSnapshot : null;
   const saleSubtotal = resolveMaterialSaleSubtotal({
     dealerMode,
@@ -417,6 +419,7 @@ export class EstimatePdfHtmlBuilder {
     estimate: EstimateWithRelations,
     view: PdfView,
     diagramRenders: PieceDiagramRenders = {},
+    viewerId?: number,
   ): string {
     const reportKind = reportKindFor(view);
     const ownerIsDealer =
@@ -431,7 +434,13 @@ export class EstimatePdfHtmlBuilder {
       reportKind === 'dealer' || (reportKind === 'admin' && ownerIsDealer);
     const internalReport = reportKind === 'dealer' || reportKind === 'admin';
     const earningsReport = internalReport ? buildDealerEarningsReport(estimate) : null;
-    const dealerEarnings = earningsReport?.dealerEarnings;
+    const network = networkSnapshot(estimate);
+    const canViewNetworkBilling = !network || reportKind === 'admin' || network.billingAccountId === viewerId ||
+      network.nodes.some(node => node.id === viewerId && node.mode === 'INTERNAL');
+    const dealerEarnings = network && reportKind !== 'admin'
+      ? viewerId === network.nodes[0].id ? earningsReport?.dealerEarnings
+        : viewerId === network.nodes[1].id ? earningsReport?.subdealerEarnings : null
+      : earningsReport?.dealerEarnings;
     const materialProfits = earningsReport?.materialProfits;
     const branding = (estimate.branding ?? null) as Branding | null;
     const brandingName = branding?.name?.trim() || '';
@@ -497,7 +506,7 @@ export class EstimatePdfHtmlBuilder {
       taxAmount: numberValue(estimate.customerTaxAmount),
       total: numberValue(estimate.customerTotalPayable),
     };
-    const manualDiscount = hideDealerPromotions ? null : estimate.manualDiscountSummary ?? calculateEstimateDiscount(estimate);
+    const manualDiscount = hideDealerPromotions || !canViewNetworkBilling ? null : estimate.manualDiscountSummary ?? calculateEstimateDiscount(estimate);
     const manualMaterial = manualDiscount?.payer === 'CUSTOMER' ? customerMaterial : internalMaterial;
     if (manualDiscount) {
       manualMaterial.taxAmount = Number(manualDiscount.material.tax);
@@ -527,11 +536,11 @@ export class EstimatePdfHtmlBuilder {
       ? numberValue(externalDealerCharges.customerTotal)
       : sharedCharges - (manualDiscount?.payer === "CUSTOMER" ? serviceDiscount : 0);
     const internalCharges = sharedCharges - (manualDiscount?.payer === "ACCOUNT_OWNER" ? serviceDiscount : 0);
-    const dealerMaterialProfit = roundMoney(
+    const dealerMaterialProfit = Number(networkMaterialProfit(estimate, viewerId, manualDiscount?.material.netDiscount ?? 0) ?? roundMoney(
       customerMaterial.subtotal - (customerMaterial.manualNetDiscount ?? 0) -
         (internalMaterial.subtotal - (internalMaterial.manualNetDiscount ?? 0)),
-    );
-    const dealerServiceProfit = roundMoney(customerServiceCharges - internalCharges);
+    ));
+    const dealerServiceProfit = network && viewerId !== estimate.idUser && reportKind !== 'admin' ? 0 : roundMoney(customerServiceCharges - internalCharges);
     const dealerProjectProfit = roundMoney(dealerMaterialProfit + dealerServiceProfit);
     const internalProjectTotal = roundMoney(
       internalMaterial.total + internalCharges,
@@ -884,6 +893,9 @@ export class EstimatePdfHtmlBuilder {
         </section>`
       : '';
 
+    const subdealerEarnings = reportKind === 'admin' ? earningsReport?.subdealerEarnings : null;
+    const subdealerEarningsHtml = subdealerEarnings ? `<section class="dealer-profit keep-together"><div class="dealer-profit-heading"><strong>Subdealer material earnings</strong><span class="dealer-profit-total">${subdealerEarnings.amount == null ? 'Pending real factory cost' : formatMoney(subdealerEarnings.amount)}</span></div><p>Sales tax, installation and services excluded.</p></section>` : '';
+
     const profitability = estimatedMaterialProfitability(
       manualDiscount ? { ...estimate, ...(manualDiscount.payer === 'CUSTOMER' ? { customerPriceT: manualDiscount.material.subtotal } : { priceT: manualDiscount.material.subtotal }) } as unknown as EstimateWithRelations : estimate,
       ownerIsDealer,
@@ -895,7 +907,7 @@ export class EstimatePdfHtmlBuilder {
             <div class="profit-heading"><strong>Material financial summary</strong><small>Installation profit is not included in these figures.</small></div>
             <div class="profit-grid">
               <div class="profit-metric"><span>Sale channel</span><strong>${escapeHtml(profitability.saleChannel)}</strong></div>
-              <div class="profit-metric"><span>Material sale subtotal</span><strong>${formatMoney(materialProfits ? estimate.order?.saleSubtotal ?? profitability.saleSubtotal : profitability.saleSubtotal)}</strong></div>
+              <div class="profit-metric"><span>Material sale subtotal</span><strong>${formatMoney(network ? estimate.order?.saleSubtotal ?? manualDiscount?.material.subtotal ?? estimate.networkBillingPriceT : materialProfits ? estimate.order?.saleSubtotal ?? profitability.saleSubtotal : profitability.saleSubtotal)}</strong></div>
               <div class="profit-metric"><span>${materialProfits ? 'App base price (before markups)' : 'Estimated factory cost'}</span><strong>${formatMoney(materialProfits ? estimate.order?.rate ?? estimate.rateT : estimate.rateT)}</strong></div>
               <div class="profit-metric"><span>${materialProfits ? 'Expected material profit' : 'Estimated material profit'}</span><strong>${formatMoney(materialProfits?.expectedProfit ?? profitability.estimatedProfit)}</strong></div>
               ${materialProfits ? `
@@ -911,7 +923,7 @@ export class EstimatePdfHtmlBuilder {
         ? 'summary-grid single-column'
         : 'summary-grid';
     const manualDiscountHtml = manualDiscount ? `<div class="card keep-together"><div class="card-body">${summaryRow('Additional discount · ' + ({ PROJECT: 'Project total', MATERIAL: 'Material', INSTALLATION: 'Installation' }[manualDiscount.scope]), '−' + formatMoney(manualDiscount.discount), { strong: true })}${serviceDiscount ? summaryRow('Included installation & services discount', '−' + formatMoney(serviceDiscount)) : ''}</div></div>` : '';
-    const schedule = (estimate as any).paymentSchedule;
+    const schedule = canViewNetworkBilling ? (estimate as any).paymentSchedule : null;
     const scheduleHtml = schedule && !(customerFacing && isExternalDealerEstimate(estimate))
       ? `<section class="card keep-together" style="margin-top:16px"><div class="card-title">Payment Schedule</div><div class="card-body">
           ${schedule.provisional ? `<p class="notice warning">${escapeHtml(schedule.provisionalMessage ?? 'Amounts are preliminary until the included charges are finalized.')}</p>` : ''}
@@ -920,7 +932,7 @@ export class EstimatePdfHtmlBuilder {
         </div></section>` : '';
     const projectSummaryHtml = projectTotalOnly
       ? `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div>${projectScopeHtml}${projectTotalHtml}${scheduleHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`
-      : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${manualDiscountHtml}${projectTotalHtml}${dealerProfitHtml}${adminProfitability}${scheduleHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
+      : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${manualDiscountHtml}${projectTotalHtml}${dealerProfitHtml}${subdealerEarningsHtml}${adminProfitability}${scheduleHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
 
     const statusBadge = estimate.status?.name
       ? `<span class="status-badge ${estimateStatusBadgeClassName(estimate.status.name)}">${escapeHtml(estimate.status.name)}</span>`

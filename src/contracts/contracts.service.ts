@@ -1,3 +1,4 @@
+import { canAccessOwner } from '@/dealer-network/dealer-network';
 import { materialChangePreview } from './material-change-preview';
 import { changeOrderPaymentPreview } from './change-order-payment-preview';
 import {
@@ -107,7 +108,7 @@ export class ContractsService {
     if (
       !estimate ||
       estimate.user.role.name !== 'dealer' ||
-      (estimate.idUser !== user.id && !privileged)
+      (!privileged && estimate.idUser !== user.id && (!estimate.user.parentDealerId || !await canAccessOwner(this.prisma, estimate.idUser, user)))
     )
       throw new NotFoundException('Estimate not found.');
     if (

@@ -43,7 +43,7 @@ export function materialRevisionBaseHash(estimate: any): string {
   const content = revisionJson({
     idUser: estimate.idUser,
     pieces,
-    totals: Object.fromEntries(['units', 'rateT', 'priceT', 'customerPriceT', 'taxRate', 'customerTaxRate', 'totalPayable', 'customerTotalPayable', 'manualDiscount', 'ownerMarkupSnapshot', 'dealerModeSnapshot', 'dealerEarningsPlanSnapshot', 'paymentPlanSnapshot'].map(key => [key, estimate[key]])),
+    totals: Object.fromEntries(['units', 'rateT', 'priceT', 'customerPriceT', 'taxRate', 'customerTaxRate', 'totalPayable', 'customerTotalPayable', 'manualDiscount', 'ownerMarkupSnapshot', 'dealerModeSnapshot', 'dealerEarningsPlanSnapshot', 'paymentPlanSnapshot', 'dealerNetworkSnapshot', 'networkBillingPriceT', 'networkRootPriceT', 'networkSubdealerPriceT'].map(key => [key, estimate[key]])),
     customer: Object.fromEntries(['name', 'customerFirstName', 'customerLastName', 'customerEmail', 'customerPhone', 'customerStreet', 'customerCity', 'customerState', 'customerPostalCode'].map(key => [key, estimate[key]])),
     installation: estimate.installationJob ? {
       id: estimate.installationJob.id, canceled: estimate.installationJob.status === 'CANCELED',
@@ -69,8 +69,21 @@ export function preserveAgreedPiecePrices(original: any, before: CalculatedPiece
     return value;
   };
   const rate = delta('rate'), price = delta('price'), customerPrice = delta('customerPrice');
+  let networkPricing = after.networkPricing;
+  if (original.networkPricing && before.networkPricing && after.networkPricing) {
+    const saved = original.networkPricing;
+    networkPricing = { ...after.networkPricing };
+    for (const field of ['prices', 'regularPrices'] as const) {
+      networkPricing[field] = after.networkPricing[field].map((value, index) => {
+        const adjusted = new Decimal(saved[field][index]).add(value).sub(before.networkPricing![field][index]).toDecimalPlaces(2);
+        if (adjusted.lt(0)) throw new BadRequestException('The revision would produce a negative network price.');
+        return adjusted.toFixed(2);
+      });
+    }
+  }
+
   return {
-    ...after, rate, price, customerPrice,
+    ...after, networkPricing, rate, price, customerPrice,
     regularPrice: delta('regularPrice'), regularCustomerPrice: delta('regularCustomerPrice'),
     subtotal: price.mul(after.qty).toDecimalPlaces(2),
     customerSubtotal: customerPrice.mul(after.qty).toDecimalPlaces(2),

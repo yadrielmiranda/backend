@@ -9,6 +9,7 @@ import {
   installmentContext,
 } from '@/payment-plans/payment-schedule';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
+import { applyNetworkPricing } from '@/dealer-network/dealer-network';
 
 const dealer: any = { id: 7, role: { name: 'dealer' } };
 const plan = {
@@ -112,8 +113,8 @@ function fixture() {
   const calculate = jest
     .spyOn(calculator, 'calculatePieceMetrics')
     .mockImplementation(
-      async (input) =>
-        ({
+      async (input, _markup, _tx, cache) =>
+        applyNetworkPricing({
           ...input,
           rate: new Decimal(80),
           price: new Decimal(100),
@@ -126,10 +127,11 @@ function fixture() {
           netProfitD: new Decimal(20),
           dpPosPsf: new Decimal(0),
           dpNegPsf: new Decimal(0),
-        }) as any,
+        } as any, cache?.networkSnapshot),
     );
   const logs = { log: jest.fn() };
   const workflow = {
+    assertEstimateEditAllowed: jest.fn(),
     refreshUnpaidDealerMeasurements: jest.fn(),
     refreshAfterEstimateChange: jest.fn(),
   };
@@ -160,6 +162,26 @@ function fixture() {
 }
 
 describe('Estimate cancellation and reactivation', () => {
+  it.each(['recalculate', 'reactivate'])('%s replaces old network tax with current terms while keeping customer tax', async action => {
+    const f = fixture(), estimate = f.estimate();
+    Object.assign(estimate.user, { username: 'subdealer', isActive: true, dealerMode: 'EXTERNAL',
+      parentDealerId: 1, networkMarkup: '.2', networkTaxRate: '.0825', isTaxExempt: true });
+    const root = { ...estimate.user, id: 1, username: 'root', parentDealerId: null, isTaxExempt: false };
+    f.tx.user.findUnique.mockImplementation(async ({ where }: any) => where.id === 1 ? root : estimate.user);
+    f.tx.user.findUniqueOrThrow = f.tx.user.findUnique;
+    estimate.taxRate = '.01';
+    if (action === 'reactivate') {
+      estimate.status.name = 'Canceled';
+      await f.service.reactivateEstimate(1, dealer);
+    } else await f.service.recalculateEstimate(1, dealer);
+    expect(f.estimate().taxRate.toString()).toBe('0.0825');
+    expect(f.estimate().taxAmount.toString()).toBe('9.9');
+    expect(f.estimate().totalPayable.toString()).toBe('129.9');
+    expect(f.estimate().customerTaxRate.toString()).toBe('0.07');
+    expect(f.estimate().dealerNetworkSnapshot.billingTaxRate).toBe('0.08');
+    expect(f.estimate().dealerNetworkSnapshot.nodes[1].taxRate).toBe('0.0825');
+  });
+
   it.each([
     dealer,
     { id: 90, role: { name: 'admin' } },

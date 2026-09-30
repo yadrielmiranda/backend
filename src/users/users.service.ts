@@ -16,12 +16,13 @@ import { LogsService } from '@/logs/logs.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { getRoleName } from '@/auth/utils/get-role-name';
 import { revokeSmsConsent } from '@/sms/sms-consent.helpers';
+import { networkParentSelect } from '@/dealer-network/network-access';
 import {
   isValidUsername,
   USERNAME_VALIDATION_MESSAGE,
 } from '@/common/username-policy';
 
-export type UserSafe = Omit<User, 'password'> & {
+export type UserSafe = Omit<User, 'password' | 'networkSuspendedByAdmin' | 'networkTaxRate'> & {
   role: Prisma.RoleGetPayload<{
     include: { installationPriceProfile: true };
   }>;
@@ -65,6 +66,12 @@ export class UsersService {
 
   private readonly safeSelect = {
     id: true,
+    parentDealerId: true,
+    networkMarkup: true,
+    subdealerEarningsMode: true,
+    subdealerEarningsPercent: true,
+    parentDealer: { select: networkParentSelect },
+    networkSuspended: true,
     username: true,
     firstName: true,
     lastName: true,
@@ -113,6 +120,7 @@ export class UsersService {
       markupOverride: u.markupOverride ?? null,
       isTaxExempt: u.isTaxExempt ?? null,
       dealerMode: u.dealerMode ?? null,
+      parentDealerId: u.parentDealerId ?? null,
       dealerEarningsPlanId: u.dealerEarningsPlanId ?? null,
       noInstallationDeposit: u.noInstallationDeposit,
       isActive: u.isActive ?? null,
@@ -314,6 +322,7 @@ export class UsersService {
       select: {
         id: true,
         idRole: true,
+        parentDealerId: true,
         dealerMode: true,
         dealerEarningsPlanId: true,
         role: { select: { name: true } },
@@ -363,6 +372,10 @@ export class UsersService {
       dataForPrisma.role = { connect: { id: idRole } };
     }
 
+    if (existing.parentDealerId && (nextRoleName !== 'dealer' || (dealerMode != null && dealerMode !== existing.dealerMode) || dealerEarningsPlanId != null || markupOverride != null)) {
+      throw new BadRequestException('Manage network account type, markup and earnings in My dealers.');
+    }
+
     dataForPrisma.dealerMode = this.resolveDealerMode({
       roleName: nextRoleName,
       dealerMode,
@@ -408,7 +421,12 @@ export class UsersService {
         roleName: idRole ? nextRoleName : current.role.name,
         dealerMode, fallbackMode: current.dealerMode,
       });
-      const internalDealer = dataForPrisma.dealerMode === DealerMode.INTERNAL;
+      if (current.role.name === 'dealer' && nextRoleName !== 'dealer' && await tx.user.count({ where: { parentDealerId: existing.id } }))
+        throw new BadRequestException('An account with a dealer network must keep the dealer role.');
+      const internalDealer = !existing.parentDealerId && dataForPrisma.dealerMode === DealerMode.INTERNAL;
+      if (!existing.parentDealerId && current.dealerMode === 'INTERNAL' && dataForPrisma.dealerMode !== 'INTERNAL' &&
+          await tx.user.count({ where: { parentDealerId: existing.id, dealerMode: 'INTERNAL' } }))
+        throw new BadRequestException('Change internal subdealers to external before changing their parent dealer.');
       if (!internalDealer && dealerEarningsPlanId != null)
         throw new BadRequestException('Earnings plans are only available for internal dealers.');
       const planId = internalDealer
@@ -440,6 +458,7 @@ export class UsersService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM User WHERE id = ${userId} FOR UPDATE`;
       const user = await tx.user.findUnique({
         where: { id: userId },
         select: {
@@ -448,6 +467,7 @@ export class UsersService {
           email: true,
           phone: true,
           deletedAt: true,
+          _count: { select: { childDealers: { where: { deletedAt: null } } } },
         },
       });
 
@@ -455,6 +475,7 @@ export class UsersService {
         throw new NotFoundException(`User with ID #${userId} not found.`);
       }
 
+      if (user._count?.childDealers) throw new BadRequestException('Delete the child accounts before deleting their parent dealer.');
       const now = new Date();
 
       await tx.session.updateMany({

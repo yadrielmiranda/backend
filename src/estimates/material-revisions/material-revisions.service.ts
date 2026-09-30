@@ -1,3 +1,4 @@
+import { networkSnapshot, canAccessOwner, billingEstimate } from '@/dealer-network/dealer-network';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
@@ -42,7 +43,7 @@ const inputKeys = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC', 'wid
   'leftPanels', 'rightPanels', 'panelCount', 'horizontalHeights', 'idCryst', 'idTint', 'idCoat', 'idPrivacy', 'screen',
   'highBottom', 'idActiveOption', 'idPreparationOption', 'idSillOption', 'idReinforcementOption', 'muntin', 'qty', 'dealerMarkup'];
 const label = (piece: any) => `${piece.mark?.trim() || 'Unit'} · ${piece.prod?.name ?? ''} · ${piece.syst?.name ?? ''} · ${piece.conf?.conf ?? ''}`;
-const summaryFields = (summary: any, dealerPricing: boolean) => summary ? {
+const summaryFields = (summary: any, dealerPricing: boolean, canSeeBilling = true) => summary ? !canSeeBilling ? { customerProjectTotal: summary.customerProjectTotal, customerTotalIncomplete: summary.customerTotalIncomplete, provisionalInstallation: summary.provisionalInstallation, paymentsVisible: false } : {
   material: summary.material, installation: summary.installation, servicesAndFees: summary.servicesAndFees,
   projectTotal: summary.projectTotal, provisionalInstallation: summary.provisionalInstallation,
   paid: summary.paid, approvedCredit: summary.approvedCredit, balance: summary.balance, creditBalance: summary.creditBalance,
@@ -61,7 +62,7 @@ export class MaterialRevisionsService {
 
   private async load(db: Prisma.TransactionClient, estimateId: number, actor?: AuthUser): Promise<any> {
     const estimate = await db.estimate.findUnique({ where: { id: estimateId }, include });
-    if (!estimate || (actor && !isPrivileged(actor) && estimate.idUser !== actor.id))
+    if (!estimate || (actor && !await canAccessOwner(db, estimate.idUser, actor)))
       throw new NotFoundException('Estimate not found.');
     return estimate;
   }
@@ -125,6 +126,8 @@ export class MaterialRevisionsService {
   }
 
   private present(estimate: any, revision: any, actor: AuthUser) {
+    const network = networkSnapshot(estimate);
+    const canSeeBilling = !network || isPrivileged(actor) || network.billingAccountId === actor.id || network.nodes.some(node => node.id === actor.id && node.mode === 'INTERNAL');
     const dealerPricing = estimate.user.role.name === 'dealer';
     return {
       id: revision.id, version: revision.version, status: revision.status, reason: revision.reason,
@@ -134,8 +137,8 @@ export class MaterialRevisionsService {
       canEdit: revision.status === 'DRAFT' && this.editorAllowed(estimate, revision, actor),
       canApprove: revision.status === 'PENDING_APPROVAL' && estimate.idUser === actor.id,
       canCancel: revision.activeSlot === 1 && (isPrivileged(actor) || estimate.idUser === actor.id),
-      original: summaryFields(revision.originalSummary, dealerPricing),
-      revised: summaryFields(revision.revisedSummary, dealerPricing),
+      original: summaryFields(revision.originalSummary, dealerPricing, canSeeBilling),
+      revised: summaryFields(revision.revisedSummary, dealerPricing, canSeeBilling),
       items: (revision.items as MaterialRevisionItemSnapshot[]).map(item => ({
         key: item.key, action: item.action, originalPieceId: item.originalPieceId,
         label: item.label, originalLabel: item.originalLabel, changeDescription: item.changeDescription,
@@ -233,6 +236,7 @@ export class MaterialRevisionsService {
       dealerMarkup: estimate.user.role.name !== 'dealer' ? 0 : original ? Number(original.dealerMarkup) * 100 : Number(dto.piece.dealerMarkup ?? 0),
     };
     const cache = this.calculator.createCalculationCache();
+    cache.networkSnapshot = networkSnapshot(estimate);
     cache.promotions = original ? savedPromotions({ promotionLockedAt: estimate.promotionLockedAt || new Date(),
       promotionContext: original.promotionSnapshot ? [original.promotionSnapshot] : [] })
       : await this.promotions.eligible(estimate.idUser, db);
@@ -478,9 +482,10 @@ export class MaterialRevisionsService {
     const updated = await this.load(db, estimate.id);
     if (estimate.order) {
       const discount = calculateEstimateDiscount(updated);
-      const customerPays = updated.dealerModeSnapshot === 'INTERNAL';
-      const saleSubtotal = discount?.material.subtotal ?? (customerPays ? updated.customerPriceT : updated.priceT);
-      const total = discount?.material.total ?? (customerPays ? updated.customerTotalPayable : updated.totalPayable);
+      const billing = billingEstimate(updated);
+      const customerPays = billing.dealerModeSnapshot === 'INTERNAL';
+      const saleSubtotal = discount?.material.subtotal ?? (customerPays ? billing.customerPriceT : billing.priceT);
+      const total = discount?.material.total ?? (customerPays ? billing.customerTotalPayable : billing.totalPayable);
       const financials = calculateMaterialFinancials({ saleSubtotal: String(saleSubtotal), factoryRate: String(updated.rateT) });
       await db.order.update({ where: { id: estimate.order.id }, data: {
         units: updated.units, amount: new Prisma.Decimal(String(total)),

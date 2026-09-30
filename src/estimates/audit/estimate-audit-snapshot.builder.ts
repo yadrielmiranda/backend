@@ -13,6 +13,14 @@ export class EstimateAuditSnapshotBuilder {
       dealerModeSnapshot: est.dealerModeSnapshot ?? null,
       dealerEarningsPlanSnapshot: est.dealerEarningsPlanSnapshot ?? null,
       ownerMarkupSnapshot: est.ownerMarkupSnapshot ?? null,
+      ...(est.dealerNetworkSnapshot
+        ? {
+            dealerNetworkSnapshot: est.dealerNetworkSnapshot,
+            networkBillingPriceT: est.networkBillingPriceT ?? null,
+            networkRootPriceT: est.networkRootPriceT ?? null,
+            networkSubdealerPriceT: est.networkSubdealerPriceT ?? null,
+          }
+        : {}),
 
       units: est.units,
 
@@ -91,6 +99,7 @@ export class EstimateAuditSnapshotBuilder {
             regularPrice: p.regularPrice ?? null,
             regularCustomerPrice: p.regularCustomerPrice ?? null,
             promotionSnapshot: p.promotionSnapshot ?? null,
+            ...(p.networkPricing ? { networkPricing: p.networkPricing } : {}),
             netProfit: p.netProfit ?? null,
 
             dealerMarkup: p.dealerMarkup ?? null,

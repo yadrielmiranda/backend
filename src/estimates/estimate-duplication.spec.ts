@@ -6,6 +6,7 @@ import { EstimatesService } from './estimates.service';
 import { EstimatePieceCalculatorService } from './calculation/estimate-piece-calculator.service';
 import { EstimateMuntinService } from './muntins/estimate-muntin.service';
 import { DuplicateEstimateDto } from './dto/duplicate-estimate.dto';
+import { applyNetworkPricing, billingEstimate } from '@/dealer-network/dealer-network';
 
 const dealer: any = { id: 7, role: { name: 'dealer' } };
 const address = { street: '123 Main St', city: 'Miami', state: 'FL', postalCode: '33101' };
@@ -55,7 +56,7 @@ function fixture() {
     $queryRaw: jest.fn(async (sql, ...values) => String(sql).includes('DealerEarningsPlan')
       ? [{ id: 17, name: 'Current earnings', basis: 'EXPECTED_PROFIT', percent: '40', revision: 2, isActive: true }]
       : [{ id: values[0] }]),
-    user: { findUniqueOrThrow: jest.fn(async () => owner) },
+    user: { findUniqueOrThrow: jest.fn(async () => owner), findUnique: jest.fn(async () => owner) },
     estimate: {
       findUnique: jest.fn(async ({ where }) => where.id === 1 ? json(source) : created.find(e => e.id === where.id)),
       create: jest.fn(async ({ data }) => {
@@ -92,11 +93,11 @@ function fixture() {
     const rate = new Decimal(100), price = rate.mul(new Decimal(1).add(markup));
     const dealerMarkupDecimal = new Decimal(input.dealerMarkup ?? 0).div(100);
     const customerPrice = price.mul(new Decimal(1).add(dealerMarkupDecimal));
-    return { ...input, rate, price, regularPrice: price, customerPrice, regularCustomerPrice: customerPrice,
+    return applyNetworkPricing({ ...input, rate, price, regularPrice: price, customerPrice, regularCustomerPrice: customerPrice,
       markup, dealerMarkupDecimal, subtotal: price.mul(input.qty), customerSubtotal: customerPrice.mul(input.qty),
       netProfit: price.sub(rate), netProfitD: customerPrice.sub(price).mul(input.qty),
       dpPosPsf: new Decimal(30), dpNegPsf: new Decimal(40), promotionSnapshot: cache?.promotions?.[0] ?? null,
-    } as any;
+    } as any, cache?.networkSnapshot);
   });
   const workflow = {
     prepareDuplicateInstallation: jest.fn(async () => ({ address, snapshot: { revision: 2 } })),
@@ -117,6 +118,24 @@ function fixture() {
 }
 
 describe('Independent estimate duplication', () => {
+  it.each([0, '.065'])('uses current subordinate tax %s for new estimates and copies without touching the original', async taxRate => {
+    const f = fixture();
+    const root = { ...f.owner, id: 1, username: 'root', parentDealerId: null };
+    Object.assign(f.owner, { parentDealerId: 1, networkMarkup: '.2', networkTaxRate: taxRate, username: 'subdealer', isTaxExempt: true });
+    f.tx.user.findUnique.mockImplementation(async ({ where }: any) => where.id === 1 ? root : f.owner);
+    const original = json(f.source);
+    await f.duplicate();
+    await f.service.createEmptyEstimate({ name: 'New estimate', customerTaxRate: .07 }, 7);
+    const [copy, empty] = f.created();
+    expect(copy.taxRate.toString()).toBe(new Decimal(taxRate).toString());
+    expect(copy.taxAmount.toFixed(2)).toBe(new Decimal(300).mul(taxRate).toFixed(2));
+    expect(empty.taxRate.toString()).toBe(new Decimal(taxRate).toString());
+    expect(empty.taxAmount.toString()).toBe('0');
+    expect(billingEstimate(copy).totalPayable).toBe('270.00');
+    expect(copy.dealerNetworkSnapshot.nodes[1].taxRate).toBe(new Decimal(taxRate).toString());
+    expect(json(f.source)).toEqual(original);
+  });
+
   it('copies configuration into new records, reprices, resets history and leaves the original unchanged', async () => {
     const f = fixture(), original = json(f.source);
     const result = await f.duplicate();

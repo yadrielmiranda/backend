@@ -16,9 +16,9 @@ function fixture() {
     installationJob: null, payments: [], deliveries: [], extraCharges: [],
     quotes: [], appointments: [], revisions: [], measurements: [], _count: { measurements: 0 },
   }));
-  const select = (owner?: number) => records.filter(item => owner === undefined || item.idUser === owner);
+  const select = (owner?: number | { in: number[] }) => records.filter(item => owner === undefined || (typeof owner === "number" ? item.idUser === owner : owner.in.includes(item.idUser)));
   const db: any = {
-    user: { findUnique: jest.fn().mockResolvedValue(null) },
+    user: { findMany: jest.fn(async () => []), findUnique: jest.fn().mockResolvedValue(null) },
     estimate: { findMany: jest.fn(async ({ where }) => select(where?.idUser)) },
     order: {
       findMany: jest.fn(async ({ where }) => select(where?.userId)),

@@ -1,3 +1,5 @@
+import { createNetworkSnapshot, networkSnapshot, networkPresentation, canAccessOwner, descendantIds } from '@/dealer-network/dealer-network';
+import { networkParentSelect } from '@/dealer-network/network-access';
 import { DuplicateEstimateDto } from './dto/duplicate-estimate.dto';
 import { assertEstimateDuplicationAccess, estimateDuplicationInclude } from './estimate-duplication';
 import { resolveNewPlan, getPaymentSchedule } from '@/payment-plans/payment-schedule';
@@ -197,6 +199,7 @@ export class EstimatesService {
     piece: CalculatedPieceCombined,
   ): Omit<Prisma.PieceUncheckedCreateInput, 'idEst'> {
     return {
+      ...(piece.networkPricing ? { networkPricing: piece.networkPricing as unknown as Prisma.InputJsonValue } : {}),
       mark: piece.mark,
       screen: piece.screen ?? false,
       highBottom: piece.highBottom ?? false,
@@ -324,6 +327,7 @@ export class EstimatesService {
         user: {
           include: {
             role: true,
+            parentDealer: { select: networkParentSelect },
           },
         },
         status: true,
@@ -375,6 +379,7 @@ export class EstimatesService {
     return estimate ? {
       ...estimate,
       ...buildDealerEarningsReport(estimate),
+      dealerNetwork: networkPresentation(estimate),
       installationJob: estimate.installationJob
         ? { id: estimate.installationJob.id, status: estimate.installationJob.status }
         : null,
@@ -422,7 +427,7 @@ export class EstimatesService {
       role: { name: actor.role.name as AuthUser['role']['name'] },
     } satisfies AuthUser;
 
-    if (!estimate || (!isPrivileged(actorUser) && estimate.idUser !== userId)) {
+    if (!estimate || !await canAccessOwner(tx, estimate.idUser, actorUser)) {
       throw new NotFoundException(`Estimate #${estimateId} not found/denied.`);
     }
 
@@ -506,6 +511,7 @@ export class EstimatesService {
         price: true,
         customerPrice: true,
         regularPrice: true, regularCustomerPrice: true, promotionSnapshot: true,
+        networkPricing: true,
         dealerMarkup: true,
       },
     });
@@ -530,6 +536,7 @@ export class EstimatesService {
         promotionExpiresAt,
         promotionContext: persistedPieces.flatMap((p) => p.promotionSnapshot ? [p.promotionSnapshot] : []) as Prisma.InputJsonValue,
         expiresAt: effectiveExpiry(header.standardExpiresAt ?? header.expiresAt, promotionExpiresAt),
+        ...(header.dealerNetworkSnapshot ? { networkBillingPriceT: 0, networkRootPriceT: 0, networkSubdealerPriceT: 0 } : {}),
         ...estimateTotals,
         units: totalUnits,
       },
@@ -756,6 +763,7 @@ export class EstimatesService {
         userId,
         this.prisma as PrismaTransactionClient,
       );
+      cache.networkSnapshot = networkSnapshot(estimate);
       effectiveMarkupDecimal = new Decimal(
         estimate!.ownerMarkupSnapshot.toString(),
       );
@@ -775,6 +783,11 @@ export class EstimatesService {
         cache.promotions = await this.promotions.eligible(estimate!.idUser);
       }
     } else {
+      if (user.parentDealerId) {
+        const tax = await this.prisma.globalParameter.findUniqueOrThrow({ where: { key: GlobalParameterKey.SALES_TAX } });
+        cache.networkSnapshot = await createNetworkSnapshot(this.prisma, user, tax.value.toString());
+        effectiveMarkupDecimal = new Decimal(cache.networkSnapshot!.rootMarkup);
+      }
       cache.promotions = await this.promotions.eligible(user.id);
     }
     const calculated: CalculatedPieceCombined =
@@ -862,7 +875,7 @@ export class EstimatesService {
     const estimate = await this.prisma.estimate.findUnique({
       where,
       include: {
-        user: { include: { role: true } }, // ✅ NECESARIO para saber si es dealer
+        user: { include: { role: true, parentDealer: { select: networkParentSelect } } },
         status: true,
         order: true,
         payments: true,
@@ -941,6 +954,7 @@ export class EstimatesService {
     return {
       ...(estimateResult as any),
       ...buildDealerEarningsReport(estimate),
+      dealerNetwork: networkPresentation(estimate),
       paymentSchedule: await getPaymentSchedule(this.prisma, estimate.id),
       pieces,
       installationJob,
@@ -970,6 +984,7 @@ export class EstimatesService {
     await this.prisma.estimate.updateMany({
       where: {
         idUser: user.id,
+        dealerNetworkSnapshot: { equals: Prisma.DbNull },
         status: { name: 'Active' },
         order: null,
         payments: {
@@ -998,6 +1013,7 @@ export class EstimatesService {
         user: {
           include: {
             role: true,
+            parentDealer: { select: networkParentSelect },
           },
         },
         status: true,
@@ -1010,6 +1026,8 @@ export class EstimatesService {
 
     return estimates.map((estimate) => ({
       ...estimate,
+      ...buildDealerEarningsReport(estimate),
+      dealerNetwork: networkPresentation(estimate),
       manualDiscountSummary: calculateEstimateDiscount(estimate),
       installationSummary: buildEstimateInstallationSummary(estimate.installationJob),
       installationJob: estimate.installationJob
@@ -1025,7 +1043,7 @@ export class EstimatesService {
     await this.syncActiveDealerMode(user);
 
     return this.estimates({
-      where: { idUser: user.id },
+      where: { idUser: { in: await descendantIds(this.prisma, user) } },
     });
   }
 
@@ -1040,7 +1058,7 @@ export class EstimatesService {
 
     if (isPrivileged(user)) return estimate;
 
-    if (estimate.idUser !== user.id) {
+    if (!await canAccessOwner(this.prisma, estimate.idUser, user)) {
       throw new NotFoundException(`Estimate with ID #${id} not found.`);
     }
 
@@ -1086,6 +1104,8 @@ export class EstimatesService {
         where: { id: userId },
         select: {
           id: true,
+          parentDealerId: true,
+          networkSuspended: true,
           isTaxExempt: true,
           markupOverride: true,
           dealerMode: true,
@@ -1132,15 +1152,14 @@ export class EstimatesService {
         tx as PrismaTransactionClient,
       );
 
-      const factoryTaxRate = user.isTaxExempt
-        ? new Decimal(0)
-        : new Decimal(taxParameter.value.toString());
-
       const customerTaxRate = new Decimal(dto.customerTaxRate ?? 0);
 
-      const ownerMarkupSnapshot = this.resolveBaseMarkupForUser(user);
+      const network = await createNetworkSnapshot(tx, user, taxParameter.value.toString());
+      const factoryTaxRate = new Decimal(network?.nodes.at(-1)?.taxRate ??
+        (user.isTaxExempt ? 0 : taxParameter.value.toString()));
+      const ownerMarkupSnapshot = network ? new Decimal(network.rootMarkup) : this.resolveBaseMarkupForUser(user);
       const ownerIsDealer = user.role.name === 'dealer';
-      const earningsPlan = ownerIsDealer && user.dealerMode === DealerMode.INTERNAL
+      const earningsPlan = ownerIsDealer && !user.parentDealerId && user.dealerMode === DealerMode.INTERNAL
         ? await loadActiveEarningsPlan(tx, user.dealerEarningsPlanId) : null;
 
       const estimateTotals = this.pieceCalculator.calculateEstimateTotals(
@@ -1155,9 +1174,10 @@ export class EstimatesService {
 
       const nextNumber = String(190909 + sequence.id);
 
-      const paymentPlanSnapshot = await resolveNewPlan(tx, userId);
+      const paymentPlanSnapshot = await resolveNewPlan(tx, network?.billingAccountId ?? userId);
       const createdBase = await tx.estimate.create({
         data: {
+          ...(network ? { dealerNetworkSnapshot: network as unknown as Prisma.InputJsonValue, networkBillingPriceT: 0, networkRootPriceT: 0, networkSubdealerPriceT: 0 } : {}),
           paymentPlanSnapshot: paymentPlanSnapshot as unknown as Prisma.InputJsonValue,
           ...(earningsPlan ? { dealerEarningsPlanSnapshot: earningsPlan } : {}),
           number: nextNumber,
@@ -1248,7 +1268,7 @@ export class EstimatesService {
       where: { id }, include: estimateDuplicationInclude,
     });
     const before = await readSource(this.prisma);
-    assertEstimateDuplicationAccess(before, actor);
+    assertEstimateDuplicationAccess(before, actor, !!before && await canAccessOwner(this.prisma, before.idUser, actor));
     if (typeof dto.includeInstallation !== 'boolean') {
       throw new BadRequestException('Choose whether to include installation.');
     }
@@ -1264,7 +1284,7 @@ export class EstimatesService {
     return this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${id} FOR UPDATE`;
       const source = await readSource(tx);
-      assertEstimateDuplicationAccess(source, actor);
+      assertEstimateDuplicationAccess(source, actor, !!source && await canAccessOwner(tx, source.idUser, actor));
       if (coverage && JSON.stringify(source.installationJob) !== JSON.stringify(before.installationJob)) {
         throw new ConflictException('The installation changed while preparing the copy. Please try again.');
       }
@@ -1273,18 +1293,22 @@ export class EstimatesService {
       const owner = await tx.user.findUniqueOrThrow({
         where: { id: source.idUser }, include: { role: true },
       });
-      assertEstimateDuplicationAccess({ ...source, user: owner }, actor);
-      const ownerMarkup = this.resolveBaseMarkupForUser(owner);
+      assertEstimateDuplicationAccess({ ...source, user: owner }, actor, await canAccessOwner(tx, owner.id, actor));
+
       const ownerIsDealer = owner.role.name === 'dealer';
-      const earningsPlan = ownerIsDealer && owner.dealerMode === DealerMode.INTERNAL
+      const earningsPlan = ownerIsDealer && !owner.parentDealerId && owner.dealerMode === DealerMode.INTERNAL
         ? await loadActiveEarningsPlan(tx, owner.dealerEarningsPlanId) : null;
-      const paymentPlan = await resolveNewPlan(tx, owner.id);
+
       const activeStatus = await tx.estimateStatus.findUnique({ where: { name: 'Active' } });
       if (!activeStatus) throw new InternalServerErrorException('EstimateStatus "Active" not seeded.');
       const taxParameter = await tx.globalParameter.findUnique({ where: { key: GlobalParameterKey.SALES_TAX } });
       if (!taxParameter) throw new InternalServerErrorException('SALES_TAX config missing.');
+      const network = await createNetworkSnapshot(tx, owner, taxParameter.value.toString());
+      const ownerMarkup = network ? new Decimal(network.rootMarkup) : this.resolveBaseMarkupForUser(owner);
+      const paymentPlan = await resolveNewPlan(tx, network?.billingAccountId ?? owner.id);
 
       const cache = this.pieceCalculator.createCalculationCache();
+      cache.networkSnapshot = network;
       cache.promotions = await this.promotions.eligible(owner.id, tx);
       const calculated: CalculatedPieceCombined[] = [];
       for (const piece of source.pieces) {
@@ -1295,7 +1319,7 @@ export class EstimatesService {
       }
       const totals = this.pieceCalculator.calculateEstimateTotals(
         calculated,
-        new Decimal(owner.isTaxExempt ? 0 : taxParameter.value.toString()),
+        new Decimal(network?.nodes.at(-1)?.taxRate ?? (owner.isTaxExempt ? 0 : taxParameter.value.toString())),
         new Decimal(source.customerTaxRate.toString()),
       );
       const standardExpiresAt = await this.getEstimateExpirationDate(tx);
@@ -1304,6 +1328,7 @@ export class EstimatesService {
       // Lista explícita: firmas, pagos, descuentos aprobados y estados anteriores no se heredan.
       const created = await tx.estimate.create({
         data: {
+          ...(network ? { dealerNetworkSnapshot: network as unknown as Prisma.InputJsonValue, networkBillingPriceT: 0, networkRootPriceT: 0, networkSubdealerPriceT: 0 } : {}),
           ...totals,
           number: String(190909 + sequence.id),
           name: dto.name?.trim() || `${source.name.slice(0, 248)} (copy)`,
@@ -1587,6 +1612,7 @@ export class EstimatesService {
       );
 
       const cache = this.pieceCalculator.createCalculationCache();
+      cache.networkSnapshot = networkSnapshot(beforeEstimate);
       cache.promotions = await this.promotions.eligible(
         beforeEstimate!.idUser,
         tx,
@@ -1713,6 +1739,7 @@ export class EstimatesService {
       }
 
       const cache = this.pieceCalculator.createCalculationCache();
+      cache.networkSnapshot = networkSnapshot(beforeEstimate);
       cache.promotions = this.promotionsForSavedPiece(
         beforeEstimate!,
         existingPiece,
@@ -1905,6 +1932,7 @@ export class EstimatesService {
       }
 
       const cache = this.pieceCalculator.createCalculationCache();
+      cache.networkSnapshot = networkSnapshot(beforeEstimate);
 
       const calculatedPieces: Array<{
         pieceId: number;
@@ -2072,6 +2100,7 @@ export class EstimatesService {
       }
 
       const cache = this.pieceCalculator.createCalculationCache();
+      cache.networkSnapshot = networkSnapshot(beforeEstimate);
 
       const calculatedPieces: Array<{
         pieceId: number;
@@ -2347,7 +2376,7 @@ export class EstimatesService {
         throw new NotFoundException(`Estimate #${estimateId} not found.`);
       }
 
-      if (!isPrivileged(user) && beforeEstimate.idUser !== user.id) {
+      if (!await canAccessOwner(tx, beforeEstimate.idUser, user)) {
         throw new NotFoundException(`Estimate #${estimateId} not found.`);
       }
 
@@ -2400,9 +2429,7 @@ export class EstimatesService {
 
       // Recalculate renueva el precio con el markup vigente del dueño,
       // también cuando lo ejecuta un administrador u operador.
-      const effectiveMarkupDecimal = this.resolveBaseMarkupForUser(
-        beforeEstimate.user,
-      );
+      let effectiveMarkupDecimal = this.resolveBaseMarkupForUser(beforeEstimate.user);
 
       const activeStatus = await tx.estimateStatus.findUnique({
         where: { name: 'Active' },
@@ -2422,14 +2449,15 @@ export class EstimatesService {
       if (!taxParameter) {
         throw new InternalServerErrorException('SALES_TAX config missing.');
       }
+      const network = await createNetworkSnapshot(tx, beforeEstimate.user, taxParameter.value.toString());
+      if (network) effectiveMarkupDecimal = new Decimal(network.rootMarkup);
 
       const expiresAt = await this.getEstimateExpirationDate(
         tx as PrismaTransactionClient,
       );
 
-      const factoryTaxRate = beforeEstimate.user.isTaxExempt
-        ? new Decimal(0)
-        : new Decimal(taxParameter.value.toString());
+      const factoryTaxRate = new Decimal(network?.nodes.at(-1)?.taxRate ??
+        (beforeEstimate.user.isTaxExempt ? 0 : taxParameter.value.toString()));
 
       const customerTaxRate = new Decimal(
         Number(beforeEstimate.customerTaxRate ?? 0),
@@ -2510,6 +2538,7 @@ export class EstimatesService {
         dealerMarkup: Number(p.dealerMarkup ?? 0) * 100,
       }));
       const cache = this.pieceCalculator.createCalculationCache();
+      cache.networkSnapshot = network;
       cache.promotions = await this.promotions.eligible(beforeEstimate.idUser, tx);
       const calculatedPieces: CalculatedPieceCombined[] = [];
 
@@ -2566,6 +2595,7 @@ export class EstimatesService {
             idSillOption: p.idSillOption ?? null,
             idReinforcementOption: p.idReinforcementOption ?? null,
 
+            ...(p.networkPricing ? { networkPricing: p.networkPricing as unknown as Prisma.InputJsonValue } : {}),
             rate: new Prisma.Decimal(p.rate.toFixed(2)),
             price: new Prisma.Decimal(p.price.toFixed(2)),
             regularPrice: new Prisma.Decimal((p.regularPrice ?? p.price).toFixed(2)),
@@ -2655,6 +2685,9 @@ export class EstimatesService {
       await tx.estimate.update({
         where: { id: estimateId },
         data: {
+          ...(network ? { dealerNetworkSnapshot: network as unknown as Prisma.InputJsonValue, networkBillingPriceT: 0, networkRootPriceT: 0, networkSubdealerPriceT: 0,
+            dealerModeSnapshot: beforeEstimate.user.dealerMode,
+            paymentPlanSnapshot: await resolveNewPlan(tx, network.billingAccountId) as unknown as Prisma.InputJsonValue } : {}),
           ...estimateTotals,
           ownerMarkupSnapshot: new Prisma.Decimal(
             effectiveMarkupDecimal.toFixed(18),
@@ -2664,7 +2697,7 @@ export class EstimatesService {
           promotionExpiresAt: promotionDeadline(calculatedPieces),
           expiresAt: effectiveExpiry(expiresAt, promotionDeadline(calculatedPieces)),
           promotionContext: calculatedPieces.flatMap((p) => p.promotionSnapshot ? [p.promotionSnapshot] : []) as unknown as Prisma.InputJsonValue,
-          ...(reactivatedPlan ? { paymentPlanSnapshot: reactivatedPlan as Prisma.InputJsonValue } : {}),
+          ...(!network && reactivatedPlan ? { paymentPlanSnapshot: reactivatedPlan as Prisma.InputJsonValue } : {}),
           status: {
             connect: { id: activeStatus.id },
           },

@@ -23,6 +23,7 @@ export type CustomerChargeRecord = {
 };
 
 export type EstimateClassification = {
+  dealerNetworkSnapshot?: unknown;
   dealerModeSnapshot: DealerMode | null;
   status?: { name: string } | null;
   order?: { id: number } | null;
@@ -129,7 +130,7 @@ export function isExternalDealerEstimate(estimate: EstimateClassification) {
 
   const isActive =
     estimate.status?.name === 'Active' && !Boolean(estimate.order);
-  const mode = isActive
+  const mode = estimate.dealerNetworkSnapshot ? estimate.dealerModeSnapshot : isActive
     ? (estimate.user.dealerMode ??
       estimate.dealerModeSnapshot ??
       DealerMode.EXTERNAL)

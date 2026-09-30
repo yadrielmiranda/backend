@@ -1,3 +1,4 @@
+import { applyNetworkPricing, networkPieceTotals, type NetworkSnapshot, type NetworkPiecePricing } from '@/dealer-network/dealer-network';
 import { applyPromotion, PromotionTerms } from '@/promotions/promotion-pricing';
 import {
   Injectable,
@@ -45,6 +46,7 @@ type ConfigSelect = {
 };
 
 export type CalculationCache = {
+  networkSnapshot?: NetworkSnapshot | null;
   promotions?: PromotionTerms[];
   product: Map<number, any>;
   config: Map<number, ConfigSelect | null>;
@@ -59,6 +61,7 @@ export type CalculationCache = {
 };
 
 export type CalculatedMetricsInternal = {
+  networkPricing?: NetworkPiecePricing;
   regularPrice?: Decimal;
   regularCustomerPrice?: Decimal;
   promotionSnapshot?: PromotionTerms | null;
@@ -81,6 +84,7 @@ export type CalculatedPieceCombined = (CreatePieceDto | UpsertPieceDto) &
   CalculatedMetricsInternal;
 
 export type PersistedPieceTotalsInput = {
+  networkPricing?: unknown;
   regularPrice?: Decimal | Prisma.Decimal;
   regularCustomerPrice?: Decimal | Prisma.Decimal;
   promotionSnapshot?: unknown;
@@ -92,6 +96,9 @@ export type PersistedPieceTotalsInput = {
 };
 
 export type EstimateTotalsResult = {
+  networkBillingPriceT?: Prisma.Decimal;
+  networkRootPriceT?: Prisma.Decimal;
+  networkSubdealerPriceT?: Prisma.Decimal;
   originalPriceT: Prisma.Decimal;
   originalCustomerPriceT: Prisma.Decimal;
   discountAmount: Prisma.Decimal;
@@ -290,7 +297,12 @@ export class EstimatePieceCalculatorService {
     return rule;
   }
 
-  async calculatePieceMetrics(
+  async calculatePieceMetrics(pieceDto: CreatePieceDto | UpsertPieceDto, effectiveMarkup: Decimal,
+    tx: PrismaTransactionClient, cache: CalculationCache): Promise<CalculatedPieceCombined> {
+    return applyNetworkPricing(await this.calculateBasePieceMetrics(pieceDto, effectiveMarkup, tx, cache), cache.networkSnapshot);
+  }
+
+  private async calculateBasePieceMetrics(
     pieceDto: CreatePieceDto | UpsertPieceDto,
     effectiveMarkup: Decimal,
     tx: PrismaTransactionClient,
@@ -1640,11 +1652,11 @@ export class EstimatePieceCalculatorService {
       }),
     );
 
-    return this.calculateNormalizedEstimateTotals(
+    return { ...this.calculateNormalizedEstimateTotals(
       normalizedPieces,
       factoryTaxRate,
       customerTaxRate,
-    );
+    ), ...networkPieceTotals(pieces) };
   }
 
   calculateEstimateTotalsFromPersistedPieces(
@@ -1666,11 +1678,11 @@ export class EstimatePieceCalculatorService {
       }),
     );
 
-    return this.calculateNormalizedEstimateTotals(
+    return { ...this.calculateNormalizedEstimateTotals(
       normalizedPieces,
       factoryTaxRate,
       customerTaxRate,
-    );
+    ), ...networkPieceTotals(pieces) };
   }
 
   private calculateNormalizedEstimateTotals(

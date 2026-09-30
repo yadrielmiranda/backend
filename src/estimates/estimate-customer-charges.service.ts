@@ -1,3 +1,4 @@
+import { canAccessOwner } from '@/dealer-network/dealer-network';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
 import {
   BadRequestException,
@@ -47,6 +48,7 @@ export class EstimateCustomerChargesService {
         number: true,
         idUser: true,
         dealerModeSnapshot: true,
+        dealerNetworkSnapshot: true,
         status: { select: { name: true } },
         order: { select: { id: true } },
         user: {
@@ -86,7 +88,7 @@ export class EstimateCustomerChargesService {
   async findForEstimate(estimateId: number, actor: AuthUser, db: Prisma.TransactionClient = this.prisma) {
     const estimate = await this.loadEstimate(estimateId, db);
 
-    if (!estimate || (!isPrivileged(actor) && estimate.idUser !== actor.id)) {
+    if (!estimate || !await canAccessOwner(db, estimate.idUser, actor)) {
       throw new NotFoundException(`Estimate with ID #${estimateId} not found.`);
     }
 

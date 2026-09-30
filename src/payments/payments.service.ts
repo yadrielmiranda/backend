@@ -1,3 +1,5 @@
+import { networkSnapshot, billingAccountId, billingEstimate } from '@/dealer-network/dealer-network';
+import { estimateNewBusinessBlocked } from '@/dealer-network/network-access';
 import { assertNoPendingMaterialRevision } from '@/estimates/material-revisions/material-revision-policy';
 import { CANCELED_ESTIMATE, assertNoEstimatePaymentHistory } from '@/estimates/estimate-lifecycle-policy';
 import { cents, hasRefundHistory, paidPrincipal, paymentIsCovered, remainingRefundBalance } from './payment-accounting';
@@ -51,7 +53,7 @@ const MATERIAL_ACCEPTANCE_TEXT =
   'I have reviewed and accept the products, dimensions, configurations and prices in this estimate.';
 
 type UnavailablePublicPaymentContext = {
-  enabled: boolean; status: 'not_applicable' | 'expired' | 'canceled'; payment: null;
+  enabled: boolean; status: 'not_applicable' | 'expired' | 'canceled' | 'unavailable'; payment: null;
   payments?: never; fullBalance?: never; checkouts?: never;
   installmentCheckouts?: never; schedule?: never; agreement?: never;
   materialRevisionPending?: never;
@@ -101,6 +103,7 @@ export class PaymentsService {
   }
 
   private getPayerSnapshot(estimate: {
+    dealerNetworkSnapshot?: unknown;
     dealerModeSnapshot: DealerMode | null;
     customerFirstName: string | null;
     customerLastName: string | null;
@@ -113,6 +116,8 @@ export class PaymentsService {
       phone: string;
     };
   }) {
+    const network = networkSnapshot(estimate);
+    if (network?.payerType === 'ACCOUNT_OWNER') return { payerType: PaymentPayerType.ACCOUNT_OWNER, payerName: network.payer.name || null, payerEmail: network.payer.email, payerPhone: network.payer.phone };
     const finalCustomer = estimate.dealerModeSnapshot === DealerMode.INTERNAL;
     const name = finalCustomer
       ? [estimate.customerFirstName, estimate.customerLastName]
@@ -205,13 +210,14 @@ export class PaymentsService {
     if (!orderedStatus)
       throw new Error('Estimate status "Ordered" not seeded.');
 
+    const billing = billingEstimate(estimate);
     const manualDiscount = calculateEstimateDiscount(estimate);
     const saleSubtotal = manualDiscount
       ? new Prisma.Decimal(manualDiscount.material.subtotal)
       : resolveMaterialSaleSubtotal({
-      dealerMode: estimate.dealerModeSnapshot,
-      priceT: estimate.priceT.toString(),
-      customerPriceT: estimate.customerPriceT.toString(),
+      dealerMode: billing.dealerModeSnapshot,
+      priceT: billing.priceT.toString(),
+      customerPriceT: billing.customerPriceT.toString(),
     });
     const materialFinancials = calculateMaterialFinancials({
       saleSubtotal,
@@ -1064,6 +1070,8 @@ export class PaymentsService {
       }
       if (estimate.status.name === CANCELED_ESTIMATE)
         return { enabled: true, status: 'canceled', payment: null } as UnavailablePublicPaymentContext;
+      if (await estimateNewBusinessBlocked(tx, estimate))
+        return { enabled: true, status: 'unavailable', payment: null } as UnavailablePublicPaymentContext;
       if (promotionExpired(estimate)) return { enabled: true, status: 'expired', payment: null } as UnavailablePublicPaymentContext;
       const agreement = await getAgreementPaymentRequirement(tx, estimate.id, token);
       const schedule = await getPaymentSchedule(tx, estimate.id);
@@ -1589,7 +1597,7 @@ export class PaymentsService {
           estimate.publicTotalToken === params.publicToken));
     if (
       !estimate ||
-      estimate.idUser !== params.user.id ||
+      billingAccountId(estimate) !== params.user.id ||
       !publicTokenMatches
     ) {
       throw new NotFoundException(`Estimate #${params.estimateId} not found.`);
@@ -1837,6 +1845,7 @@ export class PaymentsService {
       select: {
         id: true,
         idUser: true,
+        dealerNetworkSnapshot: true,
         dealerModeSnapshot: true,
         user: { select: { role: { select: { name: true } } } },
       },
@@ -1848,9 +1857,8 @@ export class PaymentsService {
     const isAdmin = actorRole === 'admin';
     const isInternalDealerOwner =
       actorRole === 'dealer' &&
-      params.actor.id === owner.idUser &&
-      owner.user.role.name === 'dealer' &&
-      owner.dealerModeSnapshot === DealerMode.INTERNAL;
+      ((params.actor.id === owner.idUser && owner.user.role.name === 'dealer' && owner.dealerModeSnapshot === DealerMode.INTERNAL) ||
+       (networkSnapshot(owner)?.nodes.some(node => node.id === params.actor.id && node.mode === 'INTERNAL')));
 
     if (!isAdmin && !isInternalDealerOwner) {
       throw new ForbiddenException(
@@ -1858,7 +1866,7 @@ export class PaymentsService {
       );
     }
     const ownerUser = {
-      id: owner.idUser,
+      id: billingAccountId(owner),
       role: { name: owner.user.role.name as AuthUser['role']['name'] },
     } satisfies AuthUser;
 
@@ -2055,8 +2063,8 @@ export class PaymentsService {
   }
 
   private async requireEstimateAccess(estimateId: number, actor: AuthUser) {
-    const estimate = await this.prisma.estimate.findUnique({ where: { id: estimateId }, select: { id: true, idUser: true } });
-    if (!estimate || (actor.role?.name !== 'admin' && estimate.idUser !== actor.id)) {
+    const estimate = await this.prisma.estimate.findUnique({ where: { id: estimateId }, select: { id: true, idUser: true, dealerNetworkSnapshot: true } });
+    if (!estimate || (actor.role?.name !== 'admin' && billingAccountId(estimate) !== actor.id && !networkSnapshot(estimate)?.nodes.some(node => node.id === actor.id && node.mode === 'INTERNAL'))) {
       throw new NotFoundException('Estimate not found.');
     }
     return estimate;

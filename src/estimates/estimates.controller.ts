@@ -1,3 +1,4 @@
+import { presentApiResponse } from '@/common/response-privacy.interceptor';
 import { DuplicateEstimateDto } from './dto/duplicate-estimate.dto';
 // @/estimates/estimates.controller.ts
 import {
@@ -56,8 +57,9 @@ export class EstimatesController {
 
   @Get(':id/discount')
   async getDiscount(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
-    const estimate = await this.estimatesService.findOneForUser(id, req.user as AuthUser);
+    const estimate = presentApiResponse(await this.estimatesService.findOneForUser(id, req.user as AuthUser), req.user as AuthUser);
     return {
+      ...(estimate.dealerNetwork ? { dealerNetwork: estimate.dealerNetwork, subdealerEarnings: estimate.subdealerEarnings } : {}),
       config: estimate.manualDiscount ?? null,
       summary: estimate.manualDiscountSummary ?? null,
       dealerEarnings: estimate.dealerEarnings ?? null,

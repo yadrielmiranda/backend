@@ -1,3 +1,4 @@
+import { DealerNetworkModule } from './dealer-network/dealer-network.module';
 import { PaymentPlansModule } from './payment-plans/payment-plans.module';
 import { EarningsPlansModule } from './earnings-plans/earnings-plans.module';
 import { ContractsModule } from './contracts/contracts.module';
@@ -64,6 +65,7 @@ import { SmsConsentModule } from './sms/sms-consent.module';
     ProductsModule,
     SystemsModule,
     UsersModule,
+    DealerNetworkModule,
     FrameColorModule,
     ConfigSModule,
     CoatingModule,

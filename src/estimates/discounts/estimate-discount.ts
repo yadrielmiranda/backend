@@ -1,3 +1,4 @@
+import { billingEstimate } from '@/dealer-network/dealer-network';
 import Decimal from 'decimal.js';
 
 export type EstimateDiscountScope = 'MATERIAL' | 'INSTALLATION';
@@ -113,6 +114,7 @@ export function calculateEstimateDiscount(
     | null
     | undefined = estimate.installationJob,
 ): EstimateDiscountSummary | null {
+  estimate = billingEstimate(estimate);
   const config = estimateDiscountConfig(estimate.manualDiscount);
   if (!config) return null;
   if (

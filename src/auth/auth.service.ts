@@ -25,6 +25,7 @@ import { pickProfileFields } from './dto/self-service-fields';
 import { assertTokenPurpose, SessionTokenPayload } from './access-session';
 import { lockCurrentPlatformTerms, requireCurrentAcceptance, savePlatformTermsAcceptance } from '@/platform-terms/platform-terms.policy';
 import { DeliveryCoverageService } from '@/deliveries/delivery-coverage.service';
+import { accountNetworkBlocked } from '@/dealer-network/network-access';
 
 type JwtRolePayload = string | undefined;
 
@@ -314,6 +315,9 @@ export class AuthService {
     const ok = await bcrypt.compare(pass, user.password);
     if (!ok) throw new UnauthorizedException('Credenciales inválidas.');
 
+    if (await accountNetworkBlocked(this.prisma, user))
+      throw new UnauthorizedException('This account is suspended. Contact your dealer or administrator.');
+
     return user;
   }
 
@@ -558,6 +562,7 @@ export class AuthService {
 
     const freshUser = await this.prisma.user.findUnique({ where: { id: userId }, include: { role: true } });
     if (!freshUser?.isActive || freshUser.deletedAt) throw new UnauthorizedException('This user account is inactive.');
+    if (await accountNetworkBlocked(this.prisma, freshUser)) throw new UnauthorizedException('This account is suspended.');
     const sessionId = this.newSessionId();
     const refreshToken = await this.signRefreshToken(userId, sessionId, freshUser.passwordUpdatedAt);
     // Se crea una sesión nueva; nunca se reactiva una sesión revocada.
@@ -644,7 +649,7 @@ export class AuthService {
     });
     if (!user) throw new UnauthorizedException('Usuario no existe.');
 
-    if (!user.isActive || user.deletedAt) {
+    if (!user.isActive || user.deletedAt || await accountNetworkBlocked(this.prisma, user)) {
       await this.prisma.session.update({
         where: { id: session.id },
         data: { revokedAt: new Date() },

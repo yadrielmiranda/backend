@@ -25,8 +25,9 @@ export type EstimateDuplicationSource = Prisma.EstimateGetPayload<{
 export function assertEstimateDuplicationAccess(
   source: EstimateDuplicationSource | null,
   actor: AuthUser,
+  networkAccess = false,
 ): asserts source is EstimateDuplicationSource {
-  if (!source || (!isPrivileged(actor) && source.idUser !== actor.id)) {
+  if (!source || (!networkAccess && !isPrivileged(actor) && source.idUser !== actor.id)) {
     throw new NotFoundException('Estimate not found.');
   }
   if (!isPrivileged(actor) && !['dealer', 'client'].includes(actor.role?.name ?? '')) {

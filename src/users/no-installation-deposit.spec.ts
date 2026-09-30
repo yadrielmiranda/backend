@@ -24,6 +24,7 @@ function fixture(roleName = 'dealer') {
       ? [{ id: 1, name: 'Dealer markup', revision: 1, basis: 'DEALER_MARKUP', percent: '100', isActive: true }] : []),
     dealerEarningsPlan: { findUnique: jest.fn(async () => ({ id: 1, name: 'Dealer markup', revision: 1, basis: 'DEALER_MARKUP', percent: '100', isActive: true })) },
     user: {
+      count: jest.fn(async () => 0),
       findFirst: jest.fn(async () => ({ ...account })),
       findUniqueOrThrow: jest.fn(async () => account),
       create: jest.fn(async ({ data }) => ({ ...account, ...data })),

@@ -1,3 +1,4 @@
+import { dealerChain } from '@/dealer-network/dealer-network';
 import {
   BadRequestException,
   Injectable,
@@ -20,10 +21,15 @@ export class PromotionsService {
     userId: number,
     tx: Prisma.TransactionClient = this.prisma,
   ): Promise<PromotionTerms[]> {
-    const user = await tx.user.findUniqueOrThrow({
+    let user = await tx.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { idRole: true, role: { select: { name: true } } },
+      select: { parentDealerId: true, idRole: true, role: { select: { name: true } } },
     });
+    if (user.parentDealerId) {
+      const chain = await dealerChain(tx, userId);
+      userId = chain[0].id;
+      user = chain[0];
+    }
     const now = new Date();
     const rows = await tx.promotion.findMany({
       where: { enabled: true, startsAt: { lte: now }, endsAt: { gt: now } },
