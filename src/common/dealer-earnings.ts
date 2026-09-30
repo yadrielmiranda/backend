@@ -58,7 +58,6 @@ export function buildDealerEarningsReport(estimate: any, order = estimate?.order
     const subdealerPrice = new Decimal(String(estimate.networkSubdealerPriceT ?? 0));
     const appBasePrice = String(order?.rate ?? estimate.rateT);
     const realFactoryCost = order?.rateReal == null ? null : String(order.rateReal);
-    // La participación original se calcula sobre el precio ofrecido al subdealer.
     if (network.rootMode !== 'INTERNAL') {
       const expected = netSale.minus(appBasePrice);
       const real = realFactoryCost == null ? null : netSale.minus(realFactoryCost);
@@ -67,8 +66,10 @@ export function buildDealerEarningsReport(estimate: any, order = estimate?.order
         authenticExpectedProfit: expected.toFixed(2), authenticRealProfit: real?.toFixed(2) ?? null,
       } };
     }
+    // MARKUP conserva el precio al subdealer. AVAILABLE_PROFIT aplica el plan
+    // del padre sobre la venta neta facturada por Authentic.
     const rootProfits = calculateMaterialProfitBases({
-      customerPrice: network.subdealerPlan ? subdealerPrice : netSale,
+      customerPrice: network.subdealerPlan?.mode === 'MARKUP' ? subdealerPrice : netSale,
       appBasePrice, dealerPrice: rootPrice, realFactoryCost,
     });
     const earnings = calculateDealerEarnings(savedPlan(network.earningsPlan), rootProfits);
@@ -76,7 +77,10 @@ export function buildDealerEarningsReport(estimate: any, order = estimate?.order
     let totalEarnings = earnings.amount == null ? null : new Decimal(earnings.amount);
     if (network.subdealerPlan) {
       const markup = netSale.minus(subdealerPrice);
-      const pool = totalEarnings?.plus(markup) ?? null;
+      // La participación del padre ya incluye la venta completa en AVAILABLE_PROFIT.
+      const pool = network.subdealerPlan.mode === 'MARKUP'
+        ? totalEarnings?.plus(markup) ?? null
+        : totalEarnings;
       // MARKUP se conoce aunque el plan del superior espere el costo real de fábrica.
       const amount = network.subdealerPlan.mode === 'MARKUP' ? markup
         : pool?.mul(network.subdealerPlan.percent).div(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP) ?? null;

@@ -152,19 +152,19 @@ describe('Three-level dealer network', () => {
 
 describe('Internal subdealer earnings and privacy', () => {
   it.each([
-    ['AVAILABLE_PROFIT', '50', '175.00', '175.00'],
-    ['AVAILABLE_PROFIT', '0', '350.00', '0.00'],
-    ['AVAILABLE_PROFIT', '100', '0.00', '350.00'],
-    ['AVAILABLE_PROFIT', '33.3333', '233.33', '116.67'],
-    ['MARKUP', '100', '150.00', '200.00'],
-  ] as const)('splits $150 + $200 using %s %s%%', async (mode, percent, root, child) => {
+    ['AVAILABLE_PROFIT', '50', '125.00', '125.00', '250.00', '450.00'],
+    ['AVAILABLE_PROFIT', '0', '250.00', '0.00', '250.00', '450.00'],
+    ['AVAILABLE_PROFIT', '100', '0.00', '250.00', '250.00', '450.00'],
+    ['AVAILABLE_PROFIT', '33.3333', '166.67', '83.33', '250.00', '450.00'],
+    ['MARKUP', '100', '150.00', '200.00', '350.00', '350.00'],
+  ] as const)('splits earnings from the billed sale using %s %s%%', async (mode, percent, root, child, total, company) => {
     const f = await estimateFixture(); f.snapshot.subdealerPlan = { mode, percent };
     const before = JSON.stringify(f.estimate);
     const report = buildDealerEarningsReport(f.estimate);
     expect(report.dealerEarnings?.amount).toBe(root);
     expect(report.subdealerEarnings?.amount).toBe(child);
-    expect(report.materialProfits?.authenticExpectedProfit).toBe('350.00');
-    expect(new Decimal(root).plus(child).toFixed(2)).toBe('350.00');
+    expect(report.materialProfits?.authenticExpectedProfit).toBe(company);
+    expect(new Decimal(root).plus(child).toFixed(2)).toBe(total);
     expect(JSON.stringify(f.estimate)).toBe(before);
   });
 
@@ -183,25 +183,28 @@ describe('Internal subdealer earnings and privacy', () => {
     f.estimate.installationJob = { status: 'APPROVED', quotes: [{ status: 'APPROVED', total: '4000' }] };
     f.estimate.manualDiscount = { scope: 'MATERIAL', type: 'AMOUNT', value: '100', materialDiscountBasis: 'BEFORE_TAX' };
     expect(calculateEstimateDiscount(f.estimate)?.material.total).toBe('1498.00');
-    expect(buildDealerEarningsReport(f.estimate).subdealerEarnings?.amount).toBe('125.00');
+    expect(buildDealerEarningsReport(f.estimate).subdealerEarnings?.amount).toBe('100.00');
     f.estimate.order = { rate: '800', saleSubtotal: '1400' };
-    expect(buildDealerEarningsReport(f.estimate).subdealerEarnings?.amount).toBe('125.00');
-    expect(buildDealerEarningsReport(f.estimate).materialProfits?.authenticExpectedProfit).toBe('350.00');
+    expect(buildDealerEarningsReport(f.estimate).subdealerEarnings?.amount).toBe('100.00');
+    expect(buildDealerEarningsReport(f.estimate).materialProfits?.authenticExpectedProfit).toBe('400.00');
   });
 
   it('does not change saved earnings when account terms change', async () => {
     const f = await estimateFixture(); f.users[1].subdealerEarningsPercent = new Prisma.Decimal(90);
     f.users[1].networkMarkup = new Prisma.Decimal('.8');
-    expect(buildDealerEarningsReport(f.estimate).subdealerEarnings?.amount).toBe('175.00');
+    expect(buildDealerEarningsReport(f.estimate).subdealerEarnings?.amount).toBe('125.00');
     const current = await createNetworkSnapshot(f.db, f.users[2], '.07');
     expect(current?.subdealerPlan?.percent).toBe('90');
     expect(current?.nodes[1].markup).toBe('0.8');
   });
 
-  it('presents only the viewer earnings and never exposes upstream price snapshots', async () => {
-    const f = await estimateFixture(); f.snapshot.subdealerPlan = { mode: 'MARKUP', percent: '100' };
+  it.each([
+    ['MARKUP', '100', '150.00', '200.00'],
+    ['AVAILABLE_PROFIT', '50', '125.00', '125.00'],
+  ] as const)('presents only the viewer earnings and hides upstream snapshots for %s', async (mode, percent, root, child) => {
+    const f = await estimateFixture(); f.snapshot.subdealerPlan = { mode, percent };
     const payload = { ...f.estimate, ...buildDealerEarningsReport(f.estimate) };
-    for (const [id, amount] of [[1, '150.00'], [2, '200.00'], [3, null]] as const) {
+    for (const [id, amount] of [[1, root], [2, child], [3, null]] as const) {
       const response = presentApiResponse(payload, actor(id));
       expect(response.dealerEarnings?.amount ?? null).toBe(amount);
       expect(response).not.toHaveProperty('dealerNetworkSnapshot');
@@ -211,7 +214,8 @@ describe('Internal subdealer earnings and privacy', () => {
       expect(response.dealerNetwork.canPay).toBe(id === 3);
     }
     const admin = presentApiResponse(payload, actor(99, 'admin'));
-    expect(admin.subdealerEarnings.amount).toBe('200.00');
+    expect(admin.dealerEarnings.amount).toBe(root);
+    expect(admin.subdealerEarnings.amount).toBe(child);
   });
 
   it('rejects checkout by an estimate owner who is not the Authentic buyer', async () => {
@@ -249,16 +253,19 @@ describe('Network reports and derived API views', () => {
     expect(refresh.dealerEarnings).toBeNull();
   });
 
-  it('keeps a network PDF scoped to the viewer and lets staff see both earnings', async () => {
+  it.each([
+    ['MARKUP', '100', '150.00', '200.00'],
+    ['AVAILABLE_PROFIT', '50', '125.00', '125.00'],
+  ] as const)('keeps the %s network PDF scoped to the viewer and shows staff both earnings', async (mode, percent, rootAmount, childAmount) => {
     const f = await estimateFixture();
-    f.snapshot.subdealerPlan = { mode: 'MARKUP', percent: '100' };
+    f.snapshot.subdealerPlan = { mode, percent };
     const e: any = { ...f.estimate, pieces: [], date: new Date(), branding: { name: 'Dealer' }, companyBranding: { name: 'Authentic' } };
     const root = EstimatePdfHtmlBuilder.build(e, 'dealer_internal', {}, 1);
     const sub = EstimatePdfHtmlBuilder.build(e, 'dealer_internal', {}, 2);
     const distributor = EstimatePdfHtmlBuilder.build(e, 'dealer_internal', {}, 3);
     const admin = EstimatePdfHtmlBuilder.build(e, 'admin', {}, 99);
-    expect(root).toContain('>$150.00</span>');
-    expect(sub).toContain('>$200.00</span>');
+    expect(root).toContain(`>$${rootAmount}</span>`);
+    expect(sub).toContain(`>$${childAmount}</span>`);
     expect(distributor).not.toContain('aria-label="Dealer material earnings"');
     expect(admin).toContain('Subdealer material earnings');
     expect(sub).not.toContain('Root plan');
