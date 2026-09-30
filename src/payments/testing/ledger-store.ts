@@ -3,7 +3,8 @@ import { Prisma } from '@prisma/client';
 export function attachLedgerStore(tx: any, payments: () => any[]) {
   const receipts: any[] = [],
     refunds: any[] = [],
-    allocations: any[] = [];
+    allocations: any[] = [],
+    processingCosts: any[] = [];
   const money = (value: any) => new Prisma.Decimal(value ?? 0);
   const matching = (row: any, where: any = {}): boolean =>
     Object.entries(where).every(([key, value]: [string, any]) => {
@@ -37,6 +38,16 @@ export function attachLedgerStore(tx: any, payments: () => any[]) {
       .filter((a) => a.receiptId === r.id)
       .map((a) => ({ ...a, refund: refunds.find((r) => r.id === a.refundId) })),
   });
+  const receiptWithIncludes = async (r: any, include: any) => {
+    const view = receiptView(r);
+    if (view.payment && include?.payment?.include?.estimate) {
+      view.payment = await find({
+        where: { id: view.payment.id },
+        include: { estimate: include.payment.include.estimate },
+      });
+    }
+    return view;
+  };
   tx.paymentReceipt = {
     create: jest.fn(async ({ data }) => {
       const r = { id: receipts.length + 1, ...data };
@@ -48,12 +59,12 @@ export function attachLedgerStore(tx: any, payments: () => any[]) {
       if (r) return Object.assign(r, update);
       return tx.paymentReceipt.create({ data: create });
     }),
-    findFirst: jest.fn(async ({ where }) => {
+    findFirst: jest.fn(async ({ where, include }) => {
       const r = receipts.find((r) => matching(r, where));
-      return r ? receiptView(r) : null;
+      return r ? receiptWithIncludes(r, include) : null;
     }),
-    findMany: jest.fn(async ({ where }) =>
-      receipts.filter((r) => matching(r, where)).map(receiptView),
+    findMany: jest.fn(async ({ where, include }) =>
+      Promise.all(receipts.filter((r) => matching(r, where)).map((r) => receiptWithIncludes(r, include))),
     ),
     updateMany: jest.fn(async ({ where, data }) => {
       receipts
@@ -101,6 +112,21 @@ export function attachLedgerStore(tx: any, payments: () => any[]) {
       ),
     ),
   };
+  tx.stripeProcessingCost = {
+    findUnique: jest.fn(async ({ where }) =>
+      processingCosts.find((row) => matching(row, where)) ?? null,
+    ),
+    findMany: jest.fn(async ({ where = {} } = {}) =>
+      processingCosts.filter((row) => matching(row, where)),
+    ),
+    upsert: jest.fn(async ({ where, create, update }) => {
+      const existing = processingCosts.find((row) => matching(row, where));
+      if (existing) return Object.assign(existing, update);
+      const row = { fee: null, materialFee: null, materialSurcharge: money(0), ...create };
+      processingCosts.push(row);
+      return row;
+    }),
+  };
   const find = tx.payment.findUniqueOrThrow ?? tx.payment.findUnique;
   tx.payment.findUniqueOrThrow = jest.fn(async (args) => {
     const p = await find(args);
@@ -116,5 +142,5 @@ export function attachLedgerStore(tx: any, payments: () => any[]) {
   tx.payment.findFirst = jest.fn(
     async ({ where }) => payments().find((p) => matching(p, where)) ?? null,
   );
-  return { receipts, refunds, allocations };
+  return { receipts, refunds, allocations, processingCosts };
 }

@@ -301,6 +301,7 @@ describe('PaymentsService reconciliation', () => {
     };
     const prisma = {
       paymentRefund: { findMany: jest.fn().mockResolvedValue([]) },
+      stripeProcessingCost: { findMany: jest.fn().mockResolvedValue([]) },
       payment: {
         findMany: jest
           .fn()

@@ -9,7 +9,8 @@ import type { InstallationDuplicationSource } from './installation-duplication';
 import { Inject } from '@nestjs/common';
 import { InstallationCoverageCalculationService, installationSurchargeCalculation, installationBaseForSurcharge, type CoverageSnapshot } from './installation-coverage-calculation.service';
 import { decimalAmount, hasRefundHistory, paidPrincipal, paymentIsCovered, remainingRefundBalance } from '@/payments/payment-accounting';
-import { assertScheduleMilestone, getPaymentSchedule, installmentContext, refreshScheduledInstallation } from '@/payment-plans/payment-schedule';
+import { installmentProcessingComponents, refundedProcessingComponents, singleProcessingComponent, type ProcessingComponents } from '@/payments/processing-cost-snapshot';
+import { assertScheduleMilestone, getPaymentSchedule, installmentContext, refreshScheduledInstallation, scheduleAmounts } from '@/payment-plans/payment-schedule';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
 import { assertCompleteEstimateCustomer } from '@/estimates/estimate-customer-details';
 import { calculateEstimateDiscount, discountedInstallationTotal, discountAllocations, estimateDiscountConfig } from '@/estimates/discounts/estimate-discount';
@@ -5383,6 +5384,7 @@ export class InstallationWorkflowService {
       }
     }
     let baseAmount: Decimal;
+    let processingComponents: ProcessingComponents | undefined;
     let description: string;
     let requiresCityFeeAcceptance = false;
     let cityFeeAmount: string | undefined;
@@ -5396,6 +5398,8 @@ export class InstallationWorkflowService {
     }
     if (type !== PaymentType.INSTALLMENT && hasRefundHistory(refundedPayment)) {
       baseAmount = remainingRefundBalance(refundedPayment!);
+      // Reutiliza el desglose congelado; un histórico sin él conserva asignación pendiente.
+      if (type === PaymentType.MATERIAL) processingComponents = refundedProcessingComponents(refundedPayment!.processingCostSnapshot, baseAmount);
       paymentSequence = refundedPayment!.sequence;
       description = `Reviewed ${type.toLowerCase().replaceAll('_', ' ')} balance — Estimate #${estimate.number}`;
       if (refundedPayment!.deliveryId) delivery = await tx.orderDelivery.findUnique({ where: { id: refundedPayment!.deliveryId } });
@@ -5470,6 +5474,10 @@ export class InstallationWorkflowService {
       requiresCityFeeAcceptance = installment.row.kind === 'CITY_FEE';
       if (requiresCityFeeAcceptance) cityFeeAmount = installment.row.amount;
       baseAmount = new Decimal(installment.row.balance);
+      processingComponents = installmentProcessingComponents({
+        snapshot: estimate.paymentPlanSnapshot, amounts: scheduleAmounts(estimate),
+        withInstallation: Boolean(job), row: installment.row,
+      });
       paymentSequence = installment.row.sequence;
       description = `${installment.row.title} — Estimate #${estimate.number}`;
     } else if (type === PaymentType.MATERIAL) {
@@ -5511,6 +5519,10 @@ export class InstallationWorkflowService {
           ? billing.customerTotalPayable
           : billing.totalPayable;
       baseAmount = new Decimal(manualDiscount?.material.total ?? materialTotal.toString()).add(cityFee);
+      processingComponents = {
+        ...singleProcessingComponent('material', new Decimal(manualDiscount?.material.total ?? materialTotal.toString())),
+        city: cityFee.toFixed(2),
+      };
       description = job
         ? `Material${cityFee.gt(0) ? ' + City Fee' : ''} — Estimate #${estimate.number}`
         : `Estimate #${estimate.number}`;
@@ -5649,6 +5661,12 @@ export class InstallationWorkflowService {
       .mul(surchargeFraction)
       .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
+    processingComponents ??= singleProcessingComponent(
+      type === PaymentType.INSTALLATION || type === PaymentType.INSTALLATION_DEPOSIT ? 'installation'
+        : type === PaymentType.PERMIT ? 'permit' : 'other',
+      baseAmount,
+    );
+
     return {
       estimate,
       job,
@@ -5659,6 +5677,7 @@ export class InstallationWorkflowService {
       requiresCityFeeAcceptance,
       cityFeeAmount,
       baseAmount: baseAmount.toDecimalPlaces(2, Decimal.ROUND_HALF_UP),
+      processingComponents,
       surchargePercent,
       surchargeAmount,
       totalAmount: baseAmount

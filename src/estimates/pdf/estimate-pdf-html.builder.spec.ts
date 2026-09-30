@@ -551,6 +551,82 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).not.toContain('Estimated Configured Company profit');
   });
 
+  it('shows gross profit, confirmed processing cost and net company profit only in the admin PDF', () => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate, {
+      dealerModeSnapshot: 'INTERNAL', rateT: '1000', priceT: '1200', customerPriceT: '1500', netProfitD: '300',
+      dealerEarningsPlanSnapshot: { version: 2, planId: 15, name: 'Sales team', revision: 1, basis: 'REAL_PROFIT', percent: '20' },
+      materialProcessingCost: '25.00', materialProcessingCostPending: false,
+      order: { saleSubtotal: '1500', rate: '1000', rateReal: '900' },
+    });
+    const admin = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+    expect(admin).toContain('Gross real material profit</span><strong>$600.00');
+    expect(admin).toContain('Material processing cost</span><strong>$25.00');
+    expect(admin).toContain('Net real material profit</span><strong>$575.00');
+    expect(admin).toContain('Company real profit after processing costs and dealer earnings</span><strong>$460.00');
+    const dealer = EstimatePdfHtmlBuilder.build(estimate, 'dealer_internal');
+    expect(dealer).toContain('Dealer material earnings');
+    expect(dealer).toContain('$115.00');
+    for (const view of ['dealer_internal', 'dealer_public', 'dealer_public_total', 'client'] as const) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, view);
+      expect(html).not.toMatch(/processing cost|Gross real material profit|Net real material profit/i);
+      expect(html).not.toContain('$25.00');
+    }
+  });
+
+  it('uses a generic earnings-pending message for both network members while processing costs are unconfirmed', () => {
+    const estimate = estimateFixture(false);
+    const plan = { version: 2, planId: 15, name: 'Sales team', revision: 1, basis: 'REAL_PROFIT', percent: '20' };
+    Object.assign(estimate, {
+      idUser: 2, dealerModeSnapshot: 'INTERNAL', rateT: '1000', priceT: '1300', customerPriceT: '1500',
+      networkBillingPriceT: '1500', networkRootPriceT: '1200', networkSubdealerPriceT: '1300',
+      materialProcessingCost: '0.00', materialProcessingCostPending: true,
+      dealerEarningsPlanSnapshot: plan,
+      order: { saleSubtotal: '1500', rate: '1000', rateReal: '900' },
+      dealerNetworkSnapshot: { version: 1, rootMode: 'INTERNAL', rootMarkup: '0.2',
+        nodes: [{ id: 1, username: 'root', level: 'DEALER', markup: '0', mode: 'INTERNAL' },
+          { id: 2, username: 'subdealer', level: 'SUBDEALER', markup: '0.1', mode: 'INTERNAL' }],
+        payerType: 'CUSTOMER', billingIndex: 2, billingAccountId: 2, billingTaxRate: '0',
+        payer: { name: 'Customer', email: null, phone: null }, earningsPlan: plan,
+        subdealerPlan: { mode: 'AVAILABLE_PROFIT', percent: '40' } },
+    });
+    for (const viewerId of [1, 2]) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, 'dealer_internal', {}, viewerId);
+      const card = html.match(/<section class="dealer-profit[\s\S]*?<\/section>/)?.[0];
+      expect(card).toContain('Earnings pending confirmation');
+      expect(card).not.toMatch(/processing|Stripe|factory|\$0\.00/);
+      expect(html).not.toContain('Material processing cost');
+    }
+    const admin = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+    expect(admin).toContain('Material processing cost</span><strong>Pending processing cost confirmation');
+    expect(admin).toContain('Net real material profit</span><strong>Pending processing cost confirmation');
+    expect(admin).toContain('Subdealer material earnings');
+    expect(admin.match(/Earnings pending confirmation/g)).toHaveLength(2);
+  });
+
+  it.each(['EXTERNAL', null])('shows processing costs for %s admin reports without adding internal dealer earnings', (mode) => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate, {
+      dealerModeSnapshot: mode, materialProcessingCost: '11.50', materialProcessingCostPending: false,
+      rateT: '1000', priceT: '1500', customerPriceT: '1600',
+      user: { ...estimate.user, role: { name: mode ? 'dealer' : 'client' } },
+      order: { saleSubtotal: '1500', rate: '1000', rateReal: '900' },
+    });
+    const admin = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+    expect(admin).toContain('Estimated factory cost');
+    expect(admin).toContain('Estimated material profit');
+    expect(admin).toContain('Material processing cost</span><strong>$11.50');
+    expect(admin).toContain('Net real material profit</span><strong>$588.50');
+    expect(admin).not.toContain('Dealer material earnings');
+    expect(admin).not.toContain('Company real profit after');
+    for (const view of ['dealer_internal', 'dealer_public', 'dealer_public_total', 'client'] as const) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, view);
+      expect(html).not.toContain('Material processing cost');
+      expect(html).not.toContain('Net real material profit');
+      expect(html).not.toContain('$11.50');
+    }
+  });
+
   it('omits the saved plan name and formula from earnings summaries', () => {
     const estimate = estimateFixture(false);
     Object.assign(estimate, {

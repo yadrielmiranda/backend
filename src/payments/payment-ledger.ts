@@ -29,6 +29,9 @@ export async function recordStripeReceipt(
       stripeChargeId: charge.id,
       stripePaymentIntentId: intentId,
       stripeSessionId: sessionId,
+      ...(payment.processingCostSnapshot != null
+        ? { processingCostSnapshot: payment.processingCostSnapshot as Prisma.InputJsonValue }
+        : {}),
       amount: payment.amount,
       baseAmount: payment.baseAmount,
       surchargeAmount: payment.surchargeAmount,

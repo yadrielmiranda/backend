@@ -5,6 +5,8 @@ import { CANCELED_ESTIMATE, assertNoEstimatePaymentHistory } from '@/estimates/e
 import { cents, hasRefundHistory, paidPrincipal, paymentIsCovered, remainingRefundBalance } from './payment-accounting';
 import { reconcileChargeRefunds, recordManualReceipt, recordStripeReceipt, refreshPaymentAccounting } from './payment-ledger';
 import { stripePaymentMethod } from './stripe-payment-method';
+import { reconcileStripeProcessingCost } from './processing-costs';
+import { freezeProcessingCostSnapshot } from './processing-cost-snapshot';
 import { ReviewRefundDto } from './dto/review-refund.dto';
 import Decimal from 'decimal.js';
 import { randomUUID } from 'node:crypto';
@@ -823,6 +825,7 @@ export class PaymentsService {
           if (this.isCompletedCheckout(session)) {
             const processed = await this.prisma.$transaction((tx) =>
               this.processPaidCheckoutSession(tx, session),
+              { timeout: 30000 },
             );
             if (!processed) {
               this.logger.warn(
@@ -871,6 +874,15 @@ export class PaymentsService {
       for (const chargeId of new Set(pendingRefunds.map(r => r.stripeChargeId))) {
         try { await this.synchronizeStripeCharge(chargeId); }
         catch (error) { this.logger.error(`Unable to reconcile pending refund for ${chargeId}: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+      // Stripe puede publicar la comisión después de confirmar la captura.
+      const pendingCosts = await this.prisma.stripeProcessingCost.findMany({
+        where: { status: 'PENDING' }, orderBy: { updatedAt: 'asc' }, take: 20,
+        select: { stripeChargeId: true },
+      });
+      for (const cost of pendingCosts) {
+        try { await this.synchronizeStripeCharge(cost.stripeChargeId); }
+        catch { this.logger.warn(`Processing cost reconciliation pending for ${cost.stripeChargeId}.`); }
       }
       await this.reconcilePaidPaymentEffects();
     } finally {
@@ -1456,6 +1468,7 @@ export class PaymentsService {
 
       const payments = [] as Array<{ id: number }>;
       for (const context of contexts) {
+        const processingCostSnapshot = freezeProcessingCostSnapshot(context);
         const payment = await tx.payment.upsert({
           where: {
             idEst_type_sequence: {
@@ -1482,6 +1495,7 @@ export class PaymentsService {
               context.surchargeAmount.toFixed(2),
             ),
             amount: new Prisma.Decimal(context.totalAmount.toFixed(2)),
+            processingCostSnapshot,
             currency: 'usd',
             status: PaymentStatus.PENDING,
             paymentMethod: PaymentMethod.OTHER,
@@ -1504,6 +1518,7 @@ export class PaymentsService {
               context.surchargeAmount.toFixed(2),
             ),
             amount: new Prisma.Decimal(context.totalAmount.toFixed(2)),
+            processingCostSnapshot,
             currency: 'usd',
             status: PaymentStatus.PENDING,
             paymentMethod: PaymentMethod.OTHER,
@@ -1617,6 +1632,7 @@ export class PaymentsService {
     const finalizePaid = async (session: Stripe.Checkout.Session) => {
       const processed = await this.prisma.$transaction((tx) =>
         this.processPaidCheckoutSession(tx, session),
+        { timeout: 30000 },
       );
       if (!processed)
         throw new BadRequestException('Paid checkout could not be processed.');
@@ -1735,6 +1751,7 @@ export class PaymentsService {
     if (this.isCompletedCheckout(session)) {
       await this.prisma.$transaction((tx) =>
         this.processPaidCheckoutSession(tx, session),
+        { timeout: 30000 },
       );
       throw new ConflictException(
         'Stripe already confirmed this charge as paid.',
@@ -1762,6 +1779,7 @@ export class PaymentsService {
         if (this.isCompletedCheckout(latest)) {
           await this.prisma.$transaction((tx) =>
             this.processPaidCheckoutSession(tx, latest),
+            { timeout: 30000 },
           );
           throw new ConflictException(
             'Stripe already confirmed this charge as paid.',
@@ -1956,6 +1974,7 @@ export class PaymentsService {
             stripeSessionId: null,
             stripePaymentIntentId: null,
             stripeCustomerId: null,
+            processingCostSnapshot: Prisma.DbNull,
             // Un cobro manual no debe heredar la aceptación de otro checkout.
             materialAcceptanceText: null,
             materialAcceptedAt: null,
@@ -2018,6 +2037,7 @@ export class PaymentsService {
       if (page.has_more && !after) throw new Error('Incomplete Stripe refund page.');
     } while (after);
     const result = await reconcileChargeRefunds(tx, charge, refunds);
+    await reconcileStripeProcessingCost(tx, this.stripe, charge, refunds);
     if (result.newRefundIds.length && result.paymentIds.length) {
       const payment = await tx.payment.findUniqueOrThrow({ where: { id: result.paymentIds[0] }, include: { estimate: { select: { number: true } } } });
       for (const refundId of result.newRefundIds) await this.notifications.createAndSendToRoles(['admin'], {
@@ -2189,7 +2209,7 @@ export class PaymentsService {
       } else {
         await this.closeUnpaidCheckoutSession(session.id, PaymentStatus.FAILED);
       }
-    } else if (['refund.created', 'refund.updated', 'refund.failed', 'charge.refunded'].includes(event.type)) {
+    } else if (['refund.created', 'refund.updated', 'refund.failed', 'charge.refunded', 'charge.updated'].includes(event.type)) {
       const object = event.data.object as Stripe.Refund | Stripe.Charge;
       const chargeId = object.object === 'charge' ? object.id : typeof object.charge === 'string' ? object.charge : object.charge?.id;
       if (chargeId) await this.synchronizeStripeCharge(chargeId);

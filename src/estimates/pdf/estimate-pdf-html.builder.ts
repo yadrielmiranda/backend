@@ -442,6 +442,7 @@ export class EstimatePdfHtmlBuilder {
         : viewerId === network.nodes[1].id ? earningsReport?.subdealerEarnings : null
       : earningsReport?.dealerEarnings;
     const materialProfits = earningsReport?.materialProfits;
+    const internalDealer = ownerIsDealer && estimate.dealerModeSnapshot === 'INTERNAL';
     const branding = (estimate.branding ?? null) as Branding | null;
     const brandingName = branding?.name?.trim() || '';
     const brandingColor = normalizeBrandingColor(branding?.brandingColor);
@@ -870,12 +871,15 @@ export class EstimatePdfHtmlBuilder {
           ${summaryRow(incompleteTotal ? 'Current Project Total' : 'Project Total', formatMoney(selectedProjectTotal), { strong: true })}
           ${notices}
         </div>`;
+    const earningsAmount = (earnings: { amount: string | null; status: string }) =>
+      earnings.amount != null ? formatMoney(earnings.amount)
+        : earnings.status === 'PENDING_COST' ? 'Earnings pending confirmation' : 'Pending real factory cost';
     const dealerProfitHtml = comparisonView
       ? dealerEarnings ? `
         <section class="dealer-profit keep-together" aria-label="Dealer material earnings">
           <div class="dealer-profit-heading">
             <strong>Dealer material earnings</strong>
-            <span class="dealer-profit-total${Number(dealerEarnings.amount) < 0 ? ' loss' : ''}">${dealerEarnings.amount == null ? 'Pending real factory cost' : formatMoney(dealerEarnings.amount)}</span>
+            <span class="dealer-profit-total${Number(dealerEarnings.amount) < 0 ? ' loss' : ''}">${earningsAmount(dealerEarnings)}</span>
           </div>
           <p>Sales tax, installation and services excluded.</p>
         </section>` : `
@@ -894,12 +898,18 @@ export class EstimatePdfHtmlBuilder {
       : '';
 
     const subdealerEarnings = reportKind === 'admin' ? earningsReport?.subdealerEarnings : null;
-    const subdealerEarningsHtml = subdealerEarnings ? `<section class="dealer-profit keep-together"><div class="dealer-profit-heading"><strong>Subdealer material earnings</strong><span class="dealer-profit-total">${subdealerEarnings.amount == null ? 'Pending real factory cost' : formatMoney(subdealerEarnings.amount)}</span></div><p>Sales tax, installation and services excluded.</p></section>` : '';
+    const subdealerEarningsHtml = subdealerEarnings ? `<section class="dealer-profit keep-together"><div class="dealer-profit-heading"><strong>Subdealer material earnings</strong><span class="dealer-profit-total">${earningsAmount(subdealerEarnings)}</span></div><p>Sales tax, installation and services excluded.</p></section>` : '';
 
     const profitability = estimatedMaterialProfitability(
       manualDiscount ? { ...estimate, ...(manualDiscount.payer === 'CUSTOMER' ? { customerPriceT: manualDiscount.material.subtotal } : { priceT: manualDiscount.material.subtotal }) } as unknown as EstimateWithRelations : estimate,
       ownerIsDealer,
     );
+    const hasProcessingCost = materialProfits?.processingCostStatus != null;
+    const processingPending = materialProfits?.processingCostStatus === 'PENDING';
+    const pendingNetProfit = processingPending ? 'Pending processing cost confirmation' : 'Pending real factory cost';
+    const pendingCompanyProfit = processingPending ? pendingNetProfit
+      : materialProfits?.realProfit == null ? 'Pending real factory cost' : 'Pending dealer earnings';
+    const showDealerEarnings = internalDealer || Boolean(earningsReport?.dealerEarnings || subdealerEarnings);
     const adminProfitability =
       reportKind === 'admin'
         ? `
@@ -908,12 +918,18 @@ export class EstimatePdfHtmlBuilder {
             <div class="profit-grid">
               <div class="profit-metric"><span>Sale channel</span><strong>${escapeHtml(profitability.saleChannel)}</strong></div>
               <div class="profit-metric"><span>Material sale subtotal</span><strong>${formatMoney(network ? estimate.order?.saleSubtotal ?? manualDiscount?.material.subtotal ?? estimate.networkBillingPriceT : materialProfits ? estimate.order?.saleSubtotal ?? profitability.saleSubtotal : profitability.saleSubtotal)}</strong></div>
-              <div class="profit-metric"><span>${materialProfits ? 'App base price (before markups)' : 'Estimated factory cost'}</span><strong>${formatMoney(materialProfits ? estimate.order?.rate ?? estimate.rateT : estimate.rateT)}</strong></div>
-              <div class="profit-metric"><span>${materialProfits ? 'Expected material profit' : 'Estimated material profit'}</span><strong>${formatMoney(materialProfits?.expectedProfit ?? profitability.estimatedProfit)}</strong></div>
+              <div class="profit-metric"><span>${internalDealer ? 'App base price (before markups)' : 'Estimated factory cost'}</span><strong>${formatMoney(materialProfits ? estimate.order?.rate ?? estimate.rateT : estimate.rateT)}</strong></div>
+              <div class="profit-metric"><span>${internalDealer ? 'Expected material profit' : 'Estimated material profit'}</span><strong>${formatMoney(materialProfits?.expectedProfit ?? profitability.estimatedProfit)}</strong></div>
               ${materialProfits ? `
-                <div class="profit-metric"><span>Real material profit</span><strong>${materialProfits.realProfit == null ? 'Pending real factory cost' : formatMoney(materialProfits.realProfit)}</strong></div>
+                <div class="profit-metric"><span>${hasProcessingCost ? 'Gross real material profit' : 'Real material profit'}</span><strong>${materialProfits.realProfit == null ? 'Pending real factory cost' : formatMoney(materialProfits.realProfit)}</strong></div>
+                ${hasProcessingCost ? `
+                  <div class="profit-metric"><span>Material processing cost</span><strong>${processingPending || materialProfits.processingCost == null ? 'Pending processing cost confirmation' : formatMoney(materialProfits.processingCost)}</strong></div>
+                  <div class="profit-metric"><span>Net real material profit</span><strong>${processingPending || materialProfits.netRealProfit == null ? pendingNetProfit : formatMoney(materialProfits.netRealProfit)}</strong></div>
+                ` : ''}
+                ${showDealerEarnings ? `
                 <div class="profit-metric"><span>Company expected profit after dealer earnings</span><strong>${materialProfits.authenticExpectedProfit == null ? 'Pending dealer earnings' : formatMoney(materialProfits.authenticExpectedProfit)}</strong></div>
-                <div class="profit-metric"><span>Company real profit after dealer earnings</span><strong>${materialProfits.authenticRealProfit == null ? 'Pending real factory cost' : formatMoney(materialProfits.authenticRealProfit)}</strong></div>
+                <div class="profit-metric"><span>${hasProcessingCost ? 'Company real profit after processing costs and dealer earnings' : 'Company real profit after dealer earnings'}</span><strong>${materialProfits.authenticRealProfit == null ? pendingCompanyProfit : formatMoney(materialProfits.authenticRealProfit)}</strong></div>
+                ` : ''}
               ` : ''}
             </div>
           </div>`

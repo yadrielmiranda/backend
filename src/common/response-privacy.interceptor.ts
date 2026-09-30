@@ -11,6 +11,10 @@ const credentials = new Set([
 ]);
 const companyFinancials = new Set([
   'materialProfits',
+  'materialProcessingCost', 'materialProcessingCostPending',
+  'processingCostSnapshot', 'processingCosts', 'processingCostSummary', 'processingComponents',
+  'processingCost', 'processingCostStatus', 'netRealProfit',
+  'materialFee', 'materialSurcharge', 'balanceTransactionId', 'allocationSnapshot', 'capturedAmount',
   'dealerNetworkSnapshot', 'networkPricing', 'networkBillingPriceT', 'networkRootPriceT', 'networkSubdealerPriceT', 'networkMarkup', 'networkTaxRate', 'subdealerEarnings',
   'rate', 'rateT', 'rateReal', 'netProfit', 'netProfitReal', 'markup',
   'markupOverride', 'ownerMarkupSnapshot', 'poNumber',

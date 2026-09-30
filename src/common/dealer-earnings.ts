@@ -24,10 +24,16 @@ function savedPlan(value: unknown): EarningsPlanSnapshot {
 }
 
 /** Las fórmulas de participación usan bases ya calculadas; no repiten las restas. */
-export function calculateDealerEarnings(plan: EarningsPlanSnapshot, profits: MaterialProfitBases) {
+export function calculateDealerEarnings(
+  plan: EarningsPlanSnapshot,
+  profits: MaterialProfitBases,
+  processingCost?: { amount: Decimal.Value; pending: boolean },
+) {
   const rule = validateEarningsRule(plan.basis, plan.percent);
+  const realProfit = profits.realProfit == null || processingCost?.pending
+    ? null : profits.realProfit.minus(processingCost?.amount ?? 0);
   const basis = rule.basis === DealerEarningsBasis.REAL_PROFIT
-    ? profits.realProfit
+    ? realProfit
     : rule.basis === DealerEarningsBasis.EXPECTED_PROFIT
       ? profits.expectedProfit
       : profits.netProfitD;
@@ -40,7 +46,9 @@ export function calculateDealerEarnings(plan: EarningsPlanSnapshot, profits: Mat
     basis: rule.basis,
     percent: rule.percent,
     label: `${plan.name} · ${rule.percent}% of ${basisLabel}`,
-    status: amount == null ? 'PENDING_REAL_COST' as const : 'CALCULATED' as const,
+    status: amount != null ? 'CALCULATED' as const
+      : rule.basis === DealerEarningsBasis.REAL_PROFIT && processingCost?.pending
+        ? 'PENDING_COST' as const : 'PENDING_REAL_COST' as const,
     amount: amount?.toFixed(2) ?? null,
   };
 }
@@ -49,6 +57,17 @@ export type DealerEarningsSummary = Omit<ReturnType<typeof calculateDealerEarnin
 
 /** Proyección común para estimados, órdenes y PDF. Solo remunera materiales de dealers internos. */
 export function buildDealerEarningsReport(estimate: any, order = estimate?.order) {
+  // Solo contiene costos asignados a materiales de cobros que usan el nuevo registro.
+  // Los recibos históricos no se reinterpretan al consultar ganancias.
+  const processingCost = {
+    amount: new Decimal(String(estimate?.materialProcessingCost ?? 0)),
+    pending: estimate?.materialProcessingCostPending === true,
+  };
+  const processingSummary = (realProfit: Decimal | null) => ({
+    processingCost: processingCost.pending ? null : processingCost.amount.toFixed(2),
+    processingCostStatus: processingCost.pending ? 'PENDING' as const : 'CONFIRMED' as const,
+    netRealProfit: realProfit == null || processingCost.pending ? null : realProfit.minus(processingCost.amount).toFixed(2),
+  });
   const network = networkSnapshot(estimate);
   if (network) {
     const discount = calculateEstimateDiscount(estimate);
@@ -61,9 +80,11 @@ export function buildDealerEarningsReport(estimate: any, order = estimate?.order
     if (network.rootMode !== 'INTERNAL') {
       const expected = netSale.minus(appBasePrice);
       const real = realFactoryCost == null ? null : netSale.minus(realFactoryCost);
+      const costs = processingSummary(real);
       return { dealerEarnings: null, subdealerEarnings: null, materialProfits: {
         expectedProfit: expected.toFixed(2), realProfit: real?.toFixed(2) ?? null, netProfitD: '0.00',
-        authenticExpectedProfit: expected.toFixed(2), authenticRealProfit: real?.toFixed(2) ?? null,
+        ...costs,
+        authenticExpectedProfit: expected.toFixed(2), authenticRealProfit: costs.netRealProfit,
       } };
     }
     // MARKUP conserva el precio al subdealer. AVAILABLE_PROFIT aplica el plan
@@ -72,7 +93,7 @@ export function buildDealerEarningsReport(estimate: any, order = estimate?.order
       customerPrice: network.subdealerPlan?.mode === 'MARKUP' ? subdealerPrice : netSale,
       appBasePrice, dealerPrice: rootPrice, realFactoryCost,
     });
-    const earnings = calculateDealerEarnings(savedPlan(network.earningsPlan), rootProfits);
+    const earnings = calculateDealerEarnings(savedPlan(network.earningsPlan), rootProfits, processingCost);
     let subdealerEarnings: DealerEarningsSummary | null = null;
     let totalEarnings = earnings.amount == null ? null : new Decimal(earnings.amount);
     if (network.subdealerPlan) {
@@ -86,26 +107,41 @@ export function buildDealerEarningsReport(estimate: any, order = estimate?.order
         : pool?.mul(network.subdealerPlan.percent).div(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP) ?? null;
       const remaining = pool == null || amount == null ? null : pool.minus(amount);
       earnings.amount = remaining?.toFixed(2) ?? null;
-      earnings.status = remaining == null ? 'PENDING_REAL_COST' : 'CALCULATED';
+      earnings.status = remaining == null ? earnings.status : 'CALCULATED';
       totalEarnings = pool;
       subdealerEarnings = {
         planId: null, planName: '', label: '',
         basis: network.subdealerPlan.mode === 'MARKUP' ? 'DEALER_MARKUP' : 'AVAILABLE_PROFIT',
         percent: network.subdealerPlan.percent,
-        status: amount == null ? 'PENDING_REAL_COST' : 'CALCULATED', amount: amount?.toFixed(2) ?? null,
+        status: amount == null ? earnings.status : 'CALCULATED', amount: amount?.toFixed(2) ?? null,
       };
     }
     const profits = calculateMaterialProfitBases({ customerPrice: netSale, appBasePrice, dealerPrice: rootPrice, realFactoryCost });
+    const costs = processingSummary(profits.realProfit);
     return { dealerEarnings: earnings, subdealerEarnings, materialProfits: {
       expectedProfit: profits.expectedProfit.toFixed(2), realProfit: profits.realProfit?.toFixed(2) ?? null,
       netProfitD: profits.netProfitD.toFixed(2),
+      ...costs,
       authenticExpectedProfit: totalEarnings == null ? null : profits.expectedProfit.minus(totalEarnings).toFixed(2),
-      authenticRealProfit: totalEarnings == null || profits.realProfit == null ? null : profits.realProfit.minus(totalEarnings).toFixed(2),
+      authenticRealProfit: totalEarnings == null || costs.netRealProfit == null ? null : new Decimal(costs.netRealProfit).minus(totalEarnings).toFixed(2),
     } };
   }
 
   const mode = order?.dealerModeSnapshot ?? estimate?.dealerModeSnapshot;
-  if (mode !== 'INTERNAL') return { dealerEarnings: null, materialProfits: null };
+  if (mode !== 'INTERNAL') {
+    // Conserva la respuesta anterior cuando no hay costos nuevos que reportar.
+    if (!processingCost.pending && processingCost.amount.eq(0)) return { dealerEarnings: null, materialProfits: null };
+    const discount = calculateEstimateDiscount(estimate);
+    const sale = new Decimal(String(order?.saleSubtotal ?? estimate.priceT)).minus(order ? 0 : discount?.material.netDiscount ?? 0);
+    const expected = sale.minus(String(order?.rate ?? estimate.rateT));
+    const real = order?.rateReal == null ? null : sale.minus(String(order.rateReal));
+    const costs = processingSummary(real);
+    return { dealerEarnings: null, materialProfits: {
+      expectedProfit: expected.toFixed(2), realProfit: real?.toFixed(2) ?? null, netProfitD: '0.00',
+      ...costs,
+      authenticExpectedProfit: expected.toFixed(2), authenticRealProfit: costs.netRealProfit,
+    } };
+  }
 
   const discount = calculateEstimateDiscount(estimate);
   const customerDiscount = discount?.payer === 'CUSTOMER' ? discount.material.netDiscount : '0';
@@ -124,7 +160,8 @@ export function buildDealerEarningsReport(estimate: any, order = estimate?.order
     realFactoryCost: order?.rateReal == null ? null : String(order.rateReal),
     netProfitD: persistedMargin,
   });
-  const earnings = calculateDealerEarnings(savedPlan(estimate.dealerEarningsPlanSnapshot), profits);
+  const earnings = calculateDealerEarnings(savedPlan(estimate.dealerEarningsPlanSnapshot), profits, processingCost);
+  const costs = processingSummary(profits.realProfit);
   return {
     dealerEarnings: earnings,
     // Estos importes son privados de administración; no se envían a clientes o dealers.
@@ -132,8 +169,9 @@ export function buildDealerEarningsReport(estimate: any, order = estimate?.order
       expectedProfit: profits.expectedProfit.toFixed(2),
       realProfit: profits.realProfit?.toFixed(2) ?? null,
       netProfitD: profits.netProfitD.toFixed(2),
+      ...costs,
       authenticExpectedProfit: earnings.amount == null ? null : profits.expectedProfit.minus(earnings.amount).toFixed(2),
-      authenticRealProfit: earnings.amount == null || profits.realProfit == null ? null : profits.realProfit.minus(earnings.amount).toFixed(2),
+      authenticRealProfit: earnings.amount == null || costs.netRealProfit == null ? null : new Decimal(costs.netRealProfit).minus(earnings.amount).toFixed(2),
     },
   };
 }
