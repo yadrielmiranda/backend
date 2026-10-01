@@ -37,7 +37,7 @@ const hash = (value: unknown) =>
 const dimension = (value: Prisma.Decimal | null) =>
   value === null ? null : Number(value);
 
-function localPiece(piece: SourcePiece): LocalFactoryPiece {
+function localPiece(piece: SourcePiece, index: number): LocalFactoryPiece {
   const dimensions = [
     'width',
     'height',
@@ -77,7 +77,8 @@ function localPiece(piece: SourcePiece): LocalFactoryPiece {
     id: piece.id,
     panelCount: piece.panelCount,
     fixedPanelCount: piece.conf.fixedPanelCount,
-    mark: piece.mark,
+    // Misma referencia del estimado/PDF: una marca por fila, no por unidad.
+    mark: String(piece.mark ?? '').trim() || `#${index + 1}`,
     qty: piece.qty,
     brand: piece.bran.name,
     product: piece.prod.name,

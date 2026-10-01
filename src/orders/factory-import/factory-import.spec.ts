@@ -121,6 +121,10 @@ function fixture() {
   const stocks: any[] = [];
   let otherPo = false;
   const db: any = {
+    $queryRaw: jest.fn().mockResolvedValue([{ id: 7 }]),
+    estimate: {
+      findUnique: jest.fn().mockResolvedValue({ materialRevisions: [], installationJob: null }),
+    },
     factoryPickupRunOrder: { findFirst: jest.fn(async () => null as any) },
     order: {
       findUnique: jest.fn(async ({ where }) =>
@@ -140,12 +144,14 @@ function fixture() {
       }),
     },
     piece: {
-      findMany: jest.fn(async () =>
-        pieces.map((piece) => ({
+      findMany: jest.fn(async ({ orderBy }) =>
+        [...pieces].sort((a, b) => orderBy?.id === 'asc' ? a.id - b.id : 0).map((piece) => ({
           ...piece,
           factoryUnits: units.filter((unit) => unit.pieceId === piece.id),
         })),
       ),
+      update: jest.fn(),
+      updateMany: jest.fn(),
     },
     factoryUnit: {
       findMany: jest.fn(async ({ where }) =>
@@ -344,6 +350,68 @@ describe('factory JSON allowlist and measurements', () => {
 });
 
 describe('factory unit matching', () => {
+  it.each([
+    ['1', '#1'],
+    ['#1', '1'],
+    [' #001 ', '001'],
+    ['001', '#001'],
+    ['w1', ' W1 '],
+    ['#w1', '#W1'],
+  ])('matches factory mark %s with local mark %s', (factoryMark, localMark) => {
+    const rows = matchFactoryLines(
+      parseFactoryDocument(file(document([factoryLine(100, factoryMark)]))),
+      [local({ mark: localMark })],
+    );
+    expect(rows[0]).toMatchObject({ pieceId: 10, issues: [] });
+  });
+
+  it.each([
+    ['', '#1'],
+    ['   ', '#1'],
+    ['#W1', 'W1'],
+    ['W1', '#W1'],
+    ['001', '#1'],
+    ['#001', '1'],
+    ['##1', '#1'],
+    ['# 1', '1'],
+    ['#1A', '1A'],
+  ])('keeps factory mark %j distinct from local mark %j', (factoryMark, localMark) => {
+    const parsed = parseFactoryDocument(file(document([factoryLine(100, factoryMark)])));
+    const piece = local({ mark: localMark });
+    expect(matchingIssues(parsed.lines[0], piece)).toContain('Mark differs or is missing');
+    expect(matchFactoryLines(parsed, [piece])[0].pieceId).toBeNull();
+  });
+
+  it.each([
+    { brand: 'Other' },
+    { family: 'FRENCH_DOOR' },
+    { system: '300' },
+    { configuration: 'XOX' },
+    { width: 61 },
+    { height: null },
+    { complexDimensions: true },
+    { frameColor: 'White' },
+    { active: 'Right Active' },
+  ])('does not let numeric mark parity bypass technical differences: %p', (overrides) => {
+    const parsed = parseFactoryDocument(file(document([factoryLine(100, '1')])));
+    const piece = local({ mark: '#1', ...overrides });
+    const issues = matchingIssues(parsed.lines[0], piece);
+    expect(issues).not.toContain('Mark differs or is missing');
+    expect(issues.length).toBeGreaterThan(0);
+    expect(matchFactoryLines(parsed, [piece])[0].pieceId).toBeNull();
+  });
+
+  it('keeps numeric-mark candidates ambiguous when unproven attributes differ', () => {
+    const rows = matchFactoryLines(
+      parseFactoryDocument(file(document([factoryLine(100, '1')]))),
+      [local({ mark: '#1' }), local({ id: 11, mark: '1', matchKey: 'different-glass' })],
+    );
+    expect(rows[0]).toMatchObject({
+      pieceId: null,
+      issues: ['Several different pieces match. Select a piece.'],
+    });
+  });
+
   it('automatically assigns distinct codes to interchangeable units', () => {
     const rows = matchFactoryLines(
       parseFactoryDocument(
@@ -409,6 +477,104 @@ describe('factory unit matching', () => {
     );
     expect(rows[0].pieceId).toBeNull();
     expect(rows[1]).toMatchObject({ pieceId: 10, existing: true });
+  });
+});
+
+describe('factory import report marks', () => {
+  it('matches 30 blank rows by their report ordinal when factory lines arrive in reverse order', async () => {
+    const f = fixture();
+    const template = f.pieces[0];
+    const ids = Array.from({ length: 30 }, (_, index) => 37 + index * 13);
+    f.pieces.splice(0, f.pieces.length, ...ids.map((id) => ({
+      ...template, id, mark: '',
+    })).reverse());
+    const input = file(document(ids.map((_id, index) =>
+      factoryLine(1000 + index, String(index + 1)),
+    ).reverse()));
+
+    const context = await f.service.get(1, admin);
+    expect(context.pieces.map((piece) => [piece.id, piece.mark])).toEqual(
+      ids.map((id, index) => [id, `#${index + 1}`]),
+    );
+    expect(f.db.piece.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { idEst: 7 }, orderBy: { id: 'asc' },
+    }));
+    const preview = await f.preview(input);
+    expect(preview.lines.map((line) => line.pieceId)).toEqual([...ids].reverse());
+    expect(preview.lines.every((line) => line.issues.length === 0)).toBe(true);
+    expect(preview.expectedUnits).toBe(30);
+
+    expect(await f.confirm(input)).toMatchObject({ addedUnits: 30, linkedUnits: 30 });
+    expect(await f.confirm(input)).toEqual({ addedUnits: 0, linkedUnits: 30, unchanged: true });
+    expect(f.units).toHaveLength(30);
+    expect(f.db.order.update).toHaveBeenCalledTimes(1);
+    expect(f.pieces.every((piece) => piece.mark === '')).toBe(true);
+    expect(f.db.piece.update).not.toHaveBeenCalled();
+    expect(f.db.piece.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps manual marks and gives each blank row one ordinal regardless of its quantity', async () => {
+    const f = fixture();
+    const template = f.pieces[0];
+    const source = [
+      { id: 50, mark: ' W10 ', qty: 2 },
+      { id: 80, mark: '', qty: 3 },
+      { id: 140, mark: ' \t ', qty: 1 },
+      { id: 900, mark: ' #W2 ', qty: 1 },
+      { id: 950, mark: '', qty: 1 },
+    ];
+    f.pieces.splice(0, f.pieces.length, ...source.map((piece) => ({ ...template, ...piece })));
+    const marks = ['W10', 'w10', '2', '#2', ' 2 ', '3', '#W2', '5'];
+    const input = file(document(marks.map((mark, index) => factoryLine(2000 + index, mark)).reverse()));
+    const preview = await f.preview(input);
+    expect(preview.pieces.map((piece) => piece.mark)).toEqual(['W10', '#2', '#3', '#W2', '#5']);
+    expect(preview.lines.map((line) => line.pieceId)).toEqual([950, 900, 140, 80, 80, 80, 50, 50]);
+    expect(preview.expectedUnits).toBe(8);
+    expect(await f.confirm(input)).toMatchObject({ addedUnits: 8, linkedUnits: 8 });
+    expect(f.pieces.map(({ id, mark, qty }) => ({ id, mark, qty }))).toEqual(source);
+    expect(f.db.piece.update).not.toHaveBeenCalled();
+    expect(f.db.piece.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not assign more factory units than a default-mark row quantity', async () => {
+    const f = fixture();
+    Object.assign(f.pieces[0], { mark: '', qty: 2 });
+    const preview = await f.preview(file(document([
+      factoryLine(100, '1'), factoryLine(101, '#1'), factoryLine(102, '1'),
+    ])));
+    expect(preview.lines.map((line) => line.pieceId)).toEqual([10, 10, null]);
+    expect(f.units).toHaveLength(0);
+  });
+
+  it('requires review when a factory line with a default numeric mark lacks dimensions', async () => {
+    const f = fixture();
+    f.pieces[0].mark = '';
+    const line = factoryLine(100, '1');
+    line.description = 'Serie 200 Horizontal Rolling Window L.M.I. OX Bronze';
+    delete (line.product_details as any).width_in;
+    const input = file(document([line]));
+    expect((await f.preview(input)).lines[0].pieceId).toBeNull();
+    const assignments = JSON.stringify([{ lineNumber: '100', pieceId: 10 }]);
+    await expect(f.confirm(input, { assignments })).rejects.toThrow('Review the manual matches');
+    expect(await f.confirm(input, { assignments, reviewed: 'true' })).toMatchObject({ addedUnits: 1 });
+    expect(f.pieces[0].mark).toBe('');
+  });
+
+  it('preserves an existing link after its report ordinal changes and still requires review', async () => {
+    const f = fixture();
+    f.pieces[0].mark = '';
+    const input = file(document([factoryLine(100, '1')]));
+    await f.confirm(input);
+    f.pieces.push({ ...f.pieces[0], id: 5 });
+    const preview = await f.preview(input);
+    expect(preview.pieces.map((piece) => [piece.id, piece.mark])).toEqual([[5, '#1'], [10, '#2']]);
+    expect(preview.lines[0]).toMatchObject({
+      pieceId: 10, existing: true, issues: ['Mark differs or is missing'],
+    });
+    await expect(f.confirm(input)).rejects.toThrow('Review the manual matches');
+    expect(await f.confirm(input, { reviewed: 'true' })).toMatchObject({ addedUnits: 0, linkedUnits: 1 });
+    expect(f.units).toEqual([{ lineNumber: '100', pieceId: 10 }]);
+    expect(f.pieces.every((piece) => piece.mark === '')).toBe(true);
   });
 });
 

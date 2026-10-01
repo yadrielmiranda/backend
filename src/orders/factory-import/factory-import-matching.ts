@@ -49,7 +49,9 @@ const record = (value: unknown): Record<string, unknown> =>
     : {};
 const text = (value: unknown) =>
   typeof value === 'string' ? value.trim() : '';
-export const normalizedMark = (value: string) => value.trim().toUpperCase();
+// El fabricante puede omitir # en referencias numéricas; conservar letras y ceros.
+export const normalizedMark = (value: string) =>
+  value.trim().toUpperCase().replace(/^#(\d+)$/, '$1');
 const token = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, '');
 const finite = (value: unknown) =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0
