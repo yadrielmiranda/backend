@@ -369,4 +369,256 @@ describe('NotificationEmailService', () => {
       }),
     );
   });
+
+  describe('direct estimate email', () => {
+    const share = () => ({
+      to: email,
+      path: '/public/estimates/total_customer-token',
+      estimateNumber: '260067',
+      ownerBrandingName: 'Owner Windows',
+      ownerEmail: 'owner@example.com',
+      customerName: 'Jane Rivera',
+      projectName: 'Rivera residence',
+    });
+
+    it('checks readiness without connecting to SMTP or the notification queue', () => {
+      const f = fixture();
+      expect(() => f.service.assertEstimateShareReady()).not.toThrow();
+      expect(createTransport).not.toHaveBeenCalled();
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(f.db.notificationEmail.findMany).not.toHaveBeenCalled();
+    });
+
+    it('sends an owner-branded customer estimate link using notification SMTP only', async () => {
+      const f = fixture();
+      await expect(f.service.sendEstimateShare(share())).resolves.toBeUndefined();
+      expect(createTransport).toHaveBeenCalledWith(expect.objectContaining({
+        auth: { user: 'notifications@example.com', pass: 'fake-notifications-secret' },
+        disableFileAccess: true,
+        disableUrlAccess: true,
+      }));
+      expect(f.config.get.mock.calls.some(([key]) => key.startsWith('SMTP_'))).toBe(false);
+      const message = sendMail.mock.calls[0][0];
+      expect(message).toMatchObject({
+        from: { name: 'Example Company', address: 'notifications@example.com' },
+        to: email,
+        replyTo: 'owner@example.com',
+        subject: 'Estimate #260067 ready to review',
+      });
+      expect(message.text).toContain('Hello Jane Rivera,');
+      expect(message.text).toContain('Owner Windows has shared estimate #260067 for Rivera residence with you.');
+      expect(message.text).toContain('https://portal.example.test/public/estimates/total_customer-token');
+      expect(message.html).toContain('href="https://portal.example.test/public/estimates/total_customer-token"');
+      expect(message.text).not.toContain('contract');
+      expect(message).not.toHaveProperty('attachments');
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+      expect(f.db.notificationEmail.updateMany).not.toHaveBeenCalled();
+      expect(f.db.user.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('includes the prepared agreement link when sharing a contract', async () => {
+      const f = fixture();
+      const path = '/public/estimates/customer-token/agreements/agreement-id';
+      await f.service.sendEstimateShare({ ...share(), path });
+      const message = sendMail.mock.calls[0][0];
+      expect(message.text).toContain('Please review your estimate and contract');
+      expect(message.text).toContain(`https://portal.example.test${path}`);
+      expect(message.html).toContain('Review estimate and contract');
+      expect(message).not.toHaveProperty('attachments');
+    });
+
+    it('uses only the configured public origin and escapes customer and owner text', async () => {
+      const f = fixture();
+      f.values.PUBLIC_FRONTEND_URL = 'https://configured.example.test/portal?ignore=1';
+      await f.service.sendEstimateShare({
+        ...share(),
+        estimateNumber: '260067\r\nBcc: another@example.com',
+        ownerBrandingName: '<img src=x onerror="alert(1)"> & Owner',
+        customerName: '<script>alert(1)</script>',
+        projectName: 'Jane\'s "Home" & <Project>',
+      });
+      const message = sendMail.mock.calls[0][0];
+      expect(message.subject).not.toMatch(/[\r\n]/);
+      expect(message.html).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt; &amp; Owner');
+      expect(message.html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+      expect(message.html).toContain('Jane&#039;s &quot;Home&quot; &amp; &lt;Project&gt;');
+      expect(message.html).not.toMatch(/<img|<script/);
+      expect(message.html).toContain('href="https://configured.example.test/public/estimates/total_customer-token"');
+      expect(message.html).not.toContain('ignore=1');
+      expect(message.html).not.toContain('portal.example.test');
+    });
+
+    it.each([
+      'https://evil.example/public/estimates/token',
+      '//evil.example/public/estimates/token',
+      '/\\evil.example/public/estimates/token',
+      '/public/estimates/token?redirect=https://evil.example',
+      '/public/estimates/../orders/1',
+      '/public/estimates/%2e%2e',
+      '/orders/1',
+    ])('rejects an invalid or externally supplied sharing path: %s', async (path) => {
+      const f = fixture();
+      await expect(f.service.sendEstimateShare({ ...share(), path })).rejects.toThrow('valid customer estimate link');
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(createTransport).not.toHaveBeenCalled();
+    });
+
+    it.each(['', 'invalid', 'a@example.com,b@example.com', 'a@example.com\r\nBcc: b@example.com'])(
+      'rejects an invalid recipient without sending: %s', async (to) => {
+        const f = fixture();
+        await expect(f.service.sendEstimateShare({ ...share(), to })).rejects.toThrow('valid recipient email');
+        expect(sendMail).not.toHaveBeenCalled();
+      },
+    );
+
+    it('normalizes the recipient and accepts the SMTP address-object response', async () => {
+      const f = fixture();
+      sendMail.mockResolvedValue({ accepted: [{ name: 'Jane', address: email.toUpperCase() }] });
+      await f.service.sendEstimateShare({ ...share(), to: ` ${email.toUpperCase()} ` });
+      expect(sendMail.mock.calls[0][0].to).toBe(email);
+    });
+
+    it.each([undefined, 'invalid', 'owner@example.com\r\nBcc: b@example.com'])(
+      'uses configured reply-to when owner reply-to is absent or invalid: %s', async (ownerEmail) => {
+        const f = fixture();
+        await f.service.sendEstimateShare({ ...share(), ownerEmail });
+        expect(sendMail.mock.calls[0][0].replyTo).toBe('sales@example.com');
+      },
+    );
+
+    it.each(['HOST', 'USER', 'PASS', 'FROM_EMAIL'])(
+      'fails explicitly without password-reset fallback when notification %s is missing', async (key) => {
+        const f = fixture();
+        delete f.values[`NOTIFICATIONS_SMTP_${key}`];
+        expect(() => f.service.assertEstimateShareReady()).toThrow('Estimate email is unavailable');
+        await expect(f.service.sendEstimateShare(share())).rejects.toThrow('Estimate email is unavailable');
+        expect(createTransport).not.toHaveBeenCalled();
+        expect(f.config.get.mock.calls.some(([name]) => name.startsWith('SMTP_'))).toBe(false);
+      },
+    );
+
+    describe('configured public origin for local development', () => {
+      it.each([
+        [undefined, 'http://192.168.1.139:3000'],
+        ['development', 'http://localhost:3000'],
+        ['test', 'http://[::1]:3000'],
+        ['development', 'http://127.25.3.4:3100'],
+        ['test', 'http://10.0.0.1:3000'],
+        ['development', 'http://172.16.0.1:3000'],
+        ['test', 'http://172.31.255.254:3000'],
+      ])('uses local HTTP for both email paths when NODE_ENV=%s and origin=%s', async (mode, origin) => {
+        const f = fixture();
+        if (mode === undefined) delete f.values.NODE_ENV;
+        else f.values.NODE_ENV = mode;
+        f.values.PUBLIC_FRONTEND_URL = origin!;
+
+        await expect(f.service.sendEstimateShare(share())).resolves.toBeUndefined();
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+
+        expect(f.db.notificationEmail.create).toHaveBeenCalledWith({
+          data: { notificationId: 10, email },
+        });
+        expect(f.row.status).toBe('ACCEPTED');
+        expect(sendMail).toHaveBeenCalledTimes(2);
+        expect(sendMail.mock.calls[0][0].html).toContain(`href="${origin}${share().path}"`);
+        expect(sendMail.mock.calls[1][0].html).toContain(`href="${origin}/orders/21"`);
+        expect(createTransport).toHaveBeenCalledTimes(1);
+        expect(createTransport).toHaveBeenCalledWith(expect.objectContaining({
+          host: 'smtp.example.com', port: 465, secure: true,
+          auth: { user: 'notifications@example.com', pass: 'fake-notifications-secret' },
+        }));
+        expect(f.config.get.mock.calls.some(([key]) => key.startsWith('SMTP_'))).toBe(false);
+      });
+
+      it.each(['production', 'staging'])(
+        'rejects local HTTP in explicit %s environments for both email paths', async (mode) => {
+          const f = fixture();
+          f.values.NODE_ENV = mode;
+          f.values.PUBLIC_FRONTEND_URL = 'http://192.168.1.139:3000';
+
+          await expect(f.service.sendEstimateShare(share())).rejects.toThrow('Estimate email is unavailable');
+          await f.service.enqueue(f.notification as never, f.db as never);
+          await f.service.processPending();
+
+          expect(createTransport).not.toHaveBeenCalled();
+          expect(sendMail).not.toHaveBeenCalled();
+          expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+          expect(f.db.notificationEmail.findMany).not.toHaveBeenCalled();
+        },
+      );
+
+      it('keeps HTTPS working for both email paths in production', async () => {
+        const f = fixture();
+        f.values.NODE_ENV = 'production';
+        f.values.PUBLIC_FRONTEND_URL = 'https://portal.example.test:8443';
+
+        await f.service.sendEstimateShare(share());
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+
+        expect(sendMail).toHaveBeenCalledTimes(2);
+        expect(sendMail.mock.calls[0][0].text).toContain('https://portal.example.test:8443/public/estimates/total_customer-token');
+        expect(sendMail.mock.calls[1][0].text).toContain('https://portal.example.test:8443/orders/21');
+        expect(f.row.status).toBe('ACCEPTED');
+      });
+
+      it.each([
+        '',
+        'http://portal.example.test:3000',
+        'http://172.15.255.254:3000',
+        'http://172.32.0.1:3000',
+        'http://localhost.evil.test:3000',
+        'http://192.168.1.139.evil.test:3000',
+        'http://user:password@localhost:3000',
+        'https://user:password@portal.example.test',
+      ])('rejects missing, public HTTP, lookalike or credential-bearing origins in development: %s', async (origin) => {
+        const f = fixture();
+        f.values.NODE_ENV = 'development';
+        f.values.PUBLIC_FRONTEND_URL = origin;
+
+        await expect(f.service.sendEstimateShare(share())).rejects.toThrow('Estimate email is unavailable');
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+
+        expect(sendMail).not.toHaveBeenCalled();
+        expect(createTransport).not.toHaveBeenCalled();
+        expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+        expect(f.db.notificationEmail.findMany).not.toHaveBeenCalled();
+      });
+    });
+
+    it.each(['', 'http://portal.example.test', 'https://username:password@portal.example.test'])(
+      'fails before sending when the public website URL is missing or invalid: %s', async (origin) => {
+        const f = fixture();
+        f.values.PUBLIC_FRONTEND_URL = origin;
+        await expect(f.service.sendEstimateShare(share())).rejects.toThrow('Estimate email is unavailable');
+        expect(createTransport).not.toHaveBeenCalled();
+      },
+    );
+
+    it('reports transport failure without leaking SMTP details or silently queuing a retry', async () => {
+      const f = fixture();
+      sendMail.mockRejectedValue(new Error('private SMTP details fake-notifications-secret client@example.com'));
+      await expect(f.service.sendEstimateShare(share())).rejects.toThrow(
+        'The estimate email could not be sent. Please try again later.',
+      );
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+    });
+
+    it('reports an explicitly rejected recipient even if the response also lists it as accepted', async () => {
+      const f = fixture();
+      sendMail.mockResolvedValue({ accepted: [email], rejected: [email] });
+      await expect(f.service.sendEstimateShare(share())).rejects.toThrow('rejected the recipient');
+    });
+
+    it.each([undefined, {}, { accepted: [] }, { accepted: ['someoneelse@example.com'] }])(
+      'does not report success when SMTP acceptance is unconfirmed: %s', async (info) => {
+        const f = fixture();
+        sendMail.mockResolvedValue(info);
+        await expect(f.service.sendEstimateShare(share())).rejects.toThrow('did not confirm acceptance');
+      },
+    );
+  });
 });

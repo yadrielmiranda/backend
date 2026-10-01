@@ -13,5 +13,6 @@ import { ContractStorageService } from './contract-storage.service';
   imports: [PrismaModule, MaterialRevisionsModule],
   controllers: [ContractsController, PublicContractsController],
   providers: [ContractsService, ContractPdfService, ContractStorageService],
+  exports: [ContractsService],
 })
 export class ContractsModule {}

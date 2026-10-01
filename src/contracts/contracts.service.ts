@@ -1,4 +1,5 @@
 import { canAccessOwner } from '@/dealer-network/dealer-network';
+import { canShareEstimate } from '@/estimates/public-share/estimate-share-access';
 import { materialChangePreview } from './material-change-preview';
 import { changeOrderPaymentPreview } from './change-order-payment-preview';
 import {
@@ -108,16 +109,14 @@ export class ContractsService {
     if (
       !estimate ||
       estimate.user.role.name !== 'dealer' ||
-      (!privileged && estimate.idUser !== user.id && (!estimate.user.parentDealerId || !await canAccessOwner(this.prisma, estimate.idUser, user)))
+      (writing
+        ? !(await canShareEstimate(this.prisma, estimate, user))
+        : !privileged &&
+          estimate.idUser !== user.id &&
+          (!estimate.user.parentDealerId ||
+            !(await canAccessOwner(this.prisma, estimate.idUser, user))))
     )
       throw new NotFoundException('Estimate not found.');
-    if (
-      writing &&
-      (user.role?.name !== 'dealer' || estimate.idUser !== user.id)
-    )
-      throw new ForbiddenException(
-        'Only the estimate owner can request a signature.',
-      );
     return estimate;
   }
 
@@ -354,7 +353,7 @@ export class ContractsService {
     useLatestContract: boolean,
     user: AuthUser,
   ) {
-    await this.ownedEstimate(estimateId, user, true);
+    const estimate = await this.ownedEstimate(estimateId, user, true);
     const prepared = await this.transaction(estimateId, async (db) => {
       await invalidateChangedAgreements(db, estimateId);
       const last = await db.estimateAgreement.findFirst({
@@ -363,7 +362,7 @@ export class ContractsService {
         orderBy: { revision: 'desc' },
       });
       const latestContract = await db.dealerContract.findFirst({
-        where: { dealerId: user.id, isCurrent: true },
+        where: { dealerId: estimate.idUser, isCurrent: true },
         orderBy: { version: 'desc' },
       });
       const contract = useLatestContract

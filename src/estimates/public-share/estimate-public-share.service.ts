@@ -1,4 +1,5 @@
 import { buildPublicEstimateData } from './public-estimate-data';
+import { canShareEstimate } from './estimate-share-access';
 import {
   BadRequestException,
   Injectable,
@@ -32,10 +33,6 @@ export class EstimatePublicShareService {
     return pricingMode === 'total' ? `total_${randomUUID()}` : randomUUID();
   }
 
-  private getAuthUserRoleName(user: AuthUser) {
-    return (user as any)?.role?.name ?? (user as any)?.roleName ?? null;
-  }
-
   private async resolveBrandingForDealerEstimate(dealerId: number) {
     const dealerBranding = await this.prisma.branding.findFirst({
       where: {
@@ -60,14 +57,6 @@ export class EstimatePublicShareService {
     user: AuthUser,
     pricingMode: CustomerReportPricingMode = 'detailed',
   ) {
-    const roleName = this.getAuthUserRoleName(user);
-
-    if (roleName !== 'dealer') {
-      throw new BadRequestException(
-        'Only dealers can create customer share links.',
-      );
-    }
-
     const estimate = await this.prisma.estimate.findUnique({
       where: { id },
       select: {
@@ -106,14 +95,8 @@ export class EstimatePublicShareService {
       },
     });
 
-    if (!estimate || estimate.idUser !== user.id) {
+    if (!estimate || !(await canShareEstimate(this.prisma, estimate, user))) {
       throw new NotFoundException(`Estimate with ID #${id} not found.`);
-    }
-
-    if (estimate.user.role.name !== 'dealer') {
-      throw new BadRequestException(
-        'Only dealer estimates can be shared with customers.',
-      );
     }
 
     if (!['Active', 'Ordered', 'Pending order review'].includes(estimate.status?.name ?? '')) {

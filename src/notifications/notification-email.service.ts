@@ -1,4 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Interval } from '@nestjs/schedule';
 import {
@@ -8,6 +13,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { isEmail } from 'class-validator';
+import { isIP } from 'node:net';
 import * as nodemailer from 'nodemailer';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { PrismaService } from '@/prisma/prisma.service';
@@ -30,6 +36,16 @@ type EmailSettings = {
   name: string;
   replyTo?: string;
   origin: string;
+};
+
+export type EstimateShareEmail = {
+  to: string;
+  path: string;
+  estimateNumber: string | number;
+  ownerBrandingName?: string | null;
+  ownerEmail?: string | null;
+  customerName?: string | null;
+  projectName?: string | null;
 };
 
 const MAX_ATTEMPTS = 3;
@@ -82,7 +98,26 @@ export class NotificationEmailService {
       return null;
     try {
       const url = new URL(this.config.get<string>('PUBLIC_FRONTEND_URL') ?? '');
-      if (url.protocol !== 'https:' || url.username || url.password)
+      const environment = this.config.get<string>('NODE_ENV') ?? 'development';
+      const [first, second] = isIP(url.hostname) === 4
+        ? url.hostname.split('.').map(Number)
+        : [];
+      const localHost =
+        url.hostname === 'localhost' ||
+        url.hostname === '[::1]' ||
+        first === 127 ||
+        first === 10 ||
+        (first === 172 && second >= 16 && second <= 31) ||
+        (first === 192 && second === 168);
+      // nest start --watch no define NODE_ENV; HTTP solo sirve para la red local.
+      const localDevelopmentHttp =
+        url.protocol === 'http:' &&
+        ['development', 'test'].includes(environment) &&
+        localHost;
+      if (
+        (url.protocol !== 'https:' && !localDevelopmentHttp) ||
+        url.username || url.password
+      )
         return null;
       return {
         host,
@@ -118,6 +153,82 @@ export class NotificationEmailService {
       user.email.trim().length <= 254 &&
       isEmail(user.email.trim())
     );
+  }
+
+  assertEstimateShareReady(): void {
+    this.estimateShareSettings();
+  }
+
+  private estimateShareSettings(): EmailSettings {
+    const settings = this.settings();
+    if (!settings)
+      throw new ServiceUnavailableException(
+        'Estimate email is unavailable. Configure the notification email settings and public website URL.',
+      );
+    return settings;
+  }
+
+  async sendEstimateShare(input: EstimateShareEmail): Promise<void> {
+    const settings = this.estimateShareSettings();
+    const to = input.to.trim().toLowerCase();
+    if (to.length > 254 || !isEmail(to))
+      throw new BadRequestException('Enter a valid recipient email address.');
+    // El servidor entrega solo la ruta; el dominio nunca procede del cliente.
+    if (
+      !/^\/public\/estimates\/[a-zA-Z0-9_-]+(?:\/agreements\/[a-zA-Z0-9_-]+)?$/.test(
+        input.path,
+      )
+    )
+      throw new BadRequestException('Could not create a valid customer estimate link.');
+    const link = new URL(input.path, settings.origin).href;
+    const number = cleanText(String(input.estimateNumber));
+    const ownerName = cleanText(input.ownerBrandingName || settings.name);
+    const customerName = cleanText(input.customerName || '');
+    const projectName = cleanText(input.projectName || '');
+    const includesContract = input.path.includes('/agreements/');
+    const document = includesContract ? 'estimate and contract' : 'estimate';
+    const title = includesContract ? 'Estimate and contract ready' : 'Estimate ready';
+    const subject = Array.from(`Estimate #${number} ready to review`).slice(0, 100).join('');
+    const message = [
+      customerName ? `Hello ${customerName},` : 'Hello,',
+      '',
+      `${ownerName} has shared estimate #${number}${projectName ? ` for ${projectName}` : ''} with you.`,
+      '',
+      `Please review your ${document} using the link below.`,
+      '',
+      'Thank you.',
+    ].join('\n');
+    const ownerEmail = input.ownerEmail?.trim();
+    const replyTo = ownerEmail && ownerEmail.length <= 254 && isEmail(ownerEmail)
+      ? ownerEmail
+      : settings.replyTo;
+    let info: SMTPTransport.SentMessageInfo;
+    try {
+      info = await this.transport(settings).sendMail({
+        ...this.renderMessage(
+          { ...settings, replyTo },
+          title,
+          subject,
+          message,
+          includesContract ? 'Review estimate and contract' : 'Review estimate',
+          link,
+        ),
+        to,
+      });
+    } catch {
+      // No exponer destinatarios, credenciales ni respuestas privadas del proveedor.
+      throw new ServiceUnavailableException(
+        'The estimate email could not be sent. Please try again later.',
+      );
+    }
+    const matchesRecipient = (address: string | { address: string }) =>
+      (typeof address === 'string' ? address : address.address)?.toLowerCase() === to;
+    if (info?.rejected?.some(matchesRecipient))
+      throw new ServiceUnavailableException('The email service rejected the recipient.');
+    if (!info?.accepted?.some(matchesRecipient))
+      throw new ServiceUnavailableException(
+        'The email service did not confirm acceptance of this estimate email.',
+      );
   }
 
   async enqueue(notification: Notification, db: Prisma.TransactionClient) {
@@ -232,6 +343,17 @@ export class NotificationEmailService {
     const message = notification.message;
     const label = notification.actionLabel?.trim() || 'Open portal';
     const { title, subject } = this.heading(notification);
+    return this.renderMessage(settings, title, subject, message, label, link);
+  }
+
+  private renderMessage(
+    settings: EmailSettings,
+    title: string,
+    subject: string,
+    message: string,
+    label: string,
+    link: string,
+  ) {
     return {
       from: { name: settings.name, address: settings.from },
       ...(settings.replyTo ? { replyTo: settings.replyTo } : {}),
@@ -255,6 +377,22 @@ export class NotificationEmailService {
   </td></tr></table>
 </body></html>`,
     };
+  }
+
+  private transport(settings: EmailSettings) {
+    this.transporter ??= nodemailer.createTransport({
+      host: settings.host,
+      port: settings.port,
+      secure: settings.secure,
+      requireTLS: !settings.secure,
+      auth: { user: settings.user, pass: settings.pass },
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000,
+      disableFileAccess: true,
+      disableUrlAccess: true,
+    });
+    return this.transporter;
   }
 
   @Interval(10_000)
@@ -352,21 +490,10 @@ export class NotificationEmailService {
       await this.finish(id, 'SKIPPED', 'RECIPIENT_CHANGED');
       return;
     }
-    this.transporter ??= nodemailer.createTransport({
-      host: settings.host,
-      port: settings.port,
-      secure: settings.secure,
-      requireTLS: !settings.secure,
-      auth: { user: settings.user, pass: settings.pass },
-      connectionTimeout: 10_000,
-      greetingTimeout: 10_000,
-      socketTimeout: 20_000,
-      disableFileAccess: true,
-      disableUrlAccess: true,
-    });
+    const transporter = this.transport(settings);
     let info: SMTPTransport.SentMessageInfo;
     try {
-      info = await this.transporter.sendMail({
+      info = await transporter.sendMail({
         ...this.message(notification, settings),
         to: entry.email,
       });

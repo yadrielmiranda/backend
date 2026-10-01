@@ -20,6 +20,9 @@ import {
 } from './agreement-content';
 import { buildPublicEstimateData } from '@/estimates/public-share/public-estimate-data';
 import { defaultPlan } from '@/payment-plans/payment-plan';
+import type { AuthUser } from '@/auth/types/auth-user.type';
+import { ContractsController } from './contracts.controller';
+import { ROLES_KEY } from '@/auth/roles.decorator';
 
 jest.mock('@/estimates/reporting/estimate-piece-diagram-metadata', () => ({
   attachEstimatePieceDiagramMetadata: async (_db: unknown, pieces: unknown[]) =>
@@ -456,6 +459,110 @@ describe('Agreement acceptance, access and history', () => {
     signerName: 'Jane Rivera',
     signature: strokes,
     accepted: true,
+  });
+
+  function dealerNetwork() {
+    f.state().estimate[0].user.parentDealerId = 3;
+    const parents = new Map([[7, 3], [3, 1], [8, 3], [9, 7]]);
+    f.db.user = {
+      findUnique: jest.fn(async ({ where: { id } }) => {
+        const parentDealerId = parents.get(id) ?? null;
+        return {
+          parentDealerId,
+          parentDealer: parentDealerId == null ? null : {
+            parentDealerId: parents.get(parentDealerId) ?? null,
+          },
+        };
+      }),
+    };
+  }
+
+  it('permits admin and dealer preparation without widening contract management roles', () => {
+    expect(Reflect.getMetadata(ROLES_KEY, ContractsController.prototype.prepare)).toEqual(['admin', 'dealer']);
+    for (const method of ['upload', 'remove'] as const)
+      expect(Reflect.getMetadata(ROLES_KEY, ContractsController.prototype[method])).toEqual(['dealer']);
+  });
+
+  describe.each(['detailed', 'total'] as const)('Sharing contracts (%s)', (mode) => {
+    const actor = (id: number, name: NonNullable<AuthUser['role']>['name'] = 'dealer'): AuthUser => ({
+      id, role: { name },
+    });
+
+    it.each([
+      ['owner', actor(7)], ['parent', actor(3)],
+      ['grandparent', actor(1)], ['admin', actor(99, 'admin')],
+    ])('lets the %s prepare the owner contract and branding', async (_label, user) => {
+      dealerNetwork();
+      const ownerContract = f.state().dealerContract[0];
+      if (user.id !== 7)
+        f.state().dealerContract.push({
+          ...ownerContract, id: randomUUID(), dealerId: user.id, version: 99,
+          name: 'Actor contract.pdf',
+        });
+      f.state().branding.push(
+        { id: 1, type: 'DEALER', userId: 7, isActive: true, name: 'Owner Windows' },
+        { id: 2, type: 'DEALER', userId: user.id, isActive: true, name: 'Actor Windows' },
+        { id: 3, type: 'COMPANY', isActive: true, name: 'Company Windows' },
+      );
+      const prepared = await service.prepare(1, mode, true, user);
+      expect(prepared.current?.contract?.id).toBe(ownerContract.id);
+      const saved = f.state().estimateAgreement[0];
+      expect(saved.contractId).toBe(ownerContract.id);
+      expect(saved.snapshot.branding.name).toBe('Owner Windows');
+      expect(saved.snapshot.publicPricingMode).toBe(mode);
+      expect(pdf.quote).toHaveBeenCalledWith(
+        expect.objectContaining({ branding: expect.objectContaining({ name: 'Owner Windows' }) }),
+        mode === 'total' ? `total_${token}` : token,
+        saved.id,
+      );
+      expect((await service.prepare(1, mode, false, user)).current?.id).toBe(saved.id);
+    });
+
+    it.each([
+      ['unrelated dealer', actor(99)], ['sibling', actor(8)],
+      ['descendant', actor(9)], ['operator', actor(99, 'operator')],
+      ['client', actor(7, 'client')], ['technician', actor(7, 'technician')],
+    ])('denies the %s before preparing an agreement', async (_label, user) => {
+      dealerNetwork();
+      await expect(service.prepare(1, mode, false, user)).rejects.toThrow('not found');
+      expect(f.state().estimateAgreement).toHaveLength(0);
+      expect(pdf.quote).not.toHaveBeenCalled();
+    });
+
+    it('does not use an ancestor contract when the owner has no contract', async () => {
+      dealerNetwork();
+      f.state().dealerContract[0].dealerId = 3;
+      await expect(service.prepare(1, mode, false, actor(3))).resolves.toEqual({ current: null });
+      expect(f.state().estimateAgreement).toHaveLength(0);
+      expect(pdf.quote).not.toHaveBeenCalled();
+    });
+
+    it('keeps disabled links disabled when an admin prepares a contract', async () => {
+      f.state().estimate[0].publicTokenEnabled = false;
+      await expect(service.prepare(1, mode, false, actor(99, 'admin'))).rejects.toThrow('enabled customer link');
+      expect(f.state().estimate[0].publicTokenEnabled).toBe(false);
+      expect(f.state().estimateAgreement).toHaveLength(0);
+    });
+
+    it('does not let an admin prepare a client-owned estimate', async () => {
+      f.state().estimate[0].user.role.name = 'client';
+      await expect(service.prepare(1, mode, false, actor(99, 'admin'))).rejects.toThrow('not found');
+      expect(f.state().estimateAgreement).toHaveLength(0);
+    });
+  });
+
+  it('keeps ancestor contract management scoped to their own uploaded contracts', async () => {
+    dealerNetwork();
+    const ownerContract = f.state().dealerContract[0];
+    const parent = { id: 3, role: { name: 'dealer' as const } };
+    await service.upload(parent, { buffer: quote, originalname: 'Parent.pdf' } as any);
+    expect(f.state().dealerContract.find((row: any) => row.id === ownerContract.id).isCurrent).toBe(true);
+    await service.removeDefault(parent);
+    expect(f.state().dealerContract.find((row: any) => row.id === ownerContract.id).isCurrent).toBe(true);
+    expect(f.state().dealerContract.find((row: any) => row.dealerId === parent.id).isCurrent).toBe(false);
+    const admin = { id: 99, role: { name: 'admin' as const } };
+    await expect(service.upload(admin, { buffer: quote, originalname: 'Admin.pdf' } as any)).rejects.toThrow('Only dealers');
+    await expect(service.removeDefault(admin)).rejects.toThrow('Only dealers');
   });
 
   it('keeps canceled signed documents readable and byte-for-byte unchanged', async () => {

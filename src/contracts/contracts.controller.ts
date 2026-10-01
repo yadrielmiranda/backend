@@ -90,7 +90,7 @@ export class ContractsController {
     );
   }
   @Post('estimates/:id')
-  @Roles('dealer')
+  @Roles('admin', 'dealer')
   prepare(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: PrepareAgreementDto,

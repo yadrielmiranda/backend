@@ -1,5 +1,6 @@
 import { EstimatePublicShareService } from './estimate-public-share.service';
 import { EstimateCustomerChargesService } from '../estimate-customer-charges.service';
+import type { AuthUser } from '@/auth/types/auth-user.type';
 
 function sharedEstimateFixture() {
   return {
@@ -109,6 +110,18 @@ function buildService(estimate = sharedEstimateFixture()) {
       findFirst: jest.fn().mockResolvedValue(estimate),
       findUnique: jest.fn(),
       update: jest.fn(),
+    },
+    user: {
+      findUnique: jest.fn(async ({ where: { id } }) => {
+        const parents = new Map([[44, 22], [22, 11], [55, 22], [66, 44]]);
+        const parentDealerId = parents.get(id) ?? null;
+        return {
+          parentDealerId,
+          parentDealer: parentDealerId == null ? null : {
+            parentDealerId: parents.get(parentDealerId) ?? null,
+          },
+        };
+      }),
     },
     branding: {
       findFirst: jest.fn().mockResolvedValue({ name: 'Dealer Windows' }),
@@ -499,5 +512,74 @@ describe('EstimatePublicShareService customer pricing modes', () => {
       enabled: true,
       pricingMode: 'detailed',
     });
+  });
+});
+
+describe.each(['detailed', 'total'] as const)('Estimate sharing permissions (%s)', (pricingMode) => {
+  const actor = (id: number, name: NonNullable<AuthUser['role']>['name'] = 'dealer'): AuthUser => ({
+    id, role: { name },
+  });
+  function sharingService() {
+    const estimate = Object.assign(sharedEstimateFixture(), {
+      publicTokenEnabled: true,
+      order: null,
+      payments: [],
+    });
+    const built = buildService(estimate);
+    built.prisma.estimate.findUnique.mockResolvedValue(estimate);
+    return { ...built, estimate };
+  }
+
+  it.each([
+    ['owner', actor(44)], ['parent', actor(22)],
+    ['grandparent', actor(11)], ['admin', actor(99, 'admin')],
+  ])('allows %s to share the estimate owner customer link', async (_label, user) => {
+    const { service, prisma, estimate } = sharingService();
+    const result = await service.getOrCreatePublicLinkToken(9, user, pricingMode);
+    expect(result).toEqual({
+      token: pricingMode === 'total' ? estimate.publicTotalToken : estimate.publicToken,
+      enabled: true,
+      pricingMode,
+    });
+    expect(prisma.estimate.update).not.toHaveBeenCalled();
+    await service.findPublicEstimateByToken(result.token!);
+    expect(prisma.branding.findFirst).toHaveBeenCalledWith({
+      where: { type: 'DEALER', userId: 44, isActive: true },
+    });
+  });
+
+  it.each([
+    ['unrelated dealer', actor(99)], ['sibling', actor(55)],
+    ['descendant', actor(66)], ['operator', actor(99, 'operator')],
+    ['client', actor(44, 'client')], ['technician', actor(44, 'technician')],
+  ])('denies %s without creating or changing a token', async (_label, user) => {
+    const { service, prisma } = sharingService();
+    await expect(service.getOrCreatePublicLinkToken(9, user, pricingMode)).rejects.toThrow('not found');
+    expect(prisma.estimate.update).not.toHaveBeenCalled();
+  });
+
+  it('does not enable an existing disabled token when an admin shares it', async () => {
+    const { service, prisma, estimate } = sharingService();
+    estimate.publicTokenEnabled = false;
+    const result = await service.getOrCreatePublicLinkToken(9, actor(99, 'admin'), pricingMode);
+    expect(result.enabled).toBe(false);
+    expect(prisma.estimate.update).not.toHaveBeenCalled();
+  });
+
+  it('uses the estimate owner mode when an ancestor has a different mode', async () => {
+    const { service, prisma, estimate } = sharingService();
+    estimate.user.dealerMode = 'INTERNAL';
+    const parent = Object.assign(actor(22), { dealerMode: 'EXTERNAL' });
+    await service.getOrCreatePublicLinkToken(9, parent, pricingMode);
+    expect(prisma.estimate.update).toHaveBeenCalledWith({
+      where: { id: 9 }, data: { dealerModeSnapshot: 'INTERNAL' },
+    });
+  });
+
+  it('does not let an admin share a client-owned estimate', async () => {
+    const { service, prisma, estimate } = sharingService();
+    estimate.user.role.name = 'client';
+    await expect(service.getOrCreatePublicLinkToken(9, actor(99, 'admin'), pricingMode)).rejects.toThrow('not found');
+    expect(prisma.estimate.update).not.toHaveBeenCalled();
   });
 });
