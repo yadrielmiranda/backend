@@ -178,6 +178,17 @@ export class EstimatePdfService {
       await page.waitForSelector('[data-piece-diagram-id]', {
         timeout: 20_000,
       });
+      // La captura incluye las capas superpuestas de la página. Ocultamos los
+      // diálogos solo en este navegador de exportación, sin alterar sus colores.
+      await page.addStyleTag({
+        content: `
+          [data-slot="dialog-overlay"], [data-slot="dialog-content"],
+          [data-slot="alert-dialog-overlay"], [data-slot="alert-dialog-content"],
+          [data-slot="sheet-overlay"], [data-slot="sheet-content"] {
+            display: none !important;
+          }
+        `,
+      });
       await page.evaluate(async () => {
         await document.fonts?.ready;
         await new Promise<void>((resolve) =>
