@@ -599,12 +599,19 @@ enum BillableHeightMode {
   FIXED
 }
 
+enum MuntinAvailability {
+  NONE
+  ALL
+  SELECTED
+}
+
 model SysConf {
   system                       System             @relation(fields: [idSystem], references: [id])
   idSystem                     Int
   config                       Config             @relation(fields: [idConfig], references: [id])
   idConfig                     Int
   allowScreen                  Boolean            @default(false)
+  muntinAvailability           MuntinAvailability @default(ALL)
   isSelectableInEstimate       Boolean            @default(true)
   sortOrder                    Int                @default(0)
   dimensionMode                DimensionMode      @default(STANDARD)
@@ -651,6 +658,7 @@ model SysConf {
   preparationOptions   SysConfPreparationOption[]
   sillOptions          SysConfSillOption[]
   reinforcementOptions SysConfReinforcementOption[]
+  allowedMuntinTypes   SysConfMuntinType[]
 
   @@id([idSystem, idConfig])
   @@index([defaultActiveOptionId])
@@ -658,6 +666,19 @@ model SysConf {
   @@index([defaultSillOptionId])
   @@index([defaultReinforcementOptionId])
   @@map("sys_conf")
+}
+
+model SysConfMuntinType {
+  idSystem     Int
+  idConfig     Int
+  muntinTypeId Int
+
+  sysConf    SysConf    @relation(fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade, map: "sys_conf_muntin_types_sys_conf_fkey")
+  muntinType MuntinType @relation(fields: [muntinTypeId], references: [id], onDelete: Cascade)
+
+  @@id([idSystem, idConfig, muntinTypeId])
+  @@index([muntinTypeId])
+  @@map("sys_conf_muntin_types")
 }
 
 model SysConfPricingComponent {
@@ -985,6 +1006,7 @@ model MuntinType {
   updatedAt DateTime @updatedAt
 
   pieceMuntins PieceMuntin[]
+  sysConfs     SysConfMuntinType[]
 
   @@map("muntin_types")
 }

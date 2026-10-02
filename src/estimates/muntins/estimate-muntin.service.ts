@@ -2,6 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 import type { PrismaTransactionClient } from '../dimensions/estimate-dimension-validation.service';
+import type { MuntinAvailabilityPolicy } from '@/systems/muntin-availability';
 
 @Injectable()
 export class EstimateMuntinService {
@@ -103,6 +104,7 @@ export class EstimateMuntinService {
     muntin: CreatePieceDto['muntin'] | null | undefined,
     configLayoutRaw: unknown,
     tx: PrismaTransactionClient,
+    policy: MuntinAvailabilityPolicy = { muntinAvailability: 'ALL', allowedMuntinTypeIds: [] },
   ) {
     if (!muntin) return null;
 
@@ -118,28 +120,33 @@ export class EstimateMuntinService {
       throw new BadRequestException(`Muntin pattern #${muntin.idPattern} not found.`);
     }
 
-    if (muntin.idType) {
-      const type = await tx.muntinType.findUnique({
-        where: { id: muntin.idType },
-        select: { id: true },
-      });
-
-      if (!type) {
-        throw new BadRequestException(`Muntin type #${muntin.idType} not found.`);
-      }
-    }
-
-    const configLayout = this.parseConfigMuntinLayout(configLayoutRaw);
-
-    // comentario en espanol: Full View o cualquier pattern sin lites
+    // Full View has no muntins; stale type/panel values must not restrict it.
     if (!pattern.requiresLites) {
       return {
         idPattern: muntin.idPattern,
-        idType: muntin.idType ?? null,
+        idType: null,
         panels: [],
       };
     }
 
+    if (policy.muntinAvailability === 'NONE') {
+      throw new BadRequestException('Muntins are not available for this series and configuration.');
+    }
+    if (!muntin.idType) {
+      throw new BadRequestException('Select a muntin type for this pattern.');
+    }
+    const type = await tx.muntinType.findUnique({
+      where: { id: muntin.idType },
+      select: { id: true, isActive: true },
+    });
+    if (!type || !type.isActive) {
+      throw new BadRequestException(`Muntin type #${muntin.idType} is invalid or inactive.`);
+    }
+    if (policy.muntinAvailability === 'SELECTED' && !policy.allowedMuntinTypeIds.includes(type.id)) {
+      throw new BadRequestException('The selected muntin type is not allowed for this series and configuration.');
+    }
+
+    const configLayout = this.parseConfigMuntinLayout(configLayoutRaw);
     if (configLayout.length === 0) {
       throw new BadRequestException(
         'This configuration does not define a muntin layout.',

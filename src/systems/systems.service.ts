@@ -23,6 +23,7 @@ import {
   hasPanelCountSource,
   installationServiceRequiresPanelCount,
 } from '@/installation/panel-count-capability';
+import { resolveMuntinAvailability, withMuntinAvailability } from './muntin-availability';
 
 @Injectable()
 export class SystemsService {
@@ -40,6 +41,7 @@ export class SystemsService {
         },
         sysconfs: {
           include: {
+            allowedMuntinTypes: { select: { muntinTypeId: true } },
             config: {
               include: {
                 category: true,
@@ -82,7 +84,8 @@ export class SystemsService {
     if (!system) {
       throw new NotFoundException(`System with ID #${where.id} not found.`);
     }
-    return system;
+    const result = { ...system, sysconfs: system.sysconfs.map(withMuntinAvailability) };
+    return result;
   }
 
   async systems(params: {
@@ -93,7 +96,7 @@ export class SystemsService {
     orderBy?: Prisma.SystemOrderByWithRelationInput;
   }): Promise<System[]> {
     const { skip, take, cursor, where, orderBy } = params;
-    return this.prisma.system.findMany({
+    const systems = await this.prisma.system.findMany({
       skip,
       take,
       cursor,
@@ -109,6 +112,7 @@ export class SystemsService {
         },
         sysconfs: {
           include: {
+            allowedMuntinTypes: { select: { muntinTypeId: true } },
             config: {
               include: {
                 category: true,
@@ -147,14 +151,16 @@ export class SystemsService {
         },
       },
     });
+    return systems.map(system => ({ ...system, sysconfs: system.sysconfs.map(withMuntinAvailability) }));
   }
 
   /** Devuelve todos los sistemas con sus configuraciones asociadas */
   async findAllWithConfigs(): Promise<System[]> {
-    return this.prisma.system.findMany({
+    const systems = await this.prisma.system.findMany({
       include: {
         sysconfs: {
           include: {
+            allowedMuntinTypes: { select: { muntinTypeId: true } },
             config: {
               include: {
                 category: true,
@@ -243,6 +249,7 @@ export class SystemsService {
       },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }, { id: 'asc' }],
     });
+    return systems.map(system => ({ ...system, sysconfs: system.sysconfs.map(withMuntinAvailability) }));
   }
 
   async createSystem(systemData: CreateSystemDto): Promise<System> {
@@ -515,6 +522,7 @@ export class SystemsService {
       include: {
         sysconfs: {
           include: {
+            allowedMuntinTypes: { select: { muntinTypeId: true } },
             config: {
               include: {
                 category: true,
@@ -559,7 +567,8 @@ export class SystemsService {
       throw new NotFoundException(`System with ID #${systemId} not found.`);
     }
 
-    return system;
+    const result = { ...system, sysconfs: system.sysconfs.map(withMuntinAvailability) };
+    return result;
   }
 
   async getSystemConfigOptions(systemId: number, configId: number) {
@@ -571,6 +580,7 @@ export class SystemsService {
         },
       },
       include: {
+        allowedMuntinTypes: { select: { muntinTypeId: true } },
         activeOptions: {
           include: { option: true },
           orderBy: { sortOrder: 'asc' },
@@ -600,6 +610,8 @@ export class SystemsService {
       idSystem: systemId,
       idConfig: configId,
       allowScreen: sysConf.allowScreen,
+      muntinAvailability: sysConf.muntinAvailability,
+      allowedMuntinTypeIds: sysConf.allowedMuntinTypes.map(link => link.muntinTypeId).sort((a, b) => a - b),
       isSelectableInEstimate: sysConf.isSelectableInEstimate,
 
       dimensionMode: sysConf.dimensionMode,
@@ -659,6 +671,7 @@ export class SystemsService {
         },
       },
       include: {
+        allowedMuntinTypes: { select: { muntinTypeId: true } },
         activeOptions: {
           include: { option: true },
           orderBy: { sortOrder: 'asc' },
@@ -810,6 +823,8 @@ export class SystemsService {
       system: sysConf.system,
       config: sysConf.config,
       allowScreen: sysConf.allowScreen,
+      muntinAvailability: sysConf.muntinAvailability,
+      allowedMuntinTypeIds: sysConf.allowedMuntinTypes.map(link => link.muntinTypeId).sort((a, b) => a - b),
       isSelectableInEstimate: sysConf.isSelectableInEstimate,
 
       dimensionMode: sysConf.dimensionMode,
@@ -1937,6 +1952,38 @@ export class SystemsService {
   /**
    * Actualiza opciones de la relación System ⇄ Config
    */
+  private async muntinAvailabilityUpdate(
+    tx: Prisma.TransactionClient,
+    systemId: number,
+    configId: number,
+    data: UpdateSystemConfigDto,
+  ): Promise<Prisma.SysConfUpdateInput> {
+    if (data.muntinAvailability === undefined && data.allowedMuntinTypeIds === undefined) return {};
+    // Keep the mode and its selected types consistent across simultaneous edits.
+    await tx.$queryRaw`SELECT idSystem FROM sys_conf WHERE idSystem = ${systemId} AND idConfig = ${configId} FOR UPDATE`;
+    const current = await tx.sysConf.findUnique({
+      where: { idSystem_idConfig: { idSystem: systemId, idConfig: configId } },
+      select: { muntinAvailability: true, allowedMuntinTypes: { select: { muntinTypeId: true } } },
+    });
+    if (!current) throw new NotFoundException('System/Config link not found.');
+    const policy = resolveMuntinAvailability(withMuntinAvailability(current), data);
+    if (policy.allowedMuntinTypeIds.length) {
+      const activeTypes = await tx.muntinType.findMany({
+        where: { id: { in: policy.allowedMuntinTypeIds }, isActive: true },
+        select: { id: true },
+      });
+      if (activeTypes.length !== policy.allowedMuntinTypeIds.length)
+        throw new BadRequestException('One or more allowed muntin types are invalid or inactive.');
+    }
+    return {
+      muntinAvailability: policy.muntinAvailability,
+      allowedMuntinTypes: {
+        deleteMany: {},
+        create: policy.allowedMuntinTypeIds.map(id => ({ muntinType: { connect: { id } } })),
+      },
+    };
+  }
+
   async updateSystemConfig(
     systemId: number,
     configId: number,
@@ -2007,6 +2054,7 @@ export class SystemsService {
     };
 
     await this.prisma.$transaction(async (tx) => {
+      Object.assign(sysConfUpdateData, await this.muntinAvailabilityUpdate(tx, systemId, configId, data));
       if (Object.keys(sysConfUpdateData).length > 0) {
         await tx.sysConf.update({
           where: {

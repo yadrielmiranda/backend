@@ -401,6 +401,8 @@ export class EstimatePieceCalculatorService {
         select: {
           isSelectableInEstimate: true,
           allowScreen: true,
+          muntinAvailability: true,
+          allowedMuntinTypes: { select: { muntinTypeId: true } },
           dimensionMode: true,
           minimumBillableWidthIn: true,
           minimumBillableHeightIn: true,
@@ -959,6 +961,10 @@ export class EstimatePieceCalculatorService {
         pieceDto.muntin,
         config.muntinLayout,
         tx as any,
+        {
+          muntinAvailability: sysConf.muntinAvailability ?? 'ALL',
+          allowedMuntinTypeIds: (sysConf.allowedMuntinTypes ?? []).map(link => link.muntinTypeId),
+        },
       );
 
     const need = (v?: number | boolean | null) => v === 1 || v === true;
