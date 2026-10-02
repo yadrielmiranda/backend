@@ -26,6 +26,7 @@ import { UpsertPieceDto } from "../dto/upsert-piece.dto";
 
 import { EstimateDimensionValidationService } from "../dimensions/estimate-dimension-validation.service";
 import { EstimateMuntinService } from "../muntins/estimate-muntin.service";
+import type { WindowWallMuntinGeometry } from "../muntins/window-wall-muntin-layout";
 
 type PrismaTransactionClient = Omit<
   PrismaClient,
@@ -956,8 +957,10 @@ export class EstimatePieceCalculatorService {
       allowedReinforcementOptionIds,
     );
 
-    const normalizedMuntin =
-      await this.muntinService.normalizePieceMuntinFromCatalog(
+    const dimensionMode: DimensionMode =
+      sysConf.dimensionMode ?? DimensionMode.STANDARD;
+    const normalizeMuntin = (windowWall?: WindowWallMuntinGeometry) =>
+      this.muntinService.normalizePieceMuntinFromCatalog(
         pieceDto.muntin,
         config.muntinLayout,
         tx as any,
@@ -965,13 +968,14 @@ export class EstimatePieceCalculatorService {
           muntinAvailability: sysConf.muntinAvailability ?? 'ALL',
           allowedMuntinTypeIds: (sysConf.allowedMuntinTypes ?? []).map(link => link.muntinTypeId),
         },
+        windowWall,
       );
+    // Validate Window Wall dimensions before normalizing its shared grid.
+    // One H/V selection is repeated in every physical glass cell.
+    let normalizedMuntin = dimensionMode === DimensionMode.WINDOW_WALL ? null : await normalizeMuntin();
 
     const need = (v?: number | boolean | null) => v === 1 || v === true;
     const missing: string[] = [];
-
-    const dimensionMode: DimensionMode =
-      sysConf.dimensionMode ?? DimensionMode.STANDARD;
 
     const isBlank = (value: unknown) => value == null || value === "";
 
@@ -1374,6 +1378,14 @@ export class EstimatePieceCalculatorService {
           `The piece exceeds the NOA limits for this combination.${sug}`,
         );
       }
+    }
+
+    if (dimensionMode === DimensionMode.WINDOW_WALL) {
+      normalizedMuntin = await normalizeMuntin({
+        panelCount: windowWallPanelCount,
+        horizontalHeights: pieceDto.horizontalHeights,
+        totalHeight: Number(pieceDto.height),
+      });
     }
 
     const dpPosPsf = new Decimal(dpCheck.dpPos ?? 0).toDecimalPlaces(

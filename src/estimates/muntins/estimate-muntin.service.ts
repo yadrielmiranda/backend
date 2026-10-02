@@ -3,6 +3,11 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 import type { PrismaTransactionClient } from '../dimensions/estimate-dimension-validation.service';
 import type { MuntinAvailabilityPolicy } from '@/systems/muntin-availability';
+import {
+  buildWindowWallMuntinLayout,
+  normalizeWindowWallMuntinPanels,
+  type WindowWallMuntinGeometry,
+} from './window-wall-muntin-layout';
 
 @Injectable()
 export class EstimateMuntinService {
@@ -105,6 +110,7 @@ export class EstimateMuntinService {
     configLayoutRaw: unknown,
     tx: PrismaTransactionClient,
     policy: MuntinAvailabilityPolicy = { muntinAvailability: 'ALL', allowedMuntinTypeIds: [] },
+    windowWall?: WindowWallMuntinGeometry,
   ) {
     if (!muntin) return null;
 
@@ -146,7 +152,10 @@ export class EstimateMuntinService {
       throw new BadRequestException('The selected muntin type is not allowed for this series and configuration.');
     }
 
-    const configLayout = this.parseConfigMuntinLayout(configLayoutRaw);
+    const windowWallLayout = windowWall
+      ? buildWindowWallMuntinLayout(windowWall.panelCount, windowWall.horizontalHeights, windowWall.totalHeight)
+      : null;
+    const configLayout = windowWallLayout ?? this.parseConfigMuntinLayout(configLayoutRaw);
     if (configLayout.length === 0) {
       throw new BadRequestException(
         'This configuration does not define a muntin layout.',
@@ -156,10 +165,14 @@ export class EstimateMuntinService {
     return {
       idPattern: muntin.idPattern,
       idType: muntin.idType ?? null,
-      panels: this.buildDefaultPanelsFromConfigLayout(
-        configLayout,
-        Array.isArray(muntin.panels) ? muntin.panels : [],
-      ),
+      panels: windowWallLayout
+        ? normalizeWindowWallMuntinPanels(
+            Array.isArray(muntin.panels) ? muntin.panels : [],
+          )
+        : this.buildDefaultPanelsFromConfigLayout(
+            configLayout,
+            Array.isArray(muntin.panels) ? muntin.panels : [],
+          ),
     };
   }
 }
