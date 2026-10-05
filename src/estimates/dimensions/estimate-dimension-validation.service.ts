@@ -57,6 +57,7 @@ function resolveShapeHeightIn(
   switch (shapeKeyFromConf(confName ?? '')) {
     case 'CIRCLE':
     case 'QUARTER_CIRCLE':
+    case 'OCTAGON':
       return widthIn;
 
     case 'HALF_CIRCLE':
@@ -75,6 +76,7 @@ function hasDerivedShapeHeight(
   return (
     shape === 'CIRCLE' ||
     shape === 'HALF_CIRCLE' ||
+    shape === 'OCTAGON' ||
     shape === 'QUARTER_CIRCLE'
   );
 }
