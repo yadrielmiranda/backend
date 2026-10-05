@@ -115,7 +115,11 @@ export function resolvePieceComponents(
     ];
   }
 
-  const totalWidth = positiveDecimal(input.width, 'Opening Width');
+  // Eco Novo stores the door and sidelite widths separately; an opening width
+  // is not required to resolve those components from persisted measurements.
+  const totalWidth = input.dimensionMode === DimensionMode.ECO_NOVO_DOOR
+    ? null
+    : positiveDecimal(input.width, 'Opening Width');
   const totalHeight = positiveDecimal(input.height, 'Opening Height');
   const result: ResolvedPieceComponent[] = [];
 
@@ -157,7 +161,7 @@ export function resolvePieceComponents(
       const width =
         input.dimensionMode === DimensionMode.ECO_WINDOWS_DOOR &&
         !hasSidelite
-          ? totalWidth
+          ? totalWidth!
           : positiveDecimal(input.doorWidth, 'Door Width');
 
       pushComponent(
@@ -181,7 +185,7 @@ export function resolvePieceComponents(
         'Sidelite Quantity',
       );
       const doorWidth = positiveDecimal(input.doorWidth, 'Door Width');
-      const remainingWidth = totalWidth.minus(doorWidth);
+      const remainingWidth = totalWidth!.minus(doorWidth);
 
       if (remainingWidth.lte(0)) {
         throw new Error(
