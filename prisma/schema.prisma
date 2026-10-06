@@ -508,6 +508,7 @@ model System {
 
   systemCrystals    SystemCrystal[]
   systemFrameColors SystemFrameColor[]
+  muntinRules       SystemMuntinRule[]
 
   sysconfs           SysConf[]
   pieces             Piece[]
@@ -599,10 +600,15 @@ enum BillableHeightMode {
   FIXED
 }
 
-enum MuntinAvailability {
-  NONE
+enum MuntinRuleAvailability {
   ALL
   SELECTED
+}
+
+enum MuntinInputMode {
+  NONE
+  GRID
+  PRESET
 }
 
 model SysConf {
@@ -611,7 +617,6 @@ model SysConf {
   config                       Config             @relation(fields: [idConfig], references: [id])
   idConfig                     Int
   allowScreen                  Boolean            @default(false)
-  muntinAvailability           MuntinAvailability @default(ALL)
   isSelectableInEstimate       Boolean            @default(true)
   sortOrder                    Int                @default(0)
   dimensionMode                DimensionMode      @default(STANDARD)
@@ -658,7 +663,7 @@ model SysConf {
   preparationOptions   SysConfPreparationOption[]
   sillOptions          SysConfSillOption[]
   reinforcementOptions SysConfReinforcementOption[]
-  allowedMuntinTypes   SysConfMuntinType[]
+  muntinAssignments    SystemMuntinAssignment[]
 
   @@id([idSystem, idConfig])
   @@index([defaultActiveOptionId])
@@ -668,17 +673,49 @@ model SysConf {
   @@map("sys_conf")
 }
 
-model SysConfMuntinType {
+// A reusable type selection for one pattern within a series.
+model SystemMuntinRule {
+  id           Int                      @id @default(autoincrement())
   idSystem     Int
-  idConfig     Int
+  patternId    Int
+  availability MuntinRuleAvailability
+  system       System                   @relation(fields: [idSystem], references: [id], onDelete: Cascade)
+  pattern      MuntinPattern            @relation(fields: [patternId], references: [id], onDelete: Cascade)
+  allowedTypes SystemMuntinRuleType[]
+  targets      SystemMuntinAssignment[]
+
+  @@unique([id, idSystem, patternId], map: "muntin_rule_scope_key")
+  @@index([idSystem, patternId])
+  @@index([patternId])
+  @@map("system_muntin_rules")
+}
+
+model SystemMuntinRuleType {
+  ruleId       Int
   muntinTypeId Int
+  rule         SystemMuntinRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  muntinType   MuntinType       @relation(fields: [muntinTypeId], references: [id], onDelete: Cascade)
 
-  sysConf    SysConf    @relation(fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade, map: "sys_conf_muntin_types_sys_conf_fkey")
-  muntinType MuntinType @relation(fields: [muntinTypeId], references: [id], onDelete: Cascade)
-
-  @@id([idSystem, idConfig, muntinTypeId])
+  @@id([ruleId, muntinTypeId])
   @@index([muntinTypeId])
-  @@map("sys_conf_muntin_types")
+  @@map("system_muntin_rule_types")
+}
+
+// One exact assignment; a new series/config/glass association has no permissions.
+model SystemMuntinAssignment {
+  idSystem      Int
+  idConfig      Int
+  idCrystal     Int
+  patternId     Int
+  ruleId        Int
+  sysConf       SysConf          @relation(fields: [idSystem, idConfig], references: [idSystem, idConfig], onDelete: Cascade, map: "muntin_assignment_config_fkey")
+  systemCrystal SystemCrystal    @relation(fields: [idSystem, idCrystal], references: [idSystem, idCrystal], onDelete: Cascade, map: "muntin_assignment_crystal_fkey")
+  rule          SystemMuntinRule @relation(fields: [ruleId, idSystem, patternId], references: [id, idSystem, patternId], onDelete: Cascade, map: "muntin_assignment_rule_fkey")
+
+  @@id([idSystem, idConfig, idCrystal, patternId])
+  @@index([idSystem, idCrystal])
+  @@index([ruleId, idSystem, patternId])
+  @@map("system_muntin_assignments")
 }
 
 model SysConfPricingComponent {
@@ -701,8 +738,9 @@ model SystemCrystal {
   idCrystal Int
   sortOrder Int @default(0)
 
-  system  System  @relation(fields: [idSystem], references: [id], onDelete: Cascade)
-  crystal Crystal @relation(fields: [idCrystal], references: [id], onDelete: Restrict)
+  system            System                   @relation(fields: [idSystem], references: [id], onDelete: Cascade)
+  crystal           Crystal                  @relation(fields: [idCrystal], references: [id], onDelete: Restrict)
+  muntinAssignments SystemMuntinAssignment[]
 
   @@id([idSystem, idCrystal])
   @@index([idCrystal])
@@ -984,15 +1022,18 @@ model BrandPrivacy {
 }
 
 model MuntinPattern {
-  id            Int      @id @default(autoincrement())
-  name          String   @unique @db.VarChar(100)
-  requiresLites Boolean  @default(true)
-  isActive      Boolean  @default(true)
-  isDefault     Boolean  @default(false)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id            Int             @id @default(autoincrement())
+  name          String          @unique @db.VarChar(100)
+  requiresLites Boolean         @default(true)
+  inputMode     MuntinInputMode @default(GRID)
+  requiresType  Boolean         @default(true)
+  isActive      Boolean         @default(true)
+  isDefault     Boolean         @default(false)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
 
   pieceMuntins PieceMuntin[]
+  systemRules  SystemMuntinRule[]
 
   @@map("muntin_patterns")
 }
@@ -1006,7 +1047,7 @@ model MuntinType {
   updatedAt DateTime @updatedAt
 
   pieceMuntins PieceMuntin[]
-  sysConfs     SysConfMuntinType[]
+  systemRules  SystemMuntinRuleType[]
 
   @@map("muntin_types")
 }

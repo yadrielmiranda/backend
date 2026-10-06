@@ -1,3 +1,4 @@
+import { MUNTIN_ASSIGNMENTS_INCLUDE, catalogMuntinRules } from '@/systems/muntin-rules';
 import { applyNetworkPricing, networkPieceTotals, type NetworkSnapshot, type NetworkPiecePricing } from '@/dealer-network/dealer-network';
 import { applyPromotion, PromotionTerms } from '@/promotions/promotion-pricing';
 import {
@@ -402,8 +403,7 @@ export class EstimatePieceCalculatorService {
         select: {
           isSelectableInEstimate: true,
           allowScreen: true,
-          muntinAvailability: true,
-          allowedMuntinTypes: { select: { muntinTypeId: true } },
+          muntinAssignments: MUNTIN_ASSIGNMENTS_INCLUDE,
           dimensionMode: true,
           minimumBillableWidthIn: true,
           minimumBillableHeightIn: true,
@@ -965,8 +965,8 @@ export class EstimatePieceCalculatorService {
         config.muntinLayout,
         tx as any,
         {
-          muntinAvailability: sysConf.muntinAvailability ?? 'ALL',
-          allowedMuntinTypeIds: (sysConf.allowedMuntinTypes ?? []).map(link => link.muntinTypeId),
+          crystalId: Number(pieceDto.idCryst),
+          rules: catalogMuntinRules(sysConf.muntinAssignments ?? []),
         },
         windowWall,
       );

@@ -3,6 +3,7 @@ import { MuntinPattern, Prisma } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { CreateMuntinPatternDto } from './dto/create-muntin-pattern.dto';
 import { UpdateMuntinPatternDto } from './dto/update-muntin-pattern.dto';
+import { resolvePatternInput } from './pattern-input';
 
 @Injectable()
 export class MuntinPatternsService {
@@ -43,6 +44,7 @@ export class MuntinPatternsService {
   async createMuntinPattern(
     data: CreateMuntinPatternDto,
   ): Promise<MuntinPattern> {
+    const metadata = resolvePatternInput(data);
     return this.prisma.$transaction(async (tx) => {
       if (data.isDefault === true) {
         await tx.muntinPattern.updateMany({
@@ -53,7 +55,7 @@ export class MuntinPatternsService {
       return tx.muntinPattern.create({
         data: {
           name: data.name.trim(),
-          requiresLites: data.requiresLites ?? true,
+          ...metadata,
           isActive: data.isActive ?? true,
           isDefault: data.isDefault ?? false,
         },
@@ -69,6 +71,9 @@ export class MuntinPatternsService {
 
     try {
       return await this.prisma.$transaction(async (tx) => {
+        const current = await tx.muntinPattern.findUnique({ where });
+        if (!current) throw new NotFoundException(`MuntinPattern with ID #${where.id} not found.`);
+        const metadata = resolvePatternInput(data, current);
         if (data.isDefault === true) {
           await tx.muntinPattern.updateMany({
             where: { NOT: { id: where.id } },
@@ -80,9 +85,7 @@ export class MuntinPatternsService {
           where,
           data: {
             ...(data.name !== undefined ? { name: data.name.trim() } : {}),
-            ...(data.requiresLites !== undefined
-              ? { requiresLites: data.requiresLites }
-              : {}),
+            ...metadata,
             ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
             ...(data.isDefault !== undefined
               ? { isDefault: data.isDefault }

@@ -2,7 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 import type { PrismaTransactionClient } from '../dimensions/estimate-dimension-validation.service';
-import type { MuntinAvailabilityPolicy } from '@/systems/muntin-availability';
+import type { MuntinCatalogRule } from '@/systems/muntin-rules';
 import {
   buildWindowWallMuntinLayout,
   normalizeWindowWallMuntinPanels,
@@ -109,7 +109,7 @@ export class EstimateMuntinService {
     muntin: CreatePieceDto['muntin'] | null | undefined,
     configLayoutRaw: unknown,
     tx: PrismaTransactionClient,
-    policy: MuntinAvailabilityPolicy = { muntinAvailability: 'ALL', allowedMuntinTypeIds: [] },
+    compatibility: { crystalId: number; rules: MuntinCatalogRule[] },
     windowWall?: WindowWallMuntinGeometry,
   ) {
     if (!muntin) return null;
@@ -118,7 +118,9 @@ export class EstimateMuntinService {
       where: { id: muntin.idPattern },
       select: {
         id: true,
-        requiresLites: true,
+        inputMode: true,
+        requiresType: true,
+        isActive: true,
       },
     });
 
@@ -127,7 +129,7 @@ export class EstimateMuntinService {
     }
 
     // Full View has no muntins; stale type/panel values must not restrict it.
-    if (!pattern.requiresLites) {
+    if (pattern.inputMode === 'NONE') {
       return {
         idPattern: muntin.idPattern,
         idType: null,
@@ -135,21 +137,27 @@ export class EstimateMuntinService {
       };
     }
 
-    if (policy.muntinAvailability === 'NONE') {
-      throw new BadRequestException('Muntins are not available for this series and configuration.');
+    if (!pattern.isActive) {
+      throw new BadRequestException('The selected muntin pattern is inactive.');
     }
-    if (!muntin.idType) {
-      throw new BadRequestException('Select a muntin type for this pattern.');
+    const rule = compatibility.rules.find(rule => rule.crystalId === compatibility.crystalId && rule.patternId === pattern.id);
+    if (!rule) {
+      throw new BadRequestException('This muntin pattern is not available for the selected series, configuration and crystal.');
     }
-    const type = await tx.muntinType.findUnique({
-      where: { id: muntin.idType },
-      select: { id: true, isActive: true },
-    });
-    if (!type || !type.isActive) {
-      throw new BadRequestException(`Muntin type #${muntin.idType} is invalid or inactive.`);
+    let typeId: number | null = null;
+    if (pattern.requiresType) {
+      if (!muntin.idType) throw new BadRequestException('Select a muntin type for this pattern.');
+      const type = await tx.muntinType.findUnique({
+        where: { id: muntin.idType }, select: { id: true, isActive: true },
+      });
+      if (!type || !type.isActive) throw new BadRequestException(`Muntin type #${muntin.idType} is invalid or inactive.`);
+      if (rule.availability === 'SELECTED' && !rule.allowedTypeIds.includes(type.id))
+        throw new BadRequestException('The selected muntin type is not allowed for this crystal and pattern.');
+      typeId = type.id;
     }
-    if (policy.muntinAvailability === 'SELECTED' && !policy.allowedMuntinTypeIds.includes(type.id)) {
-      throw new BadRequestException('The selected muntin type is not allowed for this series and configuration.');
+    // PRESET records the catalog specification, without fabricating grid geometry.
+    if (pattern.inputMode === 'PRESET') {
+      return { idPattern: pattern.id, idType: typeId, panels: [] };
     }
 
     const windowWallLayout = windowWall
@@ -164,7 +172,7 @@ export class EstimateMuntinService {
 
     return {
       idPattern: muntin.idPattern,
-      idType: muntin.idType ?? null,
+      idType: typeId,
       panels: windowWallLayout
         ? normalizeWindowWallMuntinPanels(
             Array.isArray(muntin.panels) ? muntin.panels : [],

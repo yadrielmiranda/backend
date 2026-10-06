@@ -25,7 +25,7 @@ function fixture(mode = 'ALL', allowedIds = [7]) {
   cache.sysConf.set('1-1', {
     isSelectableInEstimate: true, dimensionMode: 'WINDOW_WALL',
     requiresWidth: true, requiresHeight: true, requiresPanelCount: true, requiresHorizontalHeights: true,
-    muntinAvailability: mode, allowedMuntinTypes: allowedIds.map(muntinTypeId => ({ muntinTypeId })),
+    muntinAssignments: mode === 'NONE' ? [] : [{ ruleId: 1, idCrystal: 1, patternId: 2, rule: { availability: mode, allowedTypes: allowedIds.map(muntinTypeId => ({ muntinTypeId })) } }],
     activeOptions: [], preparationOptions: [], sillOptions: [], reinforcementOptions: [],
   });
   cache.systemFrameColor.set('1-1', {});
@@ -34,7 +34,7 @@ function fixture(mode = 'ALL', allowedIds = [7]) {
   cache.brandCoating.set('1-1', { coating: { isActive: true }, surchargeEnabled: false });
   cache.brandPrivacy.set('1-1', { privacy: { isActive: true }, surchargeEnabled: false });
   const db = {
-    muntinPattern: { findUnique: jest.fn(async ({ where }) => ({ id: where.id, requiresLites: where.id !== 1 })) },
+    muntinPattern: { findUnique: jest.fn(async ({ where }) => ({ id: where.id, inputMode: where.id === 1 ? 'NONE' : 'GRID', requiresType: where.id !== 1, isActive: true })) },
     muntinType: { findUnique: jest.fn(async ({ where }) => ({ id: where.id, isActive: true })) },
     pricingRangeRule: { findMany: jest.fn(async () => []) },
     pricingRule: { findUnique: jest.fn(async () => ({ costoA: '0', costoB: '0', costoC: '100' })) },

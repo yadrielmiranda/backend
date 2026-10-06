@@ -171,6 +171,20 @@ function withExternalDealerCustomerCharges(
 }
 
 describe('EstimatePdfHtmlBuilder', () => {
+  it('keeps the selected profile in a fixed-pattern specification without inventing lites', () => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate.pieces[0], {
+      pieceMuntin: {
+        pattern: { name: '8L', inputMode: 'PRESET', requiresLites: false, requiresType: true },
+        type: { name: '1 in Flat-Flat' },
+        panels: [],
+      },
+    });
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'client');
+    expect(html).toContain('Grid: 8L · 1 in Flat-Flat');
+    expect(html).not.toContain('Grid: 8L · 1 in Flat-Flat -');
+  });
+
   it('shows a material total discount once with adjusted tax in client PDF', () => {
     const estimate = estimateFixture(false);
     estimate.dealerModeSnapshot = null;

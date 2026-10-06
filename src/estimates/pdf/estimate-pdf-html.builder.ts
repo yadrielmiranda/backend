@@ -193,7 +193,9 @@ const buildGridLine = (piece: any) => {
   const panels = Array.isArray(muntin.panels) ? muntin.panels : [];
 
   if (!patternName) return 'Grid: Yes';
-  if (panels.length === 0) return `Grid: ${patternName}`;
+  const typeName = optionName(muntin.type);
+  const patternDescription = typeName ? `${patternName} · ${typeName}` : patternName;
+  if (panels.length === 0) return `Grid: ${patternDescription}`;
 
   const panelDetails = panels
     .map((panel: any) => {
@@ -208,7 +210,7 @@ const buildGridLine = (piece: any) => {
     })
     .join(' | ');
 
-  return `Grid: ${patternName} - ${panelDetails}`;
+  return `Grid: ${patternDescription} - ${panelDetails}`;
 };
 
 const optionalDimension = (value: unknown) =>
