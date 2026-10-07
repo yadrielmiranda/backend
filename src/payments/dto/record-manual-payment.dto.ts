@@ -45,6 +45,11 @@ export class RecordManualPaymentDto {
   @Min(0)
   expectedBalance?: number;
 
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  customAmount?: number;
+
   @IsEnum(PaymentMethod)
   method: PaymentMethod;
 

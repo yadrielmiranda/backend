@@ -40,8 +40,10 @@ export const paymentIsCovered = (payment?: AccountedPayment | null) =>
   Boolean(
     payment &&
       !payment.refundReviewPending &&
-      (hasRefundHistory(payment)
+      (payment.originalBaseAmount != null || hasRefundHistory(payment)
         ? remainingRefundBalance(payment).eq(0)
+          && (payment.status === 'PAID' || paidPrincipal(payment).gt(0)
+            || decimalAmount(payment.refundCreditAmount).gt(0))
         : payment.status === 'PAID'),
   );
 

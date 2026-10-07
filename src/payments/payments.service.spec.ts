@@ -289,7 +289,7 @@ describe('PaymentsService reconciliation', () => {
         create: jest.fn().mockResolvedValue({ id: 11 }),
       },
       order: {
-        findUnique: jest.fn().mockResolvedValue({ id: 11 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 11, status: { name: 'Pending' } }),
         create: jest.fn().mockResolvedValue({
           id: 11,
           number: 'ORD-1011',
@@ -464,7 +464,7 @@ describe('PaymentsService reconciliation', () => {
           id: 301 + index,
           ...data,
         })),
-        findUnique: jest.fn().mockResolvedValue({ id: 301 + index }),
+        findUnique: jest.fn().mockResolvedValue({ id: 301 + index, status: { name: 'Pending' } }),
       },
       estimate: { update: jest.fn().mockResolvedValue({}) },
       eventLog: { create: jest.fn().mockResolvedValue({}) },
@@ -549,7 +549,7 @@ describe('PaymentsService reconciliation', () => {
       orderSequence: { create: jest.fn() },
       order: {
         create: jest.fn(),
-        findUnique: jest.fn().mockResolvedValue({ id: 11 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 11, status: { name: 'Pending' } }),
       },
       estimate: { update: jest.fn() },
     };
@@ -609,7 +609,7 @@ describe('PaymentsService reconciliation', () => {
       orderSequence: { create: jest.fn() },
       order: {
         create: jest.fn(),
-        findUnique: jest.fn().mockResolvedValue({ id: 11 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 11, status: { name: 'Pending' } }),
       },
     };
     const installationWorkflow = {
@@ -661,7 +661,7 @@ describe('PaymentsService reconciliation', () => {
         findUniqueOrThrow: jest.fn().mockResolvedValue(payment),
         findMany: jest.fn().mockResolvedValue([payment]),
       },
-      order: { findUnique: jest.fn().mockResolvedValue({ id: 11 }) },
+      order: { findUnique: jest.fn().mockResolvedValue({ id: 11, status: { name: 'Pending' } }) },
     };
     const workflow = { markPaymentPaid: jest.fn().mockResolvedValue(false) };
     const service = new PaymentsService({} as never, config, workflow as never, notifications as never);
@@ -676,7 +676,7 @@ describe('PaymentsService reconciliation', () => {
 
   it('keeps manual payment confirmations with admins as well', async () => {
     const payment = materialPayment({ recordedById: 1 });
-    const tx = { order: { findUnique: jest.fn().mockResolvedValue({ id: 11 }) } };
+    const tx = { order: { findUnique: jest.fn().mockResolvedValue({ id: 11, status: { name: 'Pending' } }) } };
     const service = new PaymentsService({} as never, config, {} as never, notifications as never);
     await (service as any).notifyPaymentConfirmed(tx, payment);
     expect(notifications.createAndSend).not.toHaveBeenCalled();
@@ -814,7 +814,7 @@ describe('PaymentsService reconciliation', () => {
         create: jest.fn().mockResolvedValue({ id: 11 }),
       },
       order: {
-        findUnique: jest.fn().mockResolvedValue({ id: 11 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 11, status: { name: 'Pending' } }),
         create: jest.fn().mockResolvedValue({
           id: 11,
           number: 'ORD-1011',

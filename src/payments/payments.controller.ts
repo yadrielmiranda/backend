@@ -65,6 +65,7 @@ export class PaymentsController {
       sequences: dto.sequences,
       payFullBalance: dto.payFullBalance,
       expectedBalance: dto.expectedBalance,
+      customAmount: dto.customAmount,
     });
   }
 
@@ -112,6 +113,7 @@ export class PaymentsController {
       sequences: dto.sequences,
       payFullBalance: dto.payFullBalance,
       expectedBalance: dto.expectedBalance,
+      customAmount: dto.customAmount,
       user,
     });
   }

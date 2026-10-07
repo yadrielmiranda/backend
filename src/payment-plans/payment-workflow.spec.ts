@@ -17,6 +17,8 @@ import { UpdateProfileDto } from '@/auth/dto/update-profile.dto';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
 import { PaymentsController } from '@/payments/payments.controller';
 import { CreatePublicCheckoutSessionDto } from '@/payments/dto/create-public-checkout-session.dto';
+import { CreateCheckoutSessionDto } from '@/payments/dto/create-checkout-session.dto';
+import { RecordManualPaymentDto } from '@/payments/dto/record-manual-payment.dto';
 import { DeliveriesService } from '@/deliveries/deliveries.service';
 
 const plan: PlanDefinition = {
@@ -1602,4 +1604,206 @@ describe('Refund review and payment recovery', () => {
     expect(f.ledger.receipts).toHaveLength(0); expect(f.estimate.order).toBeNull();
   });
 
+});
+
+describe('Custom installment amounts with real schedule and receipt ledger', () => {
+  const admin: any = { id: 1, role: { name: 'admin' } };
+  const manualCustom = (f: ReturnType<typeof fixture>, customAmount: number, expectedBalance: number, cityFeeAccepted = false) =>
+    f.service.recordManualPayment({ estimateId: 1, type: PaymentType.INSTALLMENT, customAmount, expectedBalance,
+      method: PaymentMethod.CHECK, fundsVerified: true, reference: `custom-${customAmount}`, cityFeeAccepted, actor: admin });
+
+  it.each([CreateCheckoutSessionDto, CreatePublicCheckoutSessionDto, RecordManualPaymentDto])
+  ('accepts custom principal and rejects excess precision at the API boundary: %p', async metatype => {
+    const pipe = new ValidationPipe({ transform: true, whitelist: true });
+    const data = { estimateId: 1, type: 'INSTALLMENT', customAmount: 8000, expectedBalance: 10641.28,
+      method: 'CHECK', fundsVerified: true, reference: 'CUSTOM-42' };
+    await expect(pipe.transform(data, { type: 'body', metatype })).resolves.toMatchObject({ customAmount: 8000, expectedBalance: 10641.28 });
+    await expect(pipe.transform({ ...data, customAmount: 1.001 }, { type: 'body', metatype })).rejects.toThrow();
+  });
+
+  function cardFixture(internal = false) {
+    const f = fixture({ material: 10641.28, installation: 0, deposit: 0, mode: internal ? 'INTERNAL' : 'EXTERNAL' });
+    const sessions = new Map<string, any>();
+    f.createSession.mockImplementation(async (params: any) => {
+      const id = `cs_custom_${sessions.size + 1}`;
+      const session = { ...params, id, url: `https://checkout.stripe.com/${id}`, status: 'open', payment_status: 'unpaid',
+        amount_total: params.line_items.reduce((sum, line) => sum + line.price_data.unit_amount, 0), currency: 'usd', payment_intent: `pi_${id}` };
+      sessions.set(id, session); return session;
+    });
+    const retrieve = jest.spyOn(f.stripe.checkout.sessions, 'retrieve').mockImplementation(async id => sessions.get(id));
+    const expire = jest.spyOn(f.stripe.checkout.sessions, 'expire').mockImplementation(async id => {
+      sessions.get(id).status = 'expired'; return sessions.get(id);
+    });
+    const checkout = (customAmount: number, expectedBalance: number) => internal
+      ? f.service.createCheckoutSessionForPublicToken({ token: 'customer-link', customAmount, expectedBalance })
+      : f.service.createCheckoutSessionForEstimate({ estimateId: 1, customAmount, expectedBalance, user: f.actor });
+    const confirm = async (id: string) => {
+      const session = sessions.get(id); session.status = 'complete'; session.payment_status = 'paid';
+      await (f.service as any).processPaidCheckoutSession(f.tx, session);
+    };
+    return { ...f, sessions, retrieve, expire, checkout, confirm };
+  }
+
+  it('records 8000 as 5320.64 plus 2679.36, then allows repeated payments of the second installment', async () => {
+    const f = fixture({ material: 10641.28, installation: 0, deposit: 0 });
+    await manualCustom(f, 8000, 10641.28);
+    let schedule = buildPaymentSchedule(f.estimate)!;
+    expect(schedule.rows).toMatchObject([
+      { sequence: 1, paid: '5320.64', balance: '0.00', status: 'PAID' },
+      { sequence: 2, paid: '2679.36', balance: '2641.28' },
+    ]);
+    expect(schedule.canRelease).toBe(false);
+    expect(f.ledger.receipts.map(receipt => receipt.baseAmount.toFixed(2))).toEqual(['5320.64', '2679.36']);
+    expect(f.estimate.payments[1].originalBaseAmount.toFixed(2)).toBe('5320.64');
+    await manualCustom(f, 1000, 2641.28);
+    expect(buildPaymentSchedule(f.estimate)?.rows[1]).toMatchObject({ paid: '3679.36', balance: '1641.28' });
+    await manualCustom(f, 1641.28, 1641.28);
+    schedule = buildPaymentSchedule(f.estimate)!;
+    expect(schedule).toMatchObject({ paid: '10641.28', balance: '0.00', canRelease: true });
+    expect(f.ledger.receipts).toHaveLength(4);
+    expect(f.estimate.payments).toHaveLength(2);
+  });
+
+  it('does not create an order for a partial first installment and preserves external deposit credit', async () => {
+    const f = fixture();
+    await manualCustom(f, 1000, 9750);
+    expect(f.estimate.order).toBeNull();
+    expect(f.estimate.status.name).toBe('Active');
+    expect(f.estimate.payments.find(p => p.type === 'INSTALLMENT').originalBaseAmount.toFixed(2)).toBe('4750.00');
+    await manualCustom(f, 3750, 8750);
+    expect(f.estimate.status.name).toBe('Pending order review');
+    expect(f.estimate.order).toBeNull();
+    await f.approve();
+    expect(f.estimate.order.amount.toFixed(2)).toBe('4750.00');
+    expect(buildPaymentSchedule(f.estimate)?.paid).toBe('5000.00');
+  });
+
+  it('confirms a credited zero first installment while applying money to the next installment', async () => {
+    const f = fixture({ material: 200, installation: 200 });
+    await manualCustom(f, 50, 150);
+    expect(f.estimate.payments.filter(p => p.type === 'INSTALLMENT').map(p => p.baseAmount.toFixed(2))).toEqual(['0.00', '50.00']);
+    expect(f.estimate.status.name).toBe('Pending order review');
+    expect(buildPaymentSchedule(f.estimate)?.rows[1].balance).toBe('60.00');
+  });
+
+  it.each([false, true])('supports custom Stripe checkout (public=%s) with fees only on the entered principal', async internal => {
+    const f = cardFixture(internal);
+    await f.checkout(8000, 10641.28);
+    const session = f.sessions.get('cs_custom_1');
+    expect(session.amount_total).toBe(824000);
+    expect(f.estimate.payments.map(p => p.baseAmount.toFixed(2))).toEqual(['5320.64', '2679.36']);
+    expect(f.estimate.payments.map(p => p.surchargeAmount.toFixed(2))).toEqual(['159.62', '80.38']);
+    expect(f.estimate.payments[1].processingCostSnapshot).toMatchObject({
+      components: { material: '2759.74' }, total: '2759.74', materialSurcharge: '80.38',
+    });
+    await f.confirm('cs_custom_1');
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ paid: '8000.00', balance: '2641.28', canRelease: false });
+    await f.checkout(1000, 2641.28);
+    expect(f.sessions.get('cs_custom_2').amount_total).toBe(103000);
+    await f.confirm('cs_custom_2');
+    expect(f.ledger.receipts.map(receipt => receipt.baseAmount.toFixed(2))).toEqual(['5320.64', '2679.36', '1000.00']);
+    expect(buildPaymentSchedule(f.estimate)?.rows[1]).toMatchObject({ paid: '3679.36', balance: '1641.28' });
+  });
+
+  it('resumes an identical open amount and expires a replaced selection without losing paid principal', async () => {
+    const f = cardFixture();
+    await manualCustom(f, 1000, 10641.28);
+    await f.checkout(500, 9641.28);
+    await f.checkout(500, 9641.28);
+    expect(f.createSession).toHaveBeenCalledTimes(1);
+    await f.checkout(600, 9641.28);
+    expect(f.expire).toHaveBeenCalledWith('cs_custom_1');
+    expect(f.createSession).toHaveBeenCalledTimes(2);
+    expect(buildPaymentSchedule(f.estimate)?.paid).toBe('1000.00');
+    await f.confirm('cs_custom_2');
+    expect(buildPaymentSchedule(f.estimate)?.paid).toBe('1600.00');
+  });
+
+  it('can switch Stripe to manual and manual to Stripe on the same partially paid installment', async () => {
+    const f = cardFixture();
+    await f.checkout(1000, 10641.28); await f.confirm('cs_custom_1');
+    await manualCustom(f, 500, 9641.28);
+    expect(f.retrieve).not.toHaveBeenCalled();
+    await f.checkout(300, 9141.28); await f.confirm('cs_custom_2');
+    expect(f.ledger.receipts.map(receipt => receipt.paymentMethod)).toEqual(['CARD', 'CHECK', 'CARD']);
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ paid: '1800.00', balance: '8841.28' });
+    expect(f.estimate.order).toBeNull();
+  });
+
+  it('blocks an unreviewed refund of a partial receipt and accepts a later abono without losing its history', async () => {
+    const f = cardFixture();
+    await f.checkout(1000, 10641.28); await f.confirm('cs_custom_1');
+    const charge = (await f.stripe.paymentIntents.retrieve('pi_cs_custom_1') as any).latest_charge;
+    await reconcileChargeRefunds(f.tx, charge, [{ id: 're_custom', charge: charge.id, amount: 10300,
+      currency: 'usd', status: 'succeeded', created: 1700000200 } as any]);
+    expect(buildPaymentSchedule(f.estimate)?.fullBalance).toBeNull();
+    await expect(manualCustom(f, 100, 9741.28)).rejects.toThrow('not available');
+    await f.service.reviewRefund(1, 're_custom', { note: 'Refund reviewed; collect the remaining principal',
+      allocations: f.ledger.allocations.map(allocation => ({ id: allocation.id, creditAmount: 0 })) }, admin);
+    await manualCustom(f, 300, 9741.28);
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ paid: '1200.00', balance: '9441.28' });
+    expect(f.ledger.receipts.map(receipt => receipt.baseAmount.toFixed(2))).toEqual(['1000.00', '300.00']);
+    expect(f.ledger.allocations).toHaveLength(1);
+    expect(f.estimate.payments[0].originalBaseAmount.toFixed(2)).toBe('5320.64');
+  });
+
+  it('allocates an approved City Fee before later milestones and requires its acceptance', async () => {
+    const f = fixture();
+    f.estimate.installationJob.permit = { id: 6, status: 'SUBMITTED', permitFeeSnapshot: decimal(0), cityFee: null };
+    await f.manual(1);
+    f.estimate.installationJob.permit.cityFee = decimal(200);
+    await synchronizeScheduleChanges(f.tx, 1);
+    await expect(manualCustom(f, 100, 5200)).rejects.toThrow('acceptance');
+    await manualCustom(f, 100, 5200, true);
+    expect(buildPaymentSchedule(f.estimate)?.rows.find(row => row.sequence === 101)).toMatchObject({ paid: '100.00', balance: '100.00' });
+    expect(buildPaymentSchedule(f.estimate)?.rows.find(row => row.sequence === 2)?.paid).toBe('0.00');
+  });
+
+  it('rejects stale or excessive balances, malformed and mutually exclusive choices before charging', async () => {
+    const f = cardFixture();
+    for (const overrides of [
+      { customAmount: 0 }, { customAmount: 0.001 }, { customAmount: 10641.29 }, { expectedBalance: 10641.27 },
+      { sequence: 1 }, { sequences: [1] }, { payFullBalance: true }, { payFullBalance: false },
+      { items: [{ type: PaymentType.INSTALLMENT, sequence: 1 }] }, { type: PaymentType.EXTRA },
+    ]) {
+      await expect(f.service.createCheckoutSessionForEstimate({ estimateId: 1, customAmount: 1000, expectedBalance: 10641.28,
+        user: f.actor, ...overrides })).rejects.toThrow();
+    }
+    expect(f.createSession).not.toHaveBeenCalled();
+    expect(f.ledger.receipts).toHaveLength(0);
+  });
+
+  it('retains customer material acceptance and pending approval/revision/refund restrictions', async () => {
+    const client = fixture({ role: 'client', deposit: 0, installation: 0 });
+    await expect(client.service.createCheckoutSessionForEstimate({ estimateId: 1, customAmount: 100, expectedBalance: 8000, user: client.actor }))
+      .rejects.toThrow('accept the material details');
+    for (const block of ['quote', 'revision', 'refund']) {
+      const f = fixture();
+      if (block === 'quote') f.estimate.installationJob.quotes[0].status = 'DRAFT';
+      if (block === 'revision') f.estimate.materialRevisions = [{ activeSlot: 1 }];
+      if (block === 'refund') Object.assign(f.estimate.payments[0], { refundReviewPending: true, refundReviewBaseAmount: decimal(100), netPaidBaseAmount: decimal(150) });
+      await expect(manualCustom(f, 100, 9750)).rejects.toThrow('not available');
+    }
+  });
+
+  it('requires a current signature on the public route even for a partial amount', async () => {
+    const f = cardFixture(true);
+    await expect(f.service.createCheckoutSessionForPublicToken({ token: 'customer-link', customAmount: 100,
+      expectedBalance: 10641.28, agreementId: 'unsigned-agreement' })).rejects.toThrow('sign the current agreement');
+    expect(f.createSession).not.toHaveBeenCalled();
+  });
+
+  it('uses only the schedule balance on a public link that also has delivery and extra charges', async () => {
+    const f = cardFixture(true);
+    await manualCustom(f, 5320.64, 10641.28);
+    f.estimate.order.deliveries = [{ sequence: 1, status: 'PAYMENT_DUE', total: decimal(150) }];
+    f.estimate.order.extraCharges = [{ sequence: 1, status: 'PAYMENT_DUE', total: decimal(25) }];
+    // The public wrapper can expose other charges; custom allocation still reads
+    // the authoritative installment schedule under the payment lock.
+    jest.spyOn(f.service, 'getPublicPaymentContext').mockResolvedValue({ enabled: true, payment: { type: 'DELIVERY', sequence: 1 } } as any);
+    await f.checkout(100, 5320.64);
+    expect(f.estimate.payments.every(p => p.type === 'INSTALLMENT')).toBe(true);
+    expect(f.sessions.get('cs_custom_1').amount_total).toBe(10300);
+    await expect(f.checkout(100, 5495.64)).rejects.toThrow('balance changed');
+  });
 });

@@ -64,6 +64,11 @@ export class CreatePublicCheckoutSessionDto {
   expectedBalance?: number;
 
   @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  customAmount?: number;
+
+  @IsOptional()
   @IsBoolean()
   installationDepositTermsAccepted?: boolean;
 

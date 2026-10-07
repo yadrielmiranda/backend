@@ -7,6 +7,7 @@ import { reconcileChargeRefunds, recordManualReceipt, recordStripeReceipt, refre
 import { stripePaymentMethod } from './stripe-payment-method';
 import { reconcileStripeProcessingCost } from './processing-costs';
 import { freezeProcessingCostSnapshot } from './processing-cost-snapshot';
+import { allocateCustomPayment, installmentObligation, partialProcessingComponents } from './custom-payment-allocation';
 import { ReviewRefundDto } from './dto/review-refund.dto';
 import Decimal from 'decimal.js';
 import { randomUUID } from 'node:crypto';
@@ -62,6 +63,7 @@ type UnavailablePublicPaymentContext = {
 };
 
 type PaymentSelection = { type: PaymentType; sequence: number };
+type SelectedPaymentContext = Awaited<ReturnType<InstallationWorkflowService['getPaymentContext']>> & { installmentBalance?: Decimal };
 const paymentSelectionKey = (item: { type: PaymentType; sequence?: number }) => `${item.type}:${item.sequence}`;
 
 type PaymentWithEstimate = Prisma.PaymentGetPayload<{
@@ -147,6 +149,8 @@ export class PaymentsService {
     if (payment.type === PaymentType.INSTALLMENT) {
       const schedule = await getPaymentSchedule(tx, payment.idEst);
       if (!schedule || schedule.initialSequence !== payment.sequence) return false;
+      const initial = schedule.rows.find(row => row.sequence === payment.sequence);
+      if (!initial || Number(initial.balance) > 0 || initial.status === 'REVIEW') return false;
     }
 
     if (estimate.order) {
@@ -233,7 +237,9 @@ export class PaymentsService {
       data: {
         number: `ORD-${1000 + sequence.id}`,
         units: estimate.units,
-        amount: payment.baseAmount,
+        amount: payment.type === PaymentType.INSTALLMENT
+          ? new Prisma.Decimal(paidPrincipal(payment).toFixed(2))
+          : payment.baseAmount,
         price: new Prisma.Decimal(saleSubtotal.toFixed(2)),
         saleSubtotal: new Prisma.Decimal(saleSubtotal.toFixed(2)),
         rate: estimate.rateT,
@@ -398,10 +404,15 @@ export class PaymentsService {
     tx: Prisma.TransactionClient,
     payment: PaymentWithEstimate,
   ): Promise<boolean> {
+    let installmentRemaining: string | null = null;
     if (payment.type === PaymentType.INSTALLMENT) {
       const schedule = await getPaymentSchedule(tx, payment.idEst);
       const row = schedule?.rows.find(row => row.sequence === payment.sequence);
-      if (row && (Number(row.balance) > 0 || row.status === 'REVIEW')) return false;
+      if (row?.status === 'REVIEW') return false;
+      if (row && Number(row.balance) > 0) {
+        if (payment.status !== PaymentStatus.PAID || !paidPrincipal(payment).gt(0)) return false;
+        installmentRemaining = row.balance;
+      }
       if (!row && !paymentIsCovered(payment)) return false;
     } else if (!paymentIsCovered(payment)) return false;
     let changed = false;
@@ -424,6 +435,13 @@ export class PaymentsService {
       const terms = [...new Map(promotionTerms(pieces.map(p => p.promotionSnapshot)).map(p => [`${p.id}:${p.version}`, p])).values()];
       await tx.estimate.update({where:{id:payment.idEst},data:{promotionLockedAt:payment.paidAt ?? new Date(),promotionContext:terms as unknown as Prisma.InputJsonValue}});
       changed = true;
+    }
+
+    // A confirmed contribution locks its agreed pricing and gets a receipt
+    // notification, but never unlocks a milestone with an outstanding balance.
+    if (installmentRemaining !== null) {
+      await this.notifyPaymentConfirmed(tx, payment, installmentRemaining);
+      return changed;
     }
 
     if (payment.type === PaymentType.MATERIAL || payment.type === PaymentType.INSTALLMENT) {
@@ -520,6 +538,7 @@ export class PaymentsService {
   private async notifyPaymentConfirmed(
     tx: Prisma.TransactionClient,
     payment: PaymentWithEstimate,
+    installmentRemaining?: string,
   ) {
     const copy = this.paymentNotificationCopy(payment.type, payment.sequence);
     const order = await tx.order.findUnique({
@@ -539,10 +558,12 @@ export class PaymentsService {
     await this.notifications.createAndSendToRoles(
       ['admin'],
       {
-        message: `${copy.label} confirmed${payerSuffix} for Estimate #${payment.estimate.number}.${pendingReview ? " Pending order review." : ""}`,
+        message: `${copy.label} ${installmentRemaining ? `partial payment of $${payment.baseAmount.toFixed(2)}` : 'confirmed'}${payerSuffix} for Estimate #${payment.estimate.number}.${installmentRemaining ? ` Remaining installment balance: $${installmentRemaining}.` : ''}${pendingReview ? " Pending order review." : ""}`,
         actionUrl,
-        actionLabel: pendingReview ? 'Review order' : copy.adminNextStep,
-        dedupeKey: `payment:${payment.id}:paid:admin`,
+        actionLabel: installmentRemaining ? 'Open payment schedule' : pendingReview ? 'Review order' : copy.adminNextStep,
+        dedupeKey: installmentRemaining
+          ? `payment:${payment.id}:partial:${payment.stripePaymentIntentId ?? payment.paidAt?.toISOString() ?? paidPrincipal(payment).toFixed(2)}:admin`
+          : `payment:${payment.id}:paid:admin`,
       },
       {
         db: tx,
@@ -560,7 +581,10 @@ export class PaymentsService {
 
     const paymentIntentId = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id ?? null;
     // Una sesión puede contener varias cuotas del mismo estimate. Se confirman juntas.
-    await tx.$queryRaw`SELECT id FROM Estimate WHERE id = (SELECT idEst FROM payments WHERE stripeSessionId = ${session.id} LIMIT 1) FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM Estimate WHERE id = COALESCE(
+      (SELECT idEst FROM payments WHERE stripeSessionId = ${session.id} LIMIT 1),
+      (SELECT p.idEst FROM payments p INNER JOIN payment_receipts r ON r.paymentId = p.id WHERE r.stripeSessionId = ${session.id} LIMIT 1)
+    ) FOR UPDATE`;
     const payments = await tx.payment.findMany({
       where: { stripeSessionId: session.id },
       include: {
@@ -568,11 +592,41 @@ export class PaymentsService {
       },
       orderBy: { id: 'asc' },
     });
-    if (!payments.length) return false;
+    const recordedAmountCents = payments.reduce((sum, p) => sum + Math.round(Number(p.amount) * 100), 0);
+    if (!payments.length || session.amount_total !== recordedAmountCents) {
+      // Una cuota puede tener otro intento después de un abono. El recibo de la
+      // captura anterior conserva su importe y pertenencia a la sesión original.
+      const receipts = await tx.paymentReceipt.findMany({
+        where: { stripeSessionId: session.id }, orderBy: { id: 'asc' },
+        include: { payment: { include: {
+          estimate: { include: { order: true, installationJob: true, status: true, user: { include: { role: true } } } },
+        } } },
+      });
+      if (!receipts.length && !payments.length) return false;
+      const captured = receipts.reduce((sum, receipt) => sum + cents(receipt.amount), 0);
+      const estimateId = receipts[0]?.payment.idEst;
+      if (!receipts.length || !paymentIntentId || session.amount_total !== captured ||
+          new Set(receipts.map(receipt => receipt.paymentId)).size !== receipts.length ||
+          receipts.some(receipt => receipt.payment.idEst !== estimateId || receipt.currency !== session.currency || receipt.stripePaymentIntentId !== paymentIntentId) ||
+          payments.some(payment => payment.idEst !== estimateId))
+        throw new Error('Paid checkout amount mismatch with its original receipts.');
+      const charge = await this.successfulCharge(paymentIntentId);
+      if (charge.amount_captured !== captured || charge.currency !== session.currency ||
+          receipts.some(receipt => receipt.stripeChargeId !== charge.id))
+        throw new Error('Stripe capture does not match the original receipts.');
+      await this.applyStripeRefunds(tx, charge);
+      for (const receipt of receipts) {
+        const current = await tx.payment.findUniqueOrThrow({ where: { id: receipt.paymentId }, include: {
+          estimate: { include: { order: true, installationJob: true, status: true, user: { include: { role: true } } } },
+        } });
+        if (current.stripeSessionId === session.id && current.status === PaymentStatus.PAID)
+          await this.ensurePaidPaymentEffects(tx, current);
+      }
+      return true;
+    }
     // Cada concepto conserva su recibo y asignación, aunque comparta el checkout.
     if (new Set(payments.map(paymentSelectionKey)).size !== payments.length) throw new Error('Checkout contains duplicate payment items.');
     if (payments.some(p => p.idEst !== payments[0].idEst)) throw new Error('Checkout contains payments from different estimates.');
-    const recordedAmountCents = payments.reduce((sum, p) => sum + Math.round(Number(p.amount) * 100), 0);
     if (session.amount_total == null || session.amount_total !== recordedAmountCents ||
         payments.some(p => p.currency.toLowerCase() !== String(session.currency ?? '').toLowerCase())) {
       throw new Error(`Paid checkout amount mismatch for Payment #${payments[0].id}.`);
@@ -1122,7 +1176,12 @@ export class PaymentsService {
     sequences?: number[];
     payFullBalance?: boolean;
     expectedBalance?: number;
+    customAmount?: number;
   }) {
+    if (params.customAmount !== undefined && (params.items !== undefined || params.sequence !== undefined ||
+      params.sequences !== undefined || params.payFullBalance !== undefined ||
+      (params.type !== undefined && params.type !== PaymentType.INSTALLMENT)))
+      throw new BadRequestException('Choose a custom amount or specific installments, not both.');
     if ((params.items !== undefined && (params.type !== undefined || params.sequence !== undefined || params.sequences !== undefined || params.payFullBalance)) ||
         (params.payFullBalance && (params.type !== undefined || params.sequence !== undefined || params.sequences !== undefined))) {
       throw new BadRequestException('Choose either payment items or the full balance.');
@@ -1147,13 +1206,14 @@ export class PaymentsService {
 
     return this.createCheckoutSessionForEstimate({
       estimateId: owner.id,
-      type: params.type ?? (params.sequences || params.payFullBalance ? PaymentType.INSTALLMENT : publicContext.payment.type),
-      sequence: params.items || params.sequences || params.payFullBalance ? undefined
+      type: params.type ?? (params.sequences || params.payFullBalance || params.customAmount !== undefined ? PaymentType.INSTALLMENT : publicContext.payment.type),
+      sequence: params.items || params.sequences || params.payFullBalance || params.customAmount !== undefined ? undefined
         : params.sequence ?? (params.type === undefined ? publicContext.payment.sequence : undefined),
       items: params.items,
       sequences: params.sequences,
       payFullBalance: params.payFullBalance,
       expectedBalance: params.expectedBalance,
+      customAmount: params.customAmount,
       installationDepositTermsAccepted: params.installationDepositTermsAccepted,
       cityFeeAccepted: params.cityFeeAccepted,
       user: { id: owner.idUser, role: { name: 'dealer' } },
@@ -1164,10 +1224,14 @@ export class PaymentsService {
 
   private async selectedPaymentContexts(
     tx: Prisma.TransactionClient,
-    params: { estimateId: number; type: PaymentType; sequence?: number; sequences?: number[]; items?: PaymentSelection[]; publicToken?: string; payFullBalance?: boolean; expectedBalance?: number; installationDepositTermsAccepted?: boolean },
+    params: { estimateId: number; type: PaymentType; sequence?: number; sequences?: number[]; items?: PaymentSelection[]; publicToken?: string; payFullBalance?: boolean; expectedBalance?: number; customAmount?: number; installationDepositTermsAccepted?: boolean },
     user: AuthUser,
     preview = false,
   ) {
+    const isCustom = params.customAmount !== undefined;
+    if (isCustom && (params.type !== PaymentType.INSTALLMENT || params.sequence !== undefined ||
+      params.sequences !== undefined || params.items !== undefined || params.payFullBalance !== undefined))
+      throw new BadRequestException('Choose a custom amount or specific installments, not both.');
     if (params.sequences !== undefined && (
       params.type !== PaymentType.INSTALLMENT || params.sequence !== undefined ||
       !Array.isArray(params.sequences) || !params.sequences.length || params.sequences.length > 50 ||
@@ -1177,6 +1241,19 @@ export class PaymentsService {
     const sequences = params.sequences ? [...params.sequences].sort((a, b) => a - b) : [params.sequence];
     let selections: Array<{ type: PaymentType; sequence?: number }> = sequences.map(sequence => ({ type: params.type, sequence }));
     const advanceSelectionKeys = new Set<string>();
+    const customAmounts = new Map<number, string>();
+    if (isCustom) {
+      // Revalidate the approved principal under the same lock as payment writes.
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${params.estimateId} FOR UPDATE`;
+      const owner = await tx.estimate.findUnique({ where: { id: params.estimateId }, select: { idUser: true, dealerNetworkSnapshot: true } });
+      if (!owner || billingAccountId(owner) !== user.id) throw new NotFoundException('Estimate not found.');
+      const schedule = await getPaymentSchedule(tx, params.estimateId);
+      const allocations = allocateCustomPayment(schedule, params.customAmount!, params.expectedBalance);
+      selections = allocations.map(allocation => {
+        customAmounts.set(allocation.sequence, allocation.amount);
+        return { type: PaymentType.INSTALLMENT, sequence: allocation.sequence };
+      });
+    }
     if (params.items !== undefined) {
       if (!params.publicToken || params.payFullBalance || params.sequence !== undefined || params.sequences !== undefined ||
           !Array.isArray(params.items) || !params.items.length || params.items.length > 50 ||
@@ -1224,21 +1301,29 @@ export class PaymentsService {
       }
       selections = fullBalance.items;
     }
-    const contexts: Awaited<ReturnType<InstallationWorkflowService['getPaymentContext']>>[] = [];
+    const contexts: SelectedPaymentContext[] = [];
     // Orden estable para repartir recargos, registrar recibos y reanudar la misma selección.
-    selections.sort((a, b) => a.type.localeCompare(b.type) || (a.sequence ?? 0) - (b.sequence ?? 0));
+    if (!isCustom) selections.sort((a, b) => a.type.localeCompare(b.type) || (a.sequence ?? 0) - (b.sequence ?? 0));
     for (const item of selections) {
       const context = await this.installationWorkflow.getPaymentContext(
         params.estimateId, item.type, item.sequence, params.installationDepositTermsAccepted, user, tx,
-        { preview, ...((params.payFullBalance || advanceSelectionKeys.has(paymentSelectionKey(item))) ? { allowAdvance: true } : {}) },
+        { preview, ...((isCustom || params.payFullBalance || advanceSelectionKeys.has(paymentSelectionKey(item))) ? { allowAdvance: true } : {}) },
       );
-      contexts.push({ ...context, type: item.type });
+      const selected: SelectedPaymentContext = { ...context, type: item.type,
+        ...(item.type === PaymentType.INSTALLMENT ? { installmentBalance: new Decimal(context.baseAmount) } : {}),
+      };
+      if (isCustom) {
+        selected.baseAmount = new Decimal(customAmounts.get(context.paymentSequence)!);
+        if (selected.baseAmount.gt(context.baseAmount)) throw new ConflictException('The installment balance changed. Refresh before paying.');
+        if (context.processingComponents) selected.processingComponents = partialProcessingComponents(context.processingComponents, selected.baseAmount);
+      }
+      contexts.push(selected);
     }
     if (params.items && !contexts.reduce((sum, c) => sum.add(c.baseAmount.toString()), new Prisma.Decimal(0)).eq(params.expectedBalance!)) {
       throw new ConflictException('The selected balance changed. Refresh and review the updated amount before payment.');
     }
     // Calcula el recargo una sola vez sobre el total y distribuye los centavos sin perderlos.
-    if (contexts.length > 1) {
+    if (contexts.length > 1 || isCustom) {
       let base = new Prisma.Decimal(0);
       let fee = new Prisma.Decimal(0);
       for (const context of contexts) {
@@ -1257,11 +1342,12 @@ export class PaymentsService {
 
   private async resumeOrCloseSelectedCheckouts(
     tx: Prisma.TransactionClient,
-    existing: Array<{ stripeSessionId: string | null } | null>,
+    existing: Array<{ stripeSessionId: string | null; status: PaymentStatus } | null>,
     contexts: Awaited<ReturnType<PaymentsService['selectedPaymentContexts']>>,
     refreshUrl: string,
   ): Promise<{ url: string } | null> {
-    const sessions = [...new Set(existing.map(p => p?.stripeSessionId).filter((id): id is string => Boolean(id)))];
+    const sessions = [...new Set(existing.filter(p => p && ![PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(p.status as any))
+      .map(p => p?.stripeSessionId).filter((id): id is string => Boolean(id)))];
     for (const sessionId of sessions) {
       let session: Stripe.Checkout.Session;
       try {
@@ -1312,6 +1398,7 @@ export class PaymentsService {
     items?: PaymentSelection[];
     payFullBalance?: boolean;
     expectedBalance?: number;
+    customAmount?: number;
     installationDepositTermsAccepted?: boolean;
     cityFeeAccepted?: boolean;
     materialAccepted?: boolean;
@@ -1319,7 +1406,7 @@ export class PaymentsService {
     publicToken?: string;
     publicAgreementId?: string;
   }) {
-    const type = params.type ?? PaymentType.MATERIAL;
+    const type = params.type ?? (params.customAmount !== undefined ? PaymentType.INSTALLMENT : PaymentType.MATERIAL);
 
     return this.prisma.$transaction(async (tx) => {
       if (params.publicToken) {
@@ -1394,7 +1481,9 @@ export class PaymentsService {
           idEst: params.estimateId, type: selected.type, sequence: selected.paymentSequence,
         } } });
         if (existing?.refundReviewPending) throw new ConflictException('Review this refund before collecting another payment.');
-        if (existing && [PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(existing.status as any) && !hasRefundHistory(existing)) {
+        if (existing && [PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(existing.status as any) && !hasRefundHistory(existing) &&
+          !(selected.type === PaymentType.INSTALLMENT && selected.installmentBalance?.gt(0) &&
+            existing.status === PaymentStatus.PAID && existing.netPaidBaseAmount != null && existing.originalBaseAmount != null)) {
           throw new ConflictException(`${type} payment is already paid or requires administrative reconciliation.`);
         }
         existingPayments.push(existing);
@@ -1469,6 +1558,10 @@ export class PaymentsService {
       const payments = [] as Array<{ id: number }>;
       for (const context of contexts) {
         const processingCostSnapshot = freezeProcessingCostSnapshot(context);
+        const previous = existingPayments.find(payment => payment?.type === context.type && payment.sequence === context.paymentSequence);
+        const obligation = context.installmentBalance === undefined ? {} : {
+          originalBaseAmount: new Prisma.Decimal(installmentObligation(context.installmentBalance, previous).toFixed(2)),
+        };
         const payment = await tx.payment.upsert({
           where: {
             idEst_type_sequence: {
@@ -1486,6 +1579,7 @@ export class PaymentsService {
             deliveryId: context.delivery?.id ?? null,
             userId: context.estimate.idUser,
             ...payer,
+            ...obligation,
             ...(requiresMaterialAcceptance && context.paymentSequence === 1 ? materialAcceptance : {}),
             baseAmount: new Prisma.Decimal(context.baseAmount.toFixed(2)),
             surchargePercent: new Prisma.Decimal(
@@ -1509,6 +1603,7 @@ export class PaymentsService {
             deliveryId: context.delivery?.id ?? null,
             userId: context.estimate.idUser,
             ...payer,
+            ...obligation,
             ...(requiresMaterialAcceptance && context.paymentSequence === 1 ? materialAcceptance : {}),
             baseAmount: new Prisma.Decimal(context.baseAmount.toFixed(2)),
             surchargePercent: new Prisma.Decimal(
@@ -1563,6 +1658,7 @@ export class PaymentsService {
           paymentIds: payments.map(p => p.id).join(','),
           checkoutRef,
           ...(params.payFullBalance ? { paymentScope: 'FULL_PROJECT_BALANCE' } : {}),
+          ...(params.customAmount !== undefined ? { paymentScope: 'CUSTOM_PROJECT_AMOUNT' } : {}),
           estimateId: String(params.estimateId),
           userId: String(context.estimate.idUser),
           paymentType: contexts.every(c => c.type === firstType) ? firstType : 'MIXED',
@@ -1824,6 +1920,7 @@ export class PaymentsService {
     sequences?: number[];
     payFullBalance?: boolean;
     expectedBalance?: number;
+    customAmount?: number;
     method: PaymentMethod;
     fundsVerified: true;
     reference: string;
@@ -1897,6 +1994,11 @@ export class PaymentsService {
         idEst: params.estimateId, type: params.type, sequence: preview.paymentSequence,
       } } });
       if (existingPayment) {
+        // A confirmed partial receipt is immutable history, not an open Stripe
+        // checkout. Its next installment balance is revalidated under lock below.
+        if (params.type === PaymentType.INSTALLMENT && preview.installmentBalance?.gt(0) &&
+          !existingPayment.refundReviewPending && existingPayment.status === PaymentStatus.PAID &&
+          existingPayment.netPaidBaseAmount != null && existingPayment.originalBaseAmount != null) continue;
         await this.closeStripeCheckoutBeforePaymentChange(existingPayment, false, hasRefundHistory(existingPayment) && !existingPayment.refundReviewPending);
         if (existingPayment.stripeSessionId) await this.closeUnpaidCheckoutSession(
           existingPayment.stripeSessionId, PaymentStatus.CANCELED,
@@ -1906,19 +2008,26 @@ export class PaymentsService {
 
     return this.prisma.$transaction(async tx => {
       const contexts = await this.selectedPaymentContexts(tx, params, ownerUser);
+      const priorPayments = new Map<number, Awaited<ReturnType<typeof tx.payment.findUnique>>>();
       // Verifica todo antes de escribir: ningún concepto puede quedar registrado parcialmente.
       for (const context of contexts) {
         await this.acceptCityFee(tx, context, params.cityFeeAccepted, params.estimateId, params.actor.id, true);
         const current = await tx.payment.findUnique({ where: { idEst_type_sequence: {
           idEst: params.estimateId, type: params.type, sequence: context.paymentSequence,
         } } });
-        if (current?.refundReviewPending || (current && [PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(current.status as any) && !hasRefundHistory(current))) throw new ConflictException('This charge is already paid or requires refund review.');
-        if (current?.stripeSessionId) throw new ConflictException('A new checkout was opened. Close it before recording a manual payment.');
+        const confirmedInstallment = params.type === PaymentType.INSTALLMENT && context.installmentBalance?.gt(0) &&
+          current?.status === PaymentStatus.PAID && current.netPaidBaseAmount != null && current.originalBaseAmount != null;
+        if (current?.refundReviewPending || (current && [PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(current.status as any) && !hasRefundHistory(current) && !confirmedInstallment)) throw new ConflictException('This charge is already paid or requires refund review.');
+        if (current?.stripeSessionId && !confirmedInstallment) throw new ConflictException('A new checkout was opened. Close it before recording a manual payment.');
+        priorPayments.set(context.paymentSequence, current);
       }
       const paymentIds: number[] = [];
       for (const context of contexts) {
         const payer = this.getPayerSnapshot(context.estimate);
         const baseAmount = new Prisma.Decimal(context.baseAmount.toFixed(2));
+        const obligation = context.installmentBalance === undefined ? {} : {
+          originalBaseAmount: new Prisma.Decimal(installmentObligation(context.installmentBalance, priorPayments.get(context.paymentSequence)).toFixed(2)),
+        };
         const payment = await tx.payment.upsert({
           where: {
             idEst_type_sequence: {
@@ -1936,6 +2045,7 @@ export class PaymentsService {
             deliveryId: context.delivery?.id ?? null,
             userId: context.estimate.idUser,
             ...payer,
+            ...obligation,
             baseAmount,
             surchargePercent: new Prisma.Decimal(0),
             surchargeAmount: new Prisma.Decimal(0),
@@ -1957,6 +2067,7 @@ export class PaymentsService {
             deliveryId: context.delivery?.id ?? null,
             userId: context.estimate.idUser,
             ...payer,
+            ...obligation,
             baseAmount,
             surchargePercent: new Prisma.Decimal(0),
             surchargeAmount: new Prisma.Decimal(0),
