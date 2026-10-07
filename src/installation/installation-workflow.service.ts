@@ -5,6 +5,7 @@ import { CANCELED_ESTIMATE, assertEstimateNotCanceled } from '@/estimates/estima
 import { randomUUID } from 'crypto';
 import { PromotionsService } from '@/promotions/promotions.service';
 import { installationAddress } from './installation-address';
+import { operationalInstallationListWhere } from './installation-list-visibility';
 import type { InstallationDuplicationSource } from './installation-duplication';
 import { Inject } from '@nestjs/common';
 import { InstallationCoverageCalculationService, installationSurchargeCalculation, installationBaseForSurcharge, type CoverageSnapshot } from './installation-coverage-calculation.service';
@@ -437,7 +438,7 @@ export class InstallationWorkflowService {
     const pageSize = query.pageSize ?? 25;
     const requestedPage = query.page ?? 1;
     const scope = query.scope ?? 'active';
-    const filters: Prisma.InstallationJobWhereInput[] = [];
+    const filters: Prisma.InstallationJobWhereInput[] = [operationalInstallationListWhere()];
 
     if (!canViewAllInstallations(user.role?.name)) {
       filters.push({ estimate: { idUser: { in: await descendantIds(this.prisma, user) } } });
