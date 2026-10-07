@@ -1,6 +1,7 @@
 import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
 import { PaymentsService } from '@/payments/payments.service';
 import { PaymentType, Prisma } from '@prisma/client';
+import { scheduleAmounts } from '@/payment-plans/payment-schedule';
 import {
   calculateEstimateDiscount,
   discountAllocations,
@@ -42,6 +43,7 @@ function fixture() {
   };
   const tx: any = {
     $queryRaw: jest.fn(),
+    order: { findUnique: jest.fn().mockResolvedValue(null) },
     estimate: {
       findUnique: jest.fn().mockResolvedValue(estimate),
       update: jest.fn(),
@@ -78,6 +80,58 @@ function fixture() {
   return { estimate, tx, workflow, context };
 }
 describe('Manual discount payment integration', () => {
+  it('charges both independent discounted balances while keeping permit, city and the paid deposit separate', async () => {
+    const f = fixture();
+    f.estimate.manualDiscount = {
+      scope: 'MULTIPLE', material: { type: 'PERCENTAGE', value: '10' },
+      installation: { type: 'AMOUNT', value: '25' }, materialDiscountBasis: 'BEFORE_TAX',
+    };
+    const scheduled = scheduleAmounts(f.estimate);
+    expect(scheduled).toEqual({
+      material: '963.00', installation: '175.00', permit: '100.00', city: '30.00',
+    });
+    const materialPayment = await f.context(PaymentType.MATERIAL);
+    expect(materialPayment.baseAmount.toFixed(2)).toBe('993.00');
+    expect(materialPayment.surchargeAmount.toFixed(2)).toBe('29.79');
+    expect(f.estimate.manualDiscount).toMatchObject({
+      scope: 'MULTIPLE', checkoutMaterialNetDiscount: '100.00',
+      checkoutAllocations: { material: '107.00', installation: '25.00', permit: '0.00', city: '0.00' },
+    });
+    f.estimate.installationJob.status = 'PERMIT_PAYMENT_PENDING';
+    f.estimate.installationJob.permit.status = 'PAYMENT_PENDING';
+    expect((await f.context(PaymentType.PERMIT)).baseAmount.toFixed(2)).toBe('100.00');
+    f.estimate.installationJob.status = 'INSTALLATION_PAYMENT_PENDING';
+    f.estimate.order = { status: { name: 'Ready to pick up' } };
+    expect((await f.context(PaymentType.INSTALLATION)).baseAmount.toFixed(2)).toBe('125.00');
+  });
+  it('locks both discount terms together after the first confirmed payment', async () => {
+    const f = fixture();
+    f.estimate.manualDiscount = {
+      scope: 'MULTIPLE', material: { type: 'PERCENTAGE', value: '10' },
+      installation: { type: 'PERCENTAGE', value: '20' }, materialDiscountBasis: 'BEFORE_TAX',
+    };
+    await f.context(PaymentType.MATERIAL);
+    const service: any = new PaymentsService(
+      {} as any, { get: () => 'sk_test_no_network' } as any,
+      { markPaymentPaid: jest.fn().mockResolvedValue(false) } as any, {} as any,
+    );
+    service.notifyPaymentConfirmed = jest.fn();
+    await service.ensurePaidPaymentEffects(f.tx, {
+      type: PaymentType.INSTALLATION_DEPOSIT, status: 'PAID', idEst: 1,
+      paidAt: new Date('2026-10-07T12:00:00Z'), estimate: f.estimate,
+    });
+    expect(f.estimate.manualDiscount).toMatchObject({
+      scope: 'MULTIPLE', lockedAt: '2026-10-07T12:00:00.000Z', materialNetDiscount: '100.00',
+      allocations: { material: '107.00', installation: '40.00' },
+    });
+    f.estimate.priceT = '2000';
+    f.estimate.totalPayable = '2140';
+    f.estimate.installationJob.quotes[0].total = '400';
+    expect(calculateEstimateDiscount(f.estimate)).toMatchObject({
+      discount: '140.00', material: { netDiscount: '100.00', total: '2033.00' },
+      installation: { discount: '40.00', total: '360.00' },
+    });
+  });
   it('charges the reported $85.95 after a $20 material discount, then adds processing', async () => {
     const f = fixture();
     Object.assign(f.estimate, {

@@ -940,7 +940,22 @@ export class EstimatePdfHtmlBuilder {
       !installationSummaryHtml
         ? 'summary-grid single-column'
         : 'summary-grid';
-    const manualDiscountHtml = manualDiscount ? `<div class="card keep-together"><div class="card-body">${summaryRow('Additional discount · ' + ({ PROJECT: 'Project total', MATERIAL: 'Material', INSTALLATION: 'Installation' }[manualDiscount.scope]), '−' + formatMoney(manualDiscount.discount), { strong: true })}${serviceDiscount ? summaryRow('Included installation & services discount', '−' + formatMoney(serviceDiscount)) : ''}</div></div>` : '';
+    const manualDiscountHtml = (() => {
+      if (!manualDiscount) return '';
+      const rows = manualDiscount.scope === 'MULTIPLE'
+        ? [
+            numberValue(manualDiscount.material.netDiscount) > 0
+              ? summaryRow('Additional discount · Material', '−' + formatMoney(manualDiscount.material.netDiscount))
+              : '',
+            numberValue(manualDiscount.installation.discount) > 0
+              ? summaryRow('Additional discount · Installation', '−' + formatMoney(manualDiscount.installation.discount))
+              : '',
+            summaryRow('Total additional discount', '−' + formatMoney(manualDiscount.discount), { strong: true }),
+          ].join('')
+        : summaryRow('Additional discount · ' + ({ PROJECT: 'Project total', MATERIAL: 'Material', INSTALLATION: 'Installation' }[manualDiscount.scope]), '−' + formatMoney(manualDiscount.discount), { strong: true }) +
+          (serviceDiscount ? summaryRow('Included installation & services discount', '−' + formatMoney(serviceDiscount)) : '');
+      return `<div class="card keep-together"><div class="card-body">${rows}</div></div>`;
+    })();
     const schedule = canViewNetworkBilling ? (estimate as any).paymentSchedule : null;
     const scheduleHtml = schedule && !(customerFacing && isExternalDealerEstimate(estimate))
       ? `<section class="card keep-together" style="margin-top:16px"><div class="card-title">Payment Schedule</div><div class="card-body">

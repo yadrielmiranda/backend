@@ -1,6 +1,7 @@
 import {
   calculateEstimateDiscount,
   discountAllocations,
+  estimateDiscountConfig,
 } from './estimate-discount';
 
 const fixture = (scope = 'PROJECT', type = 'PERCENTAGE', value = '10') => ({
@@ -20,6 +21,100 @@ const fixture = (scope = 'PROJECT', type = 'PERCENTAGE', value = '10') => ({
 });
 
 describe('Manual estimate discount totals', () => {
+  const multiple = () => ({ ...fixture(), manualDiscount: {
+    scope: 'MULTIPLE', material: { type: 'PERCENTAGE', value: '10' },
+    installation: { type: 'AMOUNT', value: '25' }, materialDiscountBasis: 'BEFORE_TAX',
+  } });
+  it('applies independent material and installation discounts without discounting fees or tax twice', () => {
+    const estimate = multiple();
+    const before = JSON.stringify(estimate);
+    expect(calculateEstimateDiscount(estimate)).toMatchObject({
+      scope: 'MULTIPLE', base: '1200.00', discount: '125.00',
+      projectBefore: '1400.00', projectTotal: '1268.00',
+      materialDiscountBasis: 'BEFORE_TAX',
+      rules: { material: { type: 'PERCENTAGE', value: '10' }, installation: { type: 'AMOUNT', value: '25' } },
+      material: { subtotal: '900.00', tax: '63.00', total: '963.00', netDiscount: '100.00' },
+      installation: { total: '175.00', discount: '25.00' },
+      permit: { total: '100.00', discount: '0.00' }, city: { total: '30.00', discount: '0.00' },
+    });
+    expect(calculateEstimateDiscount(estimate)).not.toHaveProperty('type');
+    expect(JSON.stringify(estimate)).toBe(before);
+  });
+  it('freezes both commercial discounts after payment when material, tax and installation prices change', () => {
+    const estimate: any = multiple();
+    const original = calculateEstimateDiscount(estimate)!;
+    estimate.manualDiscount = {
+      ...estimate.manualDiscount, lockedAt: '2026-10-07T12:00:00Z',
+      allocations: discountAllocations(original), materialNetDiscount: original.material.netDiscount,
+    };
+    estimate.priceT = '2000';
+    estimate.taxRate = '.06';
+    estimate.totalPayable = '2120';
+    estimate.installationJob.quotes[0].total = '400';
+    expect(calculateEstimateDiscount(estimate)).toMatchObject({
+      discount: '125.00', projectTotal: '2519.00',
+      material: { subtotal: '1900.00', tax: '114.00', total: '2014.00' },
+      installation: { discount: '25.00', total: '375.00' },
+    });
+  });
+  it('keeps the material discount if the installation is absent or canceled', () => {
+    const estimate: any = multiple();
+    for (const job of [null, { ...estimate.installationJob, status: 'CANCELED' }]) {
+      expect(calculateEstimateDiscount({ ...estimate, installationJob: job })).toMatchObject({
+        discount: '100.00', projectTotal: '963.00', material: { total: '963.00' },
+        installation: { total: '0.00', discount: '0.00' },
+      });
+    }
+  });
+  it('preserves the pending checkout material amount and recalculates after an unpaid checkout is canceled', () => {
+    const estimate: any = multiple();
+    const preview = calculateEstimateDiscount(estimate)!;
+    estimate.manualDiscount.checkoutAllocations = discountAllocations(preview);
+    estimate.manualDiscount.checkoutMaterialNetDiscount = preview.material.netDiscount;
+    estimate.payments = [{ status: 'PENDING' }];
+    estimate.priceT = '2000';
+    estimate.totalPayable = '2140';
+    expect(calculateEstimateDiscount(estimate)).toMatchObject({
+      discount: '125.00', material: { netDiscount: '100.00', total: '2033.00' },
+      installation: { discount: '25.00', total: '175.00' },
+    });
+    estimate.payments[0].status = 'CANCELED';
+    expect(calculateEstimateDiscount(estimate)).toMatchObject({
+      discount: '225.00', material: { netDiscount: '200.00', total: '1926.00' },
+      installation: { discount: '25.00', total: '175.00' },
+    });
+  });
+  it('uses customer totals and rounds each independent percentage before recalculating material tax', () => {
+    const estimate: any = multiple();
+    estimate.dealerModeSnapshot = 'INTERNAL';
+    estimate.customerPriceT = '100.33';
+    estimate.customerTotalPayable = '107.35';
+    estimate.manualDiscount.material = { type: 'PERCENTAGE', value: '12.5' };
+    estimate.manualDiscount.installation = { type: 'PERCENTAGE', value: '12.5' };
+    estimate.installationJob.quotes[0].total = '100.33';
+    expect(calculateEstimateDiscount(estimate)).toMatchObject({
+      payer: 'CUSTOMER', discount: '25.08', projectTotal: '311.73',
+      material: { subtotal: '87.79', tax: '6.15', total: '93.94' },
+      installation: { total: '87.79', discount: '12.54' },
+    });
+  });
+  it('allows both full discounts without making permit or city fees free', () => {
+    const estimate: any = multiple();
+    estimate.manualDiscount.material.value = '100';
+    estimate.manualDiscount.installation = { type: 'PERCENTAGE', value: '100' };
+    expect(calculateEstimateDiscount(estimate)).toMatchObject({
+      discount: '1200.00', projectTotal: '130.00',
+      material: { subtotal: '0.00', tax: '0.00', total: '0.00' }, installation: { total: '0.00' },
+    });
+  });
+  it.each([
+    { scope: 'MULTIPLE' },
+    { scope: 'MULTIPLE', material: { type: 'PERCENTAGE', value: '101' } },
+    { scope: 'MULTIPLE', installation: { type: 'AMOUNT', value: '-1' } },
+    { scope: 'MULTIPLE', material: { type: 'AMOUNT', value: '2' }, installation: null },
+  ])('rejects malformed combined saved discounts: %j', (config) => {
+    expect(estimateDiscountConfig(config)).toBeNull();
+  });
   it('discounts the full project once and reconciles every payment bucket', () => {
     const estimate = fixture();
     const before = JSON.stringify(estimate);

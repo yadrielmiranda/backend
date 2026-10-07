@@ -11,7 +11,7 @@ import { canRefreshDraftEarningsPlan, refreshDraftEarningsPlan } from '@/earning
 import { ContractStorageService } from '@/contracts/contract-storage.service';
 import { assertNoPendingMaterialRevision } from './material-revisions/material-revision-policy';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
-import { calculateEstimateDiscount, estimateDiscountConfig, hasDiscountableInstallation, type EstimateDiscountSummary } from './discounts/estimate-discount';
+import { calculateEstimateDiscount, estimateDiscountConfig, hasDiscountableInstallation, type EstimateDiscountConfig, type EstimateDiscountSummary } from './discounts/estimate-discount';
 import { UpdateEstimateDiscountDto } from './dto/estimate-discount.dto';
 import { ForbiddenException } from '@nestjs/common';
 import { PromotionsService } from '@/promotions/promotions.service';
@@ -1403,42 +1403,70 @@ export class EstimatesService {
    */
   async updateManualDiscount(estimateId: number, dto: UpdateEstimateDiscountDto, actor: AuthUser) {
     if (actor.role?.name !== 'admin') throw new ForbiddenException('Only administrators can change an estimate discount.');
-    if (dto.scope != null && !['MATERIAL', 'INSTALLATION'].includes(dto.scope)) {
-      throw new BadRequestException('Additional discounts can apply only to material or installation totals.');
+    const separateDiscounts = dto.material !== undefined || dto.installation !== undefined;
+    const entries: Array<{ scope: 'MATERIAL' | 'INSTALLATION'; type: 'PERCENTAGE' | 'AMOUNT'; value: string }> = [];
+    const addRule = (scope: unknown, type: unknown, value: unknown) => {
+      if (scope != null && scope !== 'MATERIAL' && scope !== 'INSTALLATION') {
+        throw new BadRequestException('Additional discounts can apply only to material or installation totals.');
+      }
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 ||
+          (value > 0 && !estimateDiscountConfig({ scope, type, value: String(value) }))) {
+        throw new BadRequestException('Choose a valid discount scope, type and value. Percentages cannot exceed 100%.');
+      }
+      if (value > 0) entries.push({ scope: scope as 'MATERIAL' | 'INSTALLATION', type: type as 'PERCENTAGE' | 'AMOUNT', value: String(value) });
+    };
+    if (separateDiscounts) {
+      if (dto.material === undefined || dto.installation === undefined || dto.scope !== undefined || dto.type !== undefined || dto.value !== undefined) {
+        throw new BadRequestException('Send both material and installation discounts, using null for a discount to remove. Do not mix discount formats.');
+      }
+      for (const [scope, rule] of [['MATERIAL', dto.material], ['INSTALLATION', dto.installation]] as const) {
+        if (rule !== null) addRule(scope, rule?.type, rule?.value);
+      }
+    } else {
+      // Existing clients keep their previous replace-one-discount behavior.
+      addRule(dto.scope, dto.type, dto.value);
     }
-    if (!Number.isFinite(dto.value) || dto.value < 0 ||
-        (dto.value > 0 && !estimateDiscountConfig({ scope: dto.scope, type: dto.type, value: String(dto.value) }))) {
-      throw new BadRequestException('Choose a valid discount scope, type and value. Percentages cannot exceed 100%.');
-    }
+    const metadata = { updatedById: actor.id, updatedAt: new Date().toISOString() };
+    const material = entries.find((entry) => entry.scope === 'MATERIAL');
+    const config: EstimateDiscountConfig | null = entries.length === 0 ? null
+      : entries.length === 1 ? {
+          ...entries[0], ...metadata,
+          ...(material ? { materialDiscountBasis: 'BEFORE_TAX' as const } : {}),
+        }
+      : {
+          scope: 'MULTIPLE',
+          material: { type: material!.type, value: material!.value },
+          installation: { type: entries[1].type, value: entries[1].value },
+          materialDiscountBasis: 'BEFORE_TAX', ...metadata,
+        };
     await withAgreementTransaction(this.prisma, estimateId, async (tx) => {
       const estimate = await this.getEstimateWithRelationsInTransaction(tx, estimateId);
       await this.assertEstimateCanBeEdited(estimate, estimateId, actor.id, tx);
       if (estimate!.payments.some((p) => ['PENDING', 'PAID', 'REFUNDED'].includes(p.status))) {
         throw new BadRequestException('The discount cannot change after payment or while checkout is pending. Cancel the unpaid checkout first.');
       }
-      const config = dto.value === 0 ? null : {
-        scope: dto.scope!, type: dto.type!, value: String(dto.value),
-        ...(dto.scope === 'MATERIAL' ? { materialDiscountBasis: 'BEFORE_TAX' as const } : {}),
-        updatedById: actor.id, updatedAt: new Date().toISOString(),
-      };
       if (config) {
         const job = await tx.installationJob.findUnique({
           where: { estimateId },
           include: { quotes: { orderBy: { version: 'desc' }, take: 1 }, permit: true },
         });
-        if (config.scope === 'INSTALLATION' && !hasDiscountableInstallation(job)) {
+        if (entries.some((entry) => entry.scope === 'INSTALLATION') && !hasDiscountableInstallation(job)) {
           throw new BadRequestException('Include installation with a positive calculated total before applying an installation discount.');
         }
-        const summary = calculateEstimateDiscount({ ...estimate!, manualDiscount: config }, job);
-        if (!summary || Number(summary.base) <= 0) throw new BadRequestException('The selected total has no amount to discount.');
-        if (dto.type === 'AMOUNT' && dto.value > Number(summary.base)) throw new BadRequestException('The discount cannot exceed the selected total.');
+        for (const entry of entries) {
+          const summary = calculateEstimateDiscount({ ...estimate!, manualDiscount: {
+            ...entry, ...(entry.scope === 'MATERIAL' ? { materialDiscountBasis: 'BEFORE_TAX' } : {}),
+          } }, job);
+          if (!summary || Number(summary.base) <= 0) throw new BadRequestException('The selected total has no amount to discount.');
+          if (entry.type === 'AMOUNT' && Number(entry.value) > Number(summary.base)) throw new BadRequestException('The discount cannot exceed the selected total.');
+        }
       }
       await tx.estimate.update({ where: { id: estimateId }, data: {
         manualDiscount: config ?? Prisma.DbNull,
       } });
       await tx.eventLog.create({ data: {
         action: 'UPDATE', entityType: 'Estimate', entityId: estimateId, userId: actor.id,
-        message: config ? `Additional discount: ${config.value} ${config.type} on ${config.scope}.` : 'Additional discount removed.',
+        message: config ? `Additional discount: ${entries.map((entry) => `${entry.value} ${entry.type} on ${entry.scope}`).join('; ')}.` : 'Additional discount removed.',
       } });
     });
     return this.findOneForUser(estimateId, actor);

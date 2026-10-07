@@ -12,6 +12,8 @@ import { ContractsService } from './contracts.service';
 import { ContractStorageService } from './contract-storage.service';
 import {
   agreementContent,
+  agreementMatches,
+  agreementScopes,
   canonicalJson,
   invalidateChangedAgreements,
   loadAgreementContent,
@@ -145,6 +147,54 @@ function contentHash(estimate: any) {
 }
 
 describe('Contract content policy', () => {
+  it('detects changes to either simultaneous discount through the agreed amounts', () => {
+    const estimate = contractEstimateFixture();
+    estimate.dealerModeSnapshot = 'INTERNAL';
+    estimate.user.dealerMode = 'INTERNAL';
+    estimate.installationJob = {
+      status: 'REQUESTED',
+      quotes: [{ status: 'DRAFT', total: '500', baseAmount: '500', lines: [] }],
+    };
+    estimate.manualDiscount = {
+      scope: 'MULTIPLE',
+      material: { type: 'AMOUNT', value: '100' },
+      installation: { type: 'AMOUNT', value: '50' },
+    };
+    const scopes = () => agreementScopes(buildPublicEstimateData(estimate, null, estimate.pieces, 'detailed'));
+    const original = scopes();
+    const saved = { materialHash: original.materialHash, chargesSnapshot: original.charges };
+    const matches = () => agreementMatches(saved, { ...scopes(), legacyContentHash: '' });
+    // The agreement follows the resulting prices, as it does for single discounts.
+    estimate.manualDiscount.material = { type: 'PERCENTAGE', value: '10' };
+    estimate.manualDiscount.installation = { type: 'PERCENTAGE', value: '10' };
+    expect(matches()).toBe(true);
+    estimate.manualDiscount.material.value = '20';
+    expect(matches()).toBe(false);
+    expect(scopes().materialHash).not.toBe(original.materialHash);
+    estimate.manualDiscount.material.value = '10';
+    estimate.manualDiscount.installation.value = '20';
+    expect(matches()).toBe(false);
+    expect(scopes().materialHash).toBe(original.materialHash);
+    expect(scopes().charges.total).toBe('400.00');
+  });
+
+  it.each(['MATERIAL', 'INSTALLATION', 'PROJECT'])(
+    'preserves the exact legacy %s discount agreement payload',
+    scope => {
+      const discount = {
+        scope, type: 'AMOUNT', value: '20', base: '500.00', discount: '20.00',
+        projectBefore: '1000.00', projectTotal: '980.00',
+        material: { before: '500.00', discount: '0.00', total: '500.00' },
+        installation: { before: '500.00', discount: '20.00', total: '480.00' },
+        permit: { before: '0.00', discount: '0.00', total: '0.00' },
+        city: { before: '0.00', discount: '0.00', total: '0.00' },
+      };
+      const actual = agreementContent({ manualDiscountSummary: discount }).discount;
+      expect(actual).toEqual(discount);
+      expect(actual).not.toHaveProperty('rules');
+    },
+  );
+
   it('shows company payment terms to internal dealer customers without exposing them to external dealer customers', () => {
     const e = contractEstimateFixture();
     e.paymentPlanSnapshot = {version:1, planId:1, name:'Material upfront', definition:defaultPlan};

@@ -4,11 +4,11 @@ import Decimal from 'decimal.js';
 export type EstimateDiscountScope = 'MATERIAL' | 'INSTALLATION';
 export type EstimateDiscountType = 'PERCENTAGE' | 'AMOUNT';
 export type DiscountBucketKey = 'material' | 'installation' | 'permit' | 'city';
-export type EstimateDiscountConfig = {
-  // PROJECT se conserva únicamente para leer acuerdos anteriores.
-  scope: EstimateDiscountScope | 'PROJECT';
+export type EstimateDiscountRule = {
   type: EstimateDiscountType;
   value: string;
+};
+type EstimateDiscountMetadata = {
   updatedById?: number;
   updatedAt?: string;
   lockedAt?: string;
@@ -18,6 +18,17 @@ export type EstimateDiscountConfig = {
   checkoutMaterialNetDiscount?: string;
   materialNetDiscount?: string;
 };
+export type EstimateDiscountConfig = EstimateDiscountMetadata & (
+  | (EstimateDiscountRule & {
+      // PROJECT se conserva únicamente para leer acuerdos anteriores.
+      scope: EstimateDiscountScope | 'PROJECT';
+    })
+  | {
+      scope: 'MULTIPLE';
+      material?: EstimateDiscountRule;
+      installation?: EstimateDiscountRule;
+    }
+);
 export type DiscountBucket = {
   before: string;
   // En materiales incluye el ajuste fiscal; netDiscount es el descuento comercial.
@@ -26,8 +37,9 @@ export type DiscountBucket = {
 };
 export type EstimateDiscountSummary = {
   scope: EstimateDiscountConfig['scope'];
-  type: EstimateDiscountType;
-  value: string;
+  type?: EstimateDiscountType;
+  value?: string;
+  rules?: { material?: EstimateDiscountRule; installation?: EstimateDiscountRule };
   lockedAt: string | null;
   payer: 'CUSTOMER' | 'ACCOUNT_OWNER';
   base: string;
@@ -86,11 +98,25 @@ export function estimateDiscountConfig(
 ): EstimateDiscountConfig | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const config = value as EstimateDiscountConfig;
+  if (config.scope === 'MULTIPLE') {
+    if (!config.material && !config.installation) return null;
+    for (const rule of [config.material, config.installation]) {
+      if (rule !== undefined && !validDiscountRule(rule)) return null;
+    }
+    return config;
+  }
   if (
     !['PROJECT', 'MATERIAL', 'INSTALLATION'].includes(config.scope) ||
-    !['PERCENTAGE', 'AMOUNT'].includes(config.type)
+    !validDiscountRule(config)
   )
     return null;
+  return config;
+}
+
+function validDiscountRule(value: unknown): value is EstimateDiscountRule {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const config = value as EstimateDiscountRule;
+  if (!['PERCENTAGE', 'AMOUNT'].includes(config.type)) return false;
   try {
     const amount = new Decimal(config.value);
     if (
@@ -98,11 +124,22 @@ export function estimateDiscountConfig(
       amount.lte(0) ||
       (config.type === 'PERCENTAGE' && amount.gt(100))
     )
-      return null;
+      return false;
   } catch {
-    return null;
+    return false;
   }
-  return config;
+  return true;
+}
+
+// Removing unpaid installation must not remove an independent material discount.
+export function withoutInstallationDiscount(
+  config: EstimateDiscountConfig,
+): EstimateDiscountConfig | null {
+  if (config.scope === 'INSTALLATION') return null;
+  if (config.scope !== 'MULTIPLE') return config;
+  if (!config.material) return null;
+  const { scope, material, installation, ...metadata } = config;
+  return { ...metadata, scope: 'MATERIAL', ...material, materialDiscountBasis: 'BEFORE_TAX' };
 }
 
 // El descuento de materiales se aplica después de promociones y antes del impuesto.
@@ -117,6 +154,40 @@ export function calculateEstimateDiscount(
   estimate = billingEstimate(estimate);
   const config = estimateDiscountConfig(estimate.manualDiscount);
   if (!config) return null;
+  if (config.scope === 'MULTIPLE') {
+    // Each rule uses the same original totals. Neither discount is applied to the
+    // other one's base, and the existing locking rules remain per payment bucket.
+    const { material, installation: installationRule, scope, ...metadata } = config;
+    const materialSummary = material
+      ? calculateEstimateDiscount({ ...estimate, manualDiscount: {
+          ...metadata, scope: 'MATERIAL', ...material, materialDiscountBasis: 'BEFORE_TAX',
+        } }, installation)
+      : null;
+    const installationSummary = installationRule
+      ? calculateEstimateDiscount({ ...estimate, manualDiscount: {
+          ...metadata, scope: 'INSTALLATION', ...installationRule,
+        } }, installation)
+      : null;
+    const reference = materialSummary ?? installationSummary;
+    if (!reference) return null;
+    const materialBucket = materialSummary?.material ?? reference.material;
+    const installationBucket = installationSummary?.installation ?? reference.installation;
+    const { type, value, ...summary } = reference;
+    return {
+      ...summary,
+      scope: 'MULTIPLE',
+      rules: {
+        ...(material ? { material } : {}),
+        ...(installationRule ? { installation: installationRule } : {}),
+      },
+      base: money(materialSummary?.base).add(money(installationSummary?.base)).toFixed(2),
+      discount: money(materialSummary?.discount).add(money(installationSummary?.discount)).toFixed(2),
+      projectTotal: money(reference.projectBefore)
+        .sub(materialBucket.discount).sub(installationBucket.discount).toFixed(2),
+      material: materialBucket,
+      installation: installationBucket,
+    };
+  }
   if (
     config.scope === 'INSTALLATION' &&
     !hasDiscountableInstallation(installation)

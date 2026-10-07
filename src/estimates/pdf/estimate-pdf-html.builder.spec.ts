@@ -211,6 +211,63 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).not.toContain('−$18.69');
     expect(html).not.toContain('−$21.40');
   });
+
+  it('shows separate material and installation discounts with their combined commercial total', () => {
+    const estimate = estimateFixture();
+    estimate.dealerModeSnapshot = null;
+    estimate.user.role.name = 'client';
+    Object.assign(estimate, {
+      priceT: '1000', taxAmount: '70', totalPayable: '1070',
+      manualDiscount: {
+        scope: 'MULTIPLE',
+        material: { type: 'PERCENTAGE', value: '10' },
+        installation: { type: 'AMOUNT', value: '50' },
+      },
+      installationJob: {
+        status: 'REQUESTED',
+        quotes: [{ status: 'DRAFT', total: '525' }],
+        permit: { permitFeeSnapshot: '1000', cityFee: null },
+      },
+    });
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'client');
+    const summary = html.slice(html.indexOf('<section class="summary-section">'));
+    expect(summary).toMatch(/Additional discount · Material<\/span>\s*<span>−\$100\.00/);
+    expect(summary).toMatch(/Additional discount · Installation<\/span>\s*<span>−\$50\.00/);
+    expect(summary).toMatch(/Total additional discount<\/span>\s*<span>−\$150\.00/);
+    expect(summary).toContain('$63.00');
+    expect(summary).toContain('$963.00');
+    expect(summary).toContain('$475.00');
+    expect(summary).toContain('$2,438.00');
+    expect(summary).not.toContain('−$157.00');
+    expect(summary).not.toContain('Additional discount · undefined');
+  });
+
+  it('keeps both external dealer discounts private from customer PDFs', () => {
+    const estimate = withExternalDealerCustomerCharges();
+    Object.assign(estimate, {
+      manualDiscount: {
+        scope: 'MULTIPLE',
+        material: { type: 'AMOUNT', value: '20' },
+        installation: { type: 'PERCENTAGE', value: '10' },
+      },
+      installationJob: {
+        status: 'REQUESTED',
+        quotes: [{ status: 'DRAFT', total: '525' }],
+        permit: { permitFeeSnapshot: '1000', cityFee: null },
+      },
+    });
+    const internal = EstimatePdfHtmlBuilder.build(estimate, 'dealer_internal');
+    expect(internal).toContain('Additional discount · Material');
+    expect(internal).toContain('Additional discount · Installation');
+    expect(internal).toContain('−$72.50');
+    for (const view of ['dealer_public', 'dealer_public_total'] as const) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, view);
+      expect(html).not.toContain('Additional discount');
+      expect(html).not.toContain('Total additional discount');
+      expect(html).toContain('$2,580.29');
+    }
+  });
+
   it('keeps an external dealer additional discount private from customer PDFs', () => {
     const estimate = estimateFixture(false);
     Object.assign(estimate, { manualDiscount: { scope: 'MATERIAL', type: 'PERCENTAGE', value: '10' } });

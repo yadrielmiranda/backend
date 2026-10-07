@@ -13,7 +13,7 @@ import { installmentProcessingComponents, refundedProcessingComponents, singlePr
 import { assertScheduleMilestone, getPaymentSchedule, installmentContext, refreshScheduledInstallation, scheduleAmounts } from '@/payment-plans/payment-schedule';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
 import { assertCompleteEstimateCustomer } from '@/estimates/estimate-customer-details';
-import { calculateEstimateDiscount, discountedInstallationTotal, discountAllocations, estimateDiscountConfig } from '@/estimates/discounts/estimate-discount';
+import { calculateEstimateDiscount, discountedInstallationTotal, discountAllocations, estimateDiscountConfig, withoutInstallationDiscount } from '@/estimates/discounts/estimate-discount';
 import { buildInstallationRevisionComparison } from './installation-revision-comparison';
 import { savedPromotions, promotionExpired, expiredPromotionMessage } from '@/promotions/promotion-pricing';
 import {
@@ -2523,10 +2523,11 @@ export class InstallationWorkflowService {
         });
         const discount = estimateDiscountConfig(estimate?.manualDiscount);
         await tx.installationJob.delete({ where: { id: jobId } });
-        if (discount?.scope === 'INSTALLATION' && !discount.lockedAt) {
+        if (discount && !discount.lockedAt && (discount.scope === 'INSTALLATION' ||
+            (discount.scope === 'MULTIPLE' && discount.installation))) {
           await tx.estimate.update({
             where: { id: job.estimateId },
-            data: { manualDiscount: Prisma.DbNull },
+            data: { manualDiscount: withoutInstallationDiscount(discount) ?? Prisma.DbNull },
           });
           await tx.eventLog.create({ data: {
             action: 'UPDATE', entityType: 'Estimate', entityId: job.estimateId, userId: user.id,

@@ -3,6 +3,7 @@ import { EstimatesService } from '../estimates.service';
 import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
 import { validate } from 'class-validator';
 import { UpdateEstimateDiscountDto } from '../dto/estimate-discount.dto';
+import { plainToInstance } from 'class-transformer';
 
 const admin = { id: 99, role: { name: 'admin' as const } };
 function fixture() {
@@ -54,6 +55,85 @@ function fixture() {
 }
 
 describe('Additional discount administration', () => {
+  const both = {
+    material: { type: 'PERCENTAGE' as const, value: 10 },
+    installation: { type: 'AMOUNT' as const, value: 25 },
+  };
+  function withInstallation() {
+    const f = fixture();
+    f.tx.installationJob.findUnique.mockResolvedValue({
+      status: 'DEPOSIT_PAYMENT_PENDING', quotes: [{ status: 'DRAFT', total: '200' }],
+    });
+    return f;
+  }
+  it('saves independent discounts together in one transaction with one audit event', async () => {
+    const f = withInstallation();
+    const dto = plainToInstance(UpdateEstimateDiscountDto, both);
+    expect(await validate(dto)).toHaveLength(0);
+    await f.service.updateManualDiscount(1, dto, admin);
+    expect(f.tx.estimate.update).toHaveBeenCalledTimes(1);
+    expect(f.tx.estimate.update).toHaveBeenCalledWith({ where: { id: 1 }, data: {
+      manualDiscount: expect.objectContaining({
+        scope: 'MULTIPLE', material: { type: 'PERCENTAGE', value: '10' },
+        installation: { type: 'AMOUNT', value: '25' }, materialDiscountBasis: 'BEFORE_TAX', updatedById: 99,
+      }),
+    } });
+    expect(f.tx.eventLog.create).toHaveBeenCalledTimes(1);
+    expect(f.tx.eventLog.create.mock.calls[0][0].data.message).toContain('10 PERCENTAGE on MATERIAL; 25 AMOUNT on INSTALLATION');
+  });
+  it.each(['client', 'dealer', 'operator'])(
+    'does not broaden %s permissions for the combined payload', async (role) => {
+      const f = withInstallation();
+      await expect(f.service.updateManualDiscount(1, both, { id: 7, role: { name: role } } as any)).rejects.toThrow('Only administrators');
+      expect(f.tx.estimate.update).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    { ...both, material: { type: 'AMOUNT', value: 1000.01 } },
+    { ...both, installation: { type: 'AMOUNT', value: 200.01 } },
+  ])('rejects an excessive individual discount atomically: %j', async (payload) => {
+    const f = withInstallation();
+    await expect(f.service.updateManualDiscount(1, payload as any, admin)).rejects.toThrow('cannot exceed');
+    expect(f.tx.estimate.update).not.toHaveBeenCalled();
+  });
+  it('does not save the material part when installation is missing', async () => {
+    const f = fixture();
+    await expect(f.service.updateManualDiscount(1, both, admin)).rejects.toThrow('Include installation');
+    expect(f.tx.estimate.update).not.toHaveBeenCalled();
+  });
+  it.each([
+    { material: both.material },
+    { installation: both.installation },
+    { ...both, scope: 'MATERIAL', type: 'PERCENTAGE', value: 10 },
+  ])('rejects ambiguous partial or mixed update formats: %j', async (payload) => {
+    const f = withInstallation();
+    await expect(f.service.updateManualDiscount(1, payload as any, admin)).rejects.toThrow('Send both');
+    expect(f.prisma.$transaction).not.toHaveBeenCalled();
+  });
+  it.each([
+    { type: 'INVALID', value: 1 }, { type: 'AMOUNT', value: -1 }, { type: 'AMOUNT', value: '25' },
+    { type: 'AMOUNT', value: 0.001 }, { type: 'AMOUNT' },
+  ])('validates nested discount rules: %j', async (material) => {
+    expect((await validate(plainToInstance(UpdateEstimateDiscountDto, { material, installation: null }))).length).toBeGreaterThan(0);
+  });
+  it.each(['PENDING', 'PAID', 'REFUNDED'])(
+    'preserves both terms when a payment is %s', async (status) => {
+      const f = withInstallation();
+      f.estimate.payments = [{ status }];
+      await expect(f.service.updateManualDiscount(1, both, admin)).rejects.toThrow('cannot change after payment');
+      expect(f.tx.estimate.update).not.toHaveBeenCalled();
+    },
+  );
+  it('can remove either discount independently or both together', async () => {
+    const f = withInstallation();
+    f.estimate.manualDiscount = { scope: 'MULTIPLE', material: { type: 'PERCENTAGE', value: '10' }, installation: { type: 'AMOUNT', value: '25' } };
+    await f.service.updateManualDiscount(1, { ...both, installation: null }, admin);
+    expect(f.tx.estimate.update).toHaveBeenLastCalledWith({ where: { id: 1 }, data: { manualDiscount: expect.objectContaining({ scope: 'MATERIAL', type: 'PERCENTAGE', value: '10' }) } });
+    await f.service.updateManualDiscount(1, { ...both, material: null }, admin);
+    expect(f.tx.estimate.update).toHaveBeenLastCalledWith({ where: { id: 1 }, data: { manualDiscount: expect.objectContaining({ scope: 'INSTALLATION', type: 'AMOUNT', value: '25' }) } });
+    await f.service.updateManualDiscount(1, { material: null, installation: null }, admin);
+    expect(f.tx.estimate.update).toHaveBeenLastCalledWith({ where: { id: 1 }, data: { manualDiscount: Prisma.DbNull } });
+  });
   it('saves only the admin discount and its audit entry without repricing pieces', async () => {
     const f = fixture();
     await f.save();
@@ -271,6 +351,26 @@ describe('Removing installation and its additional discount', () => {
       data: { manualDiscount: Prisma.DbNull },
     });
     expect(f.tx.eventLog.create).toHaveBeenCalled();
+  });
+  it('removes only the installation part of an unpaid combined discount', async () => {
+    const f = cancellationFixture();
+    f.tx.estimate.findUnique.mockResolvedValue({ manualDiscount: {
+      scope: 'MULTIPLE', material: { type: 'PERCENTAGE', value: '10' },
+      installation: { type: 'AMOUNT', value: '25' }, updatedById: 99,
+    } });
+    await f.cancel();
+    expect(f.tx.estimate.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { manualDiscount: {
+      scope: 'MATERIAL', type: 'PERCENTAGE', value: '10', materialDiscountBasis: 'BEFORE_TAX', updatedById: 99,
+    } } });
+  });
+  it('preserves both locked discount terms as payment history', async () => {
+    const f = cancellationFixture();
+    f.tx.estimate.findUnique.mockResolvedValue({ manualDiscount: {
+      scope: 'MULTIPLE', material: { type: 'PERCENTAGE', value: '10' },
+      installation: { type: 'AMOUNT', value: '25' }, lockedAt: '2026-10-07T12:00:00Z',
+    } });
+    await f.cancel();
+    expect(f.tx.estimate.update).not.toHaveBeenCalled();
   });
   it.each(['MATERIAL', 'PROJECT'])(
     'preserves the existing %s discount when installation is removed',
