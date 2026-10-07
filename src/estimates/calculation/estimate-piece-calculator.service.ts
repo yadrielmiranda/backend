@@ -1357,25 +1357,8 @@ export class EstimatePieceCalculatorService {
       }
 
       if (dpCheck.reason === "OVERSIZE") {
-        const minW = dpCheck.suggestion?.minWidthIn;
-        const minH = dpCheck.suggestion?.minHeightIn;
-        const hasMinSuggestion = minW != null || minH != null;
-
-        if (hasMinSuggestion) {
-          const sug = ` Minimum allowed size: W=${minW ?? "-"}″, H=${minH ?? "-"}″.`;
-          throw new BadRequestException(`Please review the dimensions.${sug}`);
-        }
-
-        const maxW = dpCheck.suggestion?.maxWidthIn;
-        const maxH = dpCheck.suggestion?.maxHeightIn;
-        const hasMaxSuggestion = maxW != null || maxH != null;
-
-        const sug = hasMaxSuggestion
-          ? ` Maximum allowed size: W=${maxW ?? "-"}″, H=${maxH ?? "-"}″.`
-          : "";
-
         throw new BadRequestException(
-          `The piece exceeds the NOA limits for this combination.${sug}`,
+          "The entered dimensions are not allowed for this piece. Please review and adjust the measurements.",
         );
       }
     }
