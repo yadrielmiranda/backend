@@ -2040,26 +2040,17 @@ export class InstallationWorkflowService {
       },
     });
     const result = await this.findJob(createdJob.id, user);
-    await Promise.all([
-      this.notifyInstallationAdmins({
-        jobId: result.id,
-        message: `Installation requested for Estimate #${result.estimate.number}.`,
-        actionLabel: 'Review request',
-        dedupeKey: `installation:${result.id}:requested:admin`,
-        actorId: user.id,
-      }),
-      this.notifyInstallationOwner({
-        ownerId: result.estimate.idUser,
-        actorId: user.id,
-        jobId: result.id,
-        message: result.dealerMeasurementsAcceptedAt
-          ? `Installation for Estimate #${result.estimate.number} is ready to continue with the current measurements and price. No installation deposit or remeasurement is required.`
-          : `Installation deposit is due for Estimate #${result.estimate.number}.`,
-        actionLabel: result.dealerMeasurementsAcceptedAt ? 'Open estimate' : 'Open payment',
-        dedupeKey: `installation:${result.id}:${result.dealerMeasurementsAcceptedAt ? 'no-deposit' : 'deposit-due'}:owner`,
-        actionUrl: `/estimates/${result.estimateId}/edit`,
-      }),
-    ]);
+    await this.notifyInstallationOwner({
+      ownerId: result.estimate.idUser,
+      actorId: user.id,
+      jobId: result.id,
+      message: result.dealerMeasurementsAcceptedAt
+        ? `Installation for Estimate #${result.estimate.number} is ready to continue with the current measurements and price. No installation deposit or remeasurement is required.`
+        : `Installation deposit is due for Estimate #${result.estimate.number}.`,
+      actionLabel: result.dealerMeasurementsAcceptedAt ? 'Open estimate' : 'Open payment',
+      dedupeKey: `installation:${result.id}:${result.dealerMeasurementsAcceptedAt ? 'no-deposit' : 'deposit-due'}:owner`,
+      actionUrl: `/estimates/${result.estimateId}/edit`,
+    });
     return result;
   }
 
