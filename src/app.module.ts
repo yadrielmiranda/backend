@@ -51,6 +51,7 @@ import { PrivacyModule } from './privacy/privacy.module';
 import { DeliveriesModule } from './deliveries/deliveries.module';
 import { WarehouseModule } from './warehouse/warehouse.module';
 import { SmsConsentModule } from './sms/sms-consent.module';
+import { ReferralsModule } from './referrals/referrals.module';
 
 @Module({
   imports: [
@@ -100,6 +101,7 @@ import { SmsConsentModule } from './sms/sms-consent.module';
     InstallationModule,
     DeliveriesModule,
     SmsConsentModule,
+    ReferralsModule,
     WarehouseModule,
   ],
   controllers: [AppController],

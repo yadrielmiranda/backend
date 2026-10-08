@@ -1,7 +1,7 @@
 import { canAccessOwner, descendantIds, networkPresentation } from '@/dealer-network/dealer-network';
 import { assertMaterialReadyForFactory } from '@/estimates/material-revisions/material-revision-policy';
 import { decimalAmount, hasRefundHistory, paidPrincipal, remainingRefundBalance } from '@/payments/payment-accounting';
-import { buildDealerEarningsReport } from '@/common/dealer-earnings';
+import { buildMaterialEarningsReport, referralReportMaterialRelations, referralReportOrderInclude } from '@/referrals/referral-report';
 import { assertScheduleMilestone, buildPaymentSchedule, getPaymentSchedule } from '@/payment-plans/payment-schedule';
 // @/orders/orders.service.ts
 import {
@@ -42,8 +42,8 @@ import { calculateEstimateDiscount, discountedInstallationTotal } from '@/estima
 import { buildEstimateInstallationSummary, estimateInstallationSummarySelect } from '@/estimates/reporting/estimate-installation-summary';
 
 const orderDetailsInclude = {
-  estimate: { include: { payments: true, installationJob: { include: { quotes: { orderBy: { version: 'desc' as const }, take: 1 }, permit: true } } } },
-  status: true,
+  ...referralReportOrderInclude,
+  estimate: { include: { ...referralReportMaterialRelations, status: true, payments: true, installationJob: { include: { quotes: { orderBy: { version: 'desc' as const }, take: 1 }, permit: true } } } },
   user: { include: { role: true } },
   payment: true,
   extraCharges: {
@@ -63,6 +63,7 @@ const orderListInclude = {
   ...orderDetailsInclude,
   estimate: {
     include: {
+      ...referralReportMaterialRelations,
       payments: true,
       status: true,
       installationJob: {
@@ -114,7 +115,7 @@ function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof or
   }
   return {
     ...order,
-    ...buildDealerEarningsReport(order.estimate, order),
+    ...buildMaterialEarningsReport(estimate, order),
     paymentAnchor,
     estimate: {
       ...estimate,
@@ -148,7 +149,7 @@ export class OrdersService {
     });
 
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
-    return { ...order, ...buildDealerEarningsReport(order.estimate, order), paymentSchedule: await getPaymentSchedule(this.prisma, order.idEst), estimate: { ...order.estimate, dealerNetwork: networkPresentation(order.estimate), manualDiscountSummary: calculateEstimateDiscount(order.estimate) } };
+    return { ...order, ...buildMaterialEarningsReport(order.estimate, order), paymentSchedule: await getPaymentSchedule(this.prisma, order.idEst), estimate: { ...order.estimate, dealerNetwork: networkPresentation(order.estimate), manualDiscountSummary: calculateEstimateDiscount(order.estimate) } };
   }
 
   async findAllStatuses(): Promise<OrderStatus[]> {
@@ -734,7 +735,7 @@ export class OrdersService {
 
     const paymentSchedule = await getPaymentSchedule(this.prisma, order.idEst);
     const estimate = { ...order.estimate, dealerNetwork: networkPresentation(order.estimate), manualDiscountSummary: calculateEstimateDiscount(order.estimate) };
-    const earnings = buildDealerEarningsReport(order.estimate, order);
+    const earnings = buildMaterialEarningsReport(order.estimate, order);
     if (roleName === 'admin' || roleName === 'operator') return { ...order, ...earnings, estimate, paymentSchedule };
 
     if (!await canAccessOwner(this.prisma, order.userId, user)) {

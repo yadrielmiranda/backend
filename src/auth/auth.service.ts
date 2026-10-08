@@ -26,6 +26,7 @@ import { assertTokenPurpose, SessionTokenPayload } from './access-session';
 import { lockCurrentPlatformTerms, requireCurrentAcceptance, savePlatformTermsAcceptance } from '@/platform-terms/platform-terms.policy';
 import { DeliveryCoverageService } from '@/deliveries/delivery-coverage.service';
 import { accountNetworkBlocked } from '@/dealer-network/network-access';
+import { resolveRegistrationReferral } from '@/referrals/referral-terms';
 
 type JwtRolePayload = string | undefined;
 
@@ -194,6 +195,7 @@ export class AuthService {
       const user = await this.prisma.$transaction(async (tx) => {
         const terms = await lockCurrentPlatformTerms(tx);
         requireCurrentAcceptance(terms, registerUserDto.platformTermsAccepted, registerUserDto.platformTermsVersionId);
+        const referral = await resolveRegistrationReferral(tx, registerUserDto.referralCode);
         if (wantsSms) {
           const block = await tx.smsPhoneBlock.findUnique({ where: { phone: userData.phone } });
           if (block) {
@@ -225,6 +227,9 @@ export class AuthService {
           },
         });
         const now = new Date();
+        if (referral) await tx.referralAttribution.create({ data: {
+          profileId: referral.id, referredUserId: user.id,
+        } });
         if (terms) await savePlatformTermsAcceptance(tx, user.id, terms.id, 'REGISTRATION');
         const consentText = JSON.stringify({
           source: 'REGISTRATION',

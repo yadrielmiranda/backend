@@ -10,6 +10,167 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum ReferralRewardMode {
+  EXTERNAL_MARGIN
+  CUSTOM_PERCENT
+  DEALER_PLAN
+}
+
+enum ReferralRole {
+  CLIENT
+  DISTRIBUTOR
+  SUBDEALER_INTERNAL
+  SUBDEALER_EXTERNAL
+  DEALER_EXTERNAL
+  DEALER_INTERNAL
+}
+
+model ReferralRoleDefault {
+  role      ReferralRole       @id
+  mode      ReferralRewardMode @default(CUSTOM_PERCENT)
+  percent   Decimal?           @db.Decimal(7, 4)
+  revision  Int                @default(1)
+  updatedAt DateTime           @updatedAt
+}
+
+enum ReferralBankAccountType {
+  CHECKING
+  SAVINGS
+}
+
+enum ReferralBankHolderType {
+  PERSONAL
+  BUSINESS
+}
+
+enum ReferralPayoutStatus {
+  REQUESTED
+  PROCESSING
+  PAID
+  REJECTED
+  FAILED
+  CANCELED
+}
+
+// Referral attribution is deliberately separate from the commercial dealer network.
+model ReferralProfile {
+  id              Int                   @id @default(autoincrement())
+  userId          Int                   @unique
+  code            String                @unique @db.VarChar(40)
+  enabled         Boolean               @default(true)
+  useRoleDefaults Boolean               @default(true)
+  mode            ReferralRewardMode    @default(CUSTOM_PERCENT)
+  percent         Decimal?              @db.Decimal(7, 4)
+  revision        Int                   @default(1)
+  linkCreatedAt   DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  user            User                  @relation(fields: [userId], references: [id], onDelete: Restrict)
+  attributions    ReferralAttribution[]
+  rewards         ReferralReward[]
+  payouts         ReferralPayout[]
+  bank            ReferralBankAccount?
+}
+
+model ReferralAttribution {
+  id             Int              @id @default(autoincrement())
+  profileId      Int
+  referredUserId Int              @unique
+  createdAt      DateTime         @default(now())
+  profile        ReferralProfile  @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  referredUser   User             @relation("ReferredClient", fields: [referredUserId], references: [id], onDelete: Restrict)
+  rewards        ReferralReward[]
+
+  @@index([profileId, createdAt])
+}
+
+// Conditions are frozen when the order is created; amounts are reconciled from its current material.
+model ReferralReward {
+  id              Int                   @id @default(autoincrement())
+  profileId       Int
+  attributionId   Int
+  orderId         Int                   @unique
+  terms           Json
+  earnedAmount    Decimal               @default(0) @db.Decimal(18, 2)
+  availableAmount Decimal               @default(0) @db.Decimal(18, 2)
+  reason          String                @default("PENDING_PAYMENT") @db.VarChar(60)
+  evaluatedAt     DateTime?
+  createdAt       DateTime              @default(now())
+  profile         ReferralProfile       @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  attribution     ReferralAttribution   @relation(fields: [attributionId], references: [id], onDelete: Restrict)
+  order           Order                 @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  entries         ReferralLedgerEntry[]
+
+  @@index([profileId, createdAt])
+}
+
+// Append-only reconciliation audit. Payout reservations and settlement have their own event history.
+model ReferralLedgerEntry {
+  id             Int            @id @default(autoincrement())
+  rewardId       Int
+  earnedDelta    Decimal        @db.Decimal(18, 2)
+  availableDelta Decimal        @db.Decimal(18, 2)
+  reason         String         @db.VarChar(60)
+  createdAt      DateTime       @default(now())
+  reward         ReferralReward @relation(fields: [rewardId], references: [id], onDelete: Restrict)
+
+  @@index([rewardId, createdAt])
+}
+
+model ReferralBankAccount {
+  profileId        Int                     @id
+  encryptedDetails String                  @db.Text
+  accountLast4     String                  @db.VarChar(4)
+  bankName         String                  @db.VarChar(100)
+  accountType      ReferralBankAccountType
+  holderType       ReferralBankHolderType
+  revision         Int                     @default(1)
+  updatedAt        DateTime                @updatedAt
+  profile          ReferralProfile         @relation(fields: [profileId], references: [id], onDelete: Restrict)
+}
+
+model ReferralPayout {
+  id                   Int                   @id @default(autoincrement())
+  profileId            Int
+  requestKey           String                @unique @db.VarChar(36)
+  amount               Decimal               @db.Decimal(18, 2)
+  status               ReferralPayoutStatus  @default(REQUESTED)
+  encryptedDestination String                @db.Text
+  accountLast4         String                @db.VarChar(4)
+  bankName             String                @db.VarChar(100)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  processingAt         DateTime?
+  processingById       Int?
+  paidAt               DateTime?
+  reference            String?               @db.VarChar(150)
+  proofReference       String?               @db.VarChar(300)
+  bankFee              Decimal               @default(0) @db.Decimal(18, 2)
+  profile              ReferralProfile       @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  events               ReferralPayoutEvent[]
+
+  @@index([profileId, createdAt])
+  @@index([status, createdAt])
+}
+
+model ReferralPayoutEvent {
+  id        Int                  @id @default(autoincrement())
+  payoutId  Int
+  actorId   Int
+  status    ReferralPayoutStatus
+  note      String?              @db.VarChar(500)
+  createdAt DateTime             @default(now())
+  payout    ReferralPayout       @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+
+  @@index([payoutId, createdAt])
+}
+
+model ReferralSettings {
+  id                Int      @id @default(1)
+  minimumWithdrawal Decimal  @default(0) @db.Decimal(18, 2)
+  updatedAt         DateTime @updatedAt
+}
+
 // =======================================
 //        Modelos de Autenticación y Usuarios
 // =======================================
@@ -126,6 +287,8 @@ enum EstimateCustomerChargePricingMode {
 
 model User {
   id                             Int                     @id @default(autoincrement())
+  referralProfile                ReferralProfile?
+  referredBy                     ReferralAttribution?    @relation("ReferredClient")
   parentDealerId                 Int?
   parentDealer                   User?                   @relation("DealerNetwork", fields: [parentDealerId], references: [id], onDelete: Restrict)
   childDealers                   User[]                  @relation("DealerNetwork")
@@ -1796,9 +1959,10 @@ model OrderSequence {
 }
 
 model Order {
-  id     Int      @id @default(autoincrement())
-  number String   @unique
-  date   DateTime @default(now())
+  id             Int             @id @default(autoincrement())
+  referralReward ReferralReward?
+  number         String          @unique
+  date           DateTime        @default(now())
 
   units Int
 

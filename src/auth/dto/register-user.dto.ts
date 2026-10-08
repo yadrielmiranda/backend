@@ -6,6 +6,11 @@ import { PROFILE_FIELDS } from './self-service-fields';
 // Las condiciones comerciales se asignan exclusivamente desde administración.
 export class RegisterUserDto extends PickType(CreateUserDto, [...PROFILE_FIELDS, 'password'] as const) {
   @ValidateIf((_object, value) => value !== undefined)
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{20,40}$/)
+  referralCode?: string;
+
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   platformTermsAccepted?: unknown;
 

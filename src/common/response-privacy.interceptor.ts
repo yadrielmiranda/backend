@@ -8,8 +8,14 @@ import { networkAccessBlocked, networkSalesBlocked, hasExistingBusiness } from '
 const credentials = new Set([
   'password', 'passwordHash', 'refreshTokenHash', 'passwordResetTokens',
   'sessions', 'passwordUpdatedAt',
+  'encryptedDetails', 'encryptedDestination', 'referralReward',
+]);
+// Referral formulas belong exclusively to the admin, including on nested account responses.
+const referralAdministration = new Set([
+  'referralProfile', 'referralTerms', 'roleDefaults', 'referralRoleDefaults',
 ]);
 const companyFinancials = new Set([
+  'referralCosts',
   'materialProfits',
   'materialProcessingCost', 'materialProcessingCostPending',
   'processingCostSnapshot', 'processingCosts', 'processingCostSummary', 'processingComponents',
@@ -104,6 +110,7 @@ export function presentApiResponse(value: unknown, user?: AuthUser): any {
     const isUser = 'username' in input && ('idRole' in input || 'password' in input);
     return Object.fromEntries(Object.entries(input)
       .filter(([key]) => !credentials.has(key) && (!isUser || userFields.has(key)) &&
+        (user?.role?.name === 'admin' || !referralAdministration.has(key)) &&
         (user?.role?.name === 'admin' || (key !== 'coverageSnapshot' && key !== 'estimatedMinutes' && key !== 'timeSnapshot')) &&
         (staff || (technician && key === 'poNumber') || !companyFinancials.has(key)) &&
         (staff || dealer || !dealerFinancials.has(key)))

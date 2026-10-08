@@ -51,6 +51,7 @@ import {
   resolveMaterialSaleSubtotal,
 } from '@/orders/order-material-financials';
 import { NotificationsService } from '@/notifications/notifications.service';
+import { snapshotReferralReward } from '@/referrals/referral-terms';
 
 const MATERIAL_ACCEPTANCE_TEXT =
   'I have reviewed and accept the products, dimensions, configurations and prices in this estimate.';
@@ -257,6 +258,10 @@ export class PaymentsService {
       },
       include: { status: true },
     });
+
+    if (estimate.user.role.name === 'client') {
+      await snapshotReferralReward(tx, order.id, estimate.idUser);
+    }
 
     await tx.estimate.update({
       where: { id: estimate.id },
