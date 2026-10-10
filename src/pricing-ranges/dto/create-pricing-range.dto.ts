@@ -16,7 +16,7 @@ import {
 
 import { UpsertPricingRangeRuleDto } from "./upsert-pricing-range-rule.dto";
 
-const DIMENSION_DECIMAL_REGEX = /^\d{1,7}(?:\.\d{1,3})?$/;
+const DIMENSION_DECIMAL_REGEX = /^\d{1,7}(?:\.\d{1,4})?$/;
 
 export class CreatePricingRangeDto {
   @Type(() => Number)
@@ -42,7 +42,7 @@ export class CreatePricingRangeDto {
   @IsString()
   @Matches(DIMENSION_DECIMAL_REGEX, {
     message:
-      "minWidthIn must contain at most 7 integer digits and 3 decimal digits.",
+      "minWidthIn must contain at most 7 integer digits and 4 decimal digits.",
   })
   minWidthIn?: string | null;
 
@@ -54,7 +54,7 @@ export class CreatePricingRangeDto {
   @IsString()
   @Matches(DIMENSION_DECIMAL_REGEX, {
     message:
-      "maxWidthIn must contain at most 7 integer digits and 3 decimal digits.",
+      "maxWidthIn must contain at most 7 integer digits and 4 decimal digits.",
   })
   maxWidthIn?: string | null;
 
@@ -66,7 +66,7 @@ export class CreatePricingRangeDto {
   @IsString()
   @Matches(DIMENSION_DECIMAL_REGEX, {
     message:
-      "minHeightIn must contain at most 7 integer digits and 3 decimal digits.",
+      "minHeightIn must contain at most 7 integer digits and 4 decimal digits.",
   })
   minHeightIn?: string | null;
 
@@ -78,7 +78,7 @@ export class CreatePricingRangeDto {
   @IsString()
   @Matches(DIMENSION_DECIMAL_REGEX, {
     message:
-      "maxHeightIn must contain at most 7 integer digits and 3 decimal digits.",
+      "maxHeightIn must contain at most 7 integer digits and 4 decimal digits.",
   })
   maxHeightIn?: string | null;
 

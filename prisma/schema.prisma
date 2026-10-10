@@ -1314,14 +1314,14 @@ model PricingRange {
 
   code String @db.VarChar(30)
 
-  minWidthIn        Decimal? @db.Decimal(10, 3)
+  minWidthIn        Decimal? @db.Decimal(11, 4)
   minWidthInclusive Boolean  @default(true)
-  maxWidthIn        Decimal? @db.Decimal(10, 3)
+  maxWidthIn        Decimal? @db.Decimal(11, 4)
   maxWidthInclusive Boolean  @default(true)
 
-  minHeightIn        Decimal? @db.Decimal(10, 3)
+  minHeightIn        Decimal? @db.Decimal(11, 4)
   minHeightInclusive Boolean  @default(true)
-  maxHeightIn        Decimal? @db.Decimal(10, 3)
+  maxHeightIn        Decimal? @db.Decimal(11, 4)
   maxHeightInclusive Boolean  @default(true)
 
   sortOrder Int     @default(0)
