@@ -181,6 +181,11 @@ export class FactoryImportService {
       throw new ConflictException(
         'This factory PO is already associated with another order.',
       );
+    const registeredPo = await db.factoryPo.findUnique({
+      where: { poNumber: document.poNumber }, select: { orderId: true },
+    });
+    if (registeredPo && registeredPo.orderId !== data.order.id)
+      throw new ConflictException('This factory PO is already associated with another order or an external PO.');
     const existing = data.pieces.flatMap((piece) => piece.lineNumbers);
     if (existing.length && data.order.poNumber !== document.poNumber) {
       throw new ConflictException(
@@ -198,7 +203,7 @@ export class FactoryImportService {
       include: { piece: { select: { idEst: true } } },
     });
     const conflict = linked.find(
-      (unit) => unit.piece.idEst !== data.order.idEst,
+      (unit) => !unit.piece || unit.piece.idEst !== data.order.idEst,
     );
     if (conflict)
       throw new ConflictException(
@@ -282,6 +287,12 @@ export class FactoryImportService {
               'The order or its pieces changed. Preview the file again before importing.',
             );
           await this.validateDocument(tx, data, document);
+          // Both import paths claim the shared unique PO registry inside their transaction.
+          await tx.factoryPo.upsert({
+            where: { orderId },
+            create: { orderId, poNumber: document.poNumber },
+            update: { poNumber: document.poNumber },
+          });
           const piecesById = new Map(
             data.pieces.map((piece) => [piece.id, piece]),
           );

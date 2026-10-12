@@ -406,7 +406,7 @@ describe('warehouse release eligibility', () => {
       const f = fixture();
       await f.scan('RECEIVE');
       f.order.status.name = status;
-      await expect(f.scan('RELEASE')).rejects.toThrow('ready for pickup');
+      await expect(f.scan('RELEASE')).rejects.toThrow('ready for its selected pickup');
       expect(f.stocks[0].onHand).toBe(1);
     },
   );

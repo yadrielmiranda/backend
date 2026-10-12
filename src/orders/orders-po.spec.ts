@@ -27,8 +27,11 @@ function fixture(statusName = 'Pending', poNumber: string | null = null) {
     estimate: { idUser: 7, installationJob: null },
     user: { role: { name: 'client' } },
     updateStatus: new Date('2026-09-18T12:00:00Z'),
+    updatedAt: new Date('2026-09-18T12:00:00Z'),
   };
   const prisma = {
+    $queryRaw: jest.fn().mockResolvedValue([{ id: current.idEst }]),
+    estimate: { findUnique: jest.fn().mockResolvedValue({ materialRevisions: [], installationJob: null }) },
     order: {
       findUnique: jest.fn().mockResolvedValue(current),
       update: jest.fn().mockImplementation(async ({ data }) => ({

@@ -47,6 +47,7 @@ const stockInclude = {
   storeBalances: { include: { store: { select: storeSelect } } },
   unit: {
     include: {
+      externalPo: true,
       piece: {
         select: {
           id: true,
@@ -90,6 +91,7 @@ const name = (user: { firstName: string; lastName: string }) =>
 
 function parts(stock: Stock) {
   const p = stock.unit.piece;
+  if (!p) return stock.expectedParts;
   return (
     stock.expectedParts ??
     expectedPhysicalParts({
@@ -104,24 +106,27 @@ function parts(stock: Stock) {
 }
 function presentStock(stock: Stock) {
   const p = stock.unit.piece,
-    e = p.estim,
+    e = p?.estim,
+    external = stock.unit.externalPo,
     expected = parts(stock);
   return {
+    source: external ? 'EXTERNAL' as const : 'ORDER' as const,
+    externalPoId: external?.id ?? null,
+    description: external ? stock.unit.description ?? '' : [p?.prod.name, p?.syst.name, p?.conf.conf].filter(Boolean).join(' · '),
+    supplierName: external?.supplierName ?? '',
     lineNumber: stock.lineNumber,
     barcode: `I${stock.lineNumber}`,
-    pieceId: p.id,
-    mark: p.mark,
-    product: p.prod.name,
-    system: p.syst.name,
-    configuration: p.conf.conf,
-    orderId: e.order?.id ?? null,
-    orderNumber: e.order?.number ?? '',
-    poNumber: e.order?.poNumber ?? '',
-    customer:
-      [e.customerFirstName, e.customerLastName].filter(Boolean).join(' ') ||
-      name(e.user),
-    project: e.name,
-    installation: ['INSTALLATION_DELIVERY', 'COMPANY_DELIVERY'].includes(e.order?.fulfillmentMethod ?? '')
+    pieceId: p?.id ?? null,
+    mark: p?.mark ?? stock.unit.mark ?? '',
+    product: p?.prod.name ?? stock.unit.description?.split(/\r?\n/)[0] ?? '',
+    system: p?.syst.name ?? '',
+    configuration: p?.conf.conf ?? '',
+    orderId: e?.order?.id ?? null,
+    orderNumber: e?.order?.number ?? '',
+    poNumber: external?.poNumber ?? e?.order?.poNumber ?? '',
+    customer: e ? [e.customerFirstName, e.customerLastName].filter(Boolean).join(' ') || name(e.user) : '',
+    project: external?.orderName ?? e?.name ?? '',
+    installation: e && ['INSTALLATION_DELIVERY', 'COMPANY_DELIVERY'].includes(e.order?.fulfillmentMethod ?? '')
       ? installationDestination(e.installationJob) : null,
     expectedParts: expected,
     inTransit: stock.inTransit,
@@ -243,6 +248,10 @@ function stockSearch(
   return {
     OR: [
       { lineNumber: { contains: q.replace(/^I(?=\d)/i, '') } },
+      { unit: { OR: [
+        { mark: contains }, { description: contains },
+        { externalPo: { OR: [{ poNumber: contains }, { orderName: contains }, { supplierName: contains }] } },
+      ] } },
       {
         unit: {
           piece: {
@@ -274,6 +283,24 @@ function stockSearch(
       },
     ],
   };
+}
+
+function pickupSource(stock: Stock) {
+  const order = stock.unit.piece?.estim.order;
+  const external = stock.unit.externalPo;
+  if (external) return {
+    key: `external:${external.id}`, source: 'EXTERNAL' as const,
+    orderId: null, externalPoId: external.id, orderNumber: '', poNumber: external.poNumber,
+  };
+  if (!order) throw new BadRequestException('This factory unit has no inventory source.');
+  return {
+    key: `order:${order.id}`, source: 'ORDER' as const,
+    orderId: order.id, externalPoId: null, orderNumber: order.number, poNumber: order.poNumber ?? '',
+  };
+}
+
+function pickupSourceWhere(source: { orderId: number | null; externalPoId: number | null }) {
+  return source.externalPoId !== null ? { externalPoId: source.externalPoId } : { orderId: source.orderId! };
 }
 
 function pickupPoNumber(value: unknown) {
@@ -320,6 +347,8 @@ export class WarehouseService {
   // Proyección mínima: sin cliente, precios, enlaces a órdenes o inventario general.
   private technicianStock(stock: ReturnType<typeof presentStock>) {
     return {
+      source: stock.source, externalPoId: stock.externalPoId,
+      description: stock.description, supplierName: stock.supplierName,
       lineNumber: stock.lineNumber, barcode: stock.barcode, mark: stock.mark,
       product: stock.product, system: stock.system, configuration: stock.configuration,
       orderNumber: stock.orderNumber, poNumber: stock.poNumber,
@@ -385,12 +414,22 @@ export class WarehouseService {
       where: { poNumber },
       select: { id: true, number: true, poNumber: true, fulfillmentMethod: true },
     });
-    if (!order?.poNumber)
+    const external = order ? null : await tx.factoryPo.findFirst({ where: { poNumber, orderId: null } });
+    if (!order?.poNumber && !external)
       throw new NotFoundException('PO not found. Check the factory PO number.');
-    assertCompanyFactoryCollection(order);
+    if (external)
+      await tx.$queryRaw`SELECT id FROM factory_pos WHERE id = ${external.id} FOR UPDATE`;
+    if (order) assertCompanyFactoryCollection(order);
+    const source = external ? {
+      key: `external:${external.id}`, source: 'EXTERNAL' as const,
+      orderId: null, externalPoId: external.id, orderNumber: '', poNumber: external.poNumber,
+    } : {
+      key: `order:${order!.id}`, source: 'ORDER' as const,
+      orderId: order!.id, externalPoId: null, orderNumber: order!.number, poNumber: order!.poNumber!,
+    };
 
     const active = await tx.factoryPickupRunOrder.findFirst({
-      where: { orderId: order.id, activeSlot: 1 },
+      where: { ...pickupSourceWhere(source), activeSlot: 1 },
       select: { pickupRunId: true },
     });
     if (active && active.pickupRunId !== currentRunId)
@@ -400,7 +439,7 @@ export class WarehouseService {
 
     const stocks = await tx.warehouseStock.findMany({
       where: {
-        unit: { piece: { estim: { order: { id: order.id } } } },
+        unit: external ? { externalPoId: external.id } : { piece: { estim: { order: { id: order!.id } } } },
       },
       include: stockInclude,
       orderBy: { lineNumber: 'asc' },
@@ -428,7 +467,7 @@ export class WarehouseService {
     if (!lines.length)
       throw new BadRequestException('This PO has already been fully collected.');
 
-    return { order, lines };
+    return { source, lines };
   }
 
   private async addPickupOrder(
@@ -438,20 +477,15 @@ export class WarehouseService {
     addedDuringPickup: boolean,
   ) {
     const snapshot = await this.pickupOrderSnapshot(tx, poNumber, pickupRunId);
-    const existing = await tx.factoryPickupRunOrder.findUnique({
-      where: {
-        pickupRunId_orderId: {
-          pickupRunId,
-          orderId: snapshot.order.id,
-        },
-      },
+    const existing = await tx.factoryPickupRunOrder.findFirst({
+      where: { pickupRunId, ...pickupSourceWhere(snapshot.source) },
     });
     if (existing) return snapshot;
 
     await tx.factoryPickupRunOrder.create({
       data: {
         pickupRunId,
-        orderId: snapshot.order.id,
+        ...pickupSourceWhere(snapshot.source),
         addedDuringPickup,
       },
     });
@@ -492,7 +526,7 @@ export class WarehouseService {
     const [orders, lines, movements] = await Promise.all([
       tx.factoryPickupRunOrder.findMany({
         where: { pickupRunId },
-        include: { order: { select: { id: true, number: true, poNumber: true } } },
+        include: { order: { select: { id: true, number: true, poNumber: true } }, externalPo: true },
         orderBy: { addedAt: 'asc' },
       }),
       tx.factoryPickupRunLine.findMany({
@@ -524,7 +558,7 @@ export class WarehouseService {
       const remaining = Math.max(0, line.targetParts - collected);
       return {
         ...unit,
-        orderId: line.stock.unit.piece.estim.order?.id ?? null,
+        ...pickupSource(line.stock),
         targetParts: line.targetParts,
         collected,
         remaining,
@@ -538,8 +572,9 @@ export class WarehouseService {
     });
 
     const orderItems = orders.map((entry) => {
+      const key = entry.externalPoId != null ? `external:${entry.externalPoId}` : `order:${entry.orderId}`;
       const orderLines = presentedLines.filter(
-        (line) => line.orderId === entry.orderId,
+        (line) => line.key === key,
       );
       const expectedParts = orderLines.reduce(
         (sum, line) => sum + line.targetParts,
@@ -550,9 +585,12 @@ export class WarehouseService {
         0,
       );
       return {
+        key,
+        source: entry.externalPoId != null ? 'EXTERNAL' as const : 'ORDER' as const,
+        externalPoId: entry.externalPoId ?? null,
         orderId: entry.orderId,
-        orderNumber: entry.order.number,
-        poNumber: entry.order.poNumber ?? '',
+        orderNumber: entry.order?.number ?? '',
+        poNumber: entry.externalPo?.poNumber ?? entry.order?.poNumber ?? '',
         addedDuringPickup: entry.addedDuringPickup,
         addedAt: entry.addedAt,
         pieces: orderLines.length,
@@ -681,9 +719,7 @@ export class WarehouseService {
     return this.prisma.$transaction(async (tx) => {
       const snapshot = await this.pickupOrderSnapshot(tx, poNumber);
       return {
-        orderId: snapshot.order.id,
-        orderNumber: snapshot.order.number,
-        poNumber: snapshot.order.poNumber!,
+        ...snapshot.source,
         pieces: snapshot.lines.length,
         parts: snapshot.lines.reduce((sum, line) => sum + line.targetParts, 0),
       };
@@ -760,8 +796,9 @@ export class WarehouseService {
         throw new ConflictException('This factory pickup is already closed.');
       await this.noCount(tx);
       const stock = await this.load(tx, lineNumber);
-      const order = stock.unit.piece.estim.order!;
-      assertCompanyFactoryCollection(order);
+      const order = stock.unit.piece?.estim.order;
+      const source = pickupSource(stock);
+      if (order) assertCompanyFactoryCollection(order);
       const expected = parts(stock);
       if (!expected)
         throw new BadRequestException(
@@ -774,45 +811,34 @@ export class WarehouseService {
           'All expected parts for this line have already been collected.',
         );
 
-      let runOrder = await tx.factoryPickupRunOrder.findUnique({
-        where: {
-          pickupRunId_orderId: { pickupRunId, orderId: order.id },
-        },
+      let runOrder = await tx.factoryPickupRunOrder.findFirst({
+        where: { pickupRunId, ...pickupSourceWhere(source) },
       });
       if (!runOrder && !dto.addPo) {
         const snapshot = await this.pickupOrderSnapshot(
           tx,
-          order.poNumber ?? '',
+          source.poNumber,
           pickupRunId,
         );
         return {
           kind: 'PO_NOT_INCLUDED' as const,
           candidate: {
-            orderId: order.id,
-            orderNumber: order.number,
-            poNumber: order.poNumber ?? '',
+            ...this.technicianStock(presentStock(stock)),
+            ...source,
             pieces: snapshot.lines.length,
             parts: snapshot.lines.reduce(
               (sum, line) => sum + line.targetParts,
               0,
             ),
-            lineNumber,
-            barcode: `I${lineNumber}`,
-            mark: stock.unit.piece.mark,
-            product: stock.unit.piece.prod.name,
-            system: stock.unit.piece.syst.name,
-            configuration: stock.unit.piece.conf.conf,
           },
         };
       }
       if (!runOrder) {
-        if (!order.poNumber)
+        if (!source.poNumber)
           throw new BadRequestException('This order does not have a factory PO number.');
-        await this.addPickupOrder(tx, pickupRunId, order.poNumber, true);
-        runOrder = await tx.factoryPickupRunOrder.findUnique({
-          where: {
-            pickupRunId_orderId: { pickupRunId, orderId: order.id },
-          },
+        await this.addPickupOrder(tx, pickupRunId, source.poNumber, true);
+        runOrder = await tx.factoryPickupRunOrder.findFirst({
+          where: { pickupRunId, ...pickupSourceWhere(source) },
         });
       }
 
@@ -925,11 +951,13 @@ export class WarehouseService {
       await this.noCount(tx);
       const summary = await this.pickupRunSummary(tx, id, actor);
       const other = await tx.factoryPickupRunOrder.findFirst({
-        where: { orderId: { in: summary.orders.map((order) => order.orderId) }, activeSlot: 1, pickupRunId: { not: id } },
-        include: { order: { select: { poNumber: true } } },
+        where: {
+          OR: summary.orders.map(pickupSourceWhere), activeSlot: 1, pickupRunId: { not: id },
+        },
+        include: { order: { select: { poNumber: true } }, externalPo: { select: { poNumber: true } } },
       });
       if (other)
-        throw new ConflictException(`PO ${other.order.poNumber} is already in active pickup #${other.pickupRunId}. Close that pickup before reopening this one.`);
+        throw new ConflictException(`PO ${other.externalPo?.poNumber ?? other.order?.poNumber} is already in active pickup #${other.pickupRunId}. Close that pickup before reopening this one.`);
       for (const line of summary.lines) {
         const stock = await this.load(tx, line.lineNumber);
         const available = (parts(stock) ?? 0) - stock.inTransit - stock.onHand - stock.released;
@@ -981,17 +1009,19 @@ export class WarehouseService {
     }
   }
   private async load(tx: Tx, lineNumber: string): Promise<Stock> {
+    // Use the same external PO lock as reimports before reading operational counts.
+    await tx.$queryRaw`SELECT p.id FROM factory_pos p INNER JOIN factory_units u ON u.externalPoId = p.id WHERE u.lineNumber = ${lineNumber} FOR UPDATE`;
     const stock = await tx.warehouseStock.findUnique({
       where: { lineNumber },
       include: stockInclude,
     });
     if (!stock)
       throw new NotFoundException(
-        'Barcode not found. Import its factory JSON into the matching order first.',
+        'Barcode not found. Import its factory JSON into an order or as an External PO first.',
       );
-    if (!stock.unit.piece.estim.order)
+    if (!stock.unit.piece?.estim.order && !stock.unit.externalPo)
       throw new BadRequestException(
-        'This factory unit is not associated with an order.',
+        'This factory unit is not associated with an order or External PO.',
       );
     return stock;
   }
@@ -1246,6 +1276,8 @@ export class WarehouseService {
       }
       await this.noCount(tx);
       const first = await this.load(tx, items[0].lineNumber);
+      if (!first.unit.piece)
+        throw new BadRequestException('External POs do not have an installation. Receive these parts in a store and use Release for their departure.');
       const estimateId = first.unit.piece.idEst;
       // Las mismas validaciones comerciales que Release; recoger y recibir siguen independientes.
       const release = await assertWarehouseRelease(tx, estimateId);
@@ -1263,6 +1295,8 @@ export class WarehouseService {
       // Una confirmación corresponde a una obra. El lote completo se revierte ante cualquier conflicto.
       for (const [index, item] of items.entries()) {
         const stock = await this.load(tx, item.lineNumber);
+        if (!stock.unit.piece)
+          throw new BadRequestException('External POs do not have an installation. Receive these parts in a store and use Release for their departure.');
         if (stock.unit.piece.idEst !== estimateId)
           throw new BadRequestException('Select parts for one installation at a time. No parts were delivered by this request.');
         if (stock.version !== item.version)
@@ -1312,6 +1346,9 @@ export class WarehouseService {
   private inventoryWhere(query: Query) {
     const view = query.view ?? 'on_hand';
     const where: Prisma.WarehouseStockWhereInput = stockSearch(query.search);
+    if (query.source === 'EXTERNAL') where.unit = { externalPoId: { not: null } };
+    else if (query.source === 'ORDER') where.unit = { pieceId: { not: null } };
+    else if (query.source) throw new BadRequestException('Invalid inventory source.');
     if (view === 'on_hand') where.onHand = { gt: 0 };
     else if (view === 'in_transit') where.inTransit = { gt: 0 };
     else if (view === 'complete')
@@ -1406,6 +1443,7 @@ export class WarehouseService {
           lineNumber: true,
           unit: {
             select: {
+              externalPo: true,
               piece: {
                 select: {
                   estim: {
@@ -1426,6 +1464,9 @@ export class WarehouseService {
       });
       type Group = {
         key: string;
+        source: 'ORDER' | 'EXTERNAL';
+        externalPoId: number | null;
+        supplierName: string;
         orderId: number | null;
         orderNumber: string;
         poNumber: string;
@@ -1435,21 +1476,25 @@ export class WarehouseService {
       };
       const grouped = new Map<string, Group>();
       for (const row of matching) {
-        const estimate = row.unit.piece.estim,
-          order = estimate.order,
-          key = order ? `order:${order.id}` : `line:${row.lineNumber}`;
+        const estimate = row.unit.piece?.estim,
+          order = estimate?.order,
+          external = row.unit.externalPo,
+          key = external ? `external:${external.id}` : order ? `order:${order.id}` : `line:${row.lineNumber}`;
         let group = grouped.get(key);
         if (!group) {
           group = {
             key,
+            source: external ? 'EXTERNAL' : 'ORDER',
+            externalPoId: external?.id ?? null,
+            supplierName: external?.supplierName ?? '',
             orderId: order?.id ?? null,
             orderNumber: order?.number ?? '',
-            poNumber: order?.poNumber ?? '',
-            customer:
+            poNumber: external?.poNumber ?? order?.poNumber ?? '',
+            customer: estimate ?
               [estimate.customerFirstName, estimate.customerLastName]
                 .filter(Boolean)
-                .join(' ') || name(estimate.user),
-            project: estimate.name,
+                .join(' ') || name(estimate.user) : '',
+            project: external?.orderName ?? estimate?.name ?? '',
             lineNumbers: [],
           };
           grouped.set(key, group);
@@ -1475,6 +1520,9 @@ export class WarehouseService {
       return {
         items: pageGroups.map((group) => ({
           key: group.key,
+          source: group.source,
+          externalPoId: group.externalPoId,
+          supplierName: group.supplierName,
           orderId: group.orderId,
           orderNumber: group.orderNumber,
           poNumber: group.poNumber,
@@ -1541,9 +1589,9 @@ export class WarehouseService {
       const deltas = { transitDelta: 0, onHandDelta: 0, releasedDelta: 0 };
       let installation: ReturnType<typeof installationDestination> = null;
       if (dto.action === 'COLLECT') {
-        assertCompanyFactoryCollection(stock.unit.piece.estim.order!);
+        if (stock.unit.piece) assertCompanyFactoryCollection(stock.unit.piece.estim.order!);
         const activePickup = await tx.factoryPickupRunOrder.findFirst({
-          where: { orderId: stock.unit.piece.estim.order!.id, activeSlot: 1 }, select: { pickupRunId: true },
+          where: { ...pickupSourceWhere(pickupSource(stock)), activeSlot: 1 }, select: { pickupRunId: true },
         });
         if (activePickup)
           throw new ConflictException('Open the assigned factory pickup to collect parts for this PO.');
@@ -1558,7 +1606,8 @@ export class WarehouseService {
           throw new BadRequestException(
             'There are no parts of this unit in the warehouse.',
           );
-        installation = (await assertWarehouseRelease(tx, stock.unit.piece.idEst))?.installation ?? null;
+        if (stock.unit.piece)
+          installation = (await assertWarehouseRelease(tx, stock.unit.piece.idEst))?.installation ?? null;
         deltas.onHandDelta = -1;
         deltas.releasedDelta = 1;
       } else throw new BadRequestException('Invalid warehouse action.');
@@ -1604,7 +1653,7 @@ export class WarehouseService {
           'This unit changed. Refresh before editing expected parts.',
         );
       if (dto.expectedParts !== parts(stock) && await tx.factoryPickupRunOrder.findFirst({
-        where: { orderId: stock.unit.piece.estim.order!.id, activeSlot: 1 },
+        where: { ...pickupSourceWhere(pickupSource(stock)), activeSlot: 1 },
       }))
         throw new ConflictException(
           'Finish the active factory pickup before changing expected parts. Then start a new pickup for any remaining parts.',

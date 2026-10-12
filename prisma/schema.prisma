@@ -1658,19 +1658,41 @@ model Piece {
   @@index([idReinforcementOption])
 }
 
-// Cada código identifica una unidad; su ficha se consulta desde Piece.
+// Registro compartido: un PO pertenece a una orden comercial o al inventario externo.
+model FactoryPo {
+  id            Int                     @id @default(autoincrement())
+  poNumber      String                  @unique @db.VarChar(50)
+  orderId       Int?                    @unique
+  order         Order?                  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderName     String?                 @db.VarChar(200)
+  supplierName  String?                 @db.VarChar(200)
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  externalUnits FactoryUnit[]
+  pickupRuns    FactoryPickupRunOrder[]
+
+  @@map("factory_pos")
+}
+
+// Cada código pertenece a Piece o conserva una ficha mínima de un PO externo.
 model FactoryUnit {
-  lineNumber String @id @db.VarChar(50)
-  pieceId    Int
-  piece      Piece  @relation(fields: [pieceId], references: [id], onDelete: Restrict)
+  lineNumber   String     @id @db.VarChar(50)
+  pieceId      Int?
+  piece        Piece?     @relation(fields: [pieceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  externalPoId Int?
+  externalPo   FactoryPo? @relation(fields: [externalPoId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  mark         String?    @db.VarChar(200)
+  description  String?    @db.Text
+  panels       Int?
 
   stock WarehouseStock?
 
   @@index([pieceId])
+  @@index([externalPoId])
   @@map("factory_units")
 }
 
-// Cantidades operativas; la ficha del producto sigue viviendo en Piece.
+// Cantidades operativas compartidas por las unidades internas y externas.
 model WarehouseStock {
   lineNumber     String                 @id @db.VarChar(50)
   unit           FactoryUnit            @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
@@ -1859,16 +1881,21 @@ model FactoryPickupRunEvent {
 
 // Un mismo PO no puede estar simultáneamente en dos recogidas activas.
 model FactoryPickupRunOrder {
+  id                Int              @id @default(autoincrement())
   pickupRunId       Int
   pickupRun         FactoryPickupRun @relation(fields: [pickupRunId], references: [id], onDelete: Restrict)
-  orderId           Int
-  order             Order            @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderId           Int?
+  order             Order?           @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  externalPoId      Int?
+  externalPo        FactoryPo?       @relation(fields: [externalPoId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   activeSlot        Int?             @default(1)
   addedDuringPickup Boolean          @default(false)
   addedAt           DateTime         @default(now())
 
-  @@id([pickupRunId, orderId])
+  @@unique([pickupRunId, orderId])
+  @@unique([pickupRunId, externalPoId])
   @@unique([orderId, activeSlot])
+  @@unique([externalPoId, activeSlot])
   @@index([pickupRunId, addedAt])
   @@map("factory_pickup_run_orders")
 }
@@ -2005,6 +2032,7 @@ model Order {
   extraCharges      OrderExtraCharge[]
   deliveries        OrderDelivery[]
   factoryPickupRuns FactoryPickupRunOrder[]
+  factoryPo         FactoryPo?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

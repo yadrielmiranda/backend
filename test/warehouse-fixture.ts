@@ -20,6 +20,7 @@ export function warehouseFixture() {
     deliveries: [],
   };
   const orders: any[] = [order];
+  const externalPos: any[] = [];
   const definitions = [
     ['1029975', 'F3', 'French Door', 'FRENCH_DOOR', 'OX', 3],
     ['1029967', 'B2', 'Sliding Glass Door', 'SLIDING_DOOR', 'XXX', 4],
@@ -78,6 +79,11 @@ export function warehouseFixture() {
           unit: {
             lineNumber: s.lineNumber,
             pieceId: s.pieceId,
+            externalPoId: s.externalPoId ?? null,
+            externalPo: clone(externalPos.find((po) => po.id === s.externalPoId) ?? null),
+            mark: s.mark ?? null,
+            description: s.description ?? null,
+            panels: s.panels ?? null,
             piece: (() => {
               const piece = clone(pieces.find((p) => p.id === s.pieceId));
               if (piece) piece.estim.installationJob = piece.estim.order?.estimate?.installationJob ?? null;
@@ -118,6 +124,7 @@ export function warehouseFixture() {
       ? {
           ...row,
           order: clone(orders.find((value) => value.id === row.orderId) ?? null),
+          externalPo: clone(externalPos.find((value) => value.id === row.externalPoId) ?? null),
         }
       : null;
   const pickupRunView = (row) => row ? {
@@ -208,6 +215,8 @@ export function warehouseFixture() {
         return row?.pickupRunId === value.pickupRunId && row?.technicianId === value.technicianId;
       if (key === 'pickupRunId_orderId')
         return row?.pickupRunId === value.pickupRunId && row?.orderId === value.orderId;
+      if (key === 'pickupRunId_externalPoId')
+        return row?.pickupRunId === value.pickupRunId && row?.externalPoId === value.externalPoId;
       if (key === 'orderId_activeSlot')
         return row?.orderId === value.orderId && row?.activeSlot === value.activeSlot;
       if (key === 'pickupRunId_lineNumber')
@@ -309,6 +318,7 @@ export function warehouseFixture() {
   });
   let queue: Promise<any> = Promise.resolve();
   const db: any = {
+    factoryPo: model(externalPos, (po) => po ?? null, (d) => ({ id: externalPos.length + 1, orderId: null, ...d })),
     user: model(users, (u) => u ?? null, (d) => d),
     warehouseStore: model(stores, (s) => s ?? null, (d) => ({
       id: Math.max(0, ...stores.map((s) => s.id)) + 1, isActive: true, version: 0,
@@ -375,6 +385,9 @@ export function warehouseFixture() {
       ...d,
     })),
     factoryPickupRunOrder: model(pickupRunOrders, pickupRunOrderView, (d) => ({
+      id: pickupRunOrders.length + 1,
+      orderId: null,
+      externalPoId: null,
       activeSlot: 1,
       addedDuringPickup: false,
       addedAt: new Date(),
@@ -412,7 +425,7 @@ export function warehouseFixture() {
   db.warehouseStock.fields = { expectedParts: { _ref: 'expectedParts' } };
   db.warehouseCountLine.fields = { expected: { _ref: 'expected' } };
   return {
-    db, stocks, movements, counts, countLines, pieces, order, orders, stores, balances,
+    db, stocks, movements, counts, countLines, pieces, order, orders, externalPos, stores, balances,
     pickupRuns, pickupRunOrders, pickupRunLines, pickupRunTechnicians, pickupRunEvents, users,
   };
 }

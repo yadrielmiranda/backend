@@ -52,6 +52,16 @@ If the assigned administrator cannot finish a processing record, another adminis
 
 The immutable reward adjustment ledger, payout state machine, request idempotency and frozen destinations can support a future automated payout provider. Provider callbacks must use the same reservation and completion transitions and record their external transfer IDs; customer payment collection remains separate.
 
+## External PO inventory
+
+Apply `20261012120000_external_factory_pos` and regenerate Prisma before running the external PO feature. The migration preserves existing stock and pickup memberships and registers existing order POs in the shared unique PO namespace.
+
+Administrators use **Warehouse → Import External PO** to preview an ECO v3 JSON and confirm physical part counts. Only PO number, reference name, supplier name, line number, optional mark, full description and panel count are saved. French Door and Sliding Door descriptions add one to the expected part count under the same barcode. Missing or ambiguous counts require review. Importing registers expected units; physical collection and receipt establish stock. Prices, supplier IDs, manufacturer statuses and separate product attributes are ignored.
+
+External units share warehouse stores, pickup runs, counts, transfers and movement history. Their releases validate stock and staff permissions without commercial order/payment requirements. Internal units retain their existing requirements. Reimports preserve reviewed quantities and warehouse history; active pickups/counts block inventory-changing imports.
+
+`node scripts/test-external-po-mysql.cjs` verifies the migration and inventory lifecycle in a disposable local MySQL database built from migration history, without importing user files or altering application data. It requires the local MySQL client.
+
 ## Compile and run the project
 
 ```bash

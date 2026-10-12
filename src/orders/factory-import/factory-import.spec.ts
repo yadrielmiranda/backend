@@ -126,6 +126,10 @@ function fixture() {
       findUnique: jest.fn().mockResolvedValue({ materialRevisions: [], installationJob: null }),
     },
     factoryPickupRunOrder: { findFirst: jest.fn(async () => null as any) },
+    factoryPo: {
+      findUnique: jest.fn(async () => null as any),
+      upsert: jest.fn(async ({ create }) => create),
+    },
     order: {
       findUnique: jest.fn(async ({ where }) =>
         where.id === order.id
@@ -686,6 +690,18 @@ describe('factory import transaction and authorization', () => {
     const g = fixture();
     g.units.push({ lineNumber: '100', pieceId: 999, otherOrder: true });
     await expect(g.preview()).rejects.toThrow('another order');
+  });
+  it('rejects a PO reserved by external inventory and claims the shared registry on import', async () => {
+    const f = fixture();
+    f.db.factoryPo.findUnique.mockResolvedValue({ orderId: null });
+    await expect(f.preview()).rejects.toThrow('external PO');
+    f.db.factoryPo.findUnique.mockResolvedValue(null);
+    await f.confirm();
+    expect(f.db.factoryPo.upsert).toHaveBeenCalledWith({
+      where: { orderId: 1 },
+      create: { orderId: 1, poNumber: '123' },
+      update: { poNumber: '123' },
+    });
   });
   it('never drops an existing link or swaps its PO', async () => {
     const f = fixture();

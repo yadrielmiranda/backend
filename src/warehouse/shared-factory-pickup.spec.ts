@@ -1,4 +1,5 @@
-import assert from 'node:assert/strict';
+import assert = require('node:assert/strict');
+import { types } from 'node:util';
 import { randomUUID } from 'crypto';
 import { WarehouseService } from './warehouse.service';
 import { warehouseFixture } from '../../test/warehouse-fixture';
@@ -63,7 +64,7 @@ describe('Shared factory pickups and admin reopening', () => {
     await assert.rejects(() => f.start([3], ['281374', 'MISTYPED']), /PO not found/);
     await assert.rejects(() => f.start([3], ['281374', '281374']), /only once/);
     assert.equal(f.pickupRuns.length, 0); assert.equal(f.pickupRunTechnicians.length, 0);
-    assert.deepEqual((await f.service.factoryPickupTechnicians(admin)).map((u) => u.id), [3]);
+    expect((await f.service.factoryPickupTechnicians(admin)).map((u) => u.id)).toEqual([3]);
   });
 
   it('shares multiple technician scans, caps quantities and keeps the individual audit', async () => {
@@ -75,7 +76,7 @@ describe('Shared factory pickups and admin reopening', () => {
     const current = await f.service.factoryPickup(run.id, tech);
     assert.equal(current.collectedParts, 3);
     assert.deepEqual(current.collectors.map((c) => [c.id, c.parts]), [[3, 1], [4, 1], [5, 1]]);
-    assert(current.collectors.every((c) => c.firstScanAt instanceof Date && c.lastScanAt instanceof Date));
+    assert(current.collectors.every((c) => types.isDate(c.firstScanAt) && types.isDate(c.lastScanAt)));
   });
 
   it('records the same request only once during concurrent retries', async () => {
@@ -152,7 +153,7 @@ describe('Shared factory pickups and admin reopening', () => {
     const reopened = await f.service.reopenFactoryPickup(run.id, { cycle: 0 }, otherAdmin);
     assert.equal(reopened.status, 'ACTIVE'); assert.equal(reopened.cycle, 1);
     assert.equal(reopened.collectedParts, 1); assert.equal(reopened.closedBy, null);
-    assert.deepEqual(reopened.events.map((e) => [e.status, e.actor.id]), [['PARTIAL', 4], ['ACTIVE', 5]]);
+    expect(reopened.events.map((e) => [e.status, e.actor.id])).toEqual([['PARTIAL', 4], ['ACTIVE', 5]]);
     assert.deepEqual(await f.service.reopenFactoryPickup(run.id, { cycle: 0 }, admin), reopened);
     await assert.rejects(() => f.service.finishFactoryPickup(run.id, partial, second), /reopened/);
     await f.service.factoryPickupScan(run.id, scan(), second);
