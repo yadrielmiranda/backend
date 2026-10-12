@@ -1184,6 +1184,8 @@ export class WarehouseService {
       if (!dto.isActive) {
         if (await tx.warehouseStoreStock.count({ where: { storeId: id, onHand: { gt: 0 } } }))
           throw new ConflictException('Transfer all parts out of this store before deactivating it.');
+        if (await tx.materialStock.count({ where: { storeId: id, quantity: { gt: 0 } } }))
+          throw new ConflictException('Transfer all materials out of this store before deactivating it.');
         if (await tx.warehouseCount.count({ where: { storeId: id, status: 'OPEN' } }))
           throw new ConflictException('Finish or cancel the physical count for this store before deactivating it.');
       }

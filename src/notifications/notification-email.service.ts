@@ -48,6 +48,19 @@ export type EstimateShareEmail = {
   projectName?: string | null;
 };
 
+export type MaterialPurchaseEmail = {
+  to: string;
+  path: string;
+  customerName: string;
+  saleCode: string;
+  total: string;
+  currency: string;
+};
+
+export type MaterialPurchaseEmailResult =
+  | { status: 'ACCEPTED'; providerMessageId?: string }
+  | { status: 'RETRY' | 'FAILED' | 'UNKNOWN' | 'UNAVAILABLE'; errorCode: string };
+
 const MAX_ATTEMPTS = 3;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_ATTEMPT_MS = 10 * 60 * 1000;
@@ -138,13 +151,15 @@ export class NotificationEmailService {
     }
   }
 
-  private isEligible(user: Recipient | null): user is Recipient {
+  private isEligible(user: Recipient | null, notification: Pick<Notification, 'dedupeKey'>): user is Recipient {
     if (!user?.isActive || user.deletedAt) return false;
     const role = user.role.name.toLowerCase();
-    if (
+    const materialPurchase = /^material-sale:\d+:paid$/.test(notification.dedupeKey ?? '');
+    const customerPurchase = /^material-sale:\d+:paid:customer$/.test(notification.dedupeKey ?? '');
+    if (customerPurchase ? !['admin', 'operator', 'client', 'dealer'].includes(role) : materialPurchase ? role !== 'admin' : (
       role !== 'client' &&
       !(role === 'dealer' && (user.dealerMode ?? 'EXTERNAL') === 'EXTERNAL')
-    )
+    ))
       return false;
     // Son avisos operativos del proyecto, no promociones ni una suscripción SMS.
     // Las dos preferencias SMS no controlan el correo de servicio.
@@ -231,13 +246,59 @@ export class NotificationEmailService {
       );
   }
 
+  canSendMaterialPurchaseEmail(): boolean {
+    return this.settings() !== null;
+  }
+
+  /** The caller persists this result; ambiguous SMTP outcomes must not be retried. */
+  async sendMaterialPurchaseEmail(input: MaterialPurchaseEmail): Promise<MaterialPurchaseEmailResult> {
+    const to = input.to.trim().toLowerCase();
+    if (to.length > 254 || !isEmail(to))
+      return { status: 'FAILED', errorCode: 'INVALID_RECIPIENT' };
+    // Only a server-created invoice token can be included, never a supplied domain.
+    if (!/^\/public\/material-sales\/[a-f0-9]{64}$/.test(input.path))
+      return { status: 'FAILED', errorCode: 'INVALID_INVOICE_LINK' };
+    if (!/^[A-Z]{3}$/.test(input.currency) || !/^(?:0|[1-9]\d{0,9})\.\d{2}$/.test(input.total))
+      return { status: 'FAILED', errorCode: 'INVALID_INVOICE_AMOUNT' };
+    const settings = this.settings();
+    if (!settings) return { status: 'UNAVAILABLE', errorCode: 'EMAIL_NOT_CONFIGURED' };
+    const code = cleanText(input.saleCode).slice(0, 50);
+    const customerName = cleanText(input.customerName).slice(0, 200);
+    const link = new URL(input.path, settings.origin).href;
+    const message = [
+      customerName ? `Hello ${customerName},` : 'Hello,',
+      '',
+      `Your material order #${code} is paid in full (${input.currency} ${input.total}).`,
+      '',
+      'You can view and print your invoice using the link below. Show your order number or invoice at warehouse pickup.',
+    ].join('\n');
+    let info: SMTPTransport.SentMessageInfo;
+    try {
+      info = await this.transport(settings).sendMail({
+        ...this.renderMessage(settings, 'Material order paid', `Material order #${code} paid`, message, 'View order and invoice', link),
+        to,
+      });
+    } catch (error) {
+      const responseCode = Number((error as { responseCode?: number })?.responseCode);
+      // Only an explicit SMTP rejection establishes that no message was accepted.
+      if (Number.isInteger(responseCode) && responseCode >= 400 && responseCode < 600)
+        return { status: responseCode < 500 ? 'RETRY' : 'FAILED', errorCode: `SMTP_${responseCode}` };
+      return { status: 'UNKNOWN', errorCode: 'SMTP_CONNECTION_ERROR' };
+    }
+    const matches = (address: string | { address: string }) =>
+      (typeof address === 'string' ? address : address.address)?.toLowerCase() === to;
+    if (info?.rejected?.some(matches)) return { status: 'FAILED', errorCode: 'RECIPIENT_REJECTED' };
+    if (!info?.accepted?.some(matches)) return { status: 'UNKNOWN', errorCode: 'INVALID_SMTP_RESPONSE' };
+    return { status: 'ACCEPTED', ...(info.messageId ? { providerMessageId: info.messageId } : {}) };
+  }
+
   async enqueue(notification: Notification, db: Prisma.TransactionClient) {
     if (!this.settings()) return;
     const user = await db.user.findUnique({
       where: { id: notification.recipientId },
       select: recipientSelect,
     });
-    if (!this.isEligible(user)) return;
+    if (!this.isEligible(user, notification)) return;
     // Se guarda dentro de la misma transacción; todavía no se conecta con SMTP.
     await db.notificationEmail.create({
       data: {
@@ -253,7 +314,9 @@ export class NotificationEmailService {
       notification.dedupeKey?.split(':') ?? [];
     const message = cleanText(notification.message);
     let title = 'Project update';
-    if (entity === 'order') {
+    if (entity === 'material-sale' && event === 'paid') {
+      title = 'Material order paid';
+    } else if (entity === 'order') {
       const titles: Record<string, string> = {
         created: 'Order created',
         status: 'Order status updated',
@@ -484,7 +547,7 @@ export class NotificationEmailService {
     const user = notification?.recipient ?? null;
     if (
       !notification ||
-      !this.isEligible(user) ||
+      !this.isEligible(user, notification) ||
       user.email.trim().toLowerCase() !== entry.email
     ) {
       await this.finish(id, 'SKIPPED', 'RECIPIENT_CHANGED');

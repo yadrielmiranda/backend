@@ -216,6 +216,15 @@ describe('configurable warehouse stores', () => {
     expect((await f.service.unit(door, admin)).stores[0]).toMatchObject({ id: 1, name: 'North area', onHand: 1 });
     await expect(f.service.updateStore(1, { name: 'Changed', isActive: true, version: 0 }, admin)).rejects.toThrow('Refresh'); f.invariant();
   });
+  it('requires moving material stock before deactivating a store', async () => {
+    const f = fixture();
+    f.db.materialStock.count = jest.fn(async () => 1);
+    await expect(f.service.updateStore(1, { name: 'Main', isActive: false, version: 0 }, admin)).rejects.toThrow('Transfer all materials');
+    expect(f.stores[0].isActive).toBe(true);
+    f.db.materialStock.count = jest.fn(async () => 0);
+    await f.service.updateStore(1, { name: 'Main', isActive: false, version: 0 }, admin);
+    expect(f.stores[0].isActive).toBe(false);
+  });
   it('keeps one PO grouped while a store filter returns only the pieces present there', async () => {
     const f = fixture();
     await f.scan('RECEIVE', 1, door);

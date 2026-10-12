@@ -7,6 +7,7 @@ import { LogsModule } from '@/logs/logs.module';
 import { ConfigModule } from '@nestjs/config';
 import { InstallationModule } from '@/installation/installation.module';
 import { NotificationsModule } from '@/notifications/notifications.module';
+import { MaterialsModule } from '@/materials/materials.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { NotificationsModule } from '@/notifications/notifications.module';
     ConfigModule,
     InstallationModule,
     NotificationsModule,
+    MaterialsModule,
   ],
   controllers: [PaymentsController],
   providers: [PaymentsService],

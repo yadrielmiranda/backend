@@ -87,6 +87,8 @@ export class NotificationSmsService {
   }
 
   async enqueue(notification: Notification, db: Prisma.TransactionClient) {
+    // Material purchases request bell and email only, independently of SMS consent.
+    if (/^material-sale:\d+:paid(?::customer)?$/.test(notification.dedupeKey ?? '')) return;
     // Sin credenciales, el desarrollo local y las notificaciones de la app siguen funcionando.
     if (!this.settings()) return;
     const user = await db.user.findUnique({
@@ -221,6 +223,7 @@ export class NotificationSmsService {
     const user = notification?.recipient ?? null;
     if (
       !notification ||
+      /^material-sale:\d+:paid(?::customer)?$/.test(notification.dedupeKey ?? '') ||
       !this.isEligible(user) ||
       user.phone !== entry.phone ||
       user.smsConsent!.consentedAt!.getTime() !== entry.consentedAt.getTime()

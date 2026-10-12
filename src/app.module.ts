@@ -50,6 +50,7 @@ import { InstallationModule } from './installation/installation.module';
 import { PrivacyModule } from './privacy/privacy.module';
 import { DeliveriesModule } from './deliveries/deliveries.module';
 import { WarehouseModule } from './warehouse/warehouse.module';
+import { MaterialsModule } from './materials/materials.module';
 import { SmsConsentModule } from './sms/sms-consent.module';
 import { ReferralsModule } from './referrals/referrals.module';
 
@@ -103,6 +104,7 @@ import { ReferralsModule } from './referrals/referrals.module';
     SmsConsentModule,
     ReferralsModule,
     WarehouseModule,
+    MaterialsModule,
   ],
   controllers: [AppController],
   providers: [

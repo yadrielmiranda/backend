@@ -111,6 +111,14 @@ function fixture() {
 }
 
 describe('NotificationSmsService', () => {
+  it.each(['material-sale:21:paid', 'material-sale:21:paid:customer'])('never texts a material purchase event %s', async key => {
+    const f = fixture(); f.notification.dedupeKey = key;
+    await f.service.enqueue(f.notification as never, f.db as never);
+    await f.service.processPending();
+    expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(f.row.status).toBe('SKIPPED');
+  });
   beforeEach(() => {
     jest.resetAllMocks();
     jest.useFakeTimers().setSystemTime(new Date('2026-09-08T13:00:00Z'));

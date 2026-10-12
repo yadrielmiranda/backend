@@ -23,6 +23,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { refreshDraftEarningsPlan } from '@/earnings-plans/estimate-earnings-plan';
@@ -52,6 +53,7 @@ import {
 } from '@/orders/order-material-financials';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { snapshotReferralReward } from '@/referrals/referral-terms';
+import { MaterialsSalesService } from '@/materials/materials-sales.service';
 
 const MATERIAL_ACCEPTANCE_TEXT =
   'I have reviewed and accept the products, dimensions, configurations and prices in this estimate.';
@@ -91,6 +93,7 @@ export class PaymentsService {
     private readonly config: ConfigService,
     private readonly installationWorkflow: InstallationWorkflowService,
     private readonly notifications: NotificationsService,
+    @Optional() private readonly materialsSales?: MaterialsSalesService,
   ) {
     const key = this.config.get<string>('STRIPE_SECRET_KEY');
     if (!key) throw new Error('STRIPE_SECRET_KEY is not set in .env');
@@ -2310,6 +2313,10 @@ export class PaymentsService {
       event = this.stripe.webhooks.constructEvent(rawBody, signature, secret);
     } catch {
       throw new BadRequestException('Invalid Stripe signature');
+    }
+
+    if (this.materialsSales && await this.materialsSales.handleVerifiedStripeEvent(event)) {
+      return { received: true };
     }
 
     if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {

@@ -324,6 +324,7 @@ export function warehouseFixture() {
       id: Math.max(0, ...stores.map((s) => s.id)) + 1, isActive: true, version: 0,
       createdAt: new Date(), updatedAt: new Date(), ...d,
     })),
+    materialStock: { count: async () => 0 },
     warehouseStoreStock: model(balances, (b) => b ? {
       ...b, stock: stockView(stocks.find(s => s.lineNumber === b.lineNumber)),
     } : null, (d) => ({

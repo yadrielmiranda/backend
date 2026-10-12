@@ -118,6 +118,42 @@ describe('NotificationEmailService', () => {
     jest.restoreAllMocks();
   });
 
+  it('queues and sends a material purchase alert to an admin without enabling unrelated admin emails', async () => {
+    const f = fixture(); f.user.role.name = 'admin';
+    await f.service.enqueue(f.notification as never, f.db as never);
+    expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+    f.notification.dedupeKey = 'material-sale:21:paid';
+    f.notification.message = 'Material order #MS-123 from Example Buyer is fully paid (USD 48.15). Ready to prepare for warehouse pickup.';
+    f.notification.actionUrl = '/warehouse/materials/sales/21';
+    await f.service.enqueue(f.notification as never, f.db as never);
+    await f.service.processPending();
+    expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ subject: 'Material order paid - Order #MS-123', text: expect.stringContaining('https://portal.example.test/warehouse/materials/sales/21') }));
+    expect(f.row.status).toBe('ACCEPTED');
+  });
+
+  it.each(['client', 'dealer', 'operator', 'admin'])('sends the online %s buyer an invoice link', async role => {
+    const f = fixture(); f.user.role.name = role; f.user.dealerMode = 'INTERNAL';
+    f.notification.dedupeKey = 'material-sale:21:paid:customer';
+    f.notification.message = 'Your material order #MS-123 is paid in full (USD 48.15). Show your order number or invoice at warehouse pickup.';
+    f.notification.actionUrl = `/public/material-sales/${'a'.repeat(64)}`;
+    f.notification.actionLabel = 'View order and invoice';
+    await f.service.enqueue(f.notification as never, f.db as never);
+    await f.service.processPending();
+    expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining(f.notification.actionUrl) }));
+    expect(f.row.status).toBe('ACCEPTED');
+  });
+
+  it('rechecks the admin recipient role before sending a staff material alert', async () => {
+    const f = fixture(); f.user.role.name = 'admin'; f.notification.dedupeKey = 'material-sale:21:paid';
+    await f.service.enqueue(f.notification as never, f.db as never);
+    f.user.role.name = 'client';
+    await f.service.processPending();
+    expect(sendMail).not.toHaveBeenCalled();
+    expect(f.row.status).toBe('SKIPPED');
+  });
+
   it.each([
     ['client', null, true],
     ['dealer', 'EXTERNAL', true],
@@ -368,6 +404,104 @@ describe('NotificationEmailService', () => {
         },
       }),
     );
+  });
+
+  describe('guest material purchase email', () => {
+    const purchase = () => ({
+      to: email, customerName: 'Guest Buyer', saleCode: 'MS-123',
+      total: '48.15', currency: 'USD', path: `/public/material-sales/${'a'.repeat(64)}`,
+    });
+
+    it('sends the paid invoice using notification branding and credentials without requiring an account', async () => {
+      const f = fixture();
+      expect(f.service.canSendMaterialPurchaseEmail()).toBe(true);
+      expect(createTransport).not.toHaveBeenCalled();
+      await expect(f.service.sendMaterialPurchaseEmail(purchase())).resolves.toEqual({ status: 'ACCEPTED', providerMessageId: '<example-message-id>' });
+      const message = sendMail.mock.calls[0][0];
+      expect(message).toMatchObject({
+        to: email, from: { name: 'Example Company', address: 'notifications@example.com' },
+        replyTo: 'sales@example.com', subject: 'Material order #MS-123 paid',
+      });
+      expect(message.text).toContain('Hello Guest Buyer,');
+      expect(message.text).toContain('paid in full (USD 48.15)');
+      expect(message.text).toContain(`https://portal.example.test${purchase().path}`);
+      expect(message.text).toContain('Show your order number or invoice at warehouse pickup.');
+      expect(message).not.toHaveProperty('attachments');
+      expect(f.db.user.findUnique).not.toHaveBeenCalled();
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+      expect(f.config.get.mock.calls.some(([key]) => key.startsWith('SMTP_'))).toBe(false);
+    });
+
+    it('escapes the guest name and strips header line breaks', async () => {
+      const f = fixture();
+      await f.service.sendMaterialPurchaseEmail({ ...purchase(), customerName: '<script>alert(1)</script>', saleCode: 'MS-123\r\nBcc: other@example.com' });
+      const message = sendMail.mock.calls[0][0];
+      expect(message.subject).not.toMatch(/[\r\n]/);
+      expect(message.html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+      expect(message.html).not.toContain('<script>');
+    });
+
+    it.each([
+      'https://evil.test/public/material-sales/token', '//evil.test/path', '/warehouse/materials/sales/1',
+      `/public/material-sales/${'a'.repeat(64)}?redirect=bad`, `/public/material-sales/${'a'.repeat(63)}`,
+      `/public/material-sales/${'g'.repeat(64)}`, '/public/material-sales/../orders/1',
+    ])('rejects an unsafe invoice path without contacting SMTP: %s', async path => {
+      const f = fixture();
+      await expect(f.service.sendMaterialPurchaseEmail({ ...purchase(), path })).resolves.toEqual({ status: 'FAILED', errorCode: 'INVALID_INVOICE_LINK' });
+      expect(sendMail).not.toHaveBeenCalled();
+    });
+
+    it.each(['bad', 'guest@example.com,other@example.com', 'guest@example.com\r\nBcc: other@example.com'])(
+      'rejects an invalid guest email: %s', async to => {
+        const f = fixture();
+        await expect(f.service.sendMaterialPurchaseEmail({ ...purchase(), to })).resolves.toEqual({ status: 'FAILED', errorCode: 'INVALID_RECIPIENT' });
+        expect(sendMail).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([['NaN', 'USD'], ['-1.00', 'USD'], ['1.001', 'USD'], ['10.00', 'USD\r\n']])(
+      'rejects an invalid amount or currency: %s %s', async (total, currency) => {
+        const f = fixture();
+        await expect(f.service.sendMaterialPurchaseEmail({ ...purchase(), total, currency })).resolves.toEqual({ status: 'FAILED', errorCode: 'INVALID_INVOICE_AMOUNT' });
+        expect(sendMail).not.toHaveBeenCalled();
+      },
+    );
+
+    it('defers without using password-reset credentials when notification email is not ready', async () => {
+      const f = fixture(); delete f.values.NOTIFICATIONS_SMTP_PASS;
+      expect(f.service.canSendMaterialPurchaseEmail()).toBe(false);
+      await expect(f.service.sendMaterialPurchaseEmail(purchase())).resolves.toEqual({ status: 'UNAVAILABLE', errorCode: 'EMAIL_NOT_CONFIGURED' });
+      expect(createTransport).not.toHaveBeenCalled();
+      expect(f.config.get.mock.calls.some(([key]) => key.startsWith('SMTP_'))).toBe(false);
+    });
+
+    it.each([[451, 'RETRY'], [550, 'FAILED'], [450.5, 'UNKNOWN']])('classifies an explicit SMTP %s safely as %s', async (responseCode, status) => {
+      const f = fixture(); sendMail.mockRejectedValue({ responseCode, message: 'private SMTP password' });
+      await expect(f.service.sendMaterialPurchaseEmail(purchase())).resolves.toEqual({
+        status, errorCode: status === 'UNKNOWN' ? 'SMTP_CONNECTION_ERROR' : `SMTP_${responseCode}`,
+      });
+    });
+
+    it('does not turn an ambiguous timeout into a retriable failure', async () => {
+      const f = fixture(); sendMail.mockRejectedValue(new Error('secret guest@example.com fake-notifications-secret'));
+      await expect(f.service.sendMaterialPurchaseEmail(purchase())).resolves.toEqual({ status: 'UNKNOWN', errorCode: 'SMTP_CONNECTION_ERROR' });
+    });
+
+    it.each([undefined, {}, { accepted: [] }, { accepted: ['other@example.com'] }])('treats unconfirmed SMTP acceptance as unknown: %s', async response => {
+      const f = fixture(); sendMail.mockResolvedValue(response);
+      await expect(f.service.sendMaterialPurchaseEmail(purchase())).resolves.toEqual({ status: 'UNKNOWN', errorCode: 'INVALID_SMTP_RESPONSE' });
+    });
+
+    it('honors an explicitly rejected recipient over a conflicting accepted list', async () => {
+      const f = fixture(); sendMail.mockResolvedValue({ accepted: [email], rejected: [{ address: email }] });
+      await expect(f.service.sendMaterialPurchaseEmail(purchase())).resolves.toEqual({ status: 'FAILED', errorCode: 'RECIPIENT_REJECTED' });
+    });
+
+    it('accepts a normalized address-object SMTP result', async () => {
+      const f = fixture(); sendMail.mockResolvedValue({ accepted: [{ address: email.toUpperCase() }] });
+      await expect(f.service.sendMaterialPurchaseEmail({ ...purchase(), to: ` ${email.toUpperCase()} ` })).resolves.toEqual({ status: 'ACCEPTED' });
+      expect(sendMail.mock.calls[0][0].to).toBe(email);
+    });
   });
 
   describe('direct estimate email', () => {

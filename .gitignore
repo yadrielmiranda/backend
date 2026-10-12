@@ -18,6 +18,7 @@ lerna-debug.log*
 # Tests
 /coverage
 /.nyc_output
+/.test-tmp/
 
 # IDEs and editors
 /.idea
@@ -53,6 +54,7 @@ pids
 *.pid.lock
 
 # uploads
+/storage/material-images/
 /uploads/*
 !/uploads/.gitkeep
 
