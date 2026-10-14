@@ -400,6 +400,124 @@ export class WarehouseService {
     }));
   }
 
+  private async pickupTransitLots(tx: Tx, actor: AuthUser, lines?: string[], pickupRunId?: number) {
+    const runs = await tx.factoryPickupRun.findMany({
+      where: { ...this.pickupAccess(actor), ...(pickupRunId === undefined ? {} : { id: pickupRunId }) },
+      select: { id: true },
+    });
+    if (pickupRunId !== undefined && !runs.length) throw new NotFoundException('Factory pickup not found.');
+    const assigned = new Set(runs.map((run) => run.id));
+    const available = new Map<string, Array<{ pickupRunId: number; quantity: number }>>();
+    if (!assigned.size) return available;
+    const collections = await tx.warehouseMovement.findMany({
+      where: { pickupRunId: { in: [...assigned] }, type: 'COLLECT', reversal: null, stock: { inTransit: { gt: 0 } },
+        ...(lines ? { lineNumber: { in: lines } } : {}) },
+      select: { lineNumber: true },
+    });
+    const candidates = [...new Set(collections.map((movement) => movement.lineNumber))];
+    if (!candidates.length) return available;
+    // Undo pairs cancel each other. Remaining transit is attributed to collection runs;
+    // a finished pickup must not grant access to another crew's later collection.
+    const movements = await tx.warehouseMovement.findMany({
+      where: { lineNumber: { in: candidates }, transitDelta: { not: 0 }, reversalOfId: null, reversal: null },
+      select: { lineNumber: true, pickupRunId: true, transitDelta: true }, orderBy: { id: 'asc' },
+    });
+    const lots = new Map<string, Array<{ pickupRunId: number | null; quantity: number }>>();
+    for (const movement of movements) {
+      const current = lots.get(movement.lineNumber) ?? [];
+      lots.set(movement.lineNumber, current);
+      if (movement.transitDelta > 0) {
+        current.push({ pickupRunId: movement.pickupRunId, quantity: movement.transitDelta });
+      } else {
+        let remaining = -movement.transitDelta;
+        for (const lot of current) {
+          // Technician handoffs retain their pickup run. General warehouse receipts
+          // and staff releases consume the oldest remaining transit quantities.
+          if (movement.pickupRunId != null && lot.pickupRunId !== movement.pickupRunId) continue;
+          const quantity = Math.min(lot.quantity, remaining);
+          lot.quantity -= quantity; remaining -= quantity;
+          if (!remaining) break;
+        }
+      }
+    }
+    for (const [line, current] of lots) {
+      const byRun = new Map<number, number>();
+      for (const lot of current) if (lot.pickupRunId != null && assigned.has(lot.pickupRunId) && lot.quantity > 0)
+        byRun.set(lot.pickupRunId, (byRun.get(lot.pickupRunId) ?? 0) + lot.quantity);
+      if (byRun.size) available.set(line, [...byRun].map(([pickupRunId, quantity]) => ({ pickupRunId, quantity })));
+    }
+    return available;
+  }
+
+  async technicianCustomerDeliveryOptions(query: Query, actor: AuthUser) {
+    this.technician(actor);
+    const pickupRunId = query.pickupRunId === undefined ? undefined : Number(query.pickupRunId);
+    if (query.pickupRunId !== undefined && (!/^[1-9]\d*$/.test(query.pickupRunId) || !Number.isSafeInteger(pickupRunId)))
+      throw new BadRequestException('Choose a valid factory pickup.');
+    return this.pickupCustomerDeliveryOptions(query, actor, pickupRunId);
+  }
+
+  async factoryPickupCustomerDeliveryOptions(pickupRunId: number, query: Query, actor: AuthUser) {
+    this.staff(actor, true);
+    if (!Number.isSafeInteger(pickupRunId) || pickupRunId < 1)
+      throw new BadRequestException('Choose a valid factory pickup.');
+    return this.pickupCustomerDeliveryOptions(query, actor, pickupRunId);
+  }
+
+  private async pickupCustomerDeliveryOptions(query: Query, actor: AuthUser, pickupRunId?: number) {
+    const p = paging(query);
+    stockSearch(query.search); // Validate the same optional search used by inventory.
+    if (query.poKey !== undefined && !/^(order|external):[1-9]\d*$/.test(query.poKey))
+      throw new BadRequestException('Choose a valid PO.');
+    const search = query.search?.trim().toLowerCase() ?? '';
+    return this.prisma.$transaction(async (tx) => {
+      const available = await this.pickupTransitLots(tx, actor, undefined, pickupRunId);
+      const stocks = available.size ? await tx.warehouseStock.findMany({
+        where: { lineNumber: { in: [...available.keys()] }, inTransit: { gt: 0 } },
+        include: stockInclude, orderBy: { lineNumber: 'asc' },
+      }) : [];
+      type Option = ReturnType<typeof pickupSource> & {
+        customerName: string; projectName: string; expectedParts: number | null;
+        availableParts: number; pieces: number; lines: ReturnType<WarehouseService['technicianStock']>[];
+      };
+      const groups = new Map<string, Option>();
+      for (const stock of stocks) {
+        const source = pickupSource(stock), unit = presentStock(stock);
+        if (query.poKey && source.key !== query.poKey) continue;
+        const quantity = Math.min(stock.inTransit, available.get(stock.lineNumber)!.reduce((sum, lot) => sum + lot.quantity, 0));
+        if (!quantity) continue;
+        let group = groups.get(source.key);
+        if (!group) {
+          group = { ...source, customerName: unit.customer, projectName: unit.project,
+            expectedParts: 0, availableParts: 0, pieces: 0, lines: [] };
+          groups.set(source.key, group);
+        }
+        group.availableParts += quantity; group.pieces += 1;
+        group.lines.push({ ...this.technicianStock(unit), inTransit: quantity });
+      }
+      const filtered = [...groups.values()].filter((group) => !search || [
+        group.poNumber, group.orderNumber, group.customerName, group.projectName,
+        ...group.lines.flatMap((line) => [line.description, line.mark, line.lineNumber]),
+      ].some((value) => value.toLowerCase().includes(search)))
+        .sort((a, b) => a.poNumber.localeCompare(b.poNumber) || a.key.localeCompare(b.key));
+      const items = filtered.slice(p.skip, p.skip + p.take);
+      // Expected totals describe the full PO, including units not yet collected.
+      if (items.length) {
+        const all = await tx.warehouseStock.findMany({ where: { OR: items.map((item) => item.externalPoId !== null
+          ? { unit: { externalPoId: item.externalPoId } }
+          : { unit: { piece: { estim: { order: { id: item.orderId! } } } } }) }, include: stockInclude });
+        for (const stock of all) {
+          const group = groups.get(pickupSource(stock).key);
+          if (!group || group.expectedParts === null) continue;
+          const expected = parts(stock);
+          group.expectedParts = expected === null ? null : group.expectedParts + expected;
+        }
+      }
+      const count = await tx.warehouseCount.findUnique({ where: { activeSlot: 1 }, select: { id: true } });
+      return { items, total: filtered.length, page: p.page, pageSize: p.pageSize, countOpen: Boolean(count) };
+    });
+  }
+
   async technicianScan(dto: WarehouseScanDto, actor: AuthUser) {
     this.technician(actor);
     if (dto.action === 'COLLECT')
@@ -1273,10 +1391,37 @@ export class WarehouseService {
     return presentCustomerDelivery(delivery);
   }
 
+  async technicianCustomerDelivery(id: number, actor: AuthUser) {
+    this.technician(actor);
+    if (!Number.isSafeInteger(id) || id < 1)
+      throw new BadRequestException('Choose a valid customer delivery.');
+    const delivery = await this.prisma.warehouseCustomerDelivery.findFirst({
+      where: { id, actorId: actor.id, source: 'TRANSIT' },
+    });
+    if (!delivery) throw new NotFoundException('Customer delivery not found.');
+    return presentCustomerDelivery(delivery);
+  }
+
+  async technicianDeliverToCustomer(dto: WarehouseCustomerDeliveryDto, actor: AuthUser) {
+    this.technician(actor);
+    if (dto.source !== 'TRANSIT')
+      throw new ForbiddenException('Technicians can deliver collected factory parts directly to customers.');
+    return this.recordCustomerDelivery(dto, actor, true);
+  }
+
   async deliverToCustomer(dto: WarehouseCustomerDeliveryDto, actor: AuthUser) {
     this.staff(actor);
+    return this.recordCustomerDelivery(dto, actor, false);
+  }
+
+  private async recordCustomerDelivery(dto: WarehouseCustomerDeliveryDto, actor: AuthUser, technician: boolean) {
     if (!['TRANSIT', 'WAREHOUSE'].includes(dto.source))
       throw new BadRequestException('Choose the delivery source.');
+    if (dto.pickupRunId !== undefined) {
+      this.factoryPickupStaff(actor);
+      if (dto.source !== 'TRANSIT' || !Number.isSafeInteger(dto.pickupRunId) || dto.pickupRunId < 1)
+        throw new BadRequestException('Choose a valid factory pickup for this direct delivery.');
+    }
     if (typeof dto.requestKey !== 'string' ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(dto.requestKey))
       throw new BadRequestException('A valid request identifier is required.');
@@ -1305,7 +1450,8 @@ export class WarehouseService {
           !Number.isSafeInteger(item.version) || item.version < 0))
       throw new BadRequestException('Choose each unit once and enter valid quantities and versions.');
     const storeId = dto.storeId ?? null;
-    const requestHash = hash([actor.id, 'CUSTOMER_DELIVERY', dto.source, storeId, firstName, lastName, signatureStrokes, items]);
+    const requestHash = hash([actor.id, 'CUSTOMER_DELIVERY', dto.source, storeId, firstName, lastName, signatureStrokes, items,
+      ...(dto.pickupRunId === undefined ? [] : [{ pickupRunId: dto.pickupRunId }])]);
     return this.transaction(async (tx) => {
       const prior = await tx.warehouseCustomerDelivery.findUnique({ where: { requestKey: dto.requestKey } });
       if (prior) {
@@ -1315,18 +1461,31 @@ export class WarehouseService {
       }
       if (await tx.warehouseMovement.findUnique({ where: { requestKey: dto.requestKey } }))
         throw new ConflictException('This request identifier was already used for another operation.');
+      if (dto.pickupRunId !== undefined) await this.lockPickupRun(tx, dto.pickupRunId, actor, false);
       await this.noCount(tx);
       if (storeId !== null) await this.lockStores(tx, [storeId]);
       const store = storeId !== null ? await tx.warehouseStore.findUniqueOrThrow({ where: { id: storeId } }) : null;
-      const selected: Array<{ stock: Stock; quantity: number }> = [];
+      const eligible = technician || dto.pickupRunId !== undefined
+        ? await this.pickupTransitLots(tx, actor, items.map((item) => item.lineNumber), dto.pickupRunId) : null;
+      const selected: Array<{ stock: Stock; quantity: number; allocations?: Array<{ pickupRunId: number; quantity: number }> }> = [];
       for (const item of items) {
+        const lots = eligible?.get(item.lineNumber) ?? [];
+        if (eligible && lots.reduce((sum, lot) => sum + lot.quantity, 0) < item.quantity)
+          throw new ForbiddenException(dto.pickupRunId === undefined
+            ? 'These parts are not available from your assigned factory pickups. Refresh and review the delivery.'
+            : 'These parts are not available from this factory pickup. Refresh and review the delivery.');
         const stock = await this.load(tx, item.lineNumber);
         if (stock.version !== item.version)
           throw new ConflictException(`Unit I${item.lineNumber} changed. Refresh and review the delivery before signing again. No parts were released by this request.`);
         const available = dto.source === 'TRANSIT' ? stock.inTransit : storeQuantity(stock, storeId);
         if (available < item.quantity)
           throw new BadRequestException(`Unit I${item.lineNumber} does not have that many parts ${dto.source === 'TRANSIT' ? 'in transit' : 'in the selected source store'}. No parts were released by this request.`);
-        selected.push({ stock, quantity: item.quantity });
+        let remaining = item.quantity;
+        const allocations = eligible ? lots.flatMap((lot) => {
+          const quantity = Math.min(lot.quantity, remaining); remaining -= quantity;
+          return quantity > 0 ? [{ pickupRunId: lot.pickupRunId, quantity }] : [];
+        }) : undefined;
+        selected.push({ stock, quantity: item.quantity, allocations });
       }
       // Keep commercial release requirements for internal orders, regardless of the recipient.
       const estimateIds = [...new Set(selected.flatMap(({ stock }) => stock.unit.piece ? [stock.unit.piece.idEst] : []))].sort((a, b) => a - b);
@@ -1348,15 +1507,20 @@ export class WarehouseService {
         totalPieces: receiptItems.length, totalParts: items.reduce((total, item) => total + item.quantity, 0),
         actorId: actor.id, actorName: name(recordedBy),
       } });
-      for (const [index, { stock, quantity }] of selected.entries()) {
-        await this.move(tx, stock, {
-          type: 'RELEASE', actorId: actor.id, requestHash,
-          requestKey: index === 0 ? dto.requestKey : hash([dto.requestKey, stock.lineNumber]),
-          customerDeliveryId: delivery.id, quantity,
-          transitDelta: dto.source === 'TRANSIT' ? -quantity : 0,
-          onHandDelta: dto.source === 'WAREHOUSE' ? -quantity : 0,
-          releasedDelta: quantity, fromStoreId: dto.source === 'WAREHOUSE' ? storeId : null,
-        });
+      let movementIndex = 0;
+      for (const { stock, quantity, allocations } of selected) {
+        const movements: Array<{ quantity: number; pickupRunId?: number }> = allocations ?? [{ quantity }];
+        for (const [index, movement] of movements.entries()) {
+          await this.move(tx, index === 0 ? stock : await this.load(tx, stock.lineNumber), {
+            type: 'RELEASE', actorId: actor.id, requestHash,
+            requestKey: movementIndex++ === 0 ? dto.requestKey : hash(movement.pickupRunId === undefined
+              ? [dto.requestKey, stock.lineNumber] : [dto.requestKey, stock.lineNumber, movement.pickupRunId]),
+            customerDeliveryId: delivery.id, quantity: movement.quantity, pickupRunId: movement.pickupRunId,
+            transitDelta: dto.source === 'TRANSIT' ? -movement.quantity : 0,
+            onHandDelta: dto.source === 'WAREHOUSE' ? -movement.quantity : 0,
+            releasedDelta: movement.quantity, fromStoreId: dto.source === 'WAREHOUSE' ? storeId : null,
+          });
+        }
       }
       return { ...presentCustomerDelivery(delivery), replayed: false };
     }, 60000);
@@ -1620,17 +1784,37 @@ export class WarehouseService {
           bKey = b.poNumber || b.orderNumber || b.key;
         return aKey.localeCompare(bKey, undefined, { numeric: true, sensitivity: 'base' });
       });
+      // A delivery search identifies POs; selecting one must still include every
+      // available piece of that PO at the chosen location, not just text matches.
+      const completePo = query.completePo === 'true';
+      const groupWhere = (group: Group): Prisma.WarehouseStockWhereInput =>
+        group.externalPoId !== null
+          ? { unit: { externalPoId: group.externalPoId } }
+          : group.orderId !== null
+            ? { unit: { piece: { estim: { order: { id: group.orderId } } } } }
+            : { lineNumber: { in: group.lineNumbers } };
+      const wholeGroupsWhere = (selected: Group[]): Prisma.WarehouseStockWhereInput => ({
+        AND: [this.inventoryWhere({ ...query, search: undefined }), { OR: selected.map(groupWhere) }],
+      });
       const pageGroups = groups.slice(pagination.skip, pagination.skip + pagination.take),
         lineNumbers = pageGroups.flatMap((group) => group.lineNumbers),
         rows = lineNumbers.length
           ? await tx.warehouseStock.findMany({
-              where: { ...where, lineNumber: { in: lineNumbers } },
+              where: completePo ? wholeGroupsWhere(pageGroups) : { ...where, lineNumber: { in: lineNumbers } },
               include: stockInclude,
               orderBy: { lineNumber: 'asc' },
             })
           : [],
         byLine = new Map(rows.map((row) => [row.lineNumber, presentStock(row)])),
-        meta = await this.inventoryMeta(tx, where, query.storeId || 'all');
+        meta = await this.inventoryMeta(tx, completePo ? wholeGroupsWhere(groups) : where, query.storeId || 'all');
+      const completeGroups = new Map<string, ReturnType<typeof presentStock>[]>();
+      if (completePo) for (const unit of byLine.values()) {
+        const key = unit.externalPoId !== null ? `external:${unit.externalPoId}`
+          : unit.orderId !== null ? `order:${unit.orderId}` : `line:${unit.lineNumber}`;
+        const units = completeGroups.get(key) ?? [];
+        units.push(unit);
+        completeGroups.set(key, units);
+      }
       return {
         items: pageGroups.map((group) => ({
           key: group.key,
@@ -1642,7 +1826,7 @@ export class WarehouseService {
           poNumber: group.poNumber,
           customer: group.customer,
           project: group.project,
-          units: group.lineNumbers
+          units: completePo ? completeGroups.get(group.key) ?? [] : group.lineNumbers
             .map((lineNumber) => byLine.get(lineNumber))
             .filter((unit): unit is NonNullable<typeof unit> => Boolean(unit)),
         })),

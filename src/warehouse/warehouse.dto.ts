@@ -43,6 +43,7 @@ export class WarehouseReceiptDto extends WarehouseRequestDto {
 export class WarehouseCustomerDeliveryDto extends WarehouseRequestDto {
   @IsIn(['TRANSIT', 'WAREHOUSE']) source: 'TRANSIT' | 'WAREHOUSE';
   @IsOptional() @IsInt() @Min(1) storeId?: number | null;
+  @IsOptional() @IsInt() @Min(1) pickupRunId?: number;
   @IsString() @Length(1, 100) firstName: string;
   @IsString() @Length(1, 100) lastName: string;
   @IsArray() @ArrayMinSize(1) @ArrayMaxSize(100)

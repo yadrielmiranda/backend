@@ -360,7 +360,7 @@ export function warehouseFixture() {
       countId: null,
       reason: null,
       createdAt: new Date(),
-      ...d,
+      ...Object.fromEntries(Object.entries(d).filter(([, value]) => value !== undefined)),
     })),
     warehouseCount: model(counts, countView, (d) => ({
       id: counts.length + 1,

@@ -16,6 +16,7 @@ import {
   FactoryPickupRunScanDto,
   WarehouseReceiptDto,
   WarehouseInstallationDeliveryDto,
+  WarehouseCustomerDeliveryDto,
   WarehouseScanDto,
 } from './warehouse.dto';
 import { WarehouseService } from './warehouse.service';
@@ -32,6 +33,18 @@ export class TechnicianController {
 
   @Get('pending') pending(@Query() query: Record<string, string>, @Req() req: Request) {
     return this.warehouse.technicianPending(query, req.user as AuthUser);
+  }
+
+  @Get('customer-delivery-options') customerDeliveryOptions(@Query() query: Record<string, string>, @Req() req: Request) {
+    return this.warehouse.technicianCustomerDeliveryOptions(query, req.user as AuthUser);
+  }
+
+  @Get('customer-deliveries/:id') customerDelivery(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.warehouse.technicianCustomerDelivery(id, req.user as AuthUser);
+  }
+
+  @Post('customer-deliveries') deliverToCustomer(@Body() dto: WarehouseCustomerDeliveryDto, @Req() req: Request) {
+    return this.warehouse.technicianDeliverToCustomer(dto, req.user as AuthUser);
   }
 
   @Get('pickups/current') currentPickup(@Req() req: Request) {

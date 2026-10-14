@@ -128,6 +128,15 @@ export class WarehouseController {
   pickup(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.warehouse.factoryPickup(id, req.user as AuthUser);
   }
+  @Get('pickups/:id/customer-delivery-options')
+  @Roles('admin')
+  pickupCustomerDeliveryOptions(
+    @Param('id', ParseIntPipe) id: number,
+    @Query() query: Record<string, string>,
+    @Req() req: Request,
+  ) {
+    return this.warehouse.factoryPickupCustomerDeliveryOptions(id, query, req.user as AuthUser);
+  }
   @Patch('pickups/:id/technicians')
   @Roles('admin')
   assignPickup(@Param('id', ParseIntPipe) id: number, @Body() dto: FactoryPickupAssignmentsDto, @Req() req: Request) {

@@ -22,6 +22,9 @@ describe('Technician authentication and default-deny authorization', () => {
     'scan',
     'receive',
     'deliverToInstallation',
+    'customerDeliveryOptions',
+    'customerDelivery',
+    'deliverToCustomer',
     'currentPickup',
     'pickups',
     'pickup',
@@ -31,10 +34,10 @@ describe('Technician authentication and default-deny authorization', () => {
     expect(allowed(TechnicianController, method)).toBe(true);
     for (const role of ['admin', 'operator', 'dealer', 'client']) expect(allowed(TechnicianController, method, role)).toBe(false);
   });
-  it.each(['inventory', 'scan', 'receive', 'deliverToInstallation', 'history', 'stores', 'counts', 'undo', 'transfer'])('denies the administrative warehouse %s endpoint', (method) => {
+  it.each(['inventory', 'scan', 'receive', 'deliverToInstallation', 'deliverToCustomer', 'customerDelivery', 'history', 'stores', 'counts', 'undo', 'transfer'])('denies the administrative warehouse %s endpoint', (method) => {
     expect(allowed(WarehouseController, method)).toBe(false);
   });
-  it.each(['pickups', 'pickup', 'pickupTechnicians', 'pickupPo', 'startPickup', 'assignPickup', 'pickupScan', 'finishPickup', 'reopenPickup'])(
+  it.each(['pickups', 'pickup', 'pickupCustomerDeliveryOptions', 'pickupTechnicians', 'pickupPo', 'startPickup', 'assignPickup', 'pickupScan', 'finishPickup', 'reopenPickup'])(
     'restricts warehouse pickup endpoint %s to admins', (method) => {
       expect(allowed(WarehouseController, method, 'admin')).toBe(true);
       for (const role of ['technician', 'operator', 'dealer', 'client']) expect(allowed(WarehouseController, method, role)).toBe(false);
