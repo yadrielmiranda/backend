@@ -40,6 +40,18 @@ export class WarehouseReceiptDto extends WarehouseRequestDto {
   items: WarehouseReceiptItemDto[];
 }
 
+export class WarehouseCustomerDeliveryDto extends WarehouseRequestDto {
+  @IsIn(['TRANSIT', 'WAREHOUSE']) source: 'TRANSIT' | 'WAREHOUSE';
+  @IsOptional() @IsInt() @Min(1) storeId?: number | null;
+  @IsString() @Length(1, 100) firstName: string;
+  @IsString() @Length(1, 100) lastName: string;
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(100)
+  signatureStrokes: Array<Array<{ x: number; y: number }>>;
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500)
+  @ValidateNested({ each: true }) @Type(() => WarehouseReceiptItemDto)
+  items: WarehouseReceiptItemDto[];
+}
+
 export class WarehouseInstallationDeliveryDto extends WarehouseRequestDto {
   @IsInt() @Min(1) installationJobId: number;
   @IsString() @Length(1, 500) installationAddress: string;

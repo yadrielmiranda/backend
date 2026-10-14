@@ -61,6 +61,7 @@ export function warehouseFixture() {
   ];
   const balances: any[] = [];
   const movements: any[] = [],
+    customerDeliveries: any[] = [],
     counts: any[] = [],
     countLines: any[] = [],
     pickupRuns: any[] = [],
@@ -325,6 +326,10 @@ export function warehouseFixture() {
       createdAt: new Date(), updatedAt: new Date(), ...d,
     })),
     materialStock: { count: async () => 0 },
+    warehouseCustomerDelivery: model(customerDeliveries, (d) => d ?? null, (d) => ({
+      id: customerDeliveries.length + 1, storeId: null, storeName: null,
+      createdAt: new Date(), ...d,
+    })),
     warehouseStoreStock: model(balances, (b) => b ? {
       ...b, stock: stockView(stocks.find(s => s.lineNumber === b.lineNumber)),
     } : null, (d) => ({
@@ -350,6 +355,7 @@ export function warehouseFixture() {
       toStoreId: null,
       installationJobId: null,
       installationAddress: null,
+      customerDeliveryId: null,
       reversalOfId: null,
       countId: null,
       reason: null,
@@ -410,7 +416,7 @@ export function warehouseFixture() {
     $queryRaw: async () => [],
     $transaction: (callback) => {
       const result = queue.then(async () => {
-        const lists = [stocks, movements, counts, countLines, stores, balances, pickupRuns, pickupRunOrders, pickupRunLines, pickupRunTechnicians, pickupRunEvents],
+        const lists = [stocks, movements, customerDeliveries, counts, countLines, stores, balances, pickupRuns, pickupRunOrders, pickupRunLines, pickupRunTechnicians, pickupRunEvents],
           before = lists.map(clone);
         try {
           return await callback(db);
@@ -426,7 +432,7 @@ export function warehouseFixture() {
   db.warehouseStock.fields = { expectedParts: { _ref: 'expectedParts' } };
   db.warehouseCountLine.fields = { expected: { _ref: 'expected' } };
   return {
-    db, stocks, movements, counts, countLines, pieces, order, orders, externalPos, stores, balances,
+    db, stocks, movements, customerDeliveries, counts, countLines, pieces, order, orders, externalPos, stores, balances,
     pickupRuns, pickupRunOrders, pickupRunLines, pickupRunTechnicians, pickupRunEvents, users,
   };
 }

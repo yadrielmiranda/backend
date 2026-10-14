@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, WarehouseMovementType } from '@prisma/client';
+import { Prisma, WarehouseMovementType, WarehouseCustomerDelivery } from '@prisma/client';
 import { createHash } from 'crypto';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
@@ -16,6 +16,7 @@ import {
   assertBalances,
 } from './warehouse-parts';
 import { assertWarehouseRelease } from './warehouse-release';
+import { customerDeliverySignature } from './customer-delivery-signature';
 import { assertCompanyFactoryCollection } from './factory-fulfillment';
 import { installationDestination, installationDestinationSelect } from './warehouse-installation';
 import {
@@ -26,6 +27,7 @@ import {
   WarehouseCountCloseDto,
   WarehouseCountStartDto,
   WarehouseReceiptDto,
+  WarehouseCustomerDeliveryDto,
   WarehouseInstallationDeliveryDto,
   WarehouseTransferDto,
   WarehouseStoreCreateDto,
@@ -160,6 +162,7 @@ function presentStock(stock: Stock) {
 function presentMovement(m: Movement) {
   return {
     id: m.id,
+    customerDeliveryId: m.customerDeliveryId ?? null,
     lineNumber: m.lineNumber,
     type: m.type,
     quantity: m.quantity,
@@ -184,6 +187,15 @@ function presentMovement(m: Movement) {
     countId: m.countId,
     countDelta: m.countDelta,
     createdAt: m.createdAt,
+  };
+}
+function presentCustomerDelivery(delivery: WarehouseCustomerDelivery) {
+  return {
+    id: delivery.id, source: delivery.source, storeId: delivery.storeId,
+    storeName: delivery.storeName, firstName: delivery.firstName, lastName: delivery.lastName,
+    signatureStrokes: delivery.signatureStrokes, items: delivery.items,
+    totalPieces: delivery.totalPieces, totalParts: delivery.totalParts,
+    actor: delivery.actorName, createdAt: delivery.createdAt,
   };
 }
 function storeQuantity(stock: Stock, storeId: number | null): number {
@@ -1071,6 +1083,7 @@ export class WarehouseService {
       pickupRunId?: number;
       installationJobId?: number | null;
       installationAddress?: string | null;
+      customerDeliveryId?: number;
     },
   ) {
     const { transitDelta = 0, onHandDelta = 0, releasedDelta = 0,
@@ -1138,6 +1151,7 @@ export class WarehouseService {
         pickupRunId: data.pickupRunId,
         installationJobId: data.installationJobId,
         installationAddress: data.installationAddress,
+        customerDeliveryId: data.customerDeliveryId,
       },
       include: movementInclude,
     });
@@ -1250,6 +1264,104 @@ export class WarehouseService {
       return { ...summary, storeName: store.name, replayed: false };
     }, 60000);
   }
+  async customerDelivery(id: number, actor: AuthUser) {
+    this.staff(actor);
+    if (!Number.isSafeInteger(id) || id < 1)
+      throw new BadRequestException('Choose a valid customer delivery.');
+    const delivery = await this.prisma.warehouseCustomerDelivery.findUnique({ where: { id } });
+    if (!delivery) throw new NotFoundException('Customer delivery not found.');
+    return presentCustomerDelivery(delivery);
+  }
+
+  async deliverToCustomer(dto: WarehouseCustomerDeliveryDto, actor: AuthUser) {
+    this.staff(actor);
+    if (!['TRANSIT', 'WAREHOUSE'].includes(dto.source))
+      throw new BadRequestException('Choose the delivery source.');
+    if (typeof dto.requestKey !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(dto.requestKey))
+      throw new BadRequestException('A valid request identifier is required.');
+    if (dto.source === 'TRANSIT' && dto.storeId != null)
+      throw new BadRequestException('A direct factory delivery does not use a warehouse store.');
+    if (dto.source === 'WAREHOUSE' && (dto.storeId === undefined ||
+        (dto.storeId !== null && (!Number.isSafeInteger(dto.storeId) || dto.storeId < 1))))
+      throw new BadRequestException('Choose the source store, or explicitly select Unassigned.');
+    const recipientName = (value: unknown, field: string) => {
+      const clean = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+      if (!clean || clean.length > 100 || /[\u0000-\u001f\u007f]/.test(clean))
+        throw new BadRequestException(`Enter the recipient ${field} (1–100 characters).`);
+      return clean;
+    };
+    const firstName = recipientName(dto.firstName, 'first name');
+    const lastName = recipientName(dto.lastName, 'last name');
+    const signatureStrokes = customerDeliverySignature(dto.signatureStrokes);
+    if (!Array.isArray(dto.items) || !dto.items.length || dto.items.length > 500 ||
+        dto.items.some((item) => !item || typeof item !== 'object'))
+      throw new BadRequestException('Select between 1 and 500 units per customer delivery.');
+    const items = dto.items.map((item) => ({
+      lineNumber: barcodeLine(item.barcode), quantity: item.quantity, version: item.version,
+    })).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
+    if (new Set(items.map((item) => item.lineNumber)).size !== items.length ||
+        items.some((item) => !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 200 ||
+          !Number.isSafeInteger(item.version) || item.version < 0))
+      throw new BadRequestException('Choose each unit once and enter valid quantities and versions.');
+    const storeId = dto.storeId ?? null;
+    const requestHash = hash([actor.id, 'CUSTOMER_DELIVERY', dto.source, storeId, firstName, lastName, signatureStrokes, items]);
+    return this.transaction(async (tx) => {
+      const prior = await tx.warehouseCustomerDelivery.findUnique({ where: { requestKey: dto.requestKey } });
+      if (prior) {
+        if (prior.requestHash !== requestHash)
+          throw new ConflictException('This request identifier was already used for another operation.');
+        return { ...presentCustomerDelivery(prior), replayed: true };
+      }
+      if (await tx.warehouseMovement.findUnique({ where: { requestKey: dto.requestKey } }))
+        throw new ConflictException('This request identifier was already used for another operation.');
+      await this.noCount(tx);
+      if (storeId !== null) await this.lockStores(tx, [storeId]);
+      const store = storeId !== null ? await tx.warehouseStore.findUniqueOrThrow({ where: { id: storeId } }) : null;
+      const selected: Array<{ stock: Stock; quantity: number }> = [];
+      for (const item of items) {
+        const stock = await this.load(tx, item.lineNumber);
+        if (stock.version !== item.version)
+          throw new ConflictException(`Unit I${item.lineNumber} changed. Refresh and review the delivery before signing again. No parts were released by this request.`);
+        const available = dto.source === 'TRANSIT' ? stock.inTransit : storeQuantity(stock, storeId);
+        if (available < item.quantity)
+          throw new BadRequestException(`Unit I${item.lineNumber} does not have that many parts ${dto.source === 'TRANSIT' ? 'in transit' : 'in the selected source store'}. No parts were released by this request.`);
+        selected.push({ stock, quantity: item.quantity });
+      }
+      // Keep commercial release requirements for internal orders, regardless of the recipient.
+      const estimateIds = [...new Set(selected.flatMap(({ stock }) => stock.unit.piece ? [stock.unit.piece.idEst] : []))].sort((a, b) => a - b);
+      for (const estimateId of estimateIds) await assertWarehouseRelease(tx, estimateId);
+      const receiptItems = selected.map(({ stock, quantity }) => {
+        const unit = presentStock(stock);
+        return {
+          lineNumber: unit.lineNumber, barcode: unit.barcode, poNumber: unit.poNumber,
+          source: unit.source, orderNumber: unit.orderNumber, mark: unit.mark,
+          description: unit.description, product: unit.product, system: unit.system,
+          configuration: unit.configuration, quantity,
+        };
+      });
+      const recordedBy = await tx.user.findUniqueOrThrow({ where: { id: actor.id }, select: actorSelect });
+      const delivery = await tx.warehouseCustomerDelivery.create({ data: {
+        requestKey: dto.requestKey, requestHash, source: dto.source, storeId,
+        storeName: dto.source === 'WAREHOUSE' ? store?.name ?? 'Unassigned' : null,
+        firstName, lastName, signatureStrokes, items: receiptItems,
+        totalPieces: receiptItems.length, totalParts: items.reduce((total, item) => total + item.quantity, 0),
+        actorId: actor.id, actorName: name(recordedBy),
+      } });
+      for (const [index, { stock, quantity }] of selected.entries()) {
+        await this.move(tx, stock, {
+          type: 'RELEASE', actorId: actor.id, requestHash,
+          requestKey: index === 0 ? dto.requestKey : hash([dto.requestKey, stock.lineNumber]),
+          customerDeliveryId: delivery.id, quantity,
+          transitDelta: dto.source === 'TRANSIT' ? -quantity : 0,
+          onHandDelta: dto.source === 'WAREHOUSE' ? -quantity : 0,
+          releasedDelta: quantity, fromStoreId: dto.source === 'WAREHOUSE' ? storeId : null,
+        });
+      }
+      return { ...presentCustomerDelivery(delivery), replayed: false };
+    }, 60000);
+  }
+
   async deliverToInstallation(dto: WarehouseInstallationDeliveryDto, actor: AuthUser) {
     this.receivingStaff(actor);
     if (!Number.isSafeInteger(dto.installationJobId) || dto.installationJobId < 1 ||
@@ -1683,6 +1795,8 @@ export class WarehouseService {
       if (!m) throw new NotFoundException('Reading not found.');
       if (m.actorId !== actor.id && actor.role?.name !== 'admin')
         throw new ForbiddenException('You can undo only your own readings.');
+      if (m.customerDeliveryId != null)
+        throw new BadRequestException('This movement belongs to a signed customer delivery and cannot be undone as an individual reading.');
       if (
         m.reversal ||
         !['COLLECT', 'RECEIVE', 'RELEASE', 'INSTALLATION_DELIVERY', 'TRANSFER', 'COUNT'].includes(m.type)

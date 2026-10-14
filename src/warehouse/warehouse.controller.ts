@@ -21,6 +21,7 @@ import {
   WarehouseCountCloseDto,
   WarehouseCountStartDto,
   WarehouseReceiptDto,
+  WarehouseCustomerDeliveryDto,
   WarehouseInstallationDeliveryDto,
   WarehouseTransferDto,
   WarehouseStoreCreateDto,
@@ -56,6 +57,16 @@ export class WarehouseController {
   }
   @Post('receipts') receive(@Body() dto: WarehouseReceiptDto, @Req() req: Request) {
     return this.warehouse.receive(dto, req.user as AuthUser);
+  }
+  @Post('customer-deliveries') deliverToCustomer(
+    @Body() dto: WarehouseCustomerDeliveryDto, @Req() req: Request,
+  ) {
+    return this.warehouse.deliverToCustomer(dto, req.user as AuthUser);
+  }
+  @Get('customer-deliveries/:id') customerDelivery(
+    @Param('id', ParseIntPipe) id: number, @Req() req: Request,
+  ) {
+    return this.warehouse.customerDelivery(id, req.user as AuthUser);
   }
   @Post('installation-deliveries') deliverToInstallation(
     @Body() dto: WarehouseInstallationDeliveryDto, @Req() req: Request,

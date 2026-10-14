@@ -356,6 +356,7 @@ model User {
   dealerContracts                   DealerContract[]
   branding                          Branding?
   warehouseMovements                WarehouseMovement[]
+  warehouseCustomerDeliveries       WarehouseCustomerDelivery[]
   factoryPickupRunsCreated          FactoryPickupRun[]           @relation("FactoryPickupRunCreator")
   factoryPickupRunsClosed           FactoryPickupRun[]           @relation("FactoryPickupRunCloser")
   factoryPickupAssignments          FactoryPickupRunTechnician[]
@@ -1726,6 +1727,7 @@ model WarehouseStore {
   balances      WarehouseStoreStock[]
   movementsFrom WarehouseMovement[]   @relation("WarehouseMovementFromStore")
   movementsTo   WarehouseMovement[]   @relation("WarehouseMovementToStore")
+  customerDeliveries WarehouseCustomerDelivery[]
   counts        WarehouseCount[]
   materialStocks MaterialStock[]
   materialMovements MaterialMovement[]
@@ -2038,6 +2040,8 @@ model WarehouseMovement {
   installationJobId   Int?
   installationJob     InstallationJob?      @relation(fields: [installationJobId], references: [id], onDelete: Restrict)
   installationAddress String?               @db.VarChar(500)
+  customerDeliveryId  Int?
+  customerDelivery    WarehouseCustomerDelivery? @relation(fields: [customerDeliveryId], references: [id], onDelete: Restrict)
   countDelta          Int                   @default(0)
   createdAt           DateTime              @default(now())
 
@@ -2048,8 +2052,35 @@ model WarehouseMovement {
   @@index([countId])
   @@index([pickupRunId, id])
   @@index([installationJobId, id])
+  @@index([customerDeliveryId, id])
   @@index([createdAt])
   @@map("warehouse_movements")
+}
+
+// Comprobante inmutable de las partes entregadas y aceptadas por quien recibe.
+model WarehouseCustomerDelivery {
+  id               Int       @id @default(autoincrement())
+  requestKey       String    @unique @db.VarChar(64)
+  requestHash      String    @db.Char(64)
+  source           String    @db.VarChar(20)
+  storeId          Int?
+  store            WarehouseStore? @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  storeName        String?   @db.VarChar(80)
+  firstName        String    @db.VarChar(100)
+  lastName         String    @db.VarChar(100)
+  signatureStrokes Json
+  items            Json
+  totalPieces      Int
+  totalParts       Int
+  actorId          Int
+  actor            User      @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  actorName        String    @db.VarChar(255)
+  createdAt        DateTime  @default(now())
+  movements        WarehouseMovement[]
+
+  @@index([storeId, id])
+  @@index([actorId])
+  @@map("warehouse_customer_deliveries")
 }
 
 enum FactoryPickupRunStatus {
