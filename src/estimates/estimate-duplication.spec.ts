@@ -199,8 +199,10 @@ describe('Independent estimate duplication', () => {
     expect(f.created()[0].expiresAt.toISOString()).toBe(end.toISOString());
   });
 
-  it('copies only independent custom charges when materials only is selected', async () => {
+  it.each(['EXTERNAL', 'INTERNAL'])('copies only independent custom charges for %s when materials only is selected', async (mode) => {
     const f = fixture(); f.installation();
+    f.owner.dealerMode = mode;
+    f.owner.dealerEarningsPlanId = 17;
     f.source.customerCharges = ['CUSTOM', 'INSTALLATION', 'INSTALLATION_SERVICE', 'PERMIT', 'CITY_FEE'].map((source, i) => ({
       id: i + 1, estimateId: 1, source, origin: source === 'CUSTOM' ? 'DEALER' : 'SYSTEM',
       sourceKey: source === 'CUSTOM' ? null : source, pricingMode: 'PERCENTAGE', pricingValue: '20',
@@ -212,6 +214,38 @@ describe('Independent estimate duplication', () => {
     expect(f.charges()).toHaveLength(1);
     expect(f.charges()[0]).toMatchObject({ source: 'CUSTOM', estimateId: 100 });
     expect(f.charges()[0]).not.toHaveProperty('id');
+  });
+
+  it('copies internal markup and custom charges while leaving the prior City Fee behind', async () => {
+    const f = fixture(); f.installation();
+    f.owner.dealerMode = 'INTERNAL'; f.owner.dealerEarningsPlanId = 17;
+    f.source.customerCharges = ['INSTALLATION', 'PERMIT', 'CITY_FEE', 'CUSTOM'].map((source, i) => ({
+      id: i + 1, estimateId: 1, source, origin: source === 'CUSTOM' ? 'DEALER' : 'SYSTEM',
+      sourceKey: source === 'CUSTOM' ? null : source, pricingMode: source === 'CUSTOM' ? 'FINAL' : 'PERCENTAGE',
+      pricingValue: '20', description: source, usedInCustomerQuote: true, sortOrder: i, systemAmountSnapshot: '100',
+    }));
+    const original = json(f.source);
+    await f.duplicate(true, { id: 99, role: { name: 'admin' } });
+    expect(f.charges().map(charge => charge.source)).toEqual(['INSTALLATION', 'PERMIT', 'CUSTOM']);
+    expect(f.charges()[0]).toMatchObject({ estimateId: 100, pricingMode: 'PERCENTAGE', pricingValue: '20', usedInCustomerQuote: true });
+    expect(f.charges()[2]).toMatchObject({ origin: 'DEALER', pricingMode: 'FINAL', pricingValue: '20' });
+    expect(json(f.source)).toEqual(original);
+  });
+
+  it.each(['FINAL', 'SAME', 'AMOUNT'])('normalizes incompatible %s pricing when the owner is now internal', async (mode) => {
+    const f = fixture(); f.installation();
+    f.owner.dealerMode = 'INTERNAL'; f.owner.dealerEarningsPlanId = 17;
+    f.source.dealerModeSnapshot = 'EXTERNAL';
+    f.source.customerCharges = [{
+      id: 1, estimateId: 1, source: 'INSTALLATION', origin: 'SYSTEM', sourceKey: 'INSTALLATION',
+      pricingMode: mode, pricingValue: mode === 'AMOUNT' ? '-50' : '1200', description: 'Installation',
+      usedInCustomerQuote: false, sortOrder: 10, systemAmountSnapshot: '900',
+    }];
+    await f.duplicate(true);
+    expect(f.charges()[0].pricingMode).toBe('AMOUNT');
+    expect(f.charges()[0].pricingValue.toString()).toBe('0');
+    expect(f.charges()[0].usedInCustomerQuote).toBe(true);
+    expect(f.source.customerCharges[0].usedInCustomerQuote).toBe(false);
   });
 
   it('creates installation in the same transaction against the NEW estimate', async () => {

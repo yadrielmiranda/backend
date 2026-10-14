@@ -171,6 +171,31 @@ function withExternalDealerCustomerCharges(
 }
 
 describe('EstimatePdfHtmlBuilder', () => {
+  it('includes internal dealer customer charges and applies the installation discount once in PDF totals', () => {
+    const estimate = withExternalDealerCustomerCharges();
+    Object.assign(estimate, {
+      dealerModeSnapshot: 'INTERNAL',
+      manualDiscount: { scope: 'INSTALLATION', type: 'AMOUNT', value: '50' },
+      installationJob: {
+        status: 'REQUESTED', quotes: [{ status: 'DRAFT', total: '525' }],
+        permit: { permitFeeSnapshot: '1000', cityFee: null },
+      },
+    });
+    for (const view of ['admin', 'dealer_internal', 'dealer_public', 'dealer_public_total'] as const) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, view);
+      expect(html).toContain('$2,530.29');
+      expect(html).not.toContain('$2,580.29');
+      if (view !== 'dealer_public_total') {
+        expect(html).toContain('Remove shutters');
+        expect(html).toContain('−$50.00');
+        expect(html).toContain('$2,250.00');
+      }
+      if (view === 'admin' || view === 'dealer_internal') {
+        expect(html).toMatch(/Your Project Cost<\/span>\s*<span>\$1,768\.72/);
+      }
+    }
+  });
+
   it('keeps the selected profile in a fixed-pattern specification without inventing lites', () => {
     const estimate = estimateFixture(false);
     Object.assign(estimate.pieces[0], {

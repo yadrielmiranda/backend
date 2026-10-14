@@ -150,6 +150,9 @@ export function presentInstallationPricing(
       Object.entries(source)
         .filter(
           ([key]) =>
+            key !== 'customerCharges' &&
+            (key !== 'customerChargesSummary' || !('estimate' in source && Array.isArray(source.quotes)) ||
+              ['admin', 'operator', 'dealer'].includes(user?.role?.name ?? '')) &&
             !credentialFields.has(key) && (admin || !internalFields.has(key)),
         )
         .map(([key, child]) => [key, visit(child)]),

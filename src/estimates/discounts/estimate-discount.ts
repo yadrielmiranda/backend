@@ -1,4 +1,5 @@
 import { billingEstimate } from '@/dealer-network/dealer-network';
+import { internalCustomerChargeAdditionsForEstimate } from '../estimate-customer-charges.summary';
 import Decimal from 'decimal.js';
 
 export type EstimateDiscountScope = 'MATERIAL' | 'INSTALLATION';
@@ -345,9 +346,10 @@ export function discountedInstallationTotal(
   estimate: DiscountEstimate,
   job: DiscountInstallation,
 ) {
+  const additions = internalCustomerChargeAdditionsForEstimate(estimate, job);
   return new Decimal(
     calculateEstimateDiscount(estimate, job)?.installation.total ??
       job.quotes?.find((q) => q.status !== 'REJECTED')?.total?.toString() ??
       0,
-  );
+  ).add(additions.installation).add(additions.custom);
 }

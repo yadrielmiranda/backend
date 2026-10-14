@@ -4,7 +4,12 @@ import {
   EstimateCustomerChargePricingMode,
   EstimateCustomerChargeSource,
 } from '@prisma/client';
-import { buildEstimateCustomerChargeSummary } from './estimate-customer-charges.service';
+import {
+  buildEstimateCustomerChargeSummary,
+  customerChargeDealerMode,
+  internalCustomerChargeAdditions,
+  internalCustomerChargeAdditionsForEstimate,
+} from './estimate-customer-charges.service';
 
 const externalDealerEstimate = {
   dealerModeSnapshot: DealerMode.EXTERNAL,
@@ -313,7 +318,7 @@ describe('external dealer customer charges', () => {
     ).toBe(true);
   });
 
-  it('does not enable this pricing layer for internal dealers', () => {
+  it('provides included base prices for internal dealers', () => {
     const summary = buildEstimateCustomerChargeSummary({
       estimate: {
         ...externalDealerEstimate,
@@ -327,6 +332,80 @@ describe('external dealer customer charges', () => {
       charges: [],
     });
 
-    expect(summary).toBeNull();
+    expect(summary?.customerTotal).toBe('2400.00');
+    expect(summary?.lines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'INSTALLATION', pricingMode: 'AMOUNT', pricingValue: '0.0000', usedInCustomerQuote: true }),
+    ]));
+  });
+});
+
+describe('internal dealer customer charges', () => {
+  const estimate = {
+    ...externalDealerEstimate,
+    dealerModeSnapshot: DealerMode.INTERNAL,
+    user: { ...externalDealerEstimate.user, dealerMode: DealerMode.INTERNAL },
+  };
+  const systemCharge = (source: EstimateCustomerChargeSource, value: number, mode: EstimateCustomerChargePricingMode = EstimateCustomerChargePricingMode.AMOUNT) => ({
+    id: 1, origin: EstimateCustomerChargeOrigin.SYSTEM, source, sourceKey: source,
+    sourceRefId: null, description: source, pricingMode: mode, pricingValue: value,
+    systemAmountSnapshot: 2000, sortOrder: 10,
+  });
+
+  it('keeps company prices and allocates all internal additions to payable buckets', () => {
+    const charges = [
+      systemCharge(EstimateCustomerChargeSource.INSTALLATION, 25, EstimateCustomerChargePricingMode.PERCENTAGE),
+      systemCharge(EstimateCustomerChargeSource.PERMIT, 40),
+      systemCharge(EstimateCustomerChargeSource.CITY_FEE, 30),
+      { ...systemCharge(EstimateCustomerChargeSource.INSTALLATION_SERVICE, 100), sourceKey: 'SERVICE:12', sourceRefId: 12 },
+      { ...systemCharge(EstimateCustomerChargeSource.CUSTOM, 250, EstimateCustomerChargePricingMode.FINAL), origin: EstimateCustomerChargeOrigin.DEALER, sourceKey: null },
+    ];
+    const params = { estimate, installation: { ...installation, permitIncluded: true, permitFee: '100', cityFee: '200' }, charges };
+    expect(buildEstimateCustomerChargeSummary(params)).toMatchObject({
+      systemTotal: '2700.00', customerTotal: '3620.00', dealerCreatedTotal: '250.00',
+    });
+    expect(internalCustomerChargeAdditions(params)).toEqual({ installation: '600.00', permit: '40.00', city: '30.00', custom: '250.00' });
+    expect(internalCustomerChargeAdditions({ ...params, estimate: externalDealerEstimate })).toEqual({ installation: '0.00', permit: '0.00', city: '0.00', custom: '0.00' });
+  });
+
+  it.each([EstimateCustomerChargePricingMode.FINAL, EstimateCustomerChargePricingMode.SAME])(
+    'never replaces or omits the internal company base using a saved %s rule', (pricingMode) => {
+      const summary = buildEstimateCustomerChargeSummary({
+        estimate, installation,
+        charges: [{ ...systemCharge(EstimateCustomerChargeSource.INSTALLATION, 1, pricingMode), usedInCustomerQuote: false }],
+      });
+      expect(summary?.customerTotal).toBe('2400.00');
+      expect(summary?.lines[0]).toMatchObject({ customerAmount: '2000.00', pricingMode: 'AMOUNT', pricingValue: '0.0000', usedInCustomerQuote: true, needsReview: true });
+    },
+  );
+
+  it('keeps a saved additive internal charge included even if a prior exclusion exists', () => {
+    const summary = buildEstimateCustomerChargeSummary({ estimate, installation,
+      charges: [{ ...systemCharge(EstimateCustomerChargeSource.INSTALLATION, 100), usedInCustomerQuote: false }],
+    });
+    expect(summary?.customerTotal).toBe('2500.00');
+    expect(summary?.lines[0]).toMatchObject({ usedInCustomerQuote: true, needsReview: true });
+  });
+
+  it.each(['INTERNAL', 'EXTERNAL'] as const)('uses the saved %s owner mode in a dealer network', mode => {
+    const networkEstimate = { ...estimate, dealerNetworkSnapshot: {
+      version: 1, nodes: [{ id: 1, mode: 'INTERNAL' }, { id: 2, mode }],
+      billingIndex: mode === 'INTERNAL' ? 2 : 1, billingAccountId: 2,
+    } };
+    expect(customerChargeDealerMode(networkEstimate)).toBe(mode);
+  });
+
+  it('preserves internal customer payment terms after a current account mode change', () => {
+    expect(customerChargeDealerMode({ ...estimate,
+      user: { ...estimate.user, dealerMode: DealerMode.EXTERNAL },
+      payments: [{ status: 'PAID' }],
+    })).toBe(DealerMode.INTERNAL);
+  });
+
+  it('tolerates legacy payment selections when no charges exist and absent quote lines otherwise', () => {
+    expect(internalCustomerChargeAdditionsForEstimate({})).toEqual({ installation: '0.00', permit: '0.00', city: '0.00', custom: '0.00' });
+    expect(internalCustomerChargeAdditionsForEstimate({ ...estimate,
+      customerCharges: [systemCharge(EstimateCustomerChargeSource.INSTALLATION, 100)],
+      installationJob: { status: 'APPROVED', quotes: [{ status: 'APPROVED', total: '2000' }], permit: null },
+    }).installation).toBe('100.00');
   });
 });

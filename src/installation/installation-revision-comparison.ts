@@ -1,5 +1,6 @@
 import Decimal from 'decimal.js';
 import { calculateEstimateDiscount } from '@/estimates/discounts/estimate-discount';
+import { internalCustomerChargeAdditionsForEstimate } from '@/estimates/estimate-customer-charges.summary';
 
 type DiscountEstimate = Parameters<typeof calculateEstimateDiscount>[0];
 type DiscountInstallation = NonNullable<
@@ -75,13 +76,15 @@ export function buildInstallationRevisionComparison(job: ComparisonJob) {
 
   const amounts = (material: MaterialSnapshot, quote: Quote | null) => {
     const estimate = { ...job.estimate, ...material };
+    const comparisonInstallation = {
+      status: 'REQUESTED',
+      quotes: quote ? [{ ...quote, status: 'APPROVED' }] : [],
+      permit: job.permit,
+    };
+    const additions = internalCustomerChargeAdditionsForEstimate(estimate, comparisonInstallation);
     // El estado de la propuesta no cambia el importe que se está comparando.
     const discount = quote
-      ? calculateEstimateDiscount(estimate, {
-          status: 'REQUESTED',
-          quotes: [{ ...quote, status: 'APPROVED' }],
-          permit: job.permit,
-        })
+      ? calculateEstimateDiscount(estimate, comparisonInstallation)
       : null;
     const materialSubtotal = money(
       discount?.material.subtotal ??
@@ -96,22 +99,23 @@ export function buildInstallationRevisionComparison(job: ComparisonJob) {
         (customer ? material.customerTotalPayable : material.totalPayable),
     );
     const installationTotal = quote
-      ? money(discount?.installation.total ?? quote.total)
+      ? money(discount?.installation.total ?? quote.total).add(additions.installation)
       : null;
     const permitFee = job.permit
-      ? money(discount?.permit.total ?? job.permit.permitFeeSnapshot)
+      ? money(discount?.permit.total ?? job.permit.permitFeeSnapshot).add(additions.permit)
       : null;
     const cityFee =
       job.permit?.cityFee == null
         ? null
-        : money(discount?.city.total ?? job.permit.cityFee);
+        : money(discount?.city.total ?? job.permit.cityFee).add(additions.city);
     const projectTotal =
       installationTotal == null
         ? null
         : materialTotal
             .add(installationTotal)
             .add(permitFee ?? 0)
-            .add(cityFee ?? 0);
+            .add(cityFee ?? 0)
+            .add(additions.custom);
     return {
       units: material.units,
       materialSubtotal: materialSubtotal.toFixed(2),
@@ -120,6 +124,7 @@ export function buildInstallationRevisionComparison(job: ComparisonJob) {
       installationTotal: installationTotal?.toFixed(2) ?? null,
       permitFee: permitFee?.toFixed(2) ?? null,
       cityFee: cityFee?.toFixed(2) ?? null,
+      additionalCharges: additions.custom,
       projectTotal: projectTotal?.toFixed(2) ?? null,
       discountApplied: Boolean(discount && money(discount.discount).gt(0)),
     };

@@ -1371,25 +1371,30 @@ export class EstimatesService {
           created.id, source.installationJob!, actor, coverage, tx,
         );
       }
-      if (ownerIsDealer && owner.dealerMode === DealerMode.EXTERNAL) {
+      if (ownerIsDealer) {
         // CITY_FEE pertenece al trámite anterior; los cargos CUSTOM son del dealer.
         const charges = source.customerCharges.filter(charge =>
           charge.source === 'CUSTOM' || (coverage && charge.source !== 'CITY_FEE'),
         );
         if (charges.length) await tx.estimateCustomerCharge.createMany({
-          data: charges.map(charge => ({
-            estimateId: created.id,
-            origin: charge.origin,
-            source: charge.source,
-            sourceKey: charge.sourceKey,
-            sourceRefId: charge.sourceRefId,
-            description: charge.description,
-            pricingMode: charge.pricingMode,
-            pricingValue: charge.pricingValue,
-            usedInCustomerQuote: charge.usedInCustomerQuote,
-            systemAmountSnapshot: charge.systemAmountSnapshot,
-            sortOrder: charge.sortOrder,
-          })),
+          data: charges.map(charge => {
+            const internalSystemCharge = owner.dealerMode === DealerMode.INTERNAL && charge.origin === 'SYSTEM';
+            const allowedInternalPricing = (charge.pricingMode === 'PERCENTAGE' || charge.pricingMode === 'AMOUNT') &&
+              new Decimal(charge.pricingValue.toString()).gte(0);
+            return {
+              estimateId: created.id,
+              origin: charge.origin,
+              source: charge.source,
+              sourceKey: charge.sourceKey,
+              sourceRefId: charge.sourceRefId,
+              description: charge.description,
+              pricingMode: internalSystemCharge && !allowedInternalPricing ? 'AMOUNT' : charge.pricingMode,
+              pricingValue: internalSystemCharge && !allowedInternalPricing ? new Prisma.Decimal(0) : charge.pricingValue,
+              usedInCustomerQuote: internalSystemCharge ? true : charge.usedInCustomerQuote,
+              systemAmountSnapshot: charge.systemAmountSnapshot,
+              sortOrder: charge.sortOrder,
+            };
+          }),
         });
       }
       await this.logs.log({

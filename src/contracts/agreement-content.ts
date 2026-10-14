@@ -286,14 +286,14 @@ export function agreementScopes(snapshot: any): AgreementScopes {
       add('Permit Fee', installation.permitFee);
       add('City Fee', installation.cityFee);
     }
-    for (const [key, label] of [
-      ['installation', 'Installation discount'],
-      ['permit', 'Permit Fee discount'],
-      ['city', 'City Fee discount'],
-    ]) {
-      const amount = Number(discount?.[key]?.discount ?? 0);
-      if (amount > 0) add(label, -amount);
-    }
+  }
+  for (const [key, label] of [
+    ['installation', 'Installation discount'],
+    ['permit', 'Permit Fee discount'],
+    ['city', 'City Fee discount'],
+  ]) {
+    const amount = Number(discount?.[key]?.discount ?? 0);
+    if (amount > 0) add(label, -amount);
   }
   // Ordenar la presentación no genera un anexo. Los nombres repetidos conservan todas sus líneas.
   raw.sort(

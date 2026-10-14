@@ -36,11 +36,19 @@ export function buildPublicEstimateData(
   const fullInstallationSummary = buildEstimateInstallationSummary(
     estimate.installationJob,
   );
-  const fullCustomerChargesSummary = buildEstimateCustomerChargeSummary({
+  const calculatedCustomerChargesSummary = buildEstimateCustomerChargeSummary({
     estimate,
     installation: fullInstallationSummary,
     charges: estimate.customerCharges ?? [],
   });
+  // Preserve previously signed internal quotes when there is no customer-price
+  // adjustment. The editor still receives the full set of system sources.
+  const fullCustomerChargesSummary = hideDealerPromotions ||
+    calculatedCustomerChargesSummary?.lines.some((line) =>
+      line.origin === 'DEALER' || line.customerAmount !== line.systemAmount,
+    )
+    ? calculatedCustomerChargesSummary
+    : null;
   const customerServiceTotal = fullCustomerChargesSummary
     ? numberValue(fullCustomerChargesSummary.customerTotal)
     : numberValue(fullInstallationSummary?.installationTotal) +
@@ -65,10 +73,8 @@ export function buildPublicEstimateData(
       numberValue(customerDiscount?.permit.discount) -
       numberValue(customerDiscount?.city.discount),
   );
-  // An external dealer's customer must never receive the company's
-  // installation prices, even though the customer-facing report renders a
-  // different summary. Keep status/scope metadata, but zero every internal
-  // amount at the public API boundary.
+  // When a dealer sets customer prices, keep status/scope metadata while
+  // removing company installation costs from the public response.
   const hideSystemInstallationPrices = Boolean(fullCustomerChargesSummary);
   const installationSummary =
     (pricingMode === 'total' || hideSystemInstallationPrices) &&

@@ -6,7 +6,8 @@ import type { EarningsPlanSnapshot } from '@/earnings-plans/earnings-plan';
 import { buildPaymentSchedule, scheduleAmounts, scheduleInclude } from '@/payment-plans/payment-schedule';
 import { paymentsForSchedule, planSnapshot } from '@/payment-plans/payment-plan';
 import { decimalAmount, paidPrincipal } from '@/payments/payment-accounting';
-import { installmentProcessingComponents } from '@/payments/processing-cost-snapshot';
+import { installmentProcessingComponents, refundedProcessingComponents } from '@/payments/processing-cost-snapshot';
+import { internalCustomerChargeAdditionsForEstimate } from '@/estimates/estimate-customer-charges.summary';
 
 export type ReferralRewardTerms = {
   version: 1;
@@ -61,27 +62,36 @@ type MaterialSettlement = {
 /** Material includes its sales tax; card surcharge and unrelated services do not. */
 export function referralMaterialSettlement(estimate: any): MaterialSettlement {
   const amounts = scheduleAmounts(estimate);
-  const gross = new Decimal(amounts.material);
+  const withInstallation = Boolean(estimate.installationJob && estimate.installationJob.status !== 'CANCELED');
+  const customMaterial = new Decimal(withInstallation ? 0 : internalCustomerChargeAdditionsForEstimate(estimate).custom);
+  const gross = new Decimal(amounts.material).minus(customMaterial);
   const snapshot = planSnapshot(estimate.paymentPlanSnapshot);
   const payments = estimate.payments ?? [];
   if (!snapshot) {
     const material = payments.filter((payment: any) => payment.type === 'MATERIAL');
-    const received = material.reduce((sum: Decimal, payment: any) => sum.add(paidPrincipal(payment)), new Decimal(0));
-    const refundCredit = material.reduce((sum: Decimal, payment: any) => sum.add(decimalAmount(payment.refundCreditAmount)), new Decimal(0));
+    let allocationPending = false;
+    const materialShare = (payment: any, amount: Decimal) => {
+      if (!customMaterial.gt(0) || amount.eq(0)) return amount;
+      const components = refundedProcessingComponents(payment.processingCostSnapshot, amount);
+      if (components.allocationPending) allocationPending = true;
+      return new Decimal(components.material);
+    };
+    const received = material.reduce((sum: Decimal, payment: any) => sum.add(materialShare(payment, paidPrincipal(payment))), new Decimal(0));
+    const refundCredit = material.reduce((sum: Decimal, payment: any) => sum.add(materialShare(payment, decimalAmount(payment.refundCreditAmount))), new Decimal(0));
     return {
       gross, refundCredit,
       balance: nonnegative(gross.minus(received).minus(refundCredit)),
-      review: material.some((payment: any) => payment.refundReviewPending),
-      fullyRefunded: received.eq(0) && material.some((payment: any) => decimalAmount(payment.refundedAmount).gt(0)),
+      review: allocationPending || material.some((payment: any) => payment.refundReviewPending),
+      fullyRefunded: !allocationPending && received.eq(0) && material.some((payment: any) => decimalAmount(payment.refundedAmount).gt(0)),
     };
   }
 
   const schedule = buildPaymentSchedule(estimate)!;
   const projectedPayments = paymentsForSchedule(snapshot, payments);
-  const withInstallation = Boolean(estimate.installationJob && estimate.installationJob.status !== 'CANCELED');
   let balance = new Decimal(0), refundCredit = new Decimal(0), review = false, materialRefund = false;
   const components = (row: any, amount: Decimal) => installmentProcessingComponents({
     snapshot, amounts, withInstallation,
+    customMaterialAmount: customMaterial.toFixed(2),
     row: { ...row, balance: amount.toFixed(2) },
   });
   for (const row of schedule.rows) {

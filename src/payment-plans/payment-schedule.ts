@@ -5,6 +5,7 @@ import { hasRefundHistory, paymentIsCovered } from '@/payments/payment-accountin
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { calculateEstimateDiscount } from '@/estimates/discounts/estimate-discount';
+import { internalCustomerChargeAdditionsForEstimate } from '@/estimates/estimate-customer-charges.summary';
 import {
   allocateSchedule,
   paymentsForSchedule,
@@ -20,6 +21,8 @@ import {
 } from './payment-plan';
 
 export const scheduleInclude = {
+  user: { select: { dealerMode: true, role: { select: { name: true } } } },
+  customerCharges: true,
   status: true,
   materialRevisions: { where: { activeSlot: 1 }, select: { id: true }, take: 1 },
   payments: true,
@@ -31,7 +34,7 @@ export const scheduleInclude = {
         where: { type: 'INSTALLATION', status: 'ACCEPTED' },
         take: 1,
       },
-      quotes: { orderBy: { version: 'desc' as const }, take: 1 },
+      quotes: { orderBy: { version: 'desc' as const }, take: 1, include: { lines: true } },
     },
   },
 } satisfies Prisma.EstimateInclude;
@@ -55,6 +58,7 @@ export async function resolveNewPlan(
 }
 
 export function scheduleAmounts(estimate: any): ScheduleAmounts {
+  const additions = internalCustomerChargeAdditionsForEstimate(estimate);
   estimate = billingEstimate(estimate);
   const job =
     estimate.installationJob?.status === 'CANCELED'
@@ -62,21 +66,21 @@ export function scheduleAmounts(estimate: any): ScheduleAmounts {
       : estimate.installationJob;
   const discount = calculateEstimateDiscount(estimate, job);
   return {
-    material: money(
+    material: money(new Prisma.Decimal(
       discount?.material.total ??
         String(
           estimate.dealerModeSnapshot === 'INTERNAL'
             ? estimate.customerTotalPayable
             : estimate.totalPayable,
         ),
-    ),
-    installation: money(
+    ).add(job ? 0 : additions.custom)),
+    installation: money(new Prisma.Decimal(
       discount?.installation.total ?? String(job?.quotes?.[0]?.total ?? 0),
-    ),
-    permit: money(
+    ).add(additions.installation).add(job ? additions.custom : 0)),
+    permit: money(new Prisma.Decimal(
       discount?.permit.total ?? String(job?.permit?.permitFeeSnapshot ?? 0),
-    ),
-    city: money(discount?.city.total ?? String(job?.permit?.cityFee ?? 0)),
+    ).add(additions.permit)),
+    city: money(new Prisma.Decimal(discount?.city.total ?? String(job?.permit?.cityFee ?? 0)).add(additions.city)),
   };
 }
 

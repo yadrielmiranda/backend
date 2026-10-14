@@ -6,7 +6,8 @@ import {
   EstimateCustomerChargeSource,
   Prisma,
 } from '@prisma/client';
-import type { EstimateInstallationReportSummary } from './reporting/estimate-installation-summary';
+import { buildEstimateInstallationSummary, type EstimateInstallationReportSummary } from './reporting/estimate-installation-summary';
+import { networkSnapshot } from '@/dealer-network/dealer-network';
 
 export type CustomerChargeRecord = {
   id: number;
@@ -27,6 +28,7 @@ export type EstimateClassification = {
   dealerModeSnapshot: DealerMode | null;
   status?: { name: string } | null;
   order?: { id: number } | null;
+  payments?: Array<{ status?: string; paidAt?: Date | string | null }>;
   user: {
     dealerMode: DealerMode | null;
     role: { name: string };
@@ -125,12 +127,16 @@ export function systemCustomerChargeKey(
   }
 }
 
-export function isExternalDealerEstimate(estimate: EstimateClassification) {
-  if (estimate.user.role.name !== 'dealer') return false;
+export function customerChargeDealerMode(estimate: EstimateClassification): DealerMode | null {
+  if (estimate.user?.role?.name !== 'dealer') return null;
+
+  const network = networkSnapshot(estimate);
+  if (network) return network.nodes.at(-1)!.mode;
 
   const isActive =
-    estimate.status?.name === 'Active' && !Boolean(estimate.order);
-  const mode = estimate.dealerNetworkSnapshot ? estimate.dealerModeSnapshot : isActive
+    estimate.status?.name === 'Active' && !Boolean(estimate.order) &&
+    !estimate.payments?.some(payment => ['PENDING', 'PAID', 'REFUNDED'].includes(payment.status ?? '') || payment.paidAt != null);
+  return isActive
     ? (estimate.user.dealerMode ??
       estimate.dealerModeSnapshot ??
       DealerMode.EXTERNAL)
@@ -138,7 +144,14 @@ export function isExternalDealerEstimate(estimate: EstimateClassification) {
       estimate.user.dealerMode ??
       DealerMode.EXTERNAL);
 
-  return mode === DealerMode.EXTERNAL;
+}
+
+export function isExternalDealerEstimate(estimate: EstimateClassification) {
+  return customerChargeDealerMode(estimate) === DealerMode.EXTERNAL;
+}
+
+export function isInternalDealerEstimate(estimate: EstimateClassification) {
+  return customerChargeDealerMode(estimate) === DealerMode.INTERNAL;
 }
 
 export function buildSystemCustomerChargeSources(
@@ -229,10 +242,13 @@ export function buildEstimateCustomerChargeSummary(params: {
   installation: EstimateInstallationReportSummary | null | undefined;
   charges: CustomerChargeRecord[];
 }): EstimateCustomerChargeSummary | null {
-  if (!isExternalDealerEstimate(params.estimate)) return null;
+  const mode = customerChargeDealerMode(params.estimate);
+  if (mode === null) return null;
+  const internal = mode === DealerMode.INTERNAL;
+  const charges = params.charges ?? [];
 
   const overridesByKey = new Map(
-    params.charges
+    charges
       .filter(
         (charge) =>
           charge.origin === EstimateCustomerChargeOrigin.SYSTEM &&
@@ -243,8 +259,15 @@ export function buildEstimateCustomerChargeSummary(params: {
 
   const systemLines = buildSystemCustomerChargeSources(params.installation).map(
     (source): EstimateCustomerChargeSummaryLine => {
-      const override = overridesByKey.get(source.sourceKey);
-      const usedInCustomerQuote = override?.usedInCustomerQuote !== false;
+      const savedOverride = overridesByKey.get(source.sourceKey);
+      // An account changing to internal terms cannot keep a previous external
+      // exclusion or a final price that replaces the company's calculated base.
+      const incompatibleOverride = internal && Boolean(savedOverride &&
+        (savedOverride.pricingMode !== EstimateCustomerChargePricingMode.PERCENTAGE &&
+          savedOverride.pricingMode !== EstimateCustomerChargePricingMode.AMOUNT ||
+          numberValue(savedOverride.pricingValue) < 0));
+      const override = incompatibleOverride ? undefined : savedOverride;
+      const usedInCustomerQuote = internal || override?.usedInCustomerQuote !== false;
       const customerAmount = calculateCustomerAmount(
         source.systemAmount,
         override,
@@ -263,13 +286,13 @@ export function buildEstimateCustomerChargeSummary(params: {
             : moneyString(source.systemAmount),
         customerAmount:
           customerAmount === null ? null : moneyString(customerAmount),
-        pricingMode: override?.pricingMode ?? null,
+        pricingMode: override?.pricingMode ?? (internal ? EstimateCustomerChargePricingMode.AMOUNT : null),
         pricingValue: override
           ? Number(override.pricingValue).toFixed(4)
-          : null,
+          : internal ? '0.0000' : null,
         usedInCustomerQuote,
         needsReview: Boolean(
-          override &&
+          incompatibleOverride || (internal && savedOverride?.usedInCustomerQuote === false) || override &&
             override.pricingMode !== EstimateCustomerChargePricingMode.SAME &&
             !sameMoney(source.systemAmount, override.systemAmountSnapshot),
         ),
@@ -278,7 +301,7 @@ export function buildEstimateCustomerChargeSummary(params: {
     },
   );
 
-  const dealerLines = params.charges
+  const dealerLines = charges
     .filter((charge) => charge.origin === EstimateCustomerChargeOrigin.DEALER)
     .map(
       (charge): EstimateCustomerChargeSummaryLine => ({
@@ -352,4 +375,47 @@ export function buildEstimateCustomerChargeSummary(params: {
       (line) => line.usedInCustomerQuote && line.customerAmount === null,
     ),
   };
+}
+
+// These are additions to the existing company buckets, never replacement
+// prices. Custom charges stay separate so callers can choose their due date.
+export function internalCustomerChargeAdditions(params: {
+  estimate: EstimateClassification;
+  installation: EstimateInstallationReportSummary | null | undefined;
+  charges: CustomerChargeRecord[];
+}) {
+  const additions = { installation: 0, permit: 0, city: 0, custom: 0 };
+  if (isInternalDealerEstimate(params.estimate)) {
+    const summary = buildEstimateCustomerChargeSummary(params)!;
+    for (const line of summary.lines) {
+      if (line.origin === EstimateCustomerChargeOrigin.DEALER) {
+        additions.custom += numberValue(line.customerAmount);
+      } else if (line.systemAmount !== null && line.customerAmount !== null) {
+        const bucket = line.source === EstimateCustomerChargeSource.PERMIT ? 'permit'
+          : line.source === EstimateCustomerChargeSource.CITY_FEE ? 'city' : 'installation';
+        additions[bucket] += Math.max(0, numberValue(line.customerAmount) - numberValue(line.systemAmount));
+      }
+    }
+  }
+  return {
+    installation: moneyString(additions.installation),
+    permit: moneyString(additions.permit),
+    city: moneyString(additions.city),
+    custom: moneyString(additions.custom),
+  };
+}
+
+export function internalCustomerChargeAdditionsForEstimate(
+  estimate: any,
+  job = estimate.installationJob,
+) {
+  const charges = estimate.customerCharges ?? [];
+  if (!charges.length || !isInternalDealerEstimate(estimate)) {
+    return { installation: '0.00', permit: '0.00', city: '0.00', custom: '0.00' };
+  }
+  const installation = buildEstimateInstallationSummary(job ? {
+    ...job,
+    quotes: (job.quotes ?? []).map((quote: { lines?: unknown[] }) => ({ ...quote, lines: quote.lines ?? [] })),
+  } : null);
+  return internalCustomerChargeAdditions({ estimate, installation, charges });
 }

@@ -81,6 +81,56 @@ describe('Frozen processing-cost allocation', () => {
 });
 
 describe('Saved installment components', () => {
+  it('separates custom charges from material across a material-only payment plan', () => {
+    const definition = { ...defaultPlan, withoutInstallation: [
+      { milestone: 'ORDER' as const, basis: 'MATERIAL' as const, percent: 50 },
+      { milestone: 'RELEASE' as const, basis: 'MATERIAL' as const, percent: 50 },
+    ] };
+    const totals = { material: '120.00', installation: '0.00', permit: '0.00', city: '0.00' };
+    const saved: PlanSnapshot = { version: 1, planId: 1, name: 'Material', definition };
+    saved.locked = { amounts: totals, rows: planRows(saved, totals, false), at: '2026-01-01' };
+    const allocated = saved.locked.rows.map(row => installmentProcessingComponents({
+      snapshot: saved, amounts: { ...totals, material: '999.00' }, withInstallation: false,
+      customMaterialAmount: '20.00', row: { ...row, balance: row.amount },
+    }));
+    expect(allocated).toEqual([
+      { ...singleProcessingComponent('material', '50.00'), other: '10.00' },
+      { ...singleProcessingComponent('material', '50.00'), other: '10.00' },
+    ]);
+    expect(freeze('60', '1.80', allocated[0])).toMatchObject({
+      components: { material: '51.50', other: '10.30' }, materialSurcharge: '1.50',
+    });
+    expect(installmentProcessingComponents({ snapshot: saved, amounts: totals, withInstallation: false,
+      customMaterialAmount: '20.00', row: { ...saved.locked.rows[0], balance: '30.00' },
+    })).toEqual({ ...singleProcessingComponent('material', '25.00'), other: '5.00' });
+  });
+
+  it('does not subtract the same custom service again from a later material revision', () => {
+    const totals = { material: '120.00', installation: '0.00', permit: '0.00', city: '0.00' };
+    const saved: PlanSnapshot = { version: 1, planId: 1, name: 'Material', definition: defaultPlan };
+    saved.locked = { amounts: totals, rows: planRows(saved, totals, false), at: '2026-01-01' };
+    const row = { sequence: 101, milestone: 'ORDER' as const, title: 'Change', description: '', amount: '40.00',
+      amounts: { ...totals, material: '160.00' }, planAdjustment: true };
+    saved.adjustments = [row];
+    expect(installmentProcessingComponents({ snapshot: saved, amounts: row.amounts, withInstallation: false,
+      customMaterialAmount: '20.00', row: { ...row, balance: row.amount },
+    })).toEqual(singleProcessingComponent('material', '40.00'));
+  });
+
+  it('conserves cents when splitting a tiny custom service over multiple installments', () => {
+    const definition = { ...defaultPlan, withoutInstallation: [
+      { milestone: 'ORDER' as const, basis: 'MATERIAL' as const, percent: 50 },
+      { milestone: 'RELEASE' as const, basis: 'MATERIAL' as const, percent: 50 },
+    ] };
+    const totals = { material: '0.05', installation: '0.00', permit: '0.00', city: '0.00' };
+    const saved: PlanSnapshot = { version: 1, planId: 1, name: 'Material', definition };
+    const rows = planRows(saved, totals, false);
+    const allocated = rows.map(row => installmentProcessingComponents({ snapshot: saved, amounts: totals,
+      withInstallation: false, customMaterialAmount: '0.02', row: { ...row, balance: row.amount } }));
+    expect(allocated.map(value => value.material)).toEqual(['0.02', '0.01']);
+    expect(allocated.map(value => value.other)).toEqual(['0.01', '0.01']);
+  });
+
   it('uses the saved PROJECT mixture, not current project totals', () => {
     expect(components(snapshot())).toEqual({ material: '50.00', installation: '30.00', permit: '10.00', city: '10.00', other: '0.00' });
   });

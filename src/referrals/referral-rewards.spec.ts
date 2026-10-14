@@ -100,6 +100,43 @@ describe('Referral reward pricing', () => {
 });
 
 describe('Referral material payment eligibility', () => {
+  it.each([false, true])('excludes internal custom charges from material and refund credits (scheduled=%s)', scheduled => {
+    const estimate = fixture();
+    estimate.user = { role: { name: 'dealer' }, dealerMode: 'INTERNAL' };
+    estimate.dealerModeSnapshot = 'INTERNAL';
+    estimate.installationJob = null;
+    estimate.customerCharges = [{ id: 5, origin: 'DEALER', source: 'CUSTOM', sourceKey: null, sourceRefId: null,
+      description: 'Site cleaning', pricingMode: 'FINAL', pricingValue: '100', systemAmountSnapshot: null, sortOrder: 1000 }];
+    estimate.payments[0].baseAmount = '1705';
+    if (scheduled) {
+      const saved: PlanSnapshot = { version: 1, planId: 1, name: 'Material', definition: defaultPlan };
+      const totals = { material: '1705.00', installation: '0.00', permit: '0.00', city: '0.00' };
+      saved.locked = { amounts: totals, rows: planRows(saved, totals, false), at: '2026-01-01' };
+      estimate.paymentPlanSnapshot = saved;
+      estimate.payments[0].type = 'INSTALLMENT';
+    } else {
+      estimate.payments[0].processingCostSnapshot = { version: 1, total: '1705.00', materialSurcharge: '0.00',
+        components: { material: '1605.00', installation: '0.00', permit: '0.00', city: '0.00', other: '100.00' } };
+    }
+    expect(referralMaterialSettlement(estimate).gross.toFixed(2)).toBe('1605.00');
+    expect(calculateReferralReward(estimate, custom)).toMatchObject({ earnedAmount: '100.00', availableAmount: '100.00', reason: 'AVAILABLE' });
+    Object.assign(estimate.payments[0], { netPaidBaseAmount: '1534.50', refundedAmount: '170.50', refundCreditAmount: '170.50' });
+    expect(referralMaterialSettlement(estimate).refundCredit.toFixed(2)).toBe('160.50');
+    expect(calculateReferralReward(estimate, custom)).toMatchObject({ earnedAmount: '70.00', availableAmount: '70.00', reason: 'AVAILABLE' });
+  });
+
+  it('holds ambiguous legacy mixed material and custom-service receipts for review', () => {
+    const estimate = fixture();
+    estimate.user = { role: { name: 'dealer' }, dealerMode: 'INTERNAL' };
+    estimate.dealerModeSnapshot = 'INTERNAL'; estimate.installationJob = null;
+    estimate.customerCharges = [{ id: 5, origin: 'DEALER', source: 'CUSTOM', sourceKey: null, sourceRefId: null,
+      description: 'Site cleaning', pricingMode: 'FINAL', pricingValue: '100', systemAmountSnapshot: null, sortOrder: 1000 }];
+    estimate.payments[0].baseAmount = '1705';
+    expect(calculateReferralReward(estimate, custom).reason).toBe('PENDING_REVIEW');
+    Object.assign(estimate.payments[0], { refundedAmount: '100', netPaidBaseAmount: '1605' });
+    expect(calculateReferralReward(estimate, custom).reason).toBe('PENDING_REVIEW');
+  });
+
   it('requires tax-inclusive material payment, but not card surcharge', () => {
     const estimate = fixture();
     estimate.payments[0].baseAmount = '1500';

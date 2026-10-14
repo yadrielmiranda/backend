@@ -521,11 +521,14 @@ export class EstimatePdfHtmlBuilder {
       ? customerMaterial
       : internalMaterial;
     const installationSummary = estimate.installationSummary ?? null;
-    const externalDealerCharges = ownerIsDealer
+    const hasCustomerChargeAdjustments = estimate.customerChargesSummary?.lines.some(
+      line => line.origin === 'DEALER' || line.customerAmount !== line.systemAmount,
+    );
+    const customerCharges = ownerIsDealer && (isExternalDealerEstimate(estimate) || hasCustomerChargeAdjustments)
       ? (estimate.customerChargesSummary ?? null)
       : null;
     const customerVisibleServiceLines =
-      externalDealerCharges?.lines.filter((line) => line.usedInCustomerQuote) ??
+      customerCharges?.lines.filter((line) => line.usedInCustomerQuote) ??
       [];
     const installationTotal = numberValue(
       installationSummary?.installationTotal,
@@ -535,9 +538,9 @@ export class EstimatePdfHtmlBuilder {
       : 0;
     const cityFee = numberValue(installationSummary?.cityFee);
     const sharedCharges = roundMoney(installationTotal + permitFee + cityFee);
-    const customerServiceCharges = externalDealerCharges
-      ? numberValue(externalDealerCharges.customerTotal)
-      : sharedCharges - (manualDiscount?.payer === "CUSTOMER" ? serviceDiscount : 0);
+    const customerServiceCharges = (customerCharges
+      ? numberValue(customerCharges.customerTotal)
+      : sharedCharges) - (manualDiscount?.payer === "CUSTOMER" ? serviceDiscount : 0);
     const internalCharges = sharedCharges - (manualDiscount?.payer === "ACCOUNT_OWNER" ? serviceDiscount : 0);
     const dealerMaterialProfit = Number(networkMaterialProfit(estimate, viewerId, manualDiscount?.material.netDiscount ?? 0) ?? roundMoney(
       customerMaterial.subtotal - (customerMaterial.manualNetDiscount ?? 0) -
@@ -567,11 +570,11 @@ export class EstimatePdfHtmlBuilder {
         (installationSummary.quoteStatus !== 'APPROVED' ||
           installationSummary.status === 'DEPOSIT_PAYMENT_PENDING'),
     );
-    const incompleteTotal = externalDealerCharges
+    const incompleteTotal = customerCharges
       ? customerFacing
-        ? externalDealerCharges.customerTotalIncomplete
-        : externalDealerCharges.systemTotalIncomplete ||
-          externalDealerCharges.customerTotalIncomplete
+        ? customerCharges.customerTotalIncomplete
+        : customerCharges.systemTotalIncomplete ||
+          customerCharges.customerTotalIncomplete
       : cityFeePending || installationAmountPending;
 
     const productCards = estimate.pieces.length
@@ -683,9 +686,9 @@ export class EstimatePdfHtmlBuilder {
       </div>`;
 
     const installationSummaryHtml = (() => {
-      if (externalDealerCharges) {
+      if (customerCharges) {
         const displayedLines = comparisonView
-          ? externalDealerCharges.lines
+          ? customerCharges.lines
           : customerVisibleServiceLines;
 
         const hasCharges = displayedLines.length > 0;
@@ -696,8 +699,8 @@ export class EstimatePdfHtmlBuilder {
               (line) => `
                 <tr>
                   <td>${escapeHtml(line.description)}${line.origin === 'DEALER' ? '<small>Dealer-created</small>' : ''}</td>
-                  <td class="right">${line.origin === 'DEALER' ? '&mdash;' : line.systemAmount == null ? 'Pending' : line.sourceKey === 'INSTALLATION' && Number(manualDiscount?.installation.discount) > 0 ? originalPrice(numberValue(line.systemAmount)) : formatMoney(line.systemAmount)}</td>
-                  <td class="right">${!line.usedInCustomerQuote ? 'Not used' : line.customerAmount == null ? 'Pending' : formatMoney(line.customerAmount)}</td>
+                  <td class="right">${line.origin === 'DEALER' ? '&mdash;' : line.systemAmount == null ? 'Pending' : manualDiscount?.payer === 'ACCOUNT_OWNER' && line.sourceKey === 'INSTALLATION' && Number(manualDiscount?.installation.discount) > 0 ? originalPrice(numberValue(line.systemAmount)) : formatMoney(line.systemAmount)}</td>
+                  <td class="right">${!line.usedInCustomerQuote ? 'Not used' : line.customerAmount == null ? 'Pending' : manualDiscount?.payer === 'CUSTOMER' && line.sourceKey === 'INSTALLATION' && Number(manualDiscount?.installation.discount) > 0 ? originalPrice(numberValue(line.customerAmount)) : formatMoney(line.customerAmount)}</td>
                 </tr>`,
             )
             .join('');
@@ -706,7 +709,7 @@ export class EstimatePdfHtmlBuilder {
             <div class="card keep-together">
               <table class="comparison-table">
                 <thead><tr><th>Installation &amp; services</th><th class="right">Your Cost</th><th class="right">Customer Price</th></tr></thead>
-                <tbody>${!hasCharges ? '<tr><td>Installation</td><td class="right">Not included</td><td class="right">Not included</td></tr>' : ''}${rows}${manualDiscount?.payer === 'ACCOUNT_OWNER' && serviceDiscount > 0 ? `<tr><td>Additional discount</td><td class="right">−${formatMoney(serviceDiscount)}</td><td class="right">&mdash;</td></tr>` : ''}${hasCharges ? `<tr class="table-total"><td>Services total</td><td class="right">${formatMoney(numberValue(externalDealerCharges.systemTotal) - (manualDiscount?.payer === 'ACCOUNT_OWNER' ? serviceDiscount : 0))}</td><td class="right">${formatMoney(externalDealerCharges.customerTotal)}</td></tr>` : ''}</tbody>
+                <tbody>${!hasCharges ? '<tr><td>Installation</td><td class="right">Not included</td><td class="right">Not included</td></tr>' : ''}${rows}${serviceDiscount > 0 ? `<tr><td>Additional discount</td><td class="right">${manualDiscount?.payer === 'ACCOUNT_OWNER' ? '−' + formatMoney(serviceDiscount) : '&mdash;'}</td><td class="right">${manualDiscount?.payer === 'CUSTOMER' ? '−' + formatMoney(serviceDiscount) : '&mdash;'}</td></tr>` : ''}${hasCharges ? `<tr class="table-total"><td>Services total</td><td class="right">${formatMoney(internalCharges)}</td><td class="right">${formatMoney(customerServiceCharges)}</td></tr>` : ''}</tbody>
               </table>
             </div>`;
         }
@@ -723,7 +726,7 @@ export class EstimatePdfHtmlBuilder {
                     : formatMoney(line.customerAmount),
                 ),
               )
-              .join('')}</div>
+              .join('')}${manualDiscount?.payer === 'CUSTOMER' && serviceDiscount > 0 ? summaryRow('Additional discount · Installation & services', '−' + formatMoney(serviceDiscount)) + summaryRow('Services total', formatMoney(customerServiceCharges), { strong: true }) : ''}</div>
           </div>`;
       }
 
@@ -791,7 +794,7 @@ export class EstimatePdfHtmlBuilder {
     })();
 
     const projectScopeHtml = (() => {
-      if (externalDealerCharges) {
+      if (customerCharges) {
         const hasCharges = customerVisibleServiceLines.length > 0;
         const rows = customerVisibleServiceLines
           .map((line) =>
@@ -857,10 +860,10 @@ export class EstimatePdfHtmlBuilder {
     })();
 
     const notices = `
-      ${!externalDealerCharges && installationAmountPending ? '<p class="notice warning">Installation amount is pending.</p>' : ''}
-      ${(!externalDealerCharges || comparisonView) && cityFeePending ? '<p class="notice warning">Final total is pending the City Fee.</p>' : ''}
-      ${!externalDealerCharges && preliminaryInstallation && !installationAmountPending ? '<p class="notice">Installation is proposed and is not yet confirmed.</p>' : ''}
-      ${externalDealerCharges?.customerTotalIncomplete && customerFacing ? '<p class="notice warning">Customer service pricing is incomplete.</p>' : ''}`;
+      ${!customerCharges && installationAmountPending ? '<p class="notice warning">Installation amount is pending.</p>' : ''}
+      ${(!customerCharges || comparisonView) && cityFeePending ? '<p class="notice warning">Final total is pending the City Fee.</p>' : ''}
+      ${!customerCharges && preliminaryInstallation && !installationAmountPending ? '<p class="notice">Installation is proposed and is not yet confirmed.</p>' : ''}
+      ${customerCharges?.customerTotalIncomplete && customerFacing ? '<p class="notice warning">Customer service pricing is incomplete.</p>' : ''}`;
     const projectTotalHtml = comparisonView
       ? `
         <div class="project-total keep-together">

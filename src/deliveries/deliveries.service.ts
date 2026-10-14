@@ -44,12 +44,16 @@ const orderForDeliveryInclude = {
   user: { include: { role: true } },
   estimate: {
     include: {
+      user: { select: { dealerMode: true, role: { select: { name: true } } } },
+      customerCharges: true,
       installationJob: {
         include: {
+          permit: true,
           quotes: {
             where: { status: 'APPROVED' as const },
             orderBy: { version: 'desc' as const },
             take: 1,
+            include: { lines: true },
           },
           payments: {
             where: {

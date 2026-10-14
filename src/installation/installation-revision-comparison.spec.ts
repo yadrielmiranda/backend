@@ -60,6 +60,31 @@ function fixture() {
 }
 
 describe('Installation revision comparison', () => {
+  it('recalculates internal percentage markup for both versions and includes fixed custom charges', () => {
+    const job = fixture();
+    Object.assign(job.estimate, {
+      dealerModeSnapshot: 'INTERNAL',
+      user: { dealerMode: 'INTERNAL', role: { name: 'dealer' } },
+      customerCharges: [
+        { id: 1, origin: 'SYSTEM', source: 'INSTALLATION', sourceKey: 'INSTALLATION', sourceRefId: null,
+          pricingMode: 'PERCENTAGE', pricingValue: '20', systemAmountSnapshot: '1000', usedInCustomerQuote: true },
+        { id: 2, origin: 'DEALER', source: 'CUSTOM', sourceKey: null, sourceRefId: null,
+          pricingMode: 'FINAL', pricingValue: '100', description: 'Site preparation', usedInCustomerQuote: true },
+      ],
+      manualDiscount: { scope: 'INSTALLATION', type: 'AMOUNT', value: '50' },
+    });
+    job.quotes[0].total = '1500';
+    job.quotes[1].total = '1000';
+    job.revisions[0].revisedTotals = totals();
+    const before = JSON.stringify(job);
+    expect(buildInstallationRevisionComparison(job)).toMatchObject({
+      original: { installationTotal: '1150.00', additionalCharges: '100.00', projectTotal: '1578.43' },
+      revised: { installationTotal: '1750.00', additionalCharges: '100.00', projectTotal: '2178.43' },
+      difference: '600.00',
+    });
+    expect(JSON.stringify(job)).toBe(before);
+  });
+
   it('compares the saved material and installation totals without subtracting the deposit', () => {
     const job = fixture();
     const before = JSON.stringify(job);

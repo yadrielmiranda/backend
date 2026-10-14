@@ -74,6 +74,9 @@ export function installmentProcessingComponents(params: {
   snapshot: unknown;
   amounts: ScheduleAmounts;
   withInstallation: boolean;
+  // Frozen customer charges collected with materials in a material-only plan.
+  // They remain unrelated services for profit and processing-cost allocation.
+  customMaterialAmount?: string;
   row: { sequence: number; milestone: string; amount: string; balance: string; originalAmount?: string; kind?: string };
 }): ProcessingComponents {
   const { row } = params;
@@ -87,6 +90,8 @@ export function installmentProcessingComponents(params: {
     if (adjustment) {
       if (adjustment.kind === 'CITY_FEE') return singleProcessingComponent('city', row.balance);
       if (!snapshot.locked || !adjustment.planAdjustment) return pendingProcessingComponents(row.balance);
+      if (cents(params.customMaterialAmount ?? '0') > 0 && cents(snapshot.locked.amounts.installation) > 0)
+        return pendingProcessingComponents(row.balance);
       const adjustments = snapshot.adjustments!;
       let first = adjustments.indexOf(adjustment);
       // amounts es el total acumulado de la revisión, compartido por sus filas.
@@ -110,6 +115,19 @@ export function installmentProcessingComponents(params: {
       const amounts = snapshot.locked?.amounts ?? params.amounts;
       const withInstallation = params.withInstallation || cents(amounts.installation) > 0;
       const rows = componentRows(snapshot, amounts, withInstallation);
+      const customMaterial = withInstallation ? 0 : cents(params.customMaterialAmount ?? '0');
+      if (customMaterial > 0) {
+        const materialAmounts = rows.map(item => cents(item.components.material));
+        if (customMaterial > materialAmounts.reduce((sum, amount) => sum + amount, 0))
+          return pendingProcessingComponents(row.balance);
+        const customByRow = distributeCents(customMaterial, materialAmounts);
+        rows.forEach((item, index) => {
+          item.components = { ...item.components,
+            material: money(materialAmounts[index] - customByRow[index]),
+            other: money(cents(item.components.other) + customByRow[index]),
+          };
+        });
+      }
       const expected = rows.find(item => item.sequence === row.sequence && item.milestone === row.milestone);
       const saved = snapshot.locked?.rows.find(item => item.sequence === row.sequence);
       if (!expected || (snapshot.locked && (!saved || saved.milestone !== expected.milestone || cents(saved.amount) !== cents(expected.amount))))

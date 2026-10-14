@@ -24,12 +24,16 @@ export async function assertWarehouseRelease(
       deliveries: { include: { payment: true } },
       estimate: {
         include: {
+          user: { select: { dealerMode: true, role: { select: { name: true } } } },
+          customerCharges: true,
           installationJob: {
             include: {
+              permit: true,
               quotes: {
                 where: { status: 'APPROVED' },
                 orderBy: { version: 'desc' },
                 take: 1,
+                include: { lines: true },
               },
               payments: {
                 where: {

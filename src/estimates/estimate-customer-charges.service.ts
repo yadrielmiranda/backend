@@ -14,7 +14,6 @@ import {
 } from '@prisma/client';
 
 import type { AuthUser } from '@/auth/types/auth-user.type';
-import { isPrivileged } from '@/auth/utils/is-privileged';
 import { PrismaService } from '@/prisma/prisma.service';
 import {
   buildEstimateInstallationSummary,
@@ -29,7 +28,7 @@ import {
 
 import {
   buildEstimateCustomerChargeSummary, buildSystemCustomerChargeSources,
-  isExternalDealerEstimate, systemCustomerChargeKey,
+  customerChargeDealerMode, isInternalDealerEstimate, systemCustomerChargeKey,
   type CustomerChargeRecord, type EstimateClassification,
 } from './estimate-customer-charges.summary';
 export * from './estimate-customer-charges.summary';
@@ -51,6 +50,7 @@ export class EstimateCustomerChargesService {
         dealerNetworkSnapshot: true,
         status: { select: { name: true } },
         order: { select: { id: true } },
+        payments: { select: { status: true, paidAt: true, refundReviewPending: true } },
         user: {
           select: {
             dealerMode: true,
@@ -95,20 +95,22 @@ export class EstimateCustomerChargesService {
     return this.summaryFromEstimate(estimate);
   }
 
-  private async assertExternalDealerCanEdit(
+  private async assertDealerCanEdit(
     estimateId: number,
     actor: AuthUser,
     db: Prisma.TransactionClient = this.prisma,
   ) {
     const estimate = await this.loadEstimate(estimateId, db);
 
-    if (!estimate || estimate.idUser !== actor.id) {
+    const isAdmin = actor.role?.name === 'admin';
+    if (!estimate || (!isAdmin && (actor.role?.name !== 'dealer' || estimate.idUser !== actor.id))) {
       throw new NotFoundException(`Estimate with ID #${estimateId} not found.`);
     }
 
-    if (!isExternalDealerEstimate(estimate)) {
+    const dealerMode = customerChargeDealerMode(estimate);
+    if (dealerMode === null) {
       throw new BadRequestException(
-        'Customer service prices can only be edited by an external dealer.',
+        'Customer service prices are only available on dealer estimates.',
       );
     }
 
@@ -118,12 +120,20 @@ export class EstimateCustomerChargesService {
       );
     }
 
-    if (estimate.dealerModeSnapshot !== DealerMode.EXTERNAL) {
+    if (dealerMode === DealerMode.INTERNAL && estimate.payments.some(payment =>
+      ['PENDING', 'PAID', 'REFUNDED'].includes(payment.status) || payment.paidAt != null || payment.refundReviewPending,
+    )) {
+      throw new BadRequestException(
+        'Customer charges cannot change after payment or while checkout is pending. Cancel the unpaid checkout first.',
+      );
+    }
+
+    if (estimate.dealerModeSnapshot !== dealerMode) {
       await db.estimate.update({
         where: { id: estimate.id },
-        data: { dealerModeSnapshot: DealerMode.EXTERNAL },
+        data: { dealerModeSnapshot: dealerMode },
       });
-      estimate.dealerModeSnapshot = DealerMode.EXTERNAL;
+      estimate.dealerModeSnapshot = dealerMode;
     }
 
     return estimate;
@@ -135,7 +145,15 @@ export class EstimateCustomerChargesService {
     actor: AuthUser,
   ) {
     return withAgreementTransaction(this.prisma, estimateId, async (db) => {
-    const estimate = await this.assertExternalDealerCanEdit(estimateId, actor, db);
+    const estimate = await this.assertDealerCanEdit(estimateId, actor, db);
+    const internal = isInternalDealerEstimate(estimate);
+    if (internal && (dto.usedInCustomerQuote === false ||
+      ![EstimateCustomerChargePricingMode.PERCENTAGE, EstimateCustomerChargePricingMode.AMOUNT].includes(dto.pricingMode as 'PERCENTAGE' | 'AMOUNT') ||
+      !Number.isFinite(dto.value) || dto.value < 0)) {
+      throw new BadRequestException(
+        'Internal dealer company charges must stay included and can only have a nonnegative percentage or amount added.',
+      );
+    }
     const sourceKey = systemCustomerChargeKey(dto.source, dto.sourceRefId);
     const source = buildSystemCustomerChargeSources(
       buildEstimateInstallationSummary(estimate.installationJob),
@@ -154,7 +172,8 @@ export class EstimateCustomerChargesService {
       source.systemAmount === null
     ) {
       throw new BadRequestException(
-        'Use a final customer price until the company price is available.',
+        internal ? 'Wait until the company price is available before adding a charge.'
+          : 'Use a final customer price until the company price is available.',
       );
     }
 
@@ -187,8 +206,8 @@ export class EstimateCustomerChargesService {
         description: source.description,
         pricingMode: dto.pricingMode,
         pricingValue: new Prisma.Decimal(dto.value),
-        ...(dto.usedInCustomerQuote !== undefined
-          ? { usedInCustomerQuote: dto.usedInCustomerQuote }
+        ...(internal || dto.usedInCustomerQuote !== undefined
+          ? { usedInCustomerQuote: internal ? true : dto.usedInCustomerQuote }
           : {}),
         systemAmountSnapshot:
           source.systemAmount === null
@@ -208,7 +227,7 @@ export class EstimateCustomerChargesService {
     actor: AuthUser,
   ) {
     return withAgreementTransaction(this.prisma, estimateId, async (db) => {
-    const estimate = await this.assertExternalDealerCanEdit(estimateId, actor, db);
+    const estimate = await this.assertDealerCanEdit(estimateId, actor, db);
     const description = dto.description?.trim();
     if (!description) {
       throw new BadRequestException('Charge description is required.');
@@ -246,7 +265,7 @@ export class EstimateCustomerChargesService {
     actor: AuthUser,
   ) {
     return withAgreementTransaction(this.prisma, estimateId, async (db) => {
-    await this.assertExternalDealerCanEdit(estimateId, actor, db);
+    await this.assertDealerCanEdit(estimateId, actor, db);
     const charge = await db.estimateCustomerCharge.findFirst({
       where: {
         id: chargeId,
@@ -283,7 +302,7 @@ export class EstimateCustomerChargesService {
 
   async removeCharge(estimateId: number, chargeId: number, actor: AuthUser) {
     return withAgreementTransaction(this.prisma, estimateId, async (db) => {
-    await this.assertExternalDealerCanEdit(estimateId, actor, db);
+    await this.assertDealerCanEdit(estimateId, actor, db);
     const charge = await db.estimateCustomerCharge.findFirst({
       where: { id: chargeId, estimateId },
       select: { id: true },

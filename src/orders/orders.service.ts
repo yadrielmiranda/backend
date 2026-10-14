@@ -40,10 +40,11 @@ import {
 } from '@/installation/installation-flow-policy';
 import { calculateEstimateDiscount, discountedInstallationTotal } from '@/estimates/discounts/estimate-discount';
 import { buildEstimateInstallationSummary, estimateInstallationSummarySelect } from '@/estimates/reporting/estimate-installation-summary';
+import { buildEstimateCustomerChargeSummary } from '@/estimates/estimate-customer-charges.summary';
 
 const orderDetailsInclude = {
   ...referralReportOrderInclude,
-  estimate: { include: { ...referralReportMaterialRelations, status: true, payments: true, installationJob: { include: { quotes: { orderBy: { version: 'desc' as const }, take: 1 }, permit: true } } } },
+  estimate: { include: { ...referralReportMaterialRelations, user: { select: { dealerMode: true, role: { select: { name: true } } } }, customerCharges: true, status: true, payments: true, installationJob: { include: { quotes: { orderBy: { version: 'desc' as const }, take: 1, include: { lines: true } }, permit: true } } } },
   user: { include: { role: true } },
   payment: true,
   extraCharges: {
@@ -64,6 +65,8 @@ const orderListInclude = {
   estimate: {
     include: {
       ...referralReportMaterialRelations,
+      user: { select: { dealerMode: true, role: { select: { name: true } } } },
+      customerCharges: true,
       payments: true,
       status: true,
       installationJob: {
@@ -79,6 +82,22 @@ const orderListInclude = {
   },
 } satisfies Prisma.OrderInclude;
 
+function withOrderEstimateSummary(estimate: Prisma.OrderGetPayload<{ include: typeof orderDetailsInclude }>['estimate']) {
+  const installationSummary = buildEstimateInstallationSummary(estimate.installationJob);
+  const { customerCharges, ...result } = estimate;
+  return {
+    ...result,
+    dealerNetwork: networkPresentation(estimate),
+    manualDiscountSummary: calculateEstimateDiscount(estimate),
+    installationSummary,
+    customerChargesSummary: buildEstimateCustomerChargeSummary({
+      estimate,
+      installation: installationSummary,
+      charges: customerCharges,
+    }),
+  };
+}
+
 function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof orderListInclude }>) {
   const job = order.estimate.installationJob;
   const reportQuote = job?.quotes.find(quote => quote.status !== 'REJECTED');
@@ -91,6 +110,7 @@ function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof or
     ...order.estimate,
     installationJob: job ? { ...job, quotes: job.quotes.slice(0, 1) } : null,
   };
+  const { customerCharges, ...estimateResult } = estimate;
   const schedule = buildPaymentSchedule({ ...estimate, order });
   const activeInstallation = job && job.status !== 'CANCELED';
   const unpaid = (charge: { status: string; total: Prisma.Decimal; payment: { status: string } | null }) =>
@@ -118,9 +138,14 @@ function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof or
     ...buildMaterialEarningsReport(estimate, order),
     paymentAnchor,
     estimate: {
-      ...estimate,
+      ...estimateResult,
       dealerNetwork: networkPresentation(order.estimate), manualDiscountSummary: calculateEstimateDiscount(order.estimate),
       installationSummary,
+      customerChargesSummary: buildEstimateCustomerChargeSummary({
+        estimate,
+        installation: installationSummary,
+        charges: customerCharges,
+      }),
     },
   };
 }
@@ -149,7 +174,7 @@ export class OrdersService {
     });
 
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
-    return { ...order, ...buildMaterialEarningsReport(order.estimate, order), paymentSchedule: await getPaymentSchedule(this.prisma, order.idEst), estimate: { ...order.estimate, dealerNetwork: networkPresentation(order.estimate), manualDiscountSummary: calculateEstimateDiscount(order.estimate) } };
+    return { ...order, ...buildMaterialEarningsReport(order.estimate, order), paymentSchedule: await getPaymentSchedule(this.prisma, order.idEst), estimate: withOrderEstimateSummary(order.estimate) };
   }
 
   async findAllStatuses(): Promise<OrderStatus[]> {
@@ -170,13 +195,16 @@ export class OrdersService {
         status: true,
         estimate: {
           include: {
-            user: true,
+            user: { include: { role: true } },
+            customerCharges: true,
             installationJob: {
               include: {
+                permit: true,
                 quotes: {
                   where: { status: 'APPROVED' },
                   orderBy: { version: 'desc' },
                   take: 1,
+                  include: { lines: true },
                 },
                 payments: {
                   where: {
@@ -474,12 +502,16 @@ export class OrdersService {
           user: true,
           estimate: {
             include: {
+              user: { select: { dealerMode: true, role: { select: { name: true } } } },
+              customerCharges: true,
               installationJob: {
                 include: {
+                  permit: true,
                   quotes: {
                     where: { status: 'APPROVED' },
                     orderBy: { version: 'desc' },
                     take: 1,
+                    include: { lines: true },
                   },
                   payments: {
                     where: {
@@ -734,7 +766,7 @@ export class OrdersService {
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
 
     const paymentSchedule = await getPaymentSchedule(this.prisma, order.idEst);
-    const estimate = { ...order.estimate, dealerNetwork: networkPresentation(order.estimate), manualDiscountSummary: calculateEstimateDiscount(order.estimate) };
+    const estimate = withOrderEstimateSummary(order.estimate);
     const earnings = buildMaterialEarningsReport(order.estimate, order);
     if (roleName === 'admin' || roleName === 'operator') return { ...order, ...earnings, estimate, paymentSchedule };
 

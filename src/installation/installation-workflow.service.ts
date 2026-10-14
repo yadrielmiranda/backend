@@ -15,6 +15,8 @@ import { assertScheduleMilestone, getPaymentSchedule, installmentContext, refres
 import { withAgreementTransaction } from '@/contracts/agreement-content';
 import { assertCompleteEstimateCustomer } from '@/estimates/estimate-customer-details';
 import { calculateEstimateDiscount, discountedInstallationTotal, discountAllocations, estimateDiscountConfig, withoutInstallationDiscount } from '@/estimates/discounts/estimate-discount';
+import { buildEstimateCustomerChargeSummary, internalCustomerChargeAdditionsForEstimate } from '@/estimates/estimate-customer-charges.summary';
+import { buildEstimateInstallationSummary } from '@/estimates/reporting/estimate-installation-summary';
 import { buildInstallationRevisionComparison } from './installation-revision-comparison';
 import { savedPromotions, promotionExpired, expiredPromotionMessage } from '@/promotions/promotion-pricing';
 import {
@@ -219,6 +221,7 @@ export type RevisionPiecePricingSnapshot = {
 const jobInclude = {
   estimate: {
     include: {
+      customerCharges: true,
       user: { include: { role: true } },
       status: true,
       order: {
@@ -420,7 +423,7 @@ export class InstallationWorkflowService {
     if (!job) throw new NotFoundException(`Installation job #${id} not found.`);
     await this.assertAccess(job, user);
     job = await this.refreshBlockedInstallation(job);
-    return { ...job, paymentSchedule: await getPaymentSchedule(this.prisma, job.estimateId), manualDiscountSummary: calculateEstimateDiscount(job.estimate, job), revisionComparison: buildInstallationRevisionComparison(job) };
+    return this.presentJob(job);
   }
 
   async findJobByEstimate(estimateId: number, user: AuthUser) {
@@ -431,7 +434,21 @@ export class InstallationWorkflowService {
     if (!job) return null;
     await this.assertAccess(job, user);
     job = await this.refreshBlockedInstallation(this.currentRevisionMeasurements(job));
-    return { ...job, paymentSchedule: await getPaymentSchedule(this.prisma, job.estimateId), manualDiscountSummary: calculateEstimateDiscount(job.estimate, job), revisionComparison: buildInstallationRevisionComparison(job) };
+    return this.presentJob(job);
+  }
+
+  private async presentJob(job: Prisma.InstallationJobGetPayload<{ include: typeof jobInclude }>) {
+    return {
+      ...job,
+      customerChargesSummary: buildEstimateCustomerChargeSummary({
+        estimate: job.estimate,
+        installation: buildEstimateInstallationSummary(job),
+        charges: job.estimate.customerCharges ?? [],
+      }),
+      paymentSchedule: await getPaymentSchedule(this.prisma, job.estimateId),
+      manualDiscountSummary: calculateEstimateDiscount(job.estimate, job),
+      revisionComparison: buildInstallationRevisionComparison(job),
+    };
   }
 
   async findJobs(query: FindInstallationJobsQueryDto, user: AuthUser) {
@@ -4273,6 +4290,7 @@ export class InstallationWorkflowService {
       const quote = await tx.installationQuote.findFirst({
         where: { jobId },
         orderBy: { version: 'desc' },
+        include: { lines: true },
       });
       if (
         !quote ||
@@ -4347,7 +4365,8 @@ export class InstallationWorkflowService {
         await Promise.all([
           tx.estimate.findFirst({
             where: { installationJob: { id: jobId } },
-            include: { order: { include: { status: true } } },
+            include: { order: { include: { status: true } }, customerCharges: true,
+              user: { select: { dealerMode: true, role: { select: { name: true } } } } },
           }),
           tx.payment.findMany({
             where: {
@@ -5308,9 +5327,11 @@ export class InstallationWorkflowService {
     const estimate = await tx.estimate.findUnique({
       where: { id: estimateId },
       include: {
+        customerCharges: true,
         payments: true,
         user: {
           select: {
+            dealerMode: true,
             id: true,
             parentDealerId: true,
             networkSuspended: true,
@@ -5337,7 +5358,7 @@ export class InstallationWorkflowService {
         installationJob: {
           include: {
             permit: true,
-            quotes: { orderBy: { version: 'desc' }, take: 1 },
+            quotes: { orderBy: { version: 'desc' }, take: 1, include: { lines: true } },
           },
         },
       },
@@ -5362,6 +5383,7 @@ export class InstallationWorkflowService {
     }
     if (estimate.paymentPlanSnapshot && [PaymentType.MATERIAL, PaymentType.INSTALLATION, PaymentType.PERMIT].includes(type as any)) throw new BadRequestException('Use the payment schedule for this estimate.');
     const manualDiscount = calculateEstimateDiscount(estimate, job);
+    const additions = internalCustomerChargeAdditionsForEstimate(estimate, job);
     if (manualDiscount && !options.preview) {
       const config = estimateDiscountConfig(estimate.manualDiscount)!;
       if (!config.lockedAt) {
@@ -5459,7 +5481,7 @@ export class InstallationWorkflowService {
           'Remeasurement and customer approval must be completed before Permit payment.',
         );
       }
-      baseAmount = new Decimal(manualDiscount?.permit.total ?? job.permit.permitFeeSnapshot.toString());
+      baseAmount = new Decimal(manualDiscount?.permit.total ?? job.permit.permitFeeSnapshot.toString()).add(additions.permit);
       description = `Permit Fee — Estimate #${estimate.number}`;
     } else if (type === PaymentType.INSTALLMENT) {
       const installment = await installmentContext(tx, estimateId, sequence, Boolean(options.preview), Boolean(options.allowAdvance));
@@ -5469,6 +5491,7 @@ export class InstallationWorkflowService {
       baseAmount = new Decimal(installment.row.balance);
       processingComponents = installmentProcessingComponents({
         snapshot: estimate.paymentPlanSnapshot, amounts: scheduleAmounts(estimate),
+        customMaterialAmount: job ? '0.00' : additions.custom,
         withInstallation: Boolean(job), row: installment.row,
       });
       paymentSequence = installment.row.sequence;
@@ -5504,17 +5527,20 @@ export class InstallationWorkflowService {
               'The permit and City Fee must be approved before material payment.',
             );
           }
-          cityFee = new Decimal(manualDiscount?.city.total ?? job.permit.cityFee.toString());
+          cityFee = new Decimal(manualDiscount?.city.total ?? job.permit.cityFee.toString()).add(additions.city);
         }
       }
       const materialTotal =
         billing.dealerModeSnapshot === 'INTERNAL'
           ? billing.customerTotalPayable
           : billing.totalPayable;
-      baseAmount = new Decimal(manualDiscount?.material.total ?? materialTotal.toString()).add(cityFee);
+      const materialCharge = new Decimal(manualDiscount?.material.total ?? materialTotal.toString());
+      const customCharge = job ? new Decimal(0) : new Decimal(additions.custom);
+      baseAmount = materialCharge.add(cityFee).add(customCharge);
       processingComponents = {
-        ...singleProcessingComponent('material', new Decimal(manualDiscount?.material.total ?? materialTotal.toString())),
+        ...singleProcessingComponent('material', materialCharge),
         city: cityFee.toFixed(2),
+        other: customCharge.toFixed(2),
       };
       description = job
         ? `Material${cityFee.gt(0) ? ' + City Fee' : ''} — Estimate #${estimate.number}`
@@ -5550,7 +5576,7 @@ export class InstallationWorkflowService {
           'Installation payment becomes available after the material release stage.',
         );
       }
-      baseAmount = calculateInstallationBalance(manualDiscount?.installation.total ?? quote.total.toString(), [
+      baseAmount = calculateInstallationBalance(discountedInstallationTotal(estimate, job).toString(), [
         paidBase,
       ]);
       paymentSequence = quote.version;
@@ -5617,7 +5643,7 @@ export class InstallationWorkflowService {
       const paidInstallationTotal = new Decimal(
         paidInstallation.reduce((sum, p) => sum.add(paidPrincipal(p)).add(decimalAmount(p.refundCreditAmount)), new Decimal(0)),
       );
-      if (!estimate.paymentPlanSnapshot && paidInstallationTotal.lt(manualDiscount?.installation.total ?? quote.total.toString())) {
+      if (!estimate.paymentPlanSnapshot && paidInstallationTotal.lt(discountedInstallationTotal(estimate, job))) {
         throw new BadRequestException(
           'Installation must be paid before extra charges.',
         );
@@ -5916,12 +5942,13 @@ export class InstallationWorkflowService {
     const job = await tx.installationJob.findUnique({
       where: { estimateId },
       include: {
-        estimate: true,
+        estimate: { include: { customerCharges: true, user: { select: { dealerMode: true, role: { select: { name: true } } } } } },
         permit: true,
         quotes: {
           where: { status: InstallationQuoteStatus.APPROVED },
           orderBy: { version: 'desc' },
           take: 1,
+          include: { lines: true },
         },
         payments: {
           where: {

@@ -135,6 +135,16 @@ function expectCommercial(result: any) {
 }
 
 describe('installation pricing response privacy', () => {
+  it('keeps dealer customer pricing off technician jobs while preserving sanitized public quotes', () => {
+    const customerChargesSummary = { customerTotal: '1250.00', lines: [] };
+    const source = { ...job, customerChargesSummary,
+      estimate: { ...job.estimate, customerCharges: [{ pricingValue: '25' }] } };
+    expect(presentInstallationPricing(source, user('technician')).customerChargesSummary).toBeUndefined();
+    expect(presentInstallationPricing(source, user('dealer')).customerChargesSummary).toEqual(customerChargesSummary);
+    expect(presentInstallationPricing(source, user('dealer')).estimate.customerCharges).toBeUndefined();
+    expect(presentInstallationPricing({ customerChargesSummary }).customerChargesSummary).toEqual(customerChargesSummary);
+  });
+
   it.each<RoleName>(['client', 'dealer', 'operator'])(
     'keeps configured times private for %s, including nested standalone rules',
     (role) => {
