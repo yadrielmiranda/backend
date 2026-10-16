@@ -1,8 +1,10 @@
 // @/geo/geo.module.ts
-import { Module } from "@nestjs/common";
-import { HttpModule } from "@nestjs/axios";
-import { GeoController } from "./geo.controller";
-import { GeoService } from "./geo.service";
+import { Module } from '@nestjs/common';
+import { HttpModule } from '@nestjs/axios';
+import { GeoController } from './geo.controller';
+import { GeoService } from './geo.service';
+import { GooglePlacesController } from './google-places.controller';
+import { GooglePlacesService } from './google-places.service';
 
 @Module({
   imports: [
@@ -11,7 +13,7 @@ import { GeoService } from "./geo.service";
       maxRedirects: 3,
     }),
   ],
-  controllers: [GeoController],
-  providers: [GeoService],
+  controllers: [GeoController, GooglePlacesController],
+  providers: [GeoService, GooglePlacesService],
 })
 export class GeoModule {}
