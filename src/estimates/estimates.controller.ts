@@ -63,6 +63,7 @@ export class EstimatesController {
       config: estimate.manualDiscount ?? null,
       summary: estimate.manualDiscountSummary ?? null,
       dealerEarnings: estimate.dealerEarnings ?? null,
+      ...(estimate.networkProfitBreakdown ? { networkProfitBreakdown: estimate.networkProfitBreakdown } : {}),
       paymentSchedule: estimate.paymentSchedule ?? null,
     };
   }

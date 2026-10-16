@@ -26,6 +26,7 @@ function record(value: unknown): value is RecordValue {
 }
 
 const internalFields = new Set([
+  'networkProfitBreakdown',
   'coverageSnapshot',
   'estimatedMinutes',
   'timeSnapshot',

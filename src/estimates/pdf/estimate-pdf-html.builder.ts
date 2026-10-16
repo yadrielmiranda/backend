@@ -2,8 +2,8 @@ import { networkSnapshot, networkMaterialProfit, billingEstimate } from '@/deale
 import { calculateEstimateDiscount, estimateDiscountConfig } from '../discounts/estimate-discount';
 import type { Branding } from '@prisma/client';
 import { buildDealerEarningsReport } from '@/common/dealer-earnings';
+import { buildNetworkProfitBreakdown } from '@/common/network-profit-breakdown';
 
-import type { EstimateInstallationReportSummary } from '../reporting/estimate-installation-summary';
 import type { EstimateWithRelations, PdfView } from '../estimates.service';
 import { isExternalDealerEstimate } from '../estimate-customer-charges.service';
 import {
@@ -422,6 +422,7 @@ export class EstimatePdfHtmlBuilder {
     view: PdfView,
     diagramRenders: PieceDiagramRenders = {},
     viewerId?: number,
+    viewerRole?: string,
   ): string {
     const reportKind = reportKindFor(view);
     const ownerIsDealer =
@@ -436,6 +437,8 @@ export class EstimatePdfHtmlBuilder {
       reportKind === 'dealer' || (reportKind === 'admin' && ownerIsDealer);
     const internalReport = reportKind === 'dealer' || reportKind === 'admin';
     const earningsReport = internalReport ? buildDealerEarningsReport(estimate) : null;
+    const networkProfitBreakdown = reportKind === 'admin' && viewerRole === 'admin'
+      ? estimate.networkProfitBreakdown ?? buildNetworkProfitBreakdown(estimate) : null;
     const network = networkSnapshot(estimate);
     const canViewNetworkBilling = !network || reportKind === 'admin' || network.billingAccountId === viewerId ||
       network.nodes.some(node => node.id === viewerId && node.mode === 'INTERNAL');
@@ -903,7 +906,7 @@ export class EstimatePdfHtmlBuilder {
           <p>Sales tax excluded. Installation &amp; services shown before card processing fees.</p>
         </section>`;
     };
-    const dealerProfitHtml = comparisonView
+    const dealerProfitHtml = comparisonView && !networkProfitBreakdown
       ? dealerEarnings ? earningsCard(dealerEarnings, 'Dealer', internalDealer && (!network || viewerId === estimate.idUser)) : `
         <section class="dealer-profit keep-together" aria-label="Dealer Profit">
           <div class="dealer-profit-heading">
@@ -920,8 +923,36 @@ export class EstimatePdfHtmlBuilder {
       : '';
 
     const subdealerEarnings = reportKind === 'admin' ? earningsReport?.subdealerEarnings : null;
-    const subdealerEarningsHtml = subdealerEarnings ? earningsCard(subdealerEarnings, 'Subdealer',
+    const subdealerEarningsHtml = subdealerEarnings && !networkProfitBreakdown ? earningsCard(subdealerEarnings, 'Subdealer',
       internalDealer && network?.nodes[1]?.id === estimate.idUser && network.nodes[1].mode === 'INTERNAL') : '';
+
+    const profitAmountHtml = (profit: { amount: string | null; status: string }) => {
+      if (profit.amount == null) {
+        const pending = profit.status === 'PENDING_REAL_COST' ? 'Pending real factory cost'
+          : profit.status === 'PENDING_COST' ? 'Pending processing cost confirmation'
+            : 'Pending review';
+        return `<span class="profit-pending">${pending}</span>`;
+      }
+      return `<span${numberValue(profit.amount) < 0 ? ' class="loss"' : ''}>${formatMoney(profit.amount)}</span>`;
+    };
+    const participantLabels = { DEALER: 'Dealer', SUBDEALER: 'Subdealer', DISTRIBUTOR: 'Distributor' };
+    const networkProfitHtml = networkProfitBreakdown ? `
+      <section class="card network-profit keep-together" aria-label="Profit by participant">
+        <div class="profit-heading"><strong>Profit by participant</strong><small>Each participant's own earnings are shown separately.</small></div>
+        <table class="network-profit-table">
+          <thead><tr><th scope="col">Participant</th><th scope="col" class="right">Material</th><th scope="col" class="right">Installation &amp; services</th><th scope="col" class="right">Total</th></tr></thead>
+          <tbody>
+            ${networkProfitBreakdown.members.map(member => `<tr>
+              <th scope="row"><strong>${participantLabels[member.level]}</strong><span class="participant-name">${escapeHtml(member.username)}</span></th>
+              <td class="right">${profitAmountHtml(member.material)}</td><td class="right">${profitAmountHtml(member.services)}</td><td class="right profit-total">${profitAmountHtml(member.total)}</td>
+            </tr>`).join('')}
+            <tr class="company-profit-row"><th scope="row"><strong>Company</strong><span class="participant-name">Estimated</span></th>
+              <td class="right">${profitAmountHtml(networkProfitBreakdown.company.materialExpected)}</td><td class="right">${profitAmountHtml(networkProfitBreakdown.company.installation)}</td><td class="right profit-total">${profitAmountHtml(networkProfitBreakdown.company.expectedTotal)}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="network-profit-notes"><p>Sales tax excluded. Installation &amp; services shown before card processing fees.</p><p>Company totals include material and installation margin; other service margins are not included.</p></div>
+      </section>` : '';
 
     const profitability = estimatedMaterialProfitability(
       manualDiscount ? { ...estimate, ...(manualDiscount.payer === 'CUSTOMER' ? { customerPriceT: manualDiscount.material.subtotal } : { priceT: manualDiscount.material.subtotal }) } as unknown as EstimateWithRelations : estimate,
@@ -986,7 +1017,7 @@ export class EstimatePdfHtmlBuilder {
         </div></section>` : '';
     const projectSummaryHtml = projectTotalOnly
       ? `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div>${projectScopeHtml}${projectTotalHtml}${scheduleHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`
-      : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${manualDiscountHtml}${projectTotalHtml}${dealerProfitHtml}${subdealerEarningsHtml}${adminProfitability}${scheduleHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
+      : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${manualDiscountHtml}${projectTotalHtml}${dealerProfitHtml}${subdealerEarningsHtml}${networkProfitHtml}${adminProfitability}${scheduleHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
 
     const statusBadge = estimate.status?.name
       ? `<span class="status-badge ${estimateStatusBadgeClassName(estimate.status.name)}">${escapeHtml(estimate.status.name)}</span>`
@@ -1109,6 +1140,20 @@ export class EstimatePdfHtmlBuilder {
     .dealer-profit-breakdown { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-top: 10px; font-size: 11px; }
     .dealer-profit p { margin: 6px 0 0; color: #065f46; font-size: 9px; }
     .dealer-profit .loss { color: #b91c1c; }
+    .network-profit { margin-top: 14px; }
+    .network-profit-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10px; }
+    .network-profit-table thead th { padding: 9px 12px; background: #f1f5f9; color: #334155; font-size: 9px; }
+    .network-profit-table th:first-child { width: 29%; text-align: left; }
+    .network-profit-table .right { text-align: right; }
+    .network-profit-table td, .network-profit-table tbody th { padding: 10px 12px; border-top: 1px solid #e2e8f0; vertical-align: top; overflow-wrap: anywhere; }
+    .network-profit-table tbody th { font-weight: 400; }
+    .network-profit-table .participant-name { display: block; margin-top: 3px; color: #475569; font-size: 9px; }
+    .network-profit-table .profit-total { font-weight: 700; }
+    .network-profit-table .company-profit-row { background: #ecfdf5; }
+    .network-profit-table .loss { color: #b91c1c; }
+    .network-profit-table .profit-pending { color: #92400e; font-size: 9px; font-weight: 400; }
+    .network-profit-notes { padding: 9px 12px; color: #475569; font-size: 8px; }
+    .network-profit-notes p { margin: 0 0 4px; }
     .profitability { margin-top: 14px; }
     .profit-heading { padding: 13px; }
     .profit-heading strong { display: block; color: #172033; font-size: 11px; }

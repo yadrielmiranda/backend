@@ -22,6 +22,8 @@ export const estimateInstallationSummarySelect = {
     select: {
       status: true,
       total: true,
+      providerCostSnapshot: true,
+      needsRecalculation: true,
       installationSurcharge: true,
       serviceMinimumsSnapshot: true,
       lines: {
@@ -46,9 +48,13 @@ export const estimateInstallationSummarySelect = {
   },
 } satisfies Prisma.InstallationJobSelect;
 
-type InstallationSummarySource = Prisma.InstallationJobGetPayload<{
+type SelectedInstallationSummarySource = Prisma.InstallationJobGetPayload<{
   select: typeof estimateInstallationSummarySelect;
 }>;
+type InstallationSummarySource = Omit<SelectedInstallationSummarySource, 'quotes'> & {
+  quotes: Array<Omit<SelectedInstallationSummarySource['quotes'][number], 'providerCostSnapshot' | 'needsRecalculation'> &
+    Partial<Pick<SelectedInstallationSummarySource['quotes'][number], 'providerCostSnapshot' | 'needsRecalculation'>>>;
+};
 
 export type EstimateInstallationReportSummary = {
   status: InstallationJobStatus;

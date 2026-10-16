@@ -72,7 +72,7 @@ export class EstimatePdfService {
         estimate,
         cookieHeader,
       });
-      const html = EstimatePdfHtmlBuilder.build(estimate, view, diagramRenders, user.id);
+      const html = EstimatePdfHtmlBuilder.build(estimate, view, diagramRenders, user.id, viewerRole ?? undefined);
       const page = await browser.newPage();
 
       await page.setContent(html, { waitUntil: 'networkidle0' });

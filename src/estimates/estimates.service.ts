@@ -6,6 +6,7 @@ import { resolveNewPlan, getPaymentSchedule } from '@/payment-plans/payment-sche
 import { PaymentsService } from '@/payments/payments.service';
 import { CANCELED_ESTIMATE, assertEstimateLifecycleAccess, assertEstimateNotCanceled, assertNoEstimatePaymentHistory } from './estimate-lifecycle-policy';
 import { type DealerEarningsSummary } from '@/common/dealer-earnings';
+import { buildNetworkProfitBreakdown, type NetworkProfitBreakdown } from '@/common/network-profit-breakdown';
 import { buildMaterialEarningsReport, referralReportOrderInclude, referralReportMaterialRelations, type ReferralCostsSummary, type ReferralMaterialProfitsSummary } from '@/referrals/referral-report';
 import { loadActiveEarningsPlan } from '@/earnings-plans/earnings-plan';
 import { canRefreshDraftEarningsPlan, refreshDraftEarningsPlan } from '@/earnings-plans/estimate-earnings-plan';
@@ -126,6 +127,7 @@ type PieceWithRelations = Piece & {
 
 // incluyo order para que el front sepa si ya fue ordenado
 export type EstimateWithRelations = Estimate & {
+  networkProfitBreakdown?: NetworkProfitBreakdown | null;
   dealerEarnings?: DealerEarningsSummary | null;
   materialProfits?: ReferralMaterialProfitsSummary | null;
   referralCosts?: ReferralCostsSummary;
@@ -336,13 +338,8 @@ export class EstimatesService {
         order: { include: referralReportOrderInclude },
         materialRevisions: referralReportMaterialRelations.materialRevisions,
         payments: true,
-        installationJob: {
-          select: {
-            id: true, status: true,
-            quotes: { orderBy: { version: 'desc' }, select: { status: true, total: true } },
-            permit: { select: { permitFeeSnapshot: true, cityFee: true } },
-          },
-        },
+        customerCharges: true,
+        installationJob: { select: estimateInstallationSummarySelect },
         pieces: {
           orderBy: { id: 'asc' },
           include: {
@@ -378,16 +375,19 @@ export class EstimatesService {
         },
       },
     });
-    if (estimate) await refreshDraftEarningsPlan(tx, estimate);
-    return estimate ? {
-      ...estimate,
+    if (!estimate) return null;
+    await refreshDraftEarningsPlan(tx, estimate);
+    const { customerCharges: _customerCharges, ...estimateResult } = estimate;
+    return {
+      ...estimateResult,
       ...buildMaterialEarningsReport(estimate),
+      networkProfitBreakdown: buildNetworkProfitBreakdown(estimate),
       dealerNetwork: networkPresentation(estimate),
       installationJob: estimate.installationJob
         ? { id: estimate.installationJob.id, status: estimate.installationJob.status }
         : null,
       paymentSchedule: await getPaymentSchedule(tx, estimateId),
-    } : null;
+    };
   }
 
   /**
@@ -958,6 +958,7 @@ export class EstimatesService {
     return {
       ...(estimateResult as any),
       ...buildMaterialEarningsReport(estimate),
+      networkProfitBreakdown: buildNetworkProfitBreakdown(estimate),
       dealerNetwork: networkPresentation(estimate),
       paymentSchedule: await getPaymentSchedule(this.prisma, estimate.id),
       pieces,

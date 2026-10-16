@@ -15,6 +15,7 @@ const referralAdministration = new Set([
   'referralProfile', 'referralTerms', 'roleDefaults', 'referralRoleDefaults',
 ]);
 const installationAdministration = new Set([
+  'networkProfitBreakdown',
   'installationProcessingSummary', 'installationProcessing',
   'installationShare', 'installationSharePending',
   'providerCostSnapshot', 'profileRateAdjustmentsSnapshot', 'rateAdjustmentSnapshot',

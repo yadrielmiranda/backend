@@ -2,6 +2,7 @@ import { canAccessOwner, descendantIds, networkPresentation } from '@/dealer-net
 import { assertMaterialReadyForFactory } from '@/estimates/material-revisions/material-revision-policy';
 import { decimalAmount, hasRefundHistory, paidPrincipal, remainingRefundBalance } from '@/payments/payment-accounting';
 import { buildMaterialEarningsReport, referralReportMaterialRelations, referralReportOrderInclude } from '@/referrals/referral-report';
+import { buildNetworkProfitBreakdown } from '@/common/network-profit-breakdown';
 import { assertScheduleMilestone, buildPaymentSchedule, getPaymentSchedule } from '@/payment-plans/payment-schedule';
 // @/orders/orders.service.ts
 import {
@@ -136,6 +137,7 @@ function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof or
   return {
     ...order,
     ...buildMaterialEarningsReport(estimate, order),
+    networkProfitBreakdown: buildNetworkProfitBreakdown(order.estimate, order),
     paymentAnchor,
     estimate: {
       ...estimateResult,
@@ -174,7 +176,7 @@ export class OrdersService {
     });
 
     if (!order) throw new NotFoundException(`Order with ID #${id} not found.`);
-    return { ...order, ...buildMaterialEarningsReport(order.estimate, order), paymentSchedule: await getPaymentSchedule(this.prisma, order.idEst), estimate: withOrderEstimateSummary(order.estimate) };
+    return { ...order, ...buildMaterialEarningsReport(order.estimate, order), networkProfitBreakdown: buildNetworkProfitBreakdown(order.estimate, order), paymentSchedule: await getPaymentSchedule(this.prisma, order.idEst), estimate: withOrderEstimateSummary(order.estimate) };
   }
 
   async findAllStatuses(): Promise<OrderStatus[]> {
@@ -767,7 +769,7 @@ export class OrdersService {
 
     const paymentSchedule = await getPaymentSchedule(this.prisma, order.idEst);
     const estimate = withOrderEstimateSummary(order.estimate);
-    const earnings = buildMaterialEarningsReport(order.estimate, order);
+    const earnings = { ...buildMaterialEarningsReport(order.estimate, order), networkProfitBreakdown: buildNetworkProfitBreakdown(order.estimate, order) };
     if (roleName === 'admin' || roleName === 'operator') return { ...order, ...earnings, estimate, paymentSchedule };
 
     if (!await canAccessOwner(this.prisma, order.userId, user)) {
