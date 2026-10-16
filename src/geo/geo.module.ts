@@ -5,6 +5,8 @@ import { GeoController } from './geo.controller';
 import { GeoService } from './geo.service';
 import { GooglePlacesController } from './google-places.controller';
 import { GooglePlacesService } from './google-places.service';
+import { RegistrationPlacesController } from './registration-places.controller';
+import { RegistrationPlacesService } from './registration-places.service';
 
 @Module({
   imports: [
@@ -13,7 +15,11 @@ import { GooglePlacesService } from './google-places.service';
       maxRedirects: 3,
     }),
   ],
-  controllers: [GeoController, GooglePlacesController],
-  providers: [GeoService, GooglePlacesService],
+  controllers: [
+    GeoController,
+    GooglePlacesController,
+    RegistrationPlacesController,
+  ],
+  providers: [GeoService, GooglePlacesService, RegistrationPlacesService],
 })
 export class GeoModule {}
