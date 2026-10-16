@@ -12,6 +12,7 @@ import {
   Length,
   Max,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -35,6 +36,15 @@ export class WarehouseReceiptItemDto {
 }
 export class WarehouseReceiptDto extends WarehouseRequestDto {
   @IsInt() @Min(1) storeId: number;
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500)
+  @ValidateNested({ each: true }) @Type(() => WarehouseReceiptItemDto)
+  items: WarehouseReceiptItemDto[];
+}
+
+export class WarehouseReleaseDto extends WarehouseRequestDto {
+  // An explicit null selects Unassigned; omitting the source is invalid.
+  @ValidateIf((_object, value) => value !== null) @IsInt() @Min(1)
+  storeId: number | null;
   @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500)
   @ValidateNested({ each: true }) @Type(() => WarehouseReceiptItemDto)
   items: WarehouseReceiptItemDto[];

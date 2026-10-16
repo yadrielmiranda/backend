@@ -27,6 +27,7 @@ import {
   WarehouseCountCloseDto,
   WarehouseCountStartDto,
   WarehouseReceiptDto,
+  WarehouseReleaseDto,
   WarehouseCustomerDeliveryDto,
   WarehouseInstallationDeliveryDto,
   WarehouseTransferDto,
@@ -1523,6 +1524,71 @@ export class WarehouseService {
         }
       }
       return { ...presentCustomerDelivery(delivery), replayed: false };
+    }, 60000);
+  }
+
+  async release(dto: WarehouseReleaseDto, actor: AuthUser) {
+    this.staff(actor);
+    if (typeof dto.requestKey !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(dto.requestKey))
+      throw new BadRequestException('Enter a valid request identifier.');
+    if (dto.storeId === undefined ||
+        (dto.storeId !== null && (!Number.isSafeInteger(dto.storeId) || dto.storeId < 1)))
+      throw new BadRequestException('Choose the source store, or explicitly select Unassigned.');
+    if (!Array.isArray(dto.items) || !dto.items.length || dto.items.length > 500 ||
+        dto.items.some((item) => !item || typeof item !== 'object'))
+      throw new BadRequestException('Select between 1 and 500 units per release.');
+    const items = dto.items.map((item) => ({
+      lineNumber: barcodeLine(item.barcode), quantity: item.quantity, version: item.version,
+    })).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
+    if (new Set(items.map((item) => item.lineNumber)).size !== items.length ||
+        items.some((item) => !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 200 ||
+          !Number.isSafeInteger(item.version) || item.version < 0))
+      throw new BadRequestException('Choose each unit once and enter valid quantities and versions.');
+    const requestHash = hash([actor.id, 'BATCH_RELEASE', dto.storeId, items]);
+    const summary = { units: items.length, parts: items.reduce((sum, item) => sum + item.quantity, 0), storeId: dto.storeId };
+    // The human-readable audit reason also preserves the source name across renames.
+    const reasonPrefix = 'Installation release from: ';
+    return this.transaction(async (tx) => {
+      const prior = await tx.warehouseMovement.findUnique({ where: { requestKey: dto.requestKey }, include: movementInclude });
+      if (prior) {
+        if (prior.requestHash !== requestHash)
+          throw new ConflictException('This request identifier was already used for another operation.');
+        const storeName = prior.reason?.startsWith(reasonPrefix)
+          ? prior.reason.slice(reasonPrefix.length) : prior.fromStore?.name ?? 'Unassigned';
+        return { ...summary, storeName, replayed: true };
+      }
+      if (await tx.warehouseCustomerDelivery.findUnique({ where: { requestKey: dto.requestKey } }))
+        throw new ConflictException('This request identifier was already used for another operation.');
+      await this.noCount(tx);
+      if (dto.storeId !== null) await this.lockStores(tx, [dto.storeId]);
+      const store = dto.storeId === null ? null : await tx.warehouseStore.findUniqueOrThrow({ where: { id: dto.storeId } });
+      const sourceName = store?.name ?? 'Unassigned';
+      const selected: Array<{ stock: Stock; quantity: number }> = [];
+      for (const item of items) {
+        const stock = await this.load(tx, item.lineNumber);
+        if (stock.version !== item.version)
+          throw new ConflictException(`Unit I${item.lineNumber} changed. Refresh and review the release. No parts were released by this request.`);
+        if (storeQuantity(stock, dto.storeId) < item.quantity)
+          throw new BadRequestException(`Unit I${item.lineNumber} does not have that many parts in the selected source store. No parts were released by this request.`);
+        selected.push({ stock, quantity: item.quantity });
+      }
+      // Match unsigned scan RELEASE: an installation is optional, but commercial checks are not.
+      const estimateIds = [...new Set(selected.flatMap(({ stock }) => stock.unit.piece ? [stock.unit.piece.idEst] : []))].sort((a, b) => a - b);
+      const installations = new Map<number, ReturnType<typeof installationDestination>>();
+      for (const estimateId of estimateIds)
+        installations.set(estimateId, (await assertWarehouseRelease(tx, estimateId))?.installation ?? null);
+      for (const [index, { stock, quantity }] of selected.entries()) {
+        const installation = stock.unit.piece ? installations.get(stock.unit.piece.idEst) : null;
+        await this.move(tx, stock, {
+          type: 'RELEASE', actorId: actor.id, requestHash,
+          requestKey: index === 0 ? dto.requestKey : hash([dto.requestKey, stock.lineNumber]),
+          quantity, onHandDelta: -quantity, releasedDelta: quantity, fromStoreId: dto.storeId,
+          installationJobId: installation?.id, installationAddress: installation?.address,
+          reason: `${reasonPrefix}${sourceName}`,
+        });
+      }
+      return { ...summary, storeName: sourceName, replayed: false };
     }, 60000);
   }
 
