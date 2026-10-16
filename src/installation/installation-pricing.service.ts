@@ -21,7 +21,51 @@ export type InstallationProfileSnapshot = {
   name: string;
   adjustmentPercent: Decimal;
   minimumCharge: Decimal;
+  // Missing only on historical quotes that still use the global percentage.
+  rateAdjustments?: InstallationProfileRateAdjustmentsSnapshot;
 };
+
+export type InstallationProfileRateAdjustment = {
+  serviceId: number;
+  ruleId: number | null;
+  type: 'AMOUNT' | 'PERCENT';
+  value: string;
+  legacyLineRounding?: boolean;
+};
+export type InstallationProfileRateAdjustmentsSnapshot = {
+  schema: 1;
+  adjustments: InstallationProfileRateAdjustment[];
+};
+
+export function installationProfileRateAdjustments(value: unknown): InstallationProfileRateAdjustmentsSnapshot {
+  const snapshot = value as InstallationProfileRateAdjustmentsSnapshot;
+  if (snapshot?.schema !== 1 || !Array.isArray(snapshot.adjustments)) {
+    throw new BadRequestException('The saved installation profile adjustments are invalid.');
+  }
+  const targets = new Set<string>();
+  const adjustments = snapshot.adjustments.map(adjustment => {
+    let amount: Decimal;
+    try { amount = new Decimal(adjustment.value); } catch {
+      throw new BadRequestException('The saved installation profile adjustment is invalid.');
+    }
+    const key = adjustment.ruleId == null ? `SERVICE:${adjustment.serviceId}` : `RULE:${adjustment.ruleId}`;
+    if (!Number.isInteger(adjustment.serviceId) || adjustment.serviceId < 1 ||
+        (adjustment.ruleId != null && (!Number.isInteger(adjustment.ruleId) || adjustment.ruleId < 1)) ||
+        !['AMOUNT', 'PERCENT'].includes(adjustment.type) || !amount.isFinite() ||
+        (adjustment.legacyLineRounding === true && adjustment.type !== 'PERCENT') ||
+        amount.decimalPlaces() > 4 || amount.abs().gt('99999999.9999') ||
+        (adjustment.type === 'PERCENT' && amount.gt('999999.9999')) ||
+        (amount.lt(0) && !(adjustment.legacyLineRounding === true && adjustment.type === 'PERCENT' && amount.gt(-100))) ||
+        targets.has(key)) {
+      throw new BadRequestException('The saved installation profile adjustment is invalid.');
+    }
+    targets.add(key);
+    return { serviceId: adjustment.serviceId, ruleId: adjustment.ruleId ?? null,
+      type: adjustment.type, value: amount.toFixed(4),
+      ...(adjustment.legacyLineRounding === true ? { legacyLineRounding: true } : {}) };
+  });
+  return { schema: 1, adjustments };
+}
 
 export type InstallationPricingDimensions = {
   widthIn?: number | string | Prisma.Decimal | null;
@@ -189,10 +233,10 @@ export class InstallationPricingService {
     const user = await tx.user.findUnique({
       where: { id: userId },
       select: {
-        installationPriceProfile: true,
+        installationPriceProfile: { include: { adjustments: true } },
         role: {
           select: {
-            installationPriceProfile: true,
+            installationPriceProfile: { include: { adjustments: true } },
           },
         },
       },
@@ -209,6 +253,7 @@ export class InstallationPricingService {
         : null) ??
       (await tx.installationPriceProfile.findFirst({
         where: { isDefault: true, isActive: true },
+        include: { adjustments: true },
         orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
       }));
 
@@ -218,6 +263,7 @@ export class InstallationPricingService {
         name: 'Base',
         adjustmentPercent: new Decimal(0),
         minimumCharge: new Decimal(0),
+        rateAdjustments: { schema: 1, adjustments: [] },
       };
     }
 
@@ -226,6 +272,13 @@ export class InstallationPricingService {
       name: selected.name,
       adjustmentPercent: new Decimal(selected.adjustmentPercent.toString()),
       minimumCharge: new Decimal(selected.minimumCharge.toString()),
+      rateAdjustments: installationProfileRateAdjustments({ schema: 1,
+        adjustments: (selected.adjustments ?? []).map(adjustment => ({
+          serviceId: adjustment.serviceId, ruleId: adjustment.ruleId,
+          type: adjustment.type, value: adjustment.value.toString(),
+          legacyLineRounding: adjustment.legacyLineRounding,
+        })),
+      }),
     };
   }
 
@@ -415,12 +468,36 @@ export class InstallationPricingService {
       .mul(billableQuantity)
       .mul(occurrences)
       .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-    const multiplier = new Decimal(1).add(
-      input.profile.adjustmentPercent.div(100),
-    );
-    const adjustedAmount = baseAmount
-      .mul(multiplier)
+    const rateAdjustments = input.profile.rateAdjustments == null
+      ? null : installationProfileRateAdjustments(input.profile.rateAdjustments);
+    // A selected rule is an independent tariff: absence of its own adjustment
+    // means base price, even if the service has a separate adjustment.
+    const adjustment = rateAdjustments?.adjustments.find(candidate =>
+      candidate.serviceId === input.service.id && candidate.ruleId === (selectedRule?.id ?? null));
+    const legacy = rateAdjustments === null;
+    const adjustmentType = legacy ? 'PERCENT' : adjustment?.type ?? null;
+    const adjustmentValue = legacy ? input.profile.adjustmentPercent : new Decimal(adjustment?.value ?? 0);
+    const percentage = adjustmentType === 'PERCENT' ? adjustmentValue : new Decimal(0);
+    const saleRate = (adjustmentType === 'AMOUNT' ? rate.add(adjustmentValue)
+      : rate.mul(new Decimal(1).add(percentage.div(100))))
+      .toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+    if (!saleRate.isFinite() || saleRate.lt(0) || saleRate.gt('99999999999999.9999')) {
+      throw new BadRequestException('The adjusted installation tariff exceeds the supported limit.');
+    }
+    const adjustedAmount = (legacy || adjustment?.legacyLineRounding
+      ? baseAmount.mul(new Decimal(1).add(percentage.div(100)))
+      : saleRate.mul(billableQuantity).mul(occurrences))
       .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    if (adjustedAmount.gt('9999999999.99')) {
+      throw new BadRequestException('The installation line amount exceeds the supported limit.');
+    }
+    const rateAdjustmentSnapshot = {
+      schema: 1,
+      source: legacy ? 'LEGACY' : adjustment ? selectedRule ? 'RULE' : 'SERVICE' : 'NONE',
+      type: adjustmentType, value: adjustmentValue.toFixed(4),
+      providerRate: rate.toFixed(4), saleRate: saleRate.toFixed(4),
+      legacyLineRounding: legacy || adjustment?.legacyLineRounding === true,
+    } satisfies Prisma.InputJsonObject;
 
     return {
       serviceId: input.service.id,
@@ -456,11 +533,13 @@ export class InstallationPricingService {
         ? new Prisma.Decimal(metricValue.toFixed(4))
         : null,
       rate: new Prisma.Decimal(rate.toFixed(4)),
+      saleRate: new Prisma.Decimal(saleRate.toFixed(4)),
+      rateAdjustmentSnapshot,
       billableQuantity: new Prisma.Decimal(billableQuantity.toFixed(4)),
       occurrences,
       baseAmount: new Prisma.Decimal(baseAmount.toFixed(2)),
       adjustmentPercent: new Prisma.Decimal(
-        input.profile.adjustmentPercent.toFixed(4),
+        percentage.toFixed(4),
       ),
       adjustedAmount: new Prisma.Decimal(adjustedAmount.toFixed(2)),
       description: input.description?.trim() || null,

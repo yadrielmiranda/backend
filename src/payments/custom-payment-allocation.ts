@@ -3,6 +3,7 @@ import Decimal from 'decimal.js';
 import { milestones } from '@/payment-plans/payment-plan';
 import { cents, distributeCents, paidPrincipal, type AccountedPayment } from './payment-accounting';
 import type { ProcessingComponents } from './processing-cost-snapshot';
+import { withInstallationProcessingShare } from './installation-processing-cost';
 
 type CustomSchedule = {
   fullBalance: { amount: string; sequences: number[] } | null;
@@ -38,7 +39,9 @@ export function allocateCustomPayment(schedule: CustomSchedule | null, amount: n
 export function partialProcessingComponents(components: ProcessingComponents, amount: Decimal): ProcessingComponents {
   const keys = ['material', 'installation', 'permit', 'city', 'other'] as const;
   const portions = distributeCents(cents(amount), keys.map(key => cents(components[key])));
-  return { ...components, ...Object.fromEntries(keys.map((key, index) => [key, new Decimal(portions[index]).div(100).toFixed(2)])) };
+  const { installationShare, ...remaining } = components;
+  const partial = { ...remaining, ...Object.fromEntries(keys.map((key, index) => [key, new Decimal(portions[index]).div(100).toFixed(2)])) };
+  return withInstallationProcessingShare(partial, installationShare);
 }
 
 /** The obligation excludes credits from deposits/other rows, but includes this

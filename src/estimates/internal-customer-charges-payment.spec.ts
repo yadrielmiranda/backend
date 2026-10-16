@@ -109,4 +109,67 @@ describe('Internal dealer customer charges collected by the company', () => {
     expect(payment.baseAmount.toFixed(2)).toBe('1145.00');
     expect(payment.processingComponents).toMatchObject({ material: '1070.00', other: '75.00' });
   });
+
+  it('freezes provider, profile margin and dealer additions independently at checkout', async () => {
+    const f = fixture();
+    f.estimate.installationJob.quotes[0].providerCostSnapshot = { schema: 1, total: '800.00' };
+    f.estimate.installationJob.status = 'INSTALLATION_PAYMENT_PENDING';
+    f.estimate.order = { status: { name: 'Ready to pick up' } };
+    const payment = await f.context(PaymentType.INSTALLATION);
+    expect(payment.baseAmount.toFixed(2)).toBe('1325.00');
+    expect(payment.processingComponents?.installationShare).toEqual({
+      provider: '800.00', company: '200.00', dealer: '325.00',
+    });
+  });
+
+  it('takes an installation discount from the profile margin while preserving provider tariffs', async () => {
+    const f = fixture();
+    f.estimate.installationJob.quotes[0].providerCostSnapshot = { schema: 1, total: '800.00' };
+    f.estimate.manualDiscount = { scope: 'INSTALLATION', type: 'PERCENTAGE', value: '10' };
+    f.estimate.installationJob.status = 'INSTALLATION_PAYMENT_PENDING';
+    f.estimate.order = { status: { name: 'Ready to pick up' } };
+    const payment = await f.context(PaymentType.INSTALLATION);
+    expect(payment.baseAmount.toFixed(2)).toBe('1225.00');
+    expect(payment.processingComponents?.installationShare).toEqual({
+      provider: '800.00', company: '100.00', dealer: '325.00',
+    });
+  });
+
+  it('allocates a scheduled deposit to the first installment instead of counting installation twice', async () => {
+    const f = fixture();
+    f.estimate.paymentPlanSnapshot = { version: 1, planId: null, name: 'Default', definition: defaultPlan };
+    f.estimate.installationJob.status = 'DEPOSIT_PAYMENT_PENDING';
+    f.estimate.installationJob.quotes[0].status = 'DRAFT';
+    f.estimate.installationJob.quotes[0].providerCostSnapshot = { schema: 1, total: '800.00' };
+    const payment = await f.context(PaymentType.INSTALLATION_DEPOSIT);
+    expect(payment.baseAmount.toFixed(2)).toBe('50.00');
+    expect(payment.processingComponents?.installation).toBe('0.00');
+    expect(payment.processingComponents?.installationShare).toBeUndefined();
+    // The first installment also includes permit/city amounts, so the deposit
+    // follows that composition rather than all belonging to installation.
+    expect(Number(payment.processingComponents?.material)).toBeGreaterThan(0);
+  });
+
+  it('allocates a revised quote when prior card collections were exclusively material', async () => {
+    const f = fixture();
+    Object.assign(f.estimate.installationJob.quotes[0], { version: 2, providerCostSnapshot: { schema: 1, total: '800.00' } });
+    f.estimate.installationJob.status = 'INSTALLATION_PAYMENT_PENDING';
+    f.estimate.order = { status: { name: 'Ready to pick up' } };
+    f.estimate.payments = [{ type: 'MATERIAL', status: 'PAID', baseAmount: '100', processingCostSnapshot: {
+      version: 1, components: { material: '100.00', installation: '0.00', permit: '0.00', city: '0.00', other: '0.00' },
+    } }];
+    expect((await f.context(PaymentType.INSTALLATION)).processingComponents?.installationShare)
+      .toEqual({ provider: '800.00', company: '200.00', dealer: '325.00' });
+  });
+
+  it('does not invent a revised supplier allocation when prior installation collections have no trustworthy split', async () => {
+    const f = fixture();
+    Object.assign(f.estimate.installationJob.quotes[0], { version: 2, providerCostSnapshot: { schema: 1, total: '800.00' } });
+    f.estimate.installationJob.status = 'INSTALLATION_PAYMENT_PENDING';
+    f.estimate.order = { status: { name: 'Ready to pick up' } };
+    f.estimate.payments = [{ installationJobId: 2, type: 'INSTALLATION_DEPOSIT', status: 'PAID', baseAmount: '50' }];
+    const payment = await f.context(PaymentType.INSTALLATION);
+    expect(payment.processingComponents?.installationSharePending).toBe(true);
+    expect(payment.processingComponents?.installationShare).toBeUndefined();
+  });
 });

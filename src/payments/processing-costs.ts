@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import Decimal from 'decimal.js';
 import type Stripe from 'stripe';
 import { cents, distributeCents } from './payment-accounting';
+import { buildInstallationProcessingAllocation } from './installation-processing-cost';
 
 const COMPONENTS = ['material', 'installation', 'permit', 'city', 'other'] as const;
 type Components = Record<(typeof COMPONENTS)[number], number>;
@@ -216,6 +217,8 @@ export async function reconcileStripeProcessingCost(
     materialSurcharge = sum(frozen.map(item => item.materialSurcharge - distributeCents(
       item.refundedSurcharge, [item.materialSurcharge, item.surcharge - item.materialSurcharge],
     )[0]));
+    const installationProcessing = buildInstallationProcessingAllocation(receipts, allocationSnapshot, status, saved?.installationProcessing);
+    if (installationProcessing) allocationSnapshot.installationProcessing = installationProcessing;
   } catch {
     status = 'REVIEW';
     // Preserve already known costs when anomalous data needs investigation.

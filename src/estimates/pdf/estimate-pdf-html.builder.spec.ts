@@ -170,7 +170,95 @@ function withExternalDealerCustomerCharges(
   return estimate;
 }
 
+function internalServiceEarningsFixture(): EstimateWithRelations {
+  const estimate = estimateFixture(false);
+  return Object.assign(estimate, {
+    idUser: 7, dealerModeSnapshot: 'INTERNAL', rateT: '1000', priceT: '1200', customerPriceT: '1500', netProfitD: '300',
+    dealerEarningsPlanSnapshot: { version: 2, planId: 15, name: 'Sales team', revision: 1, basis: 'EXPECTED_PROFIT', percent: '20' },
+    installationJob: { status: 'REQUESTED', quotes: [{ status: 'DRAFT', total: '1000' }] },
+    installationSummary: { status: 'REQUESTED', quoteStatus: 'DRAFT', installationAmount: '1000.00', installationTotal: '1000.00',
+      additionalServices: [], permitIncluded: false, permitFee: null, cityFee: null },
+    customerChargesSummary: { enabled: true, systemTotal: '1000.00', customerTotal: '1600.00', knownSystemMargin: '600.00',
+      dealerCreatedTotal: '0.00', systemTotalIncomplete: false, customerTotalIncomplete: false,
+      lines: [{ id: 1, origin: 'SYSTEM', source: 'INSTALLATION', sourceKey: 'INSTALLATION', sourceRefId: null,
+        description: 'Installation', systemAmount: '1000.00', customerAmount: '1600.00', pricingMode: 'AMOUNT', pricingValue: '600.0000',
+        usedInCustomerQuote: true, needsReview: false, sortOrder: 10 }] },
+  } as any);
+}
+
 describe('EstimatePdfHtmlBuilder', () => {
+  it('adds only the internal dealer own service increases to material plan earnings, without reducing them for company discounts', () => {
+    const estimate = internalServiceEarningsFixture();
+    Object.assign(estimate, { manualDiscount: { scope: 'INSTALLATION', type: 'AMOUNT', value: '100' } });
+    const before = JSON.stringify(estimate);
+    for (const view of ['admin', 'dealer_internal'] as const) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, view, {}, 7);
+      const card = html.match(/<section class="dealer-profit[\s\S]*?<\/section>/)?.[0];
+      expect(card).toContain('aria-label="Dealer Profit"');
+      expect(card).toContain('class="dealer-profit-total">$700.00');
+      expect(card).toContain('Material: <strong>$100.00</strong>');
+      expect(card).toContain('Installation &amp; services: <strong>$600.00</strong>');
+      expect(card).toContain('Installation &amp; services shown before card processing fees.');
+      expect(card).not.toContain('$900.00');
+    }
+    expect(JSON.stringify(estimate)).toBe(before);
+    for (const view of ['dealer_public', 'dealer_public_total', 'client'] as const) {
+      expect(EstimatePdfHtmlBuilder.build(estimate, view)).not.toContain('aria-label="Dealer Profit"');
+    }
+  });
+
+  it('keeps the project earnings total pending while preserving a known service increase', () => {
+    const estimate = internalServiceEarningsFixture();
+    (estimate.dealerEarningsPlanSnapshot as any).basis = 'REAL_PROFIT';
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'dealer_internal', {}, 7);
+    const card = html.match(/<section class="dealer-profit[\s\S]*?<\/section>/)?.[0];
+    expect(card).toContain('class="dealer-profit-total">Earnings pending confirmation');
+    expect(card).toContain('Material: <strong>Pending real factory cost</strong>');
+    expect(card).toContain('Installation &amp; services: <strong>$600.00</strong>');
+  });
+
+  it.each(['missing', 'incomplete', 'review'])('keeps uncertain %s service earnings pending instead of inventing a total', state => {
+    const estimate = internalServiceEarningsFixture();
+    if (state === 'missing') estimate.customerChargesSummary = null;
+    else if (state === 'incomplete') estimate.customerChargesSummary!.customerTotalIncomplete = true;
+    else estimate.customerChargesSummary!.lines[0].needsReview = true;
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'dealer_internal', {}, 7);
+    const card = html.match(/<section class="dealer-profit[\s\S]*?<\/section>/)?.[0];
+    expect(card).toContain('class="dealer-profit-total">Earnings pending confirmation');
+    expect(card).toContain('Material: <strong>$100.00</strong>');
+    expect(card).toContain('Installation &amp; services: <strong>Pending confirmation</strong>');
+    expect(card).not.toContain('$700.00');
+  });
+
+  it('attributes service increases only to the internal subdealer owner, including the separate admin card', () => {
+    const estimate = internalServiceEarningsFixture();
+    const plan = estimate.dealerEarningsPlanSnapshot;
+    Object.assign(estimate, { idUser: 2, networkBillingPriceT: '1500', networkRootPriceT: '1200', networkSubdealerPriceT: '1300',
+      dealerNetworkSnapshot: { version: 1, rootMode: 'INTERNAL', rootMarkup: '0.2',
+        nodes: [{ id: 1, username: 'root', level: 'DEALER', markup: '0', mode: 'INTERNAL' },
+          { id: 2, username: 'owner', level: 'SUBDEALER', markup: '0.1', mode: 'INTERNAL' }],
+        payerType: 'CUSTOMER', billingIndex: 2, billingAccountId: 2, billingTaxRate: '0',
+        payer: { name: 'Customer', email: null, phone: null }, earningsPlan: plan,
+        subdealerPlan: { mode: 'AVAILABLE_PROFIT', percent: '40' } } });
+    const root = EstimatePdfHtmlBuilder.build(estimate, 'dealer_internal', {}, 1);
+    const rootCard = root.match(/<section class="dealer-profit[\s\S]*?<\/section>/)?.[0];
+    expect(rootCard).toContain('Dealer material earnings');
+    expect(rootCard).toContain('class="dealer-profit-total">$60.00');
+    expect(rootCard).not.toContain('$600.00');
+    const owner = EstimatePdfHtmlBuilder.build(estimate, 'dealer_internal', {}, 2);
+    const ownerCard = owner.match(/<section class="dealer-profit[\s\S]*?<\/section>/)?.[0];
+    expect(ownerCard).toContain('class="dealer-profit-total">$640.00');
+    expect(ownerCard).toContain('Material: <strong>$40.00</strong>');
+    expect(ownerCard).toContain('Installation &amp; services: <strong>$600.00</strong>');
+    const admin = EstimatePdfHtmlBuilder.build(estimate, 'admin', {}, 99);
+    const cards = admin.match(/<section class="dealer-profit[\s\S]*?<\/section>/g)!;
+    expect(cards[0]).toContain('Dealer material earnings');
+    expect(cards[0]).not.toContain('$600.00');
+    expect(cards[1]).toContain('Subdealer Profit');
+    expect(cards[1]).toContain('class="dealer-profit-total">$640.00');
+    expect(cards.filter(card => card.includes('Installation &amp; services:'))).toHaveLength(1);
+  });
+
   it('includes internal dealer customer charges and applies the installation discount once in PDF totals', () => {
     const estimate = withExternalDealerCustomerCharges();
     Object.assign(estimate, {
@@ -597,7 +685,7 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).toContain('INTERNAL DEALER');
     expect(html).toContain('Expected material profit');
     expect(html).toContain('App base price (before markups)');
-    expect(html).toContain('Dealer material earnings');
+    expect(html).toContain('Dealer Profit');
     expect(html).toContain('Company expected profit after dealer earnings');
     expect(html).toContain('$63.88');
     expect(html).not.toContain('Estimated Configured Company profit');
@@ -621,7 +709,7 @@ describe('EstimatePdfHtmlBuilder', () => {
     for (const view of ['admin', 'dealer_internal'] as const) {
       const html = EstimatePdfHtmlBuilder.build(estimate, view);
       const card = html.match(/<section class="dealer-profit[\s\S]*?<\/section>/)?.[0];
-      expect(card).toContain('Dealer material earnings');
+      expect(card).toContain('Dealer Profit');
       expect(card).toContain(amount);
       if (view === 'dealer_internal') {
         expect(html).not.toContain('Company expected profit after dealer earnings');
@@ -661,7 +749,7 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(admin).toContain('Net real material profit</span><strong>$575.00');
     expect(admin).toContain('Company real profit after processing costs and dealer earnings</span><strong>$460.00');
     const dealer = EstimatePdfHtmlBuilder.build(estimate, 'dealer_internal');
-    expect(dealer).toContain('Dealer material earnings');
+    expect(dealer).toContain('Dealer Profit');
     expect(dealer).toContain('$115.00');
     for (const view of ['dealer_internal', 'dealer_public', 'dealer_public_total', 'client'] as const) {
       const html = EstimatePdfHtmlBuilder.build(estimate, view);
@@ -690,14 +778,14 @@ describe('EstimatePdfHtmlBuilder', () => {
       const html = EstimatePdfHtmlBuilder.build(estimate, 'dealer_internal', {}, viewerId);
       const card = html.match(/<section class="dealer-profit[\s\S]*?<\/section>/)?.[0];
       expect(card).toContain('Earnings pending confirmation');
-      expect(card).not.toMatch(/processing|Stripe|factory|\$0\.00/);
+      expect(card).not.toMatch(/processing cost|Stripe|factory|Material: <strong>\$0\.00/);
       expect(html).not.toContain('Material processing cost');
     }
     const admin = EstimatePdfHtmlBuilder.build(estimate, 'admin');
     expect(admin).toContain('Material processing cost</span><strong>Pending processing cost confirmation');
     expect(admin).toContain('Net real material profit</span><strong>Pending processing cost confirmation');
-    expect(admin).toContain('Subdealer material earnings');
-    expect(admin.match(/Earnings pending confirmation/g)).toHaveLength(2);
+    expect(admin).toContain('Subdealer Profit');
+    expect(admin.match(/Earnings pending confirmation/g)).toHaveLength(3);
   });
 
   it.each(['EXTERNAL', null])('shows processing costs for %s admin reports without adding internal dealer earnings', (mode) => {

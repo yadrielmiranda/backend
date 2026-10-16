@@ -879,15 +879,32 @@ export class EstimatePdfHtmlBuilder {
     const earningsAmount = (earnings: { amount: string | null; status: string }) =>
       earnings.amount != null ? formatMoney(earnings.amount)
         : earnings.status === 'PENDING_COST' ? 'Earnings pending confirmation' : 'Pending real factory cost';
-    const dealerProfitHtml = comparisonView
-      ? dealerEarnings ? `
-        <section class="dealer-profit keep-together" aria-label="Dealer material earnings">
-          <div class="dealer-profit-heading">
-            <strong>Dealer material earnings</strong>
-            <span class="dealer-profit-total${Number(dealerEarnings.amount) < 0 ? ' loss' : ''}">${earningsAmount(dealerEarnings)}</span>
-          </div>
+    const ownServiceCharges = estimate.customerChargesSummary;
+    const ownServiceProfit = ownServiceCharges && !ownServiceCharges.systemTotalIncomplete &&
+      !ownServiceCharges.customerTotalIncomplete && !ownServiceCharges.lines.some(line => line.needsReview)
+      ? roundMoney(numberValue(ownServiceCharges.customerTotal) - numberValue(ownServiceCharges.systemTotal)) : null;
+    const earningsCard = (earnings: { amount: string | null; status: string }, label: 'Dealer' | 'Subdealer', includeOwnServices: boolean) => {
+      if (!includeOwnServices) return `
+        <section class="dealer-profit keep-together" aria-label="${label} material earnings">
+          <div class="dealer-profit-heading"><strong>${label} material earnings</strong><span class="dealer-profit-total${Number(earnings.amount) < 0 ? ' loss' : ''}">${earningsAmount(earnings)}</span></div>
           <p>Sales tax, installation and services excluded.</p>
-        </section>` : `
+        </section>`;
+      const total = earnings.amount == null || ownServiceProfit == null ? null : roundMoney(Number(earnings.amount) + ownServiceProfit);
+      const totalText = total == null ? 'Earnings pending confirmation' : formatMoney(total);
+      const servicesText = ownServiceProfit == null ? 'Pending confirmation' : formatMoney(ownServiceProfit);
+      return `
+        <section class="dealer-profit keep-together" aria-label="${label} Profit">
+          <div class="dealer-profit-heading"><strong>${label} Profit</strong><span class="dealer-profit-total${total != null && total < 0 ? ' loss' : ''}">${totalText}</span></div>
+          <div class="dealer-profit-breakdown">
+            <span>Material: <strong${Number(earnings.amount) < 0 ? ' class="loss"' : ''}>${earningsAmount(earnings)}</strong></span>
+            <span aria-hidden="true">+</span>
+            <span>Installation &amp; services: <strong${ownServiceProfit != null && ownServiceProfit < 0 ? ' class="loss"' : ''}>${servicesText}</strong></span>
+          </div>
+          <p>Sales tax excluded. Installation &amp; services shown before card processing fees.</p>
+        </section>`;
+    };
+    const dealerProfitHtml = comparisonView
+      ? dealerEarnings ? earningsCard(dealerEarnings, 'Dealer', internalDealer && (!network || viewerId === estimate.idUser)) : `
         <section class="dealer-profit keep-together" aria-label="Dealer Profit">
           <div class="dealer-profit-heading">
             <strong>Dealer Profit</strong>
@@ -903,7 +920,8 @@ export class EstimatePdfHtmlBuilder {
       : '';
 
     const subdealerEarnings = reportKind === 'admin' ? earningsReport?.subdealerEarnings : null;
-    const subdealerEarningsHtml = subdealerEarnings ? `<section class="dealer-profit keep-together"><div class="dealer-profit-heading"><strong>Subdealer material earnings</strong><span class="dealer-profit-total">${earningsAmount(subdealerEarnings)}</span></div><p>Sales tax, installation and services excluded.</p></section>` : '';
+    const subdealerEarningsHtml = subdealerEarnings ? earningsCard(subdealerEarnings, 'Subdealer',
+      internalDealer && network?.nodes[1]?.id === estimate.idUser && network.nodes[1].mode === 'INTERNAL') : '';
 
     const profitability = estimatedMaterialProfitability(
       manualDiscount ? { ...estimate, ...(manualDiscount.payer === 'CUSTOMER' ? { customerPriceT: manualDiscount.material.subtotal } : { priceT: manualDiscount.material.subtotal }) } as unknown as EstimateWithRelations : estimate,

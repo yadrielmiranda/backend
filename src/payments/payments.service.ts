@@ -7,6 +7,7 @@ import { reconcileChargeRefunds, recordManualReceipt, recordStripeReceipt, refre
 import { stripePaymentMethod } from './stripe-payment-method';
 import { reconcileStripeProcessingCost } from './processing-costs';
 import { freezeProcessingCostSnapshot } from './processing-cost-snapshot';
+import { allocateInstallationCheckoutShares } from './installation-processing-cost';
 import { allocateCustomPayment, installmentObligation, partialProcessingComponents } from './custom-payment-allocation';
 import { ReviewRefundDto } from './dto/review-refund.dto';
 import Decimal from 'decimal.js';
@@ -1563,6 +1564,28 @@ export class PaymentsService {
         throw new ConflictException(`${type} payment is already paid.`);
       }
 
+      if (contexts.some(selected => selected.processingComponents?.installationShare?.basis)) {
+        const receipts = await tx.paymentReceipt.findMany({
+          where: { payment: { idEst: params.estimateId } }, orderBy: { id: 'asc' },
+          include: { payment: { select: { type: true } }, allocations: { include: { refund: { select: { status: true } } } } },
+        });
+        const refundedCharges = [...new Set(receipts.filter(receipt => receipt.stripeChargeId &&
+          receipt.allocations.some(row => row.refund.status === 'succeeded')).map(receipt => receipt.stripeChargeId!))];
+        const costs = refundedCharges.length ? await tx.stripeProcessingCost.findMany({
+          where: { stripeChargeId: { in: refundedCharges } }, select: { stripeChargeId: true, status: true, allocationSnapshot: true },
+        }) : [];
+        // Other open sessions reserve only their frozen attempt, never the whole
+        // installment obligation. The current selection is replaced below.
+        const reserved = await tx.payment.findMany({
+          where: { idEst: params.estimateId, status: PaymentStatus.PENDING, stripeSessionId: { not: null },
+            id: { notIn: existingPayments.filter((payment): payment is NonNullable<typeof payment> => payment != null).map(payment => payment.id) } },
+          select: { id: true, amount: true, surchargeAmount: true, processingCostSnapshot: true, type: true },
+          orderBy: { id: 'asc' },
+        });
+        allocateInstallationCheckoutShares(contexts, receipts, costs, reserved.map(payment => ({
+          ...payment, id: -payment.id, payment: { type: payment.type }, allocations: [],
+        })));
+      }
       const payments = [] as Array<{ id: number }>;
       for (const context of contexts) {
         const processingCostSnapshot = freezeProcessingCostSnapshot(context);

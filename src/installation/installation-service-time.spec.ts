@@ -76,14 +76,19 @@ describe('Installation service time settings', () => {
         stored = {
           ...stored,
           ...copy(fields),
-          ...(rules ? { rules: makeRules(rules.create) } : {}),
+          ...(rules ? { rules: [...stored.rules, ...makeRules(rules.create)] } : {}),
         };
         return copy(stored);
       }),
     },
     installationServiceRule: {
-      deleteMany: jest.fn(async () => {
-        stored.rules = [];
+      deleteMany: jest.fn(async ({ where }) => {
+        stored.rules = stored.rules.filter((rule: any) => !where.id.in.includes(rule.id));
+      }),
+      update: jest.fn(async ({ where, data }) => {
+        const rule = stored.rules.find((entry: any) => entry.id === where.id);
+        Object.assign(rule, copy(data));
+        return copy(rule);
       }),
       updateMany: jest.fn(async ({ data }) => {
         stored.rules = stored.rules.map((rule: any) => ({
@@ -228,6 +233,25 @@ describe('Installation service time settings', () => {
     ]);
     expect(saved.estimatedMinutes).toBe('30.5');
     expect(saved.rules.map((rule) => rule.rate)).toEqual(['100', '150']);
+  });
+
+  it('preserves rule IDs and profile targets when tariffs and boundaries are edited', async () => {
+    const before = (await create(valid()).expect(201)).body;
+    const rules = before.rules.map((rule: any, index: number) => ({
+      ...rule, rate: index === 0 ? 110 : 160,
+      ...(index === 0 ? { maxValue: 50 } : { minValue: 50 }),
+    }));
+    const saved = (await edit({ rules }).expect(200)).body;
+    expect(saved.rules.map((rule: any) => rule.id)).toEqual(before.rules.map((rule: any) => rule.id));
+    expect(saved.rules.map((rule: any) => rule.rate)).toEqual(['110', '160']);
+    expect(db.installationServiceRule.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects rule IDs from a different service or duplicate IDs before changing anything', async () => {
+    const before = (await create(valid()).expect(201)).body;
+    await edit({ rules: before.rules.map((rule: any) => ({ ...rule, id: 999 })) }).expect(400);
+    await edit({ rules: before.rules.map((rule: any) => ({ ...rule, id: before.rules[0].id })) }).expect(400);
+    expect((await read().expect(200)).body).toEqual(before);
   });
 
   it.each(['UNIT', 'PANEL', 'SQFT', 'SQFT_RECTANGULAR', 'LINEAR_FOOT'])(

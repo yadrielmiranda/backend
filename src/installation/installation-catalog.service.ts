@@ -21,6 +21,7 @@ import {
 } from './dto/installation-catalog.dto';
 import {
   CreateInstallationPriceProfileDto,
+  InstallationProfileRateAdjustmentDto,
   UpdateInstallationPriceProfileDto,
 } from './dto/installation-profile.dto';
 import {
@@ -39,6 +40,11 @@ const serviceInclude = {
     },
   },
 } satisfies Prisma.InstallationServiceInclude;
+
+const profileInclude = {
+  adjustments: { orderBy: [{ serviceId: 'asc' as const }, { ruleId: 'asc' as const }, { id: 'asc' as const }] },
+  _count: { select: { roles: true, users: true, quotes: true } },
+} satisfies Prisma.InstallationPriceProfileInclude;
 
 @Injectable()
 export class InstallationCatalogService {
@@ -186,6 +192,9 @@ export class InstallationCatalogService {
 
   async createService(dto: CreateInstallationServiceDto, actor: AuthUser) {
     const rules = dto.rules ?? [];
+    if (rules.some(rule => rule.id !== undefined)) {
+      throw new BadRequestException('New service rules cannot reference existing rule IDs.');
+    }
     this.validateRules(dto.ruleMetric, rules);
 
     try {
@@ -232,6 +241,21 @@ export class InstallationCatalogService {
     actor: AuthUser,
   ) {
     const before = await this.findService(id);
+    const retainedRuleIds = new Set<number>();
+    const rangeKey = (rule: { minValue?: unknown; maxValue?: unknown; minInclusive?: boolean; maxInclusive?: boolean }) =>
+      [rule.minValue == null ? '' : String(rule.minValue), rule.maxValue == null ? '' : String(rule.maxValue),
+        rule.minInclusive !== false, rule.maxInclusive === true].join(':');
+    const ruleUpdates = dto.rules?.map(rule => {
+      // Older clients omit IDs. Preserve an unambiguous unchanged range instead
+      // of deleting its profile adjustments whenever its tariff is edited.
+      const candidates = before.rules.filter(existing => rangeKey(existing) === rangeKey(rule));
+      const ruleId = rule.id ?? (candidates.length === 1 ? candidates[0].id : undefined);
+      if (ruleId !== undefined && (!before.rules.some(existing => existing.id === ruleId) || retainedRuleIds.has(ruleId))) {
+        throw new BadRequestException('Each existing rule must belong to this service and appear only once.');
+      }
+      if (ruleId !== undefined) retainedRuleIds.add(ruleId);
+      return { ...rule, id: ruleId };
+    });
     const metric = dto.ruleMetric ?? before.ruleMetric;
     const rules = dto.rules ?? before.rules.map((rule) => ({
       minValue: rule.minValue == null ? null : Number(rule.minValue),
@@ -293,7 +317,15 @@ export class InstallationCatalogService {
     try {
       const updated = await this.prisma.$transaction(async (tx) => {
         if (dto.rules !== undefined) {
-          await tx.installationServiceRule.deleteMany({ where: { serviceId: id } });
+          const removedIds = before.rules.filter(rule => !retainedRuleIds.has(rule.id)).map(rule => rule.id);
+          if (removedIds.length) {
+            await tx.installationServiceRule.deleteMany({ where: { serviceId: id, id: { in: removedIds } } });
+          }
+          for (const [index, rule] of ruleUpdates!.entries()) {
+            if (rule.id !== undefined) await tx.installationServiceRule.update({
+              where: { id: rule.id }, data: this.ruleCreateData(rule, index),
+            });
+          }
         } else if (billingUnitChanged) {
           // Los tiempos por la unidad anterior no se reutilizan con otra unidad.
           await tx.installationServiceRule.updateMany({
@@ -335,12 +367,10 @@ export class InstallationCatalogService {
               : {}),
             ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
             ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
-            ...(dto.rules !== undefined
+            ...(ruleUpdates?.some(rule => rule.id === undefined)
               ? {
                   rules: {
-                    create: dto.rules.map((rule, index) =>
-                      this.ruleCreateData(rule, index),
-                    ),
+                    create: ruleUpdates.flatMap((rule, index) => rule.id === undefined ? [this.ruleCreateData(rule, index)] : []),
                   },
                 }
               : {}),
@@ -756,12 +786,48 @@ export class InstallationCatalogService {
     return response;
   }
 
+  private async profileAdjustmentData(
+    adjustments: InstallationProfileRateAdjustmentDto[],
+    tx: Prisma.TransactionClient,
+    previous: Array<{ serviceId: number; ruleId: number | null; type: string; value: Prisma.Decimal; legacyLineRounding: boolean }> = [],
+  ): Promise<Prisma.InstallationProfileRateAdjustmentUncheckedCreateWithoutProfileInput[]> {
+    if (!Array.isArray(adjustments) || adjustments.length > 10000) {
+      throw new BadRequestException('Provide a list of service and rule adjustments.');
+    }
+    if (!adjustments.length) return [];
+    const services = await tx.installationService.findMany({
+      where: { id: { in: [...new Set(adjustments.map(adjustment => adjustment.serviceId))] } },
+      select: { id: true, rules: { select: { id: true } } },
+    });
+    const targets = new Set<string>();
+    return adjustments.map(adjustment => {
+      const ruleId = adjustment.ruleId ?? null;
+      const targetKey = ruleId === null ? `SERVICE:${adjustment.serviceId}` : `RULE:${ruleId}`;
+      const service = services.find(candidate => candidate.id === adjustment.serviceId);
+      if (!service || (ruleId !== null && !service.rules.some(rule => rule.id === ruleId))) {
+        throw new BadRequestException('Each adjustment must reference an existing service or one of its own rules.');
+      }
+      if (targets.has(targetKey)) throw new BadRequestException('Each service or rule can have only one adjustment per profile.');
+      targets.add(targetKey);
+      const value = this.decimal(adjustment.value, 'Profile adjustment');
+      const unchanged = previous.find(entry => entry.serviceId === adjustment.serviceId && entry.ruleId === ruleId &&
+        entry.type === adjustment.type && new Decimal(entry.value.toString()).eq(value.toString()));
+      const legacyLineRounding = unchanged?.legacyLineRounding === true;
+      if (!['AMOUNT', 'PERCENT'].includes(adjustment.type) || value.decimalPlaces() > 4 ||
+          value.abs().gt('99999999.9999') ||
+          (adjustment.type === 'PERCENT' && value.gt('999999.9999')) ||
+          (value.lt(0) && !(legacyLineRounding && adjustment.type === 'PERCENT' && value.gt(-100)))) {
+        throw new BadRequestException('Profile adjustments must be a nonnegative amount or percentage with up to four decimals.');
+      }
+      return { serviceId: adjustment.serviceId, ruleId, targetKey, type: adjustment.type,
+        value, legacyLineRounding };
+    });
+  }
+
   findProfiles(includeInactive = true) {
     return this.prisma.installationPriceProfile.findMany({
       where: includeInactive ? undefined : { isActive: true },
-      include: {
-        _count: { select: { roles: true, users: true, quotes: true } },
-      },
+      include: profileInclude,
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     });
   }
@@ -769,13 +835,16 @@ export class InstallationCatalogService {
   async findProfile(id: number) {
     const profile = await this.prisma.installationPriceProfile.findUnique({
       where: { id },
-      include: { _count: { select: { roles: true, users: true, quotes: true } } },
+      include: profileInclude,
     });
     if (!profile) throw new NotFoundException(`Installation price profile #${id} not found.`);
     return profile;
   }
 
   async createProfile(dto: CreateInstallationPriceProfileDto, actor: AuthUser) {
+    if (dto.adjustmentPercent != null && dto.adjustmentPercent !== 0) {
+      throw new BadRequestException('Use separate service and rule adjustments instead of a global percentage.');
+    }
     const defaultExists = await this.prisma.installationPriceProfile.findFirst({
       where: { isDefault: true },
       select: { id: true },
@@ -784,19 +853,21 @@ export class InstallationCatalogService {
 
     try {
       const profile = await this.prisma.$transaction(async (tx) => {
+        const adjustments = await this.profileAdjustmentData(dto.adjustments ?? [], tx);
         if (makeDefault) {
           await tx.installationPriceProfile.updateMany({ data: { isDefault: false } });
         }
         return tx.installationPriceProfile.create({
           data: {
             name: this.normalizedName(dto.name),
-            adjustmentPercent: this.decimal(dto.adjustmentPercent, 'Adjustment percent'),
+            adjustmentPercent: new Prisma.Decimal(0),
+            adjustments: { create: adjustments },
             minimumCharge: this.decimal(dto.minimumCharge, 'Minimum charge'),
             isDefault: makeDefault,
             isActive: makeDefault ? true : dto.isActive ?? true,
             sortOrder: dto.sortOrder ?? 0,
           },
-          include: { _count: { select: { roles: true, users: true, quotes: true } } },
+          include: profileInclude,
         });
       });
       await this.logs.log({
@@ -821,6 +892,9 @@ export class InstallationCatalogService {
     dto: UpdateInstallationPriceProfileDto,
     actor: AuthUser,
   ) {
+    if (dto.adjustmentPercent != null && dto.adjustmentPercent !== 0) {
+      throw new BadRequestException('Use separate service and rule adjustments instead of a global percentage.');
+    }
     const before = await this.findProfile(id);
     if (before.isDefault && dto.isDefault === false) {
       throw new BadRequestException('Choose another default profile instead of removing the current default directly.');
@@ -831,6 +905,8 @@ export class InstallationCatalogService {
 
     try {
       const updated = await this.prisma.$transaction(async (tx) => {
+        const adjustments = dto.adjustments === undefined ? undefined
+          : await this.profileAdjustmentData(dto.adjustments, tx, before.adjustments);
         if (dto.isDefault === true) {
           await tx.installationPriceProfile.updateMany({ data: { isDefault: false } });
         }
@@ -838,9 +914,8 @@ export class InstallationCatalogService {
           where: { id },
           data: {
             ...(dto.name !== undefined ? { name: this.normalizedName(dto.name) } : {}),
-            ...(dto.adjustmentPercent !== undefined
-              ? { adjustmentPercent: this.decimal(dto.adjustmentPercent, 'Adjustment percent') }
-              : {}),
+            adjustmentPercent: new Prisma.Decimal(0),
+            ...(adjustments !== undefined ? { adjustments: { deleteMany: {}, create: adjustments } } : {}),
             ...(dto.minimumCharge !== undefined
               ? { minimumCharge: this.decimal(dto.minimumCharge, 'Minimum charge') }
               : {}),
@@ -852,7 +927,7 @@ export class InstallationCatalogService {
                 : {}),
             ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
           },
-          include: { _count: { select: { roles: true, users: true, quotes: true } } },
+          include: profileInclude,
         });
       });
       await this.logs.log({
@@ -883,7 +958,7 @@ export class InstallationCatalogService {
       const deactivated = await this.prisma.installationPriceProfile.update({
         where: { id },
         data: { isActive: false },
-        include: { _count: { select: { roles: true, users: true, quotes: true } } },
+        include: profileInclude,
       });
       return deactivated;
     }

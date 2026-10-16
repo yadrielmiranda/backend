@@ -19,6 +19,7 @@ import {
 } from '@prisma/client';
 import Stripe from 'stripe';
 import { PaymentsService } from './payments.service';
+import { buildInstallationProcessingShare, freezeProcessingCostSnapshot, singleProcessingComponent, withInstallationProcessingShare } from './processing-cost-snapshot';
 
 describe('PaymentsService reconciliation', () => {
   const config = {
@@ -212,6 +213,31 @@ describe('PaymentsService reconciliation', () => {
         9, PaymentType.INSTALLATION_DEPOSIT, undefined, true, client, tx, { preview: false },
       );
       expect(tx.payment.upsert.mock.calls[0][0].create.materialAcceptanceText).toBeUndefined();
+    });
+
+    it('freezes installation principal from the remaining basis after reserving another open checkout', async () => {
+      const { service, tx, workflow } = checkoutHarness({ role: 'dealer', existing: { id: 41, status: PaymentStatus.CANCELED } });
+      const previousContext = await workflow.getPaymentContext();
+      const share = buildInstallationProcessingShare({ quote: { id: 17, version: 1, total: '0.03', providerCostSnapshot: { schema: 1, total: '0.01' } } });
+      const components = withInstallationProcessingShare(singleProcessingComponent('installation', '0.01'), share);
+      const reservedSnapshot = freezeProcessingCostSnapshot({ baseAmount: '0.01', surchargeAmount: '0', totalAmount: '0.01', processingComponents: components });
+      workflow.getPaymentContext.mockResolvedValue({ ...previousContext, baseAmount: new Prisma.Decimal('0.01'),
+        totalAmount: new Prisma.Decimal('0.01'), processingComponents: components });
+      const findReceipts = jest.fn(async () => []);
+      const findReserved = jest.fn(async () => [{ id: 51, type: PaymentType.INSTALLMENT, amount: new Prisma.Decimal('0.01'),
+        originalBaseAmount: new Prisma.Decimal('999'), surchargeAmount: new Prisma.Decimal(0), processingCostSnapshot: reservedSnapshot }]);
+      Object.assign(tx, { paymentReceipt: { findMany: findReceipts } });
+      Object.assign(tx.payment, { findMany: findReserved });
+      await service.createCheckoutSessionForEstimate({ estimateId: 9, type: PaymentType.INSTALLATION,
+        user: { id: 7, role: { name: 'dealer' } } });
+      expect(findReceipts).toHaveBeenCalledWith(expect.objectContaining({ where: { payment: { idEst: 9 } } }));
+      expect(findReserved).toHaveBeenCalledWith(expect.objectContaining({ where: {
+        idEst: 9, status: PaymentStatus.PENDING, stripeSessionId: { not: null }, id: { notIn: [41] },
+      } }));
+      const snapshot = tx.payment.upsert.mock.calls[0][0].update.processingCostSnapshot;
+      expect(snapshot.installationShare).toMatchObject({ components: { provider: '0.01', company: '0.00', dealer: '0.00' },
+        basis: { quoteId: 17, quoteVersion: 1, provider: '0.01', company: '0.02', dealer: '0.00' } });
+      expect(snapshot.total).toBe('0.01');
     });
   });
 

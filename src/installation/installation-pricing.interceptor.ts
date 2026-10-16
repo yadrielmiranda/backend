@@ -37,6 +37,11 @@ const internalFields = new Set([
   'markup',
   'markupOverride',
   'installationPriceProfileId',
+  'providerCostSnapshot',
+  'profileRateAdjustmentsSnapshot',
+  'rateAdjustmentSnapshot',
+  'saleRate',
+  'installationProcessingSummary',
 ]);
 const credentialFields = new Set([
   'password',

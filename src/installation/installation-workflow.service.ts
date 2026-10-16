@@ -10,7 +10,8 @@ import type { InstallationDuplicationSource } from './installation-duplication';
 import { Inject } from '@nestjs/common';
 import { InstallationCoverageCalculationService, installationSurchargeCalculation, installationBaseForSurcharge, type CoverageSnapshot } from './installation-coverage-calculation.service';
 import { decimalAmount, hasRefundHistory, paidPrincipal, paymentIsCovered, remainingRefundBalance } from '@/payments/payment-accounting';
-import { installmentProcessingComponents, refundedProcessingComponents, singleProcessingComponent, type ProcessingComponents } from '@/payments/processing-cost-snapshot';
+import { advanceProcessingComponents, buildInstallationProcessingShare, withInstallationProcessingShare, installmentProcessingComponents, refundedProcessingComponents, singleProcessingComponent, type ProcessingComponents } from '@/payments/processing-cost-snapshot';
+import { aggregateInstallationProcessingCosts } from '@/payments/installation-processing-cost';
 import { assertScheduleMilestone, getPaymentSchedule, installmentContext, refreshScheduledInstallation, scheduleAmounts } from '@/payment-plans/payment-schedule';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
 import { assertCompleteEstimateCustomer } from '@/estimates/estimate-customer-details';
@@ -156,6 +157,8 @@ const quoteLineSnapshotSelect = {
   lengthIn: true,
   metricValue: true,
   rate: true,
+  saleRate: true,
+  rateAdjustmentSnapshot: true,
   billableQuantity: true,
   occurrences: true,
   baseAmount: true,
@@ -423,7 +426,7 @@ export class InstallationWorkflowService {
     if (!job) throw new NotFoundException(`Installation job #${id} not found.`);
     await this.assertAccess(job, user);
     job = await this.refreshBlockedInstallation(job);
-    return this.presentJob(job);
+    return this.presentJob(job, user);
   }
 
   async findJobByEstimate(estimateId: number, user: AuthUser) {
@@ -434,12 +437,18 @@ export class InstallationWorkflowService {
     if (!job) return null;
     await this.assertAccess(job, user);
     job = await this.refreshBlockedInstallation(this.currentRevisionMeasurements(job));
-    return this.presentJob(job);
+    return this.presentJob(job, user);
   }
 
-  private async presentJob(job: Prisma.InstallationJobGetPayload<{ include: typeof jobInclude }>) {
+  private async presentJob(job: Prisma.InstallationJobGetPayload<{ include: typeof jobInclude }>, user: AuthUser) {
+    const installationProcessingSummary = user.role?.name === 'admin' && job.quotes[0]?.providerCostSnapshot != null
+      ? aggregateInstallationProcessingCosts(await this.prisma.stripeProcessingCost.findMany({
+          where: { estimateId: job.estimateId }, select: { status: true, allocationSnapshot: true },
+        }))
+      : null;
     return {
       ...job,
+      ...(installationProcessingSummary ? { installationProcessingSummary } : {}),
       customerChargesSummary: buildEstimateCustomerChargeSummary({
         estimate: job.estimate,
         installation: buildEstimateInstallationSummary(job),
@@ -1273,12 +1282,16 @@ export class InstallationWorkflowService {
     profileNameSnapshot: string;
     profileAdjustmentPercent: Prisma.Decimal;
     profileMinimumSnapshot: Prisma.Decimal;
+    profileRateAdjustmentsSnapshot?: Prisma.JsonValue;
   }): InstallationProfileSnapshot {
     return {
       id: quote.profileId,
       name: quote.profileNameSnapshot,
       adjustmentPercent: new Decimal(quote.profileAdjustmentPercent.toString()),
       minimumCharge: new Decimal(quote.profileMinimumSnapshot.toString()),
+      ...(quote.profileRateAdjustmentsSnapshot != null
+        ? { rateAdjustments: quote.profileRateAdjustmentsSnapshot as unknown as InstallationProfileSnapshot['rateAdjustments'] }
+        : {}),
     };
   }
 
@@ -1373,6 +1386,10 @@ export class InstallationWorkflowService {
         profileNameSnapshot: latest.profileNameSnapshot,
         profileAdjustmentPercent: latest.profileAdjustmentPercent,
         profileMinimumSnapshot: latest.profileMinimumSnapshot,
+        profileRateAdjustmentsSnapshot: latest.profileRateAdjustmentsSnapshot == null
+          ? Prisma.DbNull : latest.profileRateAdjustmentsSnapshot as Prisma.InputJsonValue,
+        providerCostSnapshot: latest.providerCostSnapshot == null
+          ? Prisma.DbNull : latest.providerCostSnapshot as Prisma.InputJsonValue,
         baseSubtotal: latest.baseSubtotal,
         adjustedSubtotal: latest.adjustedSubtotal,
         serviceMinimumAdjustment: latest.serviceMinimumAdjustment,
@@ -1397,6 +1414,8 @@ export class InstallationWorkflowService {
               line.timeSnapshot == null
                 ? Prisma.DbNull
                 : (line.timeSnapshot as Prisma.InputJsonValue),
+            rateAdjustmentSnapshot: line.rateAdjustmentSnapshot == null
+              ? Prisma.DbNull : line.rateAdjustmentSnapshot as Prisma.InputJsonValue,
           })),
         },
       },
@@ -1440,15 +1459,20 @@ export class InstallationWorkflowService {
       (total, line) => total.add(line.adjustedAmount.toString()),
       new Decimal(0),
     );
+    // Los perfiles por tarifa suman su margen después de cubrir todos los
+    // mínimos del proveedor. Las cotizaciones antiguas conservan su fórmula.
+    const separateProviderCost = quote.profileRateAdjustmentsSnapshot != null;
+    const providerLines = quote.lines.map(line => ({ ...line, adjustedAmount: line.baseAmount }));
+    const minimumLines = separateProviderCost ? providerLines : quote.lines;
     const serviceMinimums = this.pricing.calculateServiceMinimums(
-      quote.lines.map((line) => ({
+      minimumLines.map((line) => ({
         serviceId: line.serviceId,
         serviceName: line.serviceNameSnapshot,
         minimumCharge: (Array.isArray(preservedMinimums) ? preservedMinimums.find(minimum => Number(minimum.serviceId) === line.serviceId)?.minimumCharge : null) ?? line.service.minimumCharge,
         adjustedAmount: line.adjustedAmount,
       })),
     );
-    const subtotalAfterServiceMinimums = adjustedSubtotal.add(
+    const subtotalAfterServiceMinimums = (separateProviderCost ? baseSubtotal : adjustedSubtotal).add(
       serviceMinimums.totalAdjustment,
     );
 
@@ -1468,7 +1492,7 @@ export class InstallationWorkflowService {
       select: { minimumAdjustment: true },
     });
 
-    const minimumAdjustment = previouslyApproved
+    const minimumAdjustment = previouslyApproved && !separateProviderCost
       ? new Decimal(previouslyApproved.minimumAdjustment.toString())
       : Decimal.max(
           0,
@@ -1483,13 +1507,16 @@ export class InstallationWorkflowService {
     const coverageSnapshot = quote.coverageSnapshot?.data as unknown as CoverageSnapshot | undefined;
     const calculation = coverageSnapshot
       ? installationSurchargeCalculation(
-          installationBaseForSurcharge(installationBase, quote.lines, serviceMinimums.snapshot),
+          installationBaseForSurcharge(installationBase, minimumLines, serviceMinimums.snapshot),
           coverageSnapshot,
           this.pricing.calculateTotalMinutes(quote.lines),
         )
       : null;
     const surcharge = new Decimal(calculation?.totalCharge ?? 0);
-    const total = installationBase.add(surcharge);
+    const providerTotal = installationBase.add(surcharge);
+    const total = separateProviderCost
+      ? providerTotal.add(adjustedSubtotal.minus(baseSubtotal))
+      : providerTotal;
     if (total.gt('9999999999.99')) {
       throw new BadRequestException('The installation amount exceeds the supported limit. Please contact support.');
     }
@@ -1508,6 +1535,14 @@ export class InstallationWorkflowService {
             : (serviceMinimums.snapshot as Prisma.InputJsonValue),
         minimumAdjustment: new Prisma.Decimal(minimumAdjustment.toFixed(2)),
         installationSurcharge: new Prisma.Decimal(surcharge.toFixed(2)),
+        ...(separateProviderCost ? { providerCostSnapshot: {
+          schema: 1,
+          baseSubtotal: baseSubtotal.toFixed(2),
+          serviceMinimumAdjustment: serviceMinimums.totalAdjustment.toFixed(2),
+          minimumAdjustment: minimumAdjustment.toFixed(2),
+          installationSurcharge: surcharge.toFixed(2),
+          total: providerTotal.toFixed(2),
+        } } : {}),
         ...(coverageSnapshot?.schema === 2 && calculation
           ? {
               coverageSnapshot: {
@@ -1978,6 +2013,8 @@ export class InstallationWorkflowService {
             profileMinimumSnapshot: new Prisma.Decimal(
               profile.minimumCharge.toFixed(2),
             ),
+            profileRateAdjustmentsSnapshot: profile.rateAdjustments == null
+              ? Prisma.DbNull : profile.rateAdjustments as unknown as Prisma.InputJsonValue,
             createdById: user.id,
           },
         },
@@ -5149,6 +5186,8 @@ export class InstallationWorkflowService {
       for (const key of ['baseSubtotal', 'adjustedSubtotal', 'serviceMinimumAdjustment', 'minimumAdjustment', 'installationSurcharge', 'total'])
         data[key] = new Prisma.Decimal(String(snapshot[key] ?? 0));
       data.serviceMinimumsSnapshot = snapshot.serviceMinimumsSnapshot ?? Prisma.JsonNull;
+      data.providerCostSnapshot = snapshot.providerCostSnapshot ?? Prisma.DbNull;
+      data.profileRateAdjustmentsSnapshot = snapshot.profileRateAdjustmentsSnapshot ?? Prisma.DbNull;
       data.needsRecalculation = false;
       await tx.installationQuote.update({ where: { id: quote.id }, data });
       await tx.installationQuoteLine.deleteMany({ where: { quoteId: quote.id } });
@@ -5161,6 +5200,7 @@ export class InstallationWorkflowService {
           measurementId: revisionMeasurementKey ? measurementIds.get(revisionMeasurementKey)! : line.measurementId,
           ruleSnapshot: line.ruleSnapshot ?? Prisma.JsonNull,
           timeSnapshot: line.timeSnapshot ?? Prisma.DbNull,
+          rateAdjustmentSnapshot: line.rateAdjustmentSnapshot ?? Prisma.DbNull,
         } });
       }
       if (snapshot.coverageSnapshot?.data) await tx.installationQuoteCoverageSnapshot.upsert({
@@ -5414,7 +5454,9 @@ export class InstallationWorkflowService {
     if (type !== PaymentType.INSTALLMENT && hasRefundHistory(refundedPayment)) {
       baseAmount = remainingRefundBalance(refundedPayment!);
       // Reutiliza el desglose congelado; un histórico sin él conserva asignación pendiente.
-      if (type === PaymentType.MATERIAL) processingComponents = refundedProcessingComponents(refundedPayment!.processingCostSnapshot, baseAmount);
+      if ([PaymentType.MATERIAL, PaymentType.INSTALLATION, PaymentType.INSTALLATION_DEPOSIT].includes(type as any)) {
+        processingComponents = refundedProcessingComponents(refundedPayment!.processingCostSnapshot, baseAmount);
+      }
       paymentSequence = refundedPayment!.sequence;
       description = `Reviewed ${type.toLowerCase().replaceAll('_', ' ')} balance — Estimate #${estimate.number}`;
       if (refundedPayment!.deliveryId) delivery = await tx.orderDelivery.findUnique({ where: { id: refundedPayment!.deliveryId } });
@@ -5680,11 +5722,40 @@ export class InstallationWorkflowService {
       .mul(surchargeFraction)
       .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
+    if (!processingComponents && type === PaymentType.INSTALLATION_DEPOSIT && estimate.paymentPlanSnapshot) {
+      processingComponents = advanceProcessingComponents({
+        snapshot: estimate.paymentPlanSnapshot, amounts: scheduleAmounts(estimate),
+        withInstallation: Boolean(job), amount: baseAmount,
+      });
+    }
     processingComponents ??= singleProcessingComponent(
       type === PaymentType.INSTALLATION || type === PaymentType.INSTALLATION_DEPOSIT ? 'installation'
         : type === PaymentType.PERMIT ? 'permit' : 'other',
       baseAmount,
     );
+
+    const installationShare = buildInstallationProcessingShare({
+      quote: job?.quotes[0],
+      discountedTotal: manualDiscount?.installation.total,
+      dealerAdditions: new Decimal(additions.installation).add(additions.custom),
+    });
+    // No atribuir el saldo de una revisión con capturas previas usando solamente
+    // las proporciones de la versión nueva. Los reemplazos conservan su snapshot.
+    const revisedAfterCapture = (job?.quotes[0]?.version ?? 1) > 1 && estimate.payments.some(payment => {
+      if (paidPrincipal(payment).lte(0)) return false;
+      const saved = payment.processingCostSnapshot as { version?: number; allocationPending?: boolean; components?: { installation?: string } } | null;
+      if (saved?.version === 1 && !saved.allocationPending && saved.components?.installation != null) {
+        try {
+          const amount = new Decimal(saved.components.installation);
+          return !amount.isFinite() || !amount.eq(0);
+        } catch {
+          return true;
+        }
+      }
+      return [PaymentType.INSTALLATION_DEPOSIT, PaymentType.INSTALLATION, PaymentType.INSTALLMENT].includes(payment.type as any);
+    });
+    processingComponents = withInstallationProcessingShare(processingComponents,
+      revisedAfterCapture && installationShare ? { ...installationShare, allocationPending: true } : installationShare);
 
     return {
       estimate,

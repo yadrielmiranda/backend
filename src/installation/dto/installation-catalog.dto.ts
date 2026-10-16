@@ -42,6 +42,12 @@ const estimatedMinutesValue = ({
 export class InstallationServiceRuleDto {
   @IsOptional()
   @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  id?: number;
+
+  @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   minValue?: number | null;
 

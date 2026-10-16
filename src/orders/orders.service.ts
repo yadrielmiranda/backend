@@ -44,7 +44,7 @@ import { buildEstimateCustomerChargeSummary } from '@/estimates/estimate-custome
 
 const orderDetailsInclude = {
   ...referralReportOrderInclude,
-  estimate: { include: { ...referralReportMaterialRelations, user: { select: { dealerMode: true, role: { select: { name: true } } } }, customerCharges: true, status: true, payments: true, installationJob: { include: { quotes: { orderBy: { version: 'desc' as const }, take: 1, include: { lines: true } }, permit: true } } } },
+  estimate: { include: { ...referralReportMaterialRelations, user: { select: { dealerMode: true, role: { select: { name: true } } } }, customerCharges: true, status: true, payments: true, installationJob: { include: { quotes: { where: { status: { not: 'REJECTED' as const } }, orderBy: { version: 'desc' as const }, take: 1, include: { lines: true } }, permit: true } } } },
   user: { include: { role: true } },
   payment: true,
   extraCharges: {

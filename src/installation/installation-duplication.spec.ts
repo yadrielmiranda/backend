@@ -38,7 +38,9 @@ function fixture() {
       distanceMeters: 1000, maximumMiles: '80', includedMiles: '25',
       range: { type: 'FIXED', value: '50', fromMiles: '0', upToMiles: '80' } },
   };
-  const profile = { id: 8, name: 'Current profile', adjustmentPercent: new Decimal(10), minimumCharge: new Decimal(0) };
+  const profile = { id: 8, name: 'Current profile', adjustmentPercent: new Decimal(0), minimumCharge: new Decimal(0),
+    rateAdjustments: { schema: 1 as const, adjustments: [1, 2, 3].map(serviceId => ({ serviceId,
+      ruleId: null, type: 'PERCENT' as const, value: '10' })) } };
   const services: any[] = [1, 2, 3].map(id => ({
     id, name: `Current service ${id}`, billingUnit: id === 3 ? 'PANEL' : 'UNIT', ruleMetric: 'NONE',
     baseRate: decimal(100 * id), minimumCharge: decimal(0), estimatedMinutes: decimal(30),
@@ -94,6 +96,8 @@ describe('Duplicated installation starts a new quote', () => {
     expect(f.pricing.resolveProfileForUser).toHaveBeenCalledWith(7, f.tx);
     expect(f.quote()).toMatchObject({ version: 1, status: 'DRAFT', profileId: 8, notes: 'Customer requests removal' });
     expect(f.quote().total.toString()).toBe('1370');
+    expect(f.quote().providerCostSnapshot.total).toBe('1250.00');
+    expect(f.quote().profileRateAdjustmentsSnapshot.adjustments).toHaveLength(3);
     expect(f.lines.map(line => line.rate.toString())).toEqual(['100', '200', '300']);
     expect(f.lines.map(line => line.origin)).toEqual(['AUTO', 'USER_SELECTED', 'FIELD_ADDED']);
     expect(f.lines[1].description).toBe('Remove old frames');

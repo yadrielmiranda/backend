@@ -1,10 +1,16 @@
 import type { Prisma } from '@prisma/client';
 import { planRows, planSnapshot, type PlanSnapshot, type ScheduleAmounts } from '@/payment-plans/payment-plan';
 import { cents, distributeCents } from './payment-accounting';
+import { freezeInstallationProcessingShare, restoreInstallationProcessingShare, type InstallationProcessingShare } from './installation-processing-cost';
+export { buildInstallationProcessingShare, withInstallationProcessingShare } from './installation-processing-cost';
 
 const keys = ['material', 'installation', 'permit', 'city', 'other'] as const;
 type Component = typeof keys[number];
-export type ProcessingComponents = Record<Component, string> & { allocationPending?: true };
+export type ProcessingComponents = Record<Component, string> & {
+  allocationPending?: true;
+  installationShare?: InstallationProcessingShare;
+  installationSharePending?: true;
+};
 const empty = (): ProcessingComponents => ({ material: '0.00', installation: '0.00', permit: '0.00', city: '0.00', other: '0.00' });
 const money = (value: number) => `${Math.trunc(value / 100)}.${String(value % 100).padStart(2, '0')}`;
 const componentCents = (value: ProcessingComponents) => keys.map(key => cents(value[key]));
@@ -24,7 +30,7 @@ export function pendingProcessingComponents(amount: { toString(): string } | str
 
 export function refundedProcessingComponents(saved: unknown, amount: { toString(): string } | string): ProcessingComponents {
   try {
-    const snapshot = saved as { version?: number; allocationPending?: boolean; components?: ProcessingComponents; total?: string; materialSurcharge?: string } | null;
+    const snapshot = saved as { version?: number; allocationPending?: boolean; components?: ProcessingComponents; total?: string; materialSurcharge?: string; installationShare?: unknown; installationSharePending?: boolean } | null;
     if (snapshot?.version !== 1 || snapshot.allocationPending || !snapshot.components ||
         keys.some(key => typeof snapshot.components![key] !== 'string') ||
         typeof snapshot.total !== 'string' || typeof snapshot.materialSurcharge !== 'string') return pendingProcessingComponents(amount);
@@ -33,7 +39,13 @@ export function refundedProcessingComponents(saved: unknown, amount: { toString(
       return pendingProcessingComponents(amount);
     // El saldo nuevo se imputa con las proporciones del cobro original. Los
     // componentes resultantes son BASE; el builder añade solamente su recargo nuevo.
-    return fromCents(distributeCents(cents(amount), weights));
+    const result = fromCents(distributeCents(cents(amount), weights));
+    if (snapshot.installationSharePending) result.installationSharePending = true;
+    else if (snapshot.installationShare && cents(result.installation) > 0) {
+      try { result.installationShare = restoreInstallationProcessingShare(snapshot.installationShare, result.installation); }
+      catch { result.installationSharePending = true; }
+    }
+    return result;
   } catch {
     return pendingProcessingComponents(amount);
   }
@@ -65,6 +77,38 @@ function componentRows(snapshot: PlanSnapshot, amounts: ScheduleAmounts, withIns
     if (allocated.reduce((sum, value) => sum + value, 0) !== cents(row.amount)) throw new Error('Component total mismatch');
     return { ...row, components: fromCents(allocated) };
   });
+}
+
+/** Deposits are advance credits against the earliest plan rows, regardless of
+ * their legacy payment type. Use the complement of the remaining row so the
+ * deposit and the later installment conserve the same component cents. */
+export function advanceProcessingComponents(params: {
+  snapshot: unknown;
+  amounts: ScheduleAmounts;
+  withInstallation: boolean;
+  amount: { toString(): string } | string;
+}): ProcessingComponents {
+  try {
+    const snapshot = planSnapshot(params.snapshot);
+    if (!snapshot) return pendingProcessingComponents(params.amount);
+    const amounts = snapshot.locked?.amounts ?? params.amounts;
+    const rows = componentRows(snapshot, amounts, params.withInstallation || cents(amounts.installation) > 0);
+    if (snapshot.locked && (rows.length !== snapshot.locked.rows.length || rows.some((row, index) => {
+      const saved = snapshot.locked!.rows[index];
+      return row.sequence !== saved.sequence || row.milestone !== saved.milestone || cents(row.amount) !== cents(saved.amount);
+    }))) return pendingProcessingComponents(params.amount);
+    let remaining = cents(params.amount);
+    const allocated = keys.map(() => 0);
+    for (const row of rows) {
+      if (!remaining) break;
+      const used = Math.min(remaining, cents(row.amount));
+      const original = componentCents(row.components);
+      const balance = distributeCents(cents(row.amount) - used, original);
+      original.forEach((value, index) => { allocated[index] += value - balance[index]; });
+      remaining -= used;
+    }
+    return remaining ? pendingProcessingComponents(params.amount) : fromCents(allocated);
+  } catch { return pendingProcessingComponents(params.amount); }
 }
 
 const sameAmounts = (a: ScheduleAmounts, b: ScheduleAmounts) =>
@@ -160,8 +204,16 @@ export function freezeProcessingCostSnapshot(context: {
     const amounts = componentCents(components);
     if (amounts.reduce((sum, value) => sum + value, 0) !== base) return pending();
     const fees = distributeCents(surcharge, amounts);
+    let installation: Record<string, any> = {};
+    if (amounts[1] > 0) {
+      if (components.installationSharePending) installation = { installationSharePending: true };
+      else if (components.installationShare) {
+        try { installation = { installationShare: freezeInstallationProcessingShare(components.installationShare, amounts[1], fees[1]) }; }
+        catch { installation = { installationSharePending: true }; }
+      }
+    }
     return { version: 1, components: fromCents(amounts.map((amount, index) => amount + fees[index])),
-      total: money(total), materialSurcharge: money(fees[0]) };
+      total: money(total), materialSurcharge: money(fees[0]), ...installation };
   } catch {
     return pending();
   }

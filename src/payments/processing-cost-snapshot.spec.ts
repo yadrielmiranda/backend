@@ -1,6 +1,6 @@
 import Decimal from 'decimal.js';
 import { defaultPlan, planRows, type PlanDefinition, type PlanSnapshot, type ScheduleAmounts } from '@/payment-plans/payment-plan';
-import { freezeProcessingCostSnapshot, installmentProcessingComponents, pendingProcessingComponents, refundedProcessingComponents, singleProcessingComponent } from './processing-cost-snapshot';
+import { advanceProcessingComponents, freezeProcessingCostSnapshot, installmentProcessingComponents, pendingProcessingComponents, refundedProcessingComponents, singleProcessingComponent } from './processing-cost-snapshot';
 import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
 
 const amounts: ScheduleAmounts = { material: '100.00', installation: '60.00', permit: '20.00', city: '20.00' };
@@ -81,6 +81,30 @@ describe('Frozen processing-cost allocation', () => {
 });
 
 describe('Saved installment components', () => {
+  it('allocates the installation deposit to the first material installment when the plan credits it there', () => {
+    const values = { material: '300.00', installation: '180.00', permit: '0.00', city: '0.00' };
+    const saved: PlanSnapshot = { version: 1, planId: 1, name: 'Material then installation', definition: {
+      withInstallation: [{ milestone: 'ORDER', basis: 'MATERIAL', percent: 100 }, { milestone: 'INSTALL', basis: 'INSTALLATION', percent: 100 }],
+      withoutInstallation: defaultPlan.withoutInstallation,
+    } };
+    const rows = planRows(saved, values, true);
+    const deposit = advanceProcessingComponents({ snapshot: saved, amounts: values, withInstallation: true, amount: '100' });
+    expect(deposit).toEqual(singleProcessingComponent('material', '100'));
+    const remaining = rows.map((row, index) => installmentProcessingComponents({ snapshot: saved, amounts: values,
+      withInstallation: true, row: { ...row, balance: index === 0 ? '200.00' : row.amount } }));
+    expect(new Decimal(deposit.material).add(remaining[0].material).add(remaining[1].material).toFixed(2)).toBe('300.00');
+    expect(new Decimal(deposit.installation).add(remaining[0].installation).add(remaining[1].installation).toFixed(2)).toBe('180.00');
+  });
+
+  it('conserves component cents when a deposit spans mixed project installments', () => {
+    const saved = snapshot(project, { material: '0.03', installation: '0.03', permit: '0.00', city: '0.00' });
+    const deposit = advanceProcessingComponents({ snapshot: saved, amounts: saved.locked!.amounts, withInstallation: true, amount: '0.04' });
+    const second = components(saved, 2, '0.02');
+    expect(new Decimal(deposit.material).add(second.material).toFixed(2)).toBe('0.03');
+    expect(new Decimal(deposit.installation).add(second.installation).toFixed(2)).toBe('0.03');
+    expect(advanceProcessingComponents({ snapshot: null, amounts, withInstallation: true, amount: '10' }).allocationPending).toBe(true);
+  });
+
   it('separates custom charges from material across a material-only payment plan', () => {
     const definition = { ...defaultPlan, withoutInstallation: [
       { milestone: 'ORDER' as const, basis: 'MATERIAL' as const, percent: 50 },

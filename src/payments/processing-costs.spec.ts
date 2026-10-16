@@ -1,6 +1,8 @@
 import { Prisma } from '@prisma/client';
 import type Stripe from 'stripe';
 import { reconcileStripeProcessingCost } from './processing-costs';
+import { buildInstallationProcessingShare, withInstallationProcessingShare } from './installation-processing-cost';
+import { freezeProcessingCostSnapshot, singleProcessingComponent } from './processing-cost-snapshot';
 
 const decimal = (value: string | number) => new Prisma.Decimal(value);
 const keys = ['material', 'installation', 'permit', 'city', 'other'] as const;
@@ -52,6 +54,22 @@ function fixture(receipts = [receipt(1, { material: '100.00' })]) {
 }
 
 describe('Stripe processing costs from immutable payment allocations', () => {
+  it('reconciles installation provider and profile margin fees without changing the material allocation', async () => {
+    const item = receipt(1, { material: '100.00', installation: '180.00' });
+    item.processingCostSnapshot = freezeProcessingCostSnapshot({ baseAmount: '280', surchargeAmount: '0', totalAmount: '280',
+      processingComponents: withInstallationProcessingShare({ ...singleProcessingComponent('material', '100'), installation: '180.00' },
+        buildInstallationProcessingShare({ quote: { total: '180', providerCostSnapshot: { schema: 1, total: '150' } } })) });
+    const f = fixture([item]);
+    f.charge.balance_transaction = balance('txn_charge', 840);
+    await f.run(); await f.run();
+    expect(f.rows.size).toBe(1);
+    expect(f.cost().fee.toFixed(2)).toBe('8.40');
+    expect(f.estimate.materialProcessingCost.toFixed(2)).toBe('3.00');
+    expect(f.cost().allocationSnapshot.installationProcessing).toMatchObject({ status: 'CONFIRMED',
+      provider: { collected: '150.00', processingFee: '4.50', netCollected: '145.50' },
+      company: { collected: '30.00', processingFee: '0.90', netCollected: '29.10' } });
+  });
+
   it('records the real material fee once, even for repeated confirmations', async () => {
     const f = fixture(); f.charge.balance_transaction = 'txn_charge';
     f.transactions.set('txn_charge', balance('txn_charge', 287));
