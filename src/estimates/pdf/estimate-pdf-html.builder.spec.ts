@@ -187,6 +187,47 @@ function internalServiceEarningsFixture(): EstimateWithRelations {
 }
 
 describe('EstimatePdfHtmlBuilder', () => {
+  it('shows frozen energy values with a bold NFRC label below design pressures, without units or their internal source', () => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate.pieces[0], { dpPosPsf: '65', dpNegPsf: '-75' });
+    (estimate.pieces[0] as any).energySnapshot = {
+      status: 'AVAILABLE', uFactor: '1.062314', shgc: '0.278', vlt: '0.501',
+      source: { file: 'C:/private/ratings.xlsx', notes: 'Internal import notes' },
+    };
+    const before = JSON.stringify(estimate.pieces[0]);
+    for (const view of ['client', 'admin', 'dealer_internal', 'dealer_public', 'dealer_public_total'] as const) {
+      const html = EstimatePdfHtmlBuilder.build(estimate, view);
+      expect(html).toContain(
+        '<div class="piece-detail">PSF: +65.0 / -75.0</div>' +
+        '<div class="piece-detail"><strong>NFRC:</strong> U-factor: 1.062 | SHGC: 0.278 | VLT: 0.501</div>',
+      );
+      expect(html).not.toContain('Btu/');
+      expect(html).not.toContain('ratings.xlsx');
+      expect(html).not.toContain('Internal import notes');
+    }
+    expect(JSON.stringify(estimate.pieces[0])).toBe(before);
+  });
+
+  it('marks absent, incomplete and ambiguous energy values unavailable without inventing zeroes', () => {
+    const estimate = estimateFixture(false);
+    for (const snapshot of [null, { status: 'UNAVAILABLE' }, { status: 'AMBIGUOUS' },
+      { status: 'AVAILABLE', uFactor: '1.062', shgc: '0.278', vlt: null }]) {
+      (estimate.pieces[0] as any).energySnapshot = snapshot;
+      const html = EstimatePdfHtmlBuilder.build(estimate, 'client');
+      expect(html).toContain('Energy performance: Data unavailable');
+      expect(html).not.toContain('U-factor:');
+    }
+  });
+
+  it('omits energy values for linear materials and not-applicable snapshots', () => {
+    const estimate = estimateFixture(false);
+    (estimate.pieces[0] as any).energySnapshot = { status: 'NOT_APPLICABLE' };
+    expect(EstimatePdfHtmlBuilder.build(estimate, 'client')).not.toContain('Energy performance:');
+    (estimate.pieces[0] as any).energySnapshot = null;
+    (estimate.pieces[0] as any).prod.kind = 'LINEAR_MATERIAL';
+    expect(EstimatePdfHtmlBuilder.build(estimate, 'client')).not.toContain('Energy performance:');
+  });
+
   it('adds only the internal dealer own service increases to material plan earnings, without reducing them for company discounts', () => {
     const estimate = internalServiceEarningsFixture();
     Object.assign(estimate, { manualDiscount: { scope: 'INSTALLATION', type: 'AMOUNT', value: '100' } });

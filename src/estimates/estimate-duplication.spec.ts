@@ -57,6 +57,8 @@ function fixture() {
       ? [{ id: 17, name: 'Current earnings', basis: 'EXPECTED_PROFIT', percent: '40', revision: 2, isActive: true }]
       : [{ id: values[0] }]),
     user: { findUniqueOrThrow: jest.fn(async () => owner), findUnique: jest.fn(async () => owner) },
+    product: { findUnique: jest.fn(async () => ({ kind: 'GLAZED_UNIT' })) },
+    energyRating: { findMany: jest.fn(async () => []) },
     estimate: {
       findUnique: jest.fn(async ({ where }) => where.id === 1 ? json(source) : created.find(e => e.id === where.id)),
       create: jest.fn(async ({ data }) => {
@@ -118,6 +120,23 @@ function fixture() {
 }
 
 describe('Independent estimate duplication', () => {
+  it('captures current energy for the new copy without changing the source rating', async () => {
+    const f = fixture();
+    const oldSnapshot = { schemaVersion: 1, status: 'AVAILABLE', uFactor: '1.2', ratingId: 30 };
+    f.source.pieces[0].energyRatingId = 30;
+    f.source.pieces[0].energySnapshot = oldSnapshot;
+    f.tx.energyRating.findMany.mockResolvedValue([{
+      id: 31, idConfig: null, appliesToAllConfigs: true, units: 'U_FACTOR_IP',
+      uFactor: '1.062', shgc: '.278', vlt: '.501',
+      sourceFile: 'NFRC.xlsx', sourceSheet: 'NFRC PLAN', sourceRow: 93,
+      sourceVersion: '0.9', sourceGlassId: 'GL-2', composition: 'Verified composition',
+    }]);
+    await f.duplicate();
+    expect(f.pieces()[0].energySnapshot).toMatchObject({ status: 'AVAILABLE', ratingId: 31, uFactor: '1.062' });
+    expect(f.source.pieces[0].energySnapshot).toEqual(oldSnapshot);
+    expect(f.source.pieces[0].energyRatingId).toBe(30);
+  });
+
   it.each([0, '.065'])('uses current subordinate tax %s for new estimates and copies without touching the original', async taxRate => {
     const f = fixture();
     const root = { ...f.owner, id: 1, username: 'root', parentDealerId: null };

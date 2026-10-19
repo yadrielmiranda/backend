@@ -53,6 +53,7 @@ import { WarehouseModule } from './warehouse/warehouse.module';
 import { MaterialsModule } from './materials/materials.module';
 import { SmsConsentModule } from './sms/sms-consent.module';
 import { ReferralsModule } from './referrals/referrals.module';
+import { EnergyRatingsModule } from './energy-ratings/energy-ratings.module';
 
 @Module({
   imports: [
@@ -105,6 +106,7 @@ import { ReferralsModule } from './referrals/referrals.module';
     ReferralsModule,
     WarehouseModule,
     MaterialsModule,
+    EnergyRatingsModule,
   ],
   controllers: [AppController],
   providers: [

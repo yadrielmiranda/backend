@@ -123,6 +123,7 @@ function fixture() {
     count: async ({ where } = {} as any) => state[key].filter((row: any) => matches(row, where)).length,
   });
   const db: any = {
+    energyRating: { findMany: jest.fn(async () => []) },
     estimate: { findUnique: async () => estimate(), findUniqueOrThrow: async () => estimate(), findFirst: async () => estimate(),
       update: async ({ data }: any) => Object.assign(state.estimate, copy(data)) },
     installationJob: { findUnique: async ({ where, select }: any) => {
@@ -291,6 +292,32 @@ describe('Combined remeasurement and added pieces', () => {
     assert(f.state.measurements.every((row: any) => row.pieceId != null));
     await assert.rejects(() => f.engine.applyEstimateRevision(id, 7, f.db), /not awaiting/);
     assert.equal(f.state.pieces.length, 2);
+  });
+
+  it('captures added-piece energy at measurement and applies it unchanged after the catalog changes', async () => {
+    const f = fixture();
+    f.db.energyRating.findMany.mockResolvedValue([{
+      id: 19, idConfig: null, appliesToAllConfigs: true, units: 'U_FACTOR_IP',
+      uFactor: d('1.062'), shgc: d('0.278'), vlt: d('0.501'),
+      sourceFile: 'manufacturer.xlsx', sourceSheet: 'NFRC PLAN', sourceRow: 93,
+      sourceVersion: '0.9', sourceGlassId: 'GL-2', composition: 'Clear + PVB + Clear',
+    }]);
+    await add(f, 2);
+    const captured = copy(f.state.items[0].calculatedSnapshot.energy);
+    expect(captured).toMatchObject({ energyRatingId: 19, energySnapshot: {
+      status: 'AVAILABLE', uFactor: '1.062', shgc: '0.278', vlt: '0.501',
+    } });
+    await confirmAll(f);
+    await f.workflow.submitQuote(40, {}, admin);
+    await f.workflow.adminDecision(40, { decision: 'APPROVED' } as any, admin);
+    f.db.energyRating.findMany.mockClear();
+    f.db.energyRating.findMany.mockRejectedValue(new Error('Current catalog must not be consulted at approval'));
+    await f.engine.applyEstimateRevision(f.state.revisions[0].id, 7, f.db);
+    const added = f.state.pieces.find((piece: any) => piece.mark === 'NEW');
+    expect(added.qty).toBe(2);
+    expect(added.energyRatingId).toBe(captured.energyRatingId);
+    expect(added.energySnapshot).toEqual(captured.energySnapshot);
+    expect(f.db.energyRating.findMany).not.toHaveBeenCalled();
   });
   it('keeps differently measured added units separate at application', async () => {
     const f = fixture(); await add(f, 2); const item = f.state.items[0];

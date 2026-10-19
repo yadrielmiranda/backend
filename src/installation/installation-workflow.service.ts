@@ -14,6 +14,7 @@ import { advanceProcessingComponents, buildInstallationProcessingShare, withInst
 import { aggregateInstallationProcessingCosts } from '@/payments/installation-processing-cost';
 import { assertScheduleMilestone, getPaymentSchedule, installmentContext, refreshScheduledInstallation, scheduleAmounts } from '@/payment-plans/payment-schedule';
 import { withAgreementTransaction } from '@/contracts/agreement-content';
+import { buildEnergyPersistence, stripEnergySnapshotMetadata } from '@/energy-ratings/energy-rating-lookup';
 import { assertCompleteEstimateCustomer } from '@/estimates/estimate-customer-details';
 import { calculateEstimateDiscount, discountedInstallationTotal, discountAllocations, estimateDiscountConfig, withoutInstallationDiscount } from '@/estimates/discounts/estimate-discount';
 import { buildEstimateCustomerChargeSummary, internalCustomerChargeAdditionsForEstimate } from '@/estimates/estimate-customer-charges.summary';
@@ -195,7 +196,10 @@ export type RevisionPieceRecord = Prisma.PieceGetPayload<{
   include: typeof revisionPieceInclude;
 }>;
 
+export type FrozenPieceEnergy = Awaited<ReturnType<typeof buildEnergyPersistence>>;
+
 export type RevisionPiecePricingSnapshot = {
+  energy?: { energyRatingId: number | null; energySnapshot: Prisma.JsonValue };
   networkPricing?: import("@/dealer-network/dealer-network").NetworkPiecePricing;
   regularPrice?: string;
   regularCustomerPrice?: string;
@@ -643,6 +647,8 @@ export class InstallationWorkflowService {
       tintName: piece.tin?.color ?? null,
       coatingName: piece.coat?.name ?? null,
       privacyName: piece.privacyOption?.name ?? null,
+      energyRatingId: piece.energyRatingId ?? null,
+      energySnapshot: stripEnergySnapshotMetadata(piece.energySnapshot) ?? null,
       width: piece.width?.toString() ?? null,
       height: piece.height?.toString() ?? null,
       heightLeft: piece.heightLeft?.toString() ?? null,
@@ -845,6 +851,7 @@ export class InstallationWorkflowService {
       ...source,
       pieceInput: this.pieceInputFromPersisted(piece, 1),
       pricing: {
+        energy: { energyRatingId: piece.energyRatingId ?? null, energySnapshot: stripEnergySnapshotMetadata(piece.energySnapshot) ?? null },
         networkPricing: piece.networkPricing,
         rate: piece.rate.toString(),
         price: piece.price.toString(),
@@ -868,11 +875,12 @@ export class InstallationWorkflowService {
   private async calculatedRevisionSnapshot(
     calculated: CalculatedPieceCombined,
     tx: PrismaTransactionClient,
+    existingPiece?: Parameters<typeof buildEnergyPersistence>[2],
   ): Promise<RevisionPiecePricingSnapshot> {
     const [product, brand, system, config, crystal] = await Promise.all([
       tx.product.findUnique({
         where: { id: calculated.idProd },
-        select: { name: true },
+        select: { name: true, kind: true },
       }),
       tx.brand.findUnique({
         where: { id: calculated.idBrand },
@@ -894,7 +902,14 @@ export class InstallationWorkflowService {
         : Promise.resolve(null),
     ]);
 
+    const energy = await buildEnergyPersistence(tx, {
+      ...calculated, isLinear: product?.kind === 'LINEAR_MATERIAL',
+    }, existingPiece);
     return {
+      energy: {
+        energyRatingId: energy.energyRatingId,
+        energySnapshot: energy.energySnapshot === Prisma.DbNull ? null : energy.energySnapshot as Prisma.JsonValue,
+      },
       networkPricing: calculated.networkPricing,
       rate: calculated.rate.toFixed(2),
       price: calculated.price.toFixed(2),
@@ -1241,7 +1256,7 @@ export class InstallationWorkflowService {
         tx,
         await this.promotionRevisionCache(revision.estimateId, tx, measurement.piece),
       );
-      pricing = this.jsonValue(await this.calculatedRevisionSnapshot(calculated, tx));
+      pricing = this.jsonValue(await this.calculatedRevisionSnapshot(calculated, tx, measurement.piece));
     }
 
     await tx.estimateRevisionItem.upsert({
@@ -2828,7 +2843,8 @@ export class InstallationWorkflowService {
     } else {
       calculated = await this.pieceCalculator.calculatePieceMetrics(input, markup, tx, cache);
     }
-    const pricing = await this.calculatedRevisionSnapshot(calculated, tx);
+    const pricing = await this.calculatedRevisionSnapshot(calculated, tx,
+      previousInput && previous?.energy ? { ...previousInput, ...previous.energy } : undefined);
     // Se guardan solo especificaciones normalizadas, nunca los precios enviados por el navegador.
     const normalized = this.additionPieceInput(calculated);
     const product = await tx.product.findUnique({ where: { id: calculated.idProd }, select: { kind: true } });
@@ -3362,7 +3378,7 @@ export class InstallationWorkflowService {
               dto.piece!,
               tx,
             );
-          const pricing = await this.calculatedRevisionSnapshot(calculated, tx);
+          const pricing = await this.calculatedRevisionSnapshot(calculated, tx, measurement.piece);
           const product = await tx.product.findUnique({
             where: { id: calculated.idProd },
             select: { kind: true },
@@ -4002,8 +4018,21 @@ export class InstallationWorkflowService {
     mark: string,
     tx: PrismaTransactionClient,
     existingPiece?: RevisionPieceRecord,
+    frozenEnergy?: FrozenPieceEnergy,
   ) {
-    const data = this.revisionPieceData(input, pricing, qty, mark);
+    const pieceData = this.revisionPieceData(input, pricing, qty, mark);
+    const product = await tx.product.findUnique({
+      where: { id: pieceData.idProd }, select: { kind: true },
+    });
+    const data = {
+      ...pieceData,
+      ...(frozenEnergy ? {
+        ...frozenEnergy,
+        energySnapshot: stripEnergySnapshotMetadata(frozenEnergy.energySnapshot),
+      } : await buildEnergyPersistence(tx, {
+        ...pieceData, isLinear: product?.kind === 'LINEAR_MATERIAL',
+      }, existingPiece)),
+    };
     const saved = existingPiece
       ? await tx.piece.update({
           where: { id: existingPiece.id },
@@ -4200,6 +4229,10 @@ export class InstallationWorkflowService {
           mark,
           tx,
           group === retainedGroup ? originalPiece : undefined,
+          {
+            energyRatingId: group.pricing.energy?.energyRatingId ?? null,
+            energySnapshot: group.pricing.energy?.energySnapshot ?? Prisma.DbNull,
+          },
         );
         for (const [index, item] of group.items.entries()) {
           const automaticLabel = [
@@ -4244,6 +4277,10 @@ export class InstallationWorkflowService {
       const pricing = items[0].calculatedSnapshot as RevisionPiecePricingSnapshot;
       const savedPiece = await this.saveRevisionPiece(
         revision.estimateId, input, pricing, items.length, String(input.mark ?? '').trim(), tx,
+        undefined, {
+          energyRatingId: pricing.energy?.energyRatingId ?? null,
+          energySnapshot: pricing.energy?.energySnapshot ?? Prisma.DbNull,
+        },
       );
       for (const [index, item] of items.entries()) {
         await tx.installationMeasurement.update({
@@ -5135,8 +5172,8 @@ export class InstallationWorkflowService {
   }
 
   persistMaterialRevisionPiece(estimateId: number, input: CreatePieceDto, pricing: RevisionPiecePricingSnapshot,
-    tx: PrismaTransactionClient, original?: RevisionPieceRecord) {
-    return this.saveRevisionPiece(estimateId, input, pricing, input.qty, input.mark.trim(), tx, original);
+    tx: PrismaTransactionClient, original?: RevisionPieceRecord, frozenEnergy?: FrozenPieceEnergy) {
+    return this.saveRevisionPiece(estimateId, input, pricing, input.qty, input.mark.trim(), tx, original, frozenEnergy);
   }
 
   async stageMaterialRevisionInstallation(

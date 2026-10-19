@@ -186,6 +186,9 @@ export function agreementContent(publicEstimate: any) {
         ]),
       ),
       horizontalHeights: piece.horizontalHeights,
+      ...(piece.energySnapshot ? { energy: pick(piece.energySnapshot, [
+        'schemaVersion', 'status', 'uFactor', 'shgc', 'vlt',
+      ]) } : {}),
       screen: Boolean(piece.screen),
       highBottom: Boolean(piece.highBottom),
       options: [

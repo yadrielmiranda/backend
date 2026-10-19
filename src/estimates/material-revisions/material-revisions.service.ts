@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import Decimal from 'decimal.js';
 import { PrismaService } from '@/prisma/prisma.service';
+import { buildEnergyPersistence, stripEnergySnapshotMetadata } from '@/energy-ratings/energy-rating-lookup';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { isPrivileged } from '@/auth/utils/is-privileged';
 import { NotificationsService } from '@/notifications/notifications.service';
@@ -272,7 +273,18 @@ export class MaterialRevisionsService {
     return this.prisma.$transaction(async db => {
       const estimate = await this.load(db, estimateId, actor);
       const revision = await this.findRevision(db, estimateId, revisionId);
-      return this.calculatedResponse((await this.calculate(db, estimate, revision, dto, actor)).calculated, actor);
+      const { original, calculated } = await this.calculate(db, estimate, revision, dto, actor);
+      const product = await db.product.findUnique({
+        where: { id: calculated.idProd }, select: { kind: true },
+      });
+      const energy = await buildEnergyPersistence(db, {
+        ...calculated, isLinear: product?.kind === 'LINEAR_MATERIAL',
+      }, original);
+      return {
+        ...this.calculatedResponse(calculated, actor),
+        energyRatingId: energy.energyRatingId,
+        energySnapshot: energy.energySnapshot === Prisma.DbNull ? null : energy.energySnapshot,
+      };
     }, { timeout: 60000 });
   }
 
@@ -305,6 +317,11 @@ export class MaterialRevisionsService {
       for (const item of items) {
         const original = item.originalPieceId ? estimate.pieces.find((piece: any) => piece.id === item.originalPieceId) : undefined;
         const piece = await this.installation.persistMaterialRevisionPiece(estimate.id, item.input, item.pricing, db, original);
+        // The reviewed item carries its own energy values, including additions whose preview ID is rolled back.
+        item.pricing = { ...item.pricing, energy: {
+          energyRatingId: piece.energyRatingId ?? null,
+          energySnapshot: stripEnergySnapshotMetadata(piece.energySnapshot) ?? null,
+        } };
         changes.push({ key: item.key, piece, original });
         item.label = label(piece); item.originalLabel = original ? label(original) : null;
         item.changeDescription = this.describeChange(original, piece);
@@ -315,7 +332,9 @@ export class MaterialRevisionsService {
         new Decimal(String(estimate.taxRate)), new Decimal(String(estimate.customerTaxRate)));
       const proposal: MaterialRevisionProposal = {
         pieces: staged.pieces.map((piece: any) => {
-          const { factoryUnits, ...record } = piece; return record;
+          const { factoryUnits, ...record } = piece;
+          if (record.energySnapshot != null) record.energySnapshot = stripEnergySnapshotMetadata(record.energySnapshot);
+          return record;
         }),
         totals: { ...totals, units: staged.pieces.reduce((sum: number, piece: any) => sum + piece.qty, 0),
           promotionContext: staged.pieces.flatMap((piece: any) => piece.promotionSnapshot ? [piece.promotionSnapshot] : []) },
@@ -471,8 +490,14 @@ export class MaterialRevisionsService {
     for (const item of items) {
       const original = item.originalPieceId ? estimate.pieces.find((piece: any) => piece.id === item.originalPieceId) : undefined;
       if (item.originalPieceId && !original) throw new ConflictException('An original piece is no longer available.');
+      // This snapshot comes from our stored proposal, never from the client piece DTO.
+      // A legacy approved proposal retains its original absence of energy data.
+      const frozenEnergy = {
+        energyRatingId: item.pricing.energy?.energyRatingId ?? null,
+        energySnapshot: stripEnergySnapshotMetadata(item.pricing.energy?.energySnapshot) ?? Prisma.DbNull,
+      };
       changes.push({ key: item.key, original,
-        piece: await this.installation.persistMaterialRevisionPiece(estimate.id, item.input, item.pricing, db, original) });
+        piece: await this.installation.persistMaterialRevisionPiece(estimate.id, item.input, item.pricing, db, original, frozenEnergy) });
     }
     await this.installation.stageMaterialRevisionInstallation(estimate.id, changes, actorId, db, proposal.installation);
     await db.estimate.update({ where: { id: estimate.id }, data: {

@@ -51,6 +51,8 @@ function recalcFixture(promotions: PromotionTerms[] = [offer]) {
     ],
   };
   const tx: any = {
+    product: { findUnique: jest.fn().mockResolvedValue({ kind: 'GLAZED_UNIT' }) },
+    energyRating: { findMany: jest.fn().mockResolvedValue([]) },
     estimateAgreement: { findMany: jest.fn().mockResolvedValue([]) },
     $queryRaw: jest.fn(),
     estimate: {

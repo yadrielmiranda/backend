@@ -19,6 +19,18 @@ function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+function publicEnergySnapshot(value: any) {
+  if (!value || value.schemaVersion !== 1) return null;
+  return {
+    schemaVersion: 1,
+    status: value.status,
+    uFactor: value.uFactor ?? null,
+    shgc: value.shgc ?? null,
+    vlt: value.vlt ?? null,
+    ratingId: value.ratingId ?? null,
+  };
+}
+
 // Proyección compartida: no incluye costos, ganancias ni promociones privadas del dealer.
 export function buildPublicEstimateData(
   estimate: any,
@@ -226,6 +238,7 @@ export function buildPublicEstimateData(
 
       dpPosPsf: p.dpPosPsf,
       dpNegPsf: p.dpNegPsf,
+      energySnapshot: publicEnergySnapshot(p.energySnapshot),
 
       customerPrice: pricingMode === 'total' ? 0 : p.customerPrice,
       customerSubtotal: pricingMode === 'total' ? 0 : p.customerSubtotal,

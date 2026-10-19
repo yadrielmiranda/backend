@@ -21,6 +21,7 @@ lerna-debug.log*
 .test-tmp/
 .jest-cache/
 /outputs/test-temp/
+/outputs/jest-energy-pdf-cache/
 
 # IDEs and editors
 /.idea

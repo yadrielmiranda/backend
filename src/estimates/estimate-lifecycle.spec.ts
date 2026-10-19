@@ -81,6 +81,8 @@ function fixture() {
       }),
     },
     user: { findUnique: jest.fn(async () => estimate.user) },
+    product: { findUnique: jest.fn(async () => ({ kind: 'GLAZED_UNIT' })) },
+    energyRating: { findMany: jest.fn(async () => []) },
     globalParameter: {
       findUnique: jest.fn(async ({ where }) => ({
         value: where.key === 'SALES_TAX' ? '.08' : 30,

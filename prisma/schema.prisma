@@ -704,6 +704,7 @@ model Config {
   pieces             Piece[]
   pricingRules       PricingRule[]
   linearPricingRules LinearPricingRule[]
+  energyRatings      EnergyRating[]
 
   requiresWidth        Boolean @default(false)
   requiresHeight       Boolean @default(false)
@@ -906,6 +907,7 @@ model SystemCrystal {
   system            System                   @relation(fields: [idSystem], references: [id], onDelete: Cascade)
   crystal           Crystal                  @relation(fields: [idCrystal], references: [id], onDelete: Restrict)
   muntinAssignments SystemMuntinAssignment[]
+  energyRatings     EnergyRating[]
 
   @@id([idSystem, idCrystal])
   @@index([idCrystal])
@@ -1089,6 +1091,7 @@ model Tint {
   globalSortOrder Int         @default(0)
   pieces          Piece[]
   brandTints      BrandTint[]
+  energyRatings  EnergyRating[]
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
@@ -1104,6 +1107,7 @@ model Coating {
   globalSortOrder Int            @default(0)
   pieces          Piece[]
   brandCoatings   BrandCoating[]
+  energyRatings  EnergyRating[]
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -1117,6 +1121,7 @@ model Privacy {
   isActive       Boolean        @default(true)
   pieces         Piece[]
   brandPrivacies BrandPrivacy[]
+  energyRatings EnergyRating[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -1560,7 +1565,43 @@ model EstimateCustomerCharge {
   @@map("estimate_customer_charges")
 }
 
+// Exact catalog combinations, independent of pricing and diagram configuration.
+model EnergyRating {
+  id                  Int      @id @default(autoincrement())
+  idSystem            Int
+  idCrystal           Int
+  idTint              Int
+  idCoating           Int
+  idPrivacy           Int
+  idConfig            Int?
+  appliesToAllConfigs Boolean  @default(false)
+  uFactor             Decimal? @db.Decimal(10, 6)
+  shgc                Decimal? @db.Decimal(10, 6)
+  vlt                 Decimal? @db.Decimal(10, 6)
+  isActive            Boolean  @default(true)
+  // NULL for inactive versions; one active entry per exact configuration scope.
+  activeKey           String?  @unique @db.VarChar(191)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  systemCrystal       SystemCrystal @relation(fields: [idSystem, idCrystal], references: [idSystem, idCrystal], onDelete: Restrict)
+  config              Config?  @relation(fields: [idConfig], references: [id], onDelete: Restrict)
+  tint                Tint     @relation(fields: [idTint], references: [id], onDelete: Restrict)
+  coating             Coating  @relation(fields: [idCoating], references: [id], onDelete: Restrict)
+  privacy             Privacy  @relation(fields: [idPrivacy], references: [id], onDelete: Restrict)
+  pieces              Piece[]
+
+  @@index([idSystem, idCrystal, idTint, idCoating, idPrivacy, isActive], map: "energy_rating_lookup_idx")
+  @@index([idConfig])
+  @@index([idTint])
+  @@index([idCoating])
+  @@index([idPrivacy])
+  @@map("energy_ratings")
+}
+
 model Piece {
+  energyRatingId Int?
+  energyRating   EnergyRating? @relation(fields: [energyRatingId], references: [id], onDelete: SetNull)
+  energySnapshot Json?
   // Precio unitario de compra de cada nivel, antes de impuestos.
   networkPricing       Json?
   regularPrice         Decimal    @default(0) @db.Decimal(12, 2)
@@ -1649,6 +1690,7 @@ model Piece {
   factoryUnits             FactoryUnit[]
 
   @@index([idEst])
+  @@index([energyRatingId])
   @@index([idProd])
   @@index([idBrand])
   @@index([idSyst])

@@ -72,6 +72,8 @@ function fixture(qty = 1, mark = '') {
   let nextId = 25;
   const ordered = () => [...pieces.values()].sort((a, b) => a.id - b.id);
   const tx: any = {
+    product: { findUnique: jest.fn(async () => ({ kind: 'GLAZED_UNIT' })) },
+    energyRating: { findMany: jest.fn(async () => { throw new Error('An approved revision must not read current energy ratings'); }) },
     piece: {
       findMany: jest.fn(async () => ordered()),
       findUniqueOrThrow: jest.fn(async ({ where }) => pieces.get(where.id)),
@@ -189,6 +191,7 @@ function fixture(qty = 1, mark = '') {
     return row;
   }
   return {
+    workflow,
     original,
     other,
     pieces,
@@ -204,6 +207,73 @@ function fixture(qty = 1, mark = '') {
 }
 
 describe('Applying an approved material revision', () => {
+  const frozenEnergy = (uFactor = '1.062', capturedAt = '2026-10-18T12:00:00.000Z') => ({
+    energyRatingId: 19,
+    energySnapshot: {
+      schemaVersion: 1, status: 'AVAILABLE', uFactor, shgc: '0.278', vlt: '0.501',
+      ratingId: 19, capturedAt,
+      selection: { idBrand: 1, idProd: 1, idSyst: 1, idConf: 1, idCryst: 1, idTint: 1, idCoat: 1, idPrivacy: 1 },
+    },
+  });
+
+  it('captures the existing piece energy in its original revision snapshot', () => {
+    const f = fixture();
+    const energy = frozenEnergy();
+    Object.assign(f.original, energy);
+    f.original.energySnapshot = { ...energy.energySnapshot, units: 'Btu/(h·ft²·°F)' };
+    const captured = f.workflow.originalRevisionSnapshot(f.original);
+    expect(captured.pricing.energy).toEqual(energy);
+    expect(captured.energySnapshot).toEqual(energy.energySnapshot);
+    expect(f.tx.energyRating.findMany).not.toHaveBeenCalled();
+  });
+
+  it('preserves approved energy values while removing obsolete snapshot units', async () => {
+    const f = fixture(2);
+    const energy = frozenEnergy();
+    f.change(1).calculatedSnapshot.energy = {
+      ...energy,
+      energySnapshot: { ...energy.energySnapshot, units: 'Btu/(h·ft²·°F)' },
+    };
+    await f.apply();
+    expect(f.pieces.get(26)).toMatchObject(energy);
+    expect(f.tx.piece.create.mock.calls[0][0].data.energySnapshot).toEqual(energy.energySnapshot);
+    expect(f.tx.energyRating.findMany).not.toHaveBeenCalled();
+  });
+
+  it('applies approved measured energy to a split piece without reading a changed catalog', async () => {
+    const f = fixture(2);
+    const energy = frozenEnergy();
+    f.change(1).calculatedSnapshot.energy = energy;
+    await f.apply();
+    expect(f.pieces.get(26)).toMatchObject(energy);
+    expect(f.tx.piece.create.mock.calls[0][0].data.energySnapshot).toEqual(energy.energySnapshot);
+    expect(f.tx.energyRating.findMany).not.toHaveBeenCalled();
+  });
+
+  it('leaves legacy approved measurements without energy empty instead of looking up current ratings', async () => {
+    const f = fixture();
+    const item = f.change();
+    delete item.calculatedSnapshot.energy;
+    await f.apply();
+    const data = f.tx.piece.update.mock.calls[0][0].data;
+    expect(data.energyRatingId).toBeNull();
+    expect(data.energySnapshot).toBe(Prisma.DbNull);
+    expect(f.tx.energyRating.findMany).not.toHaveBeenCalled();
+  });
+
+  it('groups equal energy values despite different capture times and separates different values', async () => {
+    const f = fixture(3);
+    f.change(1).calculatedSnapshot.energy = frozenEnergy('1.062', '2026-10-18T12:00:00.000Z');
+    f.change(2).calculatedSnapshot.energy = frozenEnergy('1.0620', '2026-10-18T13:00:00.000Z');
+    f.change(3).calculatedSnapshot.energy = frozenEnergy('1.099', '2026-10-18T13:00:00.000Z');
+    await f.apply();
+    expect(f.pieces.get(24).qty).toBe(2);
+    expect(f.pieces.get(24).energySnapshot.uFactor).toBe('1.062');
+    expect(f.pieces.get(26).qty).toBe(1);
+    expect(f.pieces.get(26).energySnapshot.uFactor).toBe('1.099');
+    expect(f.tx.energyRating.findMany).not.toHaveBeenCalled();
+  });
+
   it('updates the original piece and keeps its position, Mark, creation date and estimate', async () => {
     const f = fixture();
     f.change();

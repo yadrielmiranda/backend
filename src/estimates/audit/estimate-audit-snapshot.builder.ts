@@ -1,3 +1,5 @@
+import { stripEnergySnapshotMetadata } from '@/energy-ratings/energy-rating-lookup';
+
 export class EstimateAuditSnapshotBuilder {
   static build(est: any) {
     // comentario en espanol: snapshot estable para auditoria, no guardamos el objeto completo
@@ -91,6 +93,8 @@ export class EstimateAuditSnapshotBuilder {
             idCoat: p.idCoat ?? null,
             idPrivacy: p.idPrivacy ?? null,
             privacyName: p.privacyOption?.name ?? null,
+            energyRatingId: p.energyRatingId ?? null,
+            energySnapshot: stripEnergySnapshotMetadata(p.energySnapshot) ?? null,
 
             // money
             rate: p.rate ?? null,

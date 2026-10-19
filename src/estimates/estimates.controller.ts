@@ -55,6 +55,11 @@ export class EstimatesController {
     return this.estimatesService.duplicateEstimate(id, dto, req.user as AuthUser);
   }
 
+  @Post(':id/energy-ratings/refresh')
+  refreshEnergyRatings(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.estimatesService.refreshEnergyRatings(id, (req.user as AuthUser).id);
+  }
+
   @Get(':id/discount')
   async getDiscount(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     const estimate = presentApiResponse(await this.estimatesService.findOneForUser(id, req.user as AuthUser), req.user as AuthUser);

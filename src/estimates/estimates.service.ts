@@ -12,7 +12,8 @@ import { loadActiveEarningsPlan } from '@/earnings-plans/earnings-plan';
 import { canRefreshDraftEarningsPlan, refreshDraftEarningsPlan } from '@/earnings-plans/estimate-earnings-plan';
 import { ContractStorageService } from '@/contracts/contract-storage.service';
 import { assertNoPendingMaterialRevision } from './material-revisions/material-revision-policy';
-import { withAgreementTransaction } from '@/contracts/agreement-content';
+import { invalidateChangedAgreements, withAgreementTransaction } from '@/contracts/agreement-content';
+import { buildEnergyPersistence } from '@/energy-ratings/energy-rating-lookup';
 import { calculateEstimateDiscount, estimateDiscountConfig, hasDiscountableInstallation, type EstimateDiscountConfig, type EstimateDiscountSummary } from './discounts/estimate-discount';
 import { UpdateEstimateDiscountDto } from './dto/estimate-discount.dto';
 import { ForbiddenException } from '@nestjs/common';
@@ -261,6 +262,23 @@ export class EstimatesService {
 
       dpPosPsf: new Prisma.Decimal(piece.dpPosPsf.toFixed(2)),
       dpNegPsf: new Prisma.Decimal(piece.dpNegPsf.toFixed(2)),
+    };
+  }
+
+  /** Adds the frozen energy values without changing the existing price calculation. */
+  private async buildPiecePersistenceWithEnergy(
+    tx: PrismaTransactionClient,
+    piece: CalculatedPieceCombined,
+    existingPiece?: Piece,
+  ) {
+    const product = await tx.product.findUnique({
+      where: { id: piece.idProd }, select: { kind: true },
+    });
+    return {
+      ...this.buildCalculatedPiecePersistenceData(piece),
+      ...await buildEnergyPersistence(tx, {
+        ...piece, isLinear: product?.kind === 'LINEAR_MATERIAL',
+      }, existingPiece),
     };
   }
 
@@ -755,6 +773,7 @@ export class EstimatesService {
 
     const cache = this.pieceCalculator.createCalculationCache();
     let effectiveMarkupDecimal = this.resolveBaseMarkupForUser(user);
+    let existingPiece: Parameters<typeof buildEnergyPersistence>[2];
     if (estimateId) {
       const estimate = await this.prisma.estimate.findUnique({
         where: { id: estimateId },
@@ -773,7 +792,12 @@ export class EstimatesService {
       if (pieceId !== undefined) {
         const piece = await this.prisma.piece.findFirst({
           where: { id: pieceId, idEst: estimateId },
-          select: { promotionSnapshot: true },
+          select: {
+            promotionSnapshot: true,
+            idBrand: true, idProd: true, idSyst: true, idConf: true,
+            idCryst: true, idTint: true, idCoat: true, idPrivacy: true,
+            energyRatingId: true, energySnapshot: true,
+          },
         });
         if (!piece) {
           throw new NotFoundException(
@@ -781,6 +805,7 @@ export class EstimatesService {
           );
         }
         cache.promotions = this.promotionsForSavedPiece(estimate!, piece);
+        existingPiece = piece;
       } else {
         // Las piezas nuevas usan las ofertas vigentes del dueño del Estimate.
         cache.promotions = await this.promotions.eligible(estimate!.idUser);
@@ -801,8 +826,17 @@ export class EstimatesService {
         cache,
       );
 
+    const product = await this.prisma.product.findUnique({
+      where: { id: calculated.idProd }, select: { kind: true },
+    });
+    const energy = await buildEnergyPersistence(this.prisma, {
+      ...calculated, isLinear: product?.kind === 'LINEAR_MATERIAL',
+    }, existingPiece);
+
     return {
       ...calculated,
+      energyRatingId: energy.energyRatingId,
+      energySnapshot: energy.energySnapshot === Prisma.DbNull ? null : energy.energySnapshot,
       muntin: calculated.muntin ?? null,
       highBottom: calculated.highBottom,
       highBottomPercent: calculated.highBottomPercent
@@ -1362,7 +1396,7 @@ export class EstimatesService {
       });
       for (const piece of calculated) {
         const saved = await tx.piece.create({
-          data: { ...this.buildCalculatedPiecePersistenceData(piece), idEst: created.id },
+          data: { ...await this.buildPiecePersistenceWithEnergy(tx, piece), idEst: created.id },
           select: { id: true },
         });
         await this.replacePieceMuntin(tx, saved.id, piece.muntin);
@@ -1665,7 +1699,7 @@ export class EstimatesService {
       );
 
       const pieceData =
-        this.buildCalculatedPiecePersistenceData(calculatedPiece);
+        await this.buildPiecePersistenceWithEnergy(tx, calculatedPiece);
 
       const createdPiece = await tx.piece.create({
         data: {
@@ -1792,7 +1826,7 @@ export class EstimatesService {
       );
 
       const pieceData =
-        this.buildCalculatedPiecePersistenceData(calculatedPiece);
+        await this.buildPiecePersistenceWithEnergy(tx, calculatedPiece, existingPiece);
 
       await tx.piece.update({
         where: {
@@ -1849,6 +1883,32 @@ export class EstimatesService {
 
       return updatedEstimate as EstimateWithRelations;
     });
+  }
+
+  /** Explicitly refreshes energy values without recalculating prices or payment plans. */
+  async refreshEnergyRatings(estimateId: number, userId: number): Promise<EstimateWithRelations> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Estimate WHERE id = ${estimateId} FOR UPDATE`;
+      const before = await this.getEstimateWithRelationsInTransaction(tx, estimateId);
+      await this.assertEstimateCanBeEdited(before, estimateId, userId, tx);
+      for (const piece of before!.pieces) {
+        const energy = await buildEnergyPersistence(tx, {
+          ...piece, isLinear: piece.prod.kind === 'LINEAR_MATERIAL',
+        });
+        await tx.piece.update({ where: { id: piece.id }, data: energy });
+      }
+      const after = await this.getEstimateWithRelationsInTransaction(tx, estimateId);
+      if (!after) throw new NotFoundException(`Estimate #${estimateId} not found.`);
+      await invalidateChangedAgreements(tx, estimateId);
+      await this.logs.log({
+        action: 'UPDATE', entityType: 'Estimate', entityId: estimateId, userId,
+        message: `Energy ratings refreshed in Estimate #${after.number}`,
+        before: EstimateAuditSnapshotBuilder.build(before),
+        after: EstimateAuditSnapshotBuilder.build(after),
+        meta: { source: 'EstimatesService.refreshEnergyRatings' },
+      });
+      return after;
+    }, { timeout: 30000 });
   }
 
   /**
@@ -2192,8 +2252,10 @@ export class EstimatesService {
       // Las actualizaciones comienzan únicamente después
       // de calcular correctamente todas las piezas.
       for (const item of calculatedPieces) {
-        const pieceData = this.buildCalculatedPiecePersistenceData(
+        const pieceData = await this.buildPiecePersistenceWithEnergy(
+          tx,
           item.calculatedPiece,
+          beforeEstimate!.pieces.find((piece) => piece.id === item.pieceId),
         );
 
         await tx.piece.update({

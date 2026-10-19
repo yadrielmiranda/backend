@@ -334,6 +334,18 @@ const buildPieceReportDetails = (piece: any): PieceReportDetails => {
     );
   }
 
+  const energy = piece.energySnapshot;
+  if (piece.prod?.kind !== 'LINEAR_MATERIAL' && energy?.status !== 'NOT_APPLICABLE') {
+    const values = [energy?.uFactor, energy?.shgc, energy?.vlt].map((value) => {
+      if (value == null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number.toFixed(3) : null;
+    });
+    detailLines.push(energy?.status === 'AVAILABLE' && values.every((value) => value !== null)
+      ? `NFRC: U-factor: ${values[0]} | SHGC: ${values[1]} | VLT: ${values[2]}`
+      : 'Energy performance: Data unavailable');
+  }
+
   return {
     productName: String(piece.prod?.name ?? '').trim() || 'Product',
     systemLine: [piece.bran?.name, piece.syst?.name]
@@ -611,7 +623,9 @@ export class EstimatePdfHtmlBuilder {
             const details = buildPieceReportDetails(piece);
             const detailLines = details.detailLines
               .map(
-                (line) => `<div class="piece-detail">${escapeHtml(line)}</div>`,
+                (line) => `<div class="piece-detail">${line.startsWith('NFRC: ')
+                  ? `<strong>NFRC:</strong> ${escapeHtml(line.slice('NFRC: '.length))}`
+                  : escapeHtml(line)}</div>`,
               )
               .join('');
             const diagramSrc =

@@ -130,6 +130,7 @@ export function createEstimateRevisionPieceFingerprint(
 ): string {
   const piece = input as Record<string, unknown>;
   const price = pricing as Record<string, unknown> | null | undefined;
+  const energy = (price?.energy as { energySnapshot?: Record<string, unknown> | null } | undefined)?.energySnapshot;
   const dimensions = [
     "width",
     "height",
@@ -180,6 +181,12 @@ export function createEstimateRevisionPieceFingerprint(
           price: decimalOrNull(price.price),
           customerPrice: decimalOrNull(price.customerPrice),
           dealerMarkupDecimal: decimalOrNull(price.dealerMarkupDecimal),
+          ...(energy ? { energy: {
+            status: energy.status,
+            uFactor: decimalOrNull(energy.uFactor),
+            shgc: decimalOrNull(energy.shgc),
+            vlt: decimalOrNull(energy.vlt),
+          } } : {}),
         }
       : null,
   });

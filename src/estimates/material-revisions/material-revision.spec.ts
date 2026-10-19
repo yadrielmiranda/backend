@@ -10,6 +10,7 @@ import { MaterialRevisionsService } from './material-revisions.service';
 import { agreementMatches, invalidateChangedAgreements, loadAgreementContent } from '@/contracts/agreement-content';
 import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
+import { buildEnergyPersistence } from '@/energy-ratings/energy-rating-lookup';
 
 const admin: AuthUser = { id: 1, role: { name: 'admin' } };
 const dealer: AuthUser = { id: 7, role: { name: 'dealer' } };
@@ -61,6 +62,32 @@ function serviceFixture(e = beforeMeasurement()) {
 }
 
 describe('Material revision scope and approval', () => {
+  it('previews energy for new and changed revision pieces while retaining agreed values on unchanged glass', async () => {
+    const f = serviceFixture();
+    const selection = { idBrand: 3, idProd: 2, idSyst: 10, idConf: 20, idCryst: 5, idTint: 1, idCoat: 2, idPrivacy: 1 };
+    f.db.product = { findUnique: jest.fn(async () => ({ kind: 'GLAZED_UNIT' })) };
+    f.db.energyRating = { findMany: jest.fn(async () => [{ id: 100, idConfig: null, appliesToAllConfigs: true,
+      uFactor: d('1.062'), shgc: d('.278'), vlt: d('.501') }]) };
+    Object.assign(f.e.pieces[0], selection, await buildEnergyPersistence(f.db, selection));
+    const saved = f.e.pieces[0].energySnapshot;
+    await f.service.begin(35, { reason: 'Change glass' }, admin);
+    const before = JSON.stringify({ estimate: f.e, revisions: f.rows });
+    f.db.energyRating.findMany.mockClear();
+    f.db.energyRating.findMany.mockResolvedValue([{ id: 101, idConfig: null, appliesToAllConfigs: true,
+      uFactor: d('1.02'), shgc: d('.3'), vlt: d('.6') }]);
+    const unchanged = await f.service.previewPiece(35, 1, { originalPieceId: 1,
+      piece: { ...f.e.pieces[0], width: '96' } }, admin);
+    expect(unchanged.energySnapshot).toEqual(saved);
+    expect(unchanged.price).toBe(2377.39);
+    expect(f.db.energyRating.findMany).not.toHaveBeenCalled();
+    const changed = await f.service.previewPiece(35, 1, { originalPieceId: 1,
+      piece: { ...f.e.pieces[0], idCoat: 3 } }, admin);
+    expect(changed.energySnapshot).toMatchObject({ ratingId: 101, shgc: '0.3', selection: { idCoat: 3 } });
+    const added = await f.service.previewPiece(35, 1, { piece: { ...f.e.pieces[0], mark: 'W2' } }, admin);
+    expect(added.energySnapshot).toMatchObject({ ratingId: 101, status: 'AVAILABLE', uFactor: '1.02' });
+    expect(JSON.stringify({ estimate: f.e, revisions: f.rows })).toBe(before);
+  });
+
   it('allows the owner to add a piece after the deposit, before measurement', () => assert.equal(ownerCanAddBeforeRemeasurement(beforeMeasurement(), 7), true));
   it('supports a client owner without enabling dealer pricing', () => { const e = beforeMeasurement(); e.user.role.name = 'client'; e.dealerModeSnapshot = null; assert.equal(ownerCanAddBeforeRemeasurement(e, 7), true); });
   it('rejects a different owner', () => assert.equal(ownerCanAddBeforeRemeasurement(beforeMeasurement(), 8), false));

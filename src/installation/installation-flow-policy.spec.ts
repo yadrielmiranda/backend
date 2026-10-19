@@ -194,6 +194,22 @@ describe("installation flow policy", () => {
     expect(first).toBe(second);
   });
 
+  it("groups equal frozen energy values without using their capture time or catalog reference", () => {
+    const piece = { idProd: 1, idBrand: 2, idSyst: 3, idConf: 4, width: "42", height: "62" };
+    const pricing = { rate: "400", price: "600", customerPrice: "700", dealerMarkupDecimal: "0.1" };
+    const energySnapshot = { status: "AVAILABLE", uFactor: "1.062", shgc: "0.278", vlt: "0.501", units: "Btu/(h·ft²·°F)", capturedAt: "2026-10-18T12:00:00Z" };
+    const original = createEstimateRevisionPieceFingerprint(piece, { ...pricing, energy: { energyRatingId: 1, energySnapshot } });
+    const sameValues = createEstimateRevisionPieceFingerprint(piece, { ...pricing, energy: { energyRatingId: 99, energySnapshot: { ...energySnapshot, uFactor: "1.0620", capturedAt: "2026-10-18T13:00:00Z" } } });
+    const different = createEstimateRevisionPieceFingerprint(piece, { ...pricing, energy: { energyRatingId: 1, energySnapshot: { ...energySnapshot, vlt: "0.667" } } });
+    const { units, ...withoutUnits } = energySnapshot;
+    expect(original).toBe(createEstimateRevisionPieceFingerprint(piece, { ...pricing, energy: { energySnapshot: withoutUnits } }));
+    expect(original).toBe(sameValues);
+    expect(original).not.toBe(different);
+    expect(createEstimateRevisionPieceFingerprint(piece, pricing)).toBe(
+      createEstimateRevisionPieceFingerprint(piece, { ...pricing, energy: { energyRatingId: null, energySnapshot: null } }),
+    );
+  });
+
   it("splits units when dimensions, configuration, or unit price differ", () => {
     const base = {
       idProd: 1,
