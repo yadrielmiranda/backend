@@ -6,12 +6,14 @@ function fixture(count = 200) {
   const products = Array.from({ length: count }, (_, i) => ({
     id: i + 1, name: `Material ${String(i + 1).padStart(3, '0')}`, code: `MAT-${i + 1}`, description: i === 199 ? 'Special outdoor adhesive' : 'A material',
     brand: i % 2 ? 'Beta' : 'Alpha', categoryId: i % 2 + 1, category: categories[i % 2], imageUrl: `/api/materials/images/${'a'.repeat(64)}.png`,
-    baseUnit: { id: 1, name: 'Tube' }, isActive: true, isSaleEnabled: true,
+    baseUnit: { id: 1, name: 'Tube' }, isActive: true, isSaleEnabled: true, allowBaseUnitOperations: true,
     presentations: [
       { id: i * 2 + 1, productId: i + 1, name: 'Tube', multiplier: 1, isBase: true, isActive: true, isSaleEnabled: true, salePrice: new Prisma.Decimal(15), barcode: null, unit: { id: 1, name: 'Tube' } },
       { id: i * 2 + 2, productId: i + 1, name: 'Box of 12', multiplier: 12, isBase: false, isActive: true, isSaleEnabled: true, salePrice: new Prisma.Decimal(120), barcode: null, unit: { id: 2, name: 'Box' } },
     ],
   }));
+  for (const product of products) for (const presentation of product.presentations)
+    Object.defineProperty(presentation, 'product', { get: () => ({ allowBaseUnitOperations: product.allowBaseUnitOperations }) });
   const stock: any[] = products.flatMap(product => [1, 2].map(storeId => ({ productId: product.id, storeId, presentationId: product.presentations[1].id, quantity: 1, store: { isActive: true } })));
   const reservations: any[] = [];
   function matches(row: any, where: any = {}) {
@@ -61,6 +63,30 @@ function fixture(count = 200) {
 }
 
 describe('Paged materials catalog', () => {
+  it('hides restricted single units from browsing, cart refresh and in-stock matching', async () => {
+    const f = fixture(4);
+    for (const product of f.products.slice(0, 3)) product.allowBaseUnitOperations = false;
+    f.products[1].presentations[1].isSaleEnabled = false;
+    for (const stock of f.stock.filter(stock => stock.productId === 3)) { stock.presentationId = 5; stock.quantity = 12; }
+    const catalog = await materialCatalogPage(f.db);
+    expect(catalog.total).toBe(3);
+    expect(catalog.products.map(product => product.id)).toEqual([1, 3, 4]);
+    expect(catalog.products[0]).toMatchObject({ allowBaseUnitOperations: false });
+    expect(catalog.products[0].presentations.map(presentation => presentation.id)).toEqual([2]);
+    expect((await materialCatalogPage(f.db, { presentationIds: '1,2,3' })).products.flatMap(product => product.presentations.map(presentation => presentation.id))).toEqual([2]);
+    expect((await materialCatalogPage(f.db, { inStock: 'true' })).products.map(product => product.id)).toEqual([1, 4]);
+  });
+
+  it('also excludes a non-base multiplier-one alias from the restricted catalog', async () => {
+    const f = fixture(1);
+    f.products[0].allowBaseUnitOperations = false;
+    const alias = { ...f.products[0].presentations[0], id: 3, isBase: false };
+    Object.defineProperty(alias, 'product', { get: () => ({ allowBaseUnitOperations: false }) });
+    f.products[0].presentations.push(alias);
+    expect((await materialCatalogPage(f.db)).products[0].presentations.map(presentation => presentation.id)).toEqual([2]);
+    expect((await materialCatalogPage(f.db, { presentationIds: '3' })).total).toBe(0);
+  });
+
   it('serves 200 products across nine database pages with metadata only for the requested 24', async () => {
     const f = fixture();
     const first = await materialCatalogPage(f.db);

@@ -1,9 +1,13 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { materialAvailability, MaterialReservation } from './materials-stock';
+import { allowsMaterialDailyOperation } from './materials-operation-policy';
 
 export type MaterialCatalogQuery = Record<string, string | undefined>;
-const sellablePresentation = { isActive: true, isSaleEnabled: true, salePrice: { gt: 0 } } satisfies Prisma.MaterialPresentationWhereInput;
+const sellablePresentation = {
+  isActive: true, isSaleEnabled: true, salePrice: { gt: 0 },
+  OR: [{ product: { allowBaseUnitOperations: true } }, { isBase: false, multiplier: { gt: 1 } }],
+} satisfies Prisma.MaterialPresentationWhereInput;
 const visibleProduct = { isActive: true, isSaleEnabled: true, presentations: { some: sellablePresentation } } satisfies Prisma.MaterialProductWhereInput;
 
 function optionalText(query: MaterialCatalogQuery, key: string, max: number) {
@@ -42,6 +46,7 @@ export async function materialCatalogAvailability(tx: Prisma.TransactionClient, 
   const [presentations, stocks, reservations] = await Promise.all([
     tx.materialPresentation.findMany({ where: { productId: { in: productIds } }, select: {
       id: true, productId: true, multiplier: true, isBase: true, isActive: true, isSaleEnabled: true, salePrice: true,
+      product: { select: { allowBaseUnitOperations: true } },
     } }),
     tx.materialStock.findMany({ where: { productId: { in: productIds }, store: { isActive: true } }, select: { productId: true, storeId: true, presentationId: true, quantity: true } }),
     tx.materialSaleLine.findMany({ where: { productId: { in: productIds }, store: { isActive: true }, sale: { status: 'CONFIRMED' } }, select: { productId: true, storeId: true, presentationId: true, quantity: true } }),
@@ -70,7 +75,7 @@ export async function materialCatalogAvailability(tx: Prisma.TransactionClient, 
     for (const item of availability.presentations) quantities.set(item.id, (quantities.get(item.id) ?? 0) + item.availableQuantity);
   }
   for (const p of presentations) {
-    if (p.isActive && p.isSaleEnabled && Number(p.salePrice) > 0 && (quantities.get(p.id) ?? 0) > 0) inStock.add(p.productId);
+    if (p.isActive && p.isSaleEnabled && allowsMaterialDailyOperation(p.product, p) && Number(p.salePrice) > 0 && (quantities.get(p.id) ?? 0) > 0) inStock.add(p.productId);
   }
   return { quantities, inStock };
 }
@@ -99,7 +104,7 @@ export async function materialCatalogPage(tx: Prisma.TransactionClient, query: M
     tx.materialProduct.count({ where }),
     tx.materialProduct.findMany({ where, skip: (page - 1) * pageSize, take: pageSize,
       orderBy: [{ name: filters.sort === 'name-desc' ? 'desc' : 'asc' }, { id: 'asc' }],
-      select: { id: true, code: true, name: true, description: true, imageUrl: true, brand: true, categoryId: true,
+      select: { id: true, code: true, name: true, description: true, imageUrl: true, brand: true, categoryId: true, allowBaseUnitOperations: true,
         category: { select: { id: true, name: true, isActive: true } }, baseUnit: { select: { id: true, name: true } },
         presentations: { where: { ...sellablePresentation, ...(presentationIds ? { id: { in: presentationIds } } : {}) },
           orderBy: [{ multiplier: 'asc' }, { id: 'asc' }], select: { id: true, name: true, multiplier: true, barcode: true, salePrice: true, unit: { select: { id: true, name: true } } },

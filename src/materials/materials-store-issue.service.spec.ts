@@ -16,7 +16,7 @@ function fixture(count = 2) {
   let db = {
     stores: [{ id: 3, name: 'Main warehouse', isActive: true }, { id: 4, name: 'Other warehouse', isActive: true }],
     products: Array.from({ length: count }, (_, index) => ({
-      id: index + 1, name: `Material ${index + 1}`, version: 4, isActive: true, isSaleEnabled: false,
+      id: index + 1, name: `Material ${index + 1}`, version: 4, isActive: true, isSaleEnabled: false, allowBaseUnitOperations: true,
       presentations: [
         { id: (index + 1) * 10 + 1, name: 'Tube', isBase: true, isActive: true, multiplier: 1 },
         { id: (index + 1) * 10 + 2, name: 'Box', isBase: false, isActive: true, multiplier: 12 },
@@ -67,6 +67,28 @@ function fixture(count = 2) {
 }
 
 describe('Atomic material store internal use', () => {
+  it('rejects a restricted base or 1x-alias in a batch before issuing any other product', async () => {
+    for (const isBase of [true, false]) {
+      const f = fixture();
+      f.db().products[1].allowBaseUnitOperations = false;
+      f.db().products[1].presentations[0].isBase = isBase;
+      if (!isBase) f.db().products[1].presentations.push({ id: 23, name: 'Base', multiplier: 1, isBase: true, isActive: true });
+      const before = clone(f.db());
+      await expect(f.service.internalUse(3, f.payload([
+        { productId: 1, presentationId: 12, quantity: 1 }, { productId: 2, presentationId: 21, quantity: 1 },
+      ]), operator)).rejects.toThrow('complete packages only');
+      expect(f.db()).toEqual(before);
+      expect(f.tx.materialStock.upsert).not.toHaveBeenCalled();
+    }
+  });
+
+  it('allows complete packages of a restricted material in bulk issues', async () => {
+    const f = fixture();
+    f.db().products[0].allowBaseUnitOperations = false;
+    await f.service.internalUse(3, f.payload([{ productId: 1, presentationId: 12, quantity: 2 }]), operator);
+    expect([f.quantity(12), f.quantity(11)]).toEqual([8, 0]);
+  });
+
   it('issues multiple internal-only products from the selected store and records each line without prices', async () => {
     const f = fixture();
     const result = await f.service.internalUse(3, f.payload([

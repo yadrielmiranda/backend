@@ -8,7 +8,7 @@ import { materialAvailability, MaterialStockError, MaterialStockState } from './
 
 type Tx = Prisma.TransactionClient;
 const productSelect = {
-  id: true, code: true, name: true, imageUrl: true, isActive: true, version: true,
+  id: true, code: true, name: true, imageUrl: true, isActive: true, version: true, allowBaseUnitOperations: true,
   baseUnit: { select: { id: true, name: true } },
 } satisfies Prisma.MaterialProductSelect;
 type Product = Prisma.MaterialProductGetPayload<{ select: typeof productSelect }>;

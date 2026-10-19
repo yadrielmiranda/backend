@@ -1811,6 +1811,7 @@ model MaterialProduct {
   baseUnit MaterialUnit @relation(fields: [baseUnitId], references: [id], onDelete: Restrict)
   isActive Boolean @default(true)
   isSaleEnabled Boolean @default(false)
+  allowBaseUnitOperations Boolean @default(true)
   version Int @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

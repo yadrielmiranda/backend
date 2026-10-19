@@ -4,6 +4,7 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 import { MaterialsInventoryService } from './materials-inventory.service';
 import { MaterialStoreIssueDto } from './materials-store-issue.dto';
 import { MaterialStockError, MaterialStockState, withdrawMaterial } from './materials-stock';
+import { assertMaterialDailyOperation } from './materials-operation-policy';
 
 const integer = (value: unknown, max = 2147483647): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= max;
@@ -46,7 +47,7 @@ export class MaterialsStoreIssueService {
       if (!store?.isActive) throw new ConflictException('This store is inactive.');
       const [products, stocks, reservations] = await Promise.all([
         tx.materialProduct.findMany({ where: { id: { in: productIds } }, select: {
-          id: true, name: true, isActive: true,
+          id: true, name: true, isActive: true, allowBaseUnitOperations: true,
           presentations: { select: { id: true, name: true, isActive: true, isBase: true, multiplier: true }, orderBy: { id: 'asc' } },
         } }),
         tx.materialStock.findMany({ where: { storeId, productId: { in: productIds } }, select: { productId: true, presentationId: true, quantity: true } }),
@@ -72,6 +73,7 @@ export class MaterialsStoreIssueService {
         for (const line of requested) {
           if (!presentations.get(line.presentationId)?.isActive)
             throw new BadRequestException('Select active presentations belonging to the selected product.');
+          assertMaterialDailyOperation(product, presentations.get(line.presentationId)!);
         }
         requested.sort((a, b) => Number(a.presentationId === base.id) - Number(b.presentationId === base.id) || a.presentationId - b.presentationId);
         let state: MaterialStockState = {

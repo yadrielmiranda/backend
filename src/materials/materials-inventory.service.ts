@@ -10,6 +10,7 @@ import {
   MaterialCategoryCreateDto, MaterialCategoryUpdateDto,
 } from './materials.dto';
 import { validateMaterialImageUrl } from './materials-images';
+import { assertMaterialDailyOperation } from './materials-operation-policy';
 import { materialAvailability, MaterialStockError, MaterialStockState, repackMaterial, withdrawMaterial } from './materials-stock';
 
 type Tx = Prisma.TransactionClient;
@@ -143,12 +144,16 @@ export class MaterialsInventoryService {
     const groups = [...new Set(sale.lines.map(l => `${l.productId}:${l.storeId}`))];
     for (const key of groups) {
       const [productId, storeId] = key.split(':').map(Number);
+      const product = await tx.materialProduct.findUnique({ where: { id: productId } });
       let state = await this.loadStock(tx, productId, storeId, sale.id);
       const lines = sale.lines.filter(l => l.productId === productId && l.storeId === storeId)
         .sort((a, b) => Number(a.presentationId === state.basePresentationId) - Number(b.presentationId === state.basePresentationId));
       // Protect this sale's remaining lines as well as other sales during each withdrawal.
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        const pack = state.packs.find(pack => pack.id === line.presentationId);
+        if (!pack) throw new BadRequestException('Unknown material presentation.');
+        assertMaterialDailyOperation(product, { isBase: line.presentationId === state.basePresentationId, multiplier: pack.baseUnits });
         const working = { ...state, reservations: [...state.reservations, ...lines.slice(i + 1).map(l => ({ presentationId: l.presentationId, quantity: l.quantity }))] };
         const next = withdrawMaterial(working, line.presentationId, line.quantity);
         movements.push(await this.applyStock(tx, productId, storeId, working, next, {
@@ -233,12 +238,15 @@ export class MaterialsInventoryService {
       const base = await this.unit(tx, dto.baseUnitId);
       const purchase = await this.unit(tx, dto.purchaseUnitId);
       const same = dto.baseUnitId === dto.purchaseUnitId && dto.purchaseMultiplier === 1;
+      if (dto.allowBaseUnitOperations === false && dto.purchaseMultiplier <= 1)
+        throw new BadRequestException('Choose a purchase package containing more than one base unit before restricting daily operations to packages.');
       const baseBarcode = this.barcode(dto.baseBarcode);
       const purchaseBarcode = this.barcode(dto.purchaseBarcode);
       if (same && baseBarcode && purchaseBarcode && baseBarcode !== purchaseBarcode)
         throw new BadRequestException('A single-unit purchase uses the same base presentation and barcode.');
       const product = await tx.materialProduct.create({ data: {
         name: requiredText(dto.name, 'Product name'), description: text(dto.description), baseUnitId: base.id, code: `MAT-${randomUUID()}`,
+        allowBaseUnitOperations: dto.allowBaseUnitOperations ?? true,
         ...await this.catalogFields(tx, dto),
       } });
       await tx.materialProduct.update({ where: { id: product.id }, data: { code: `MAT-${String(product.id).padStart(6, '0')}` } });
@@ -259,6 +267,12 @@ export class MaterialsInventoryService {
       await this.lockProducts(tx, [id]);
       const product = await tx.materialProduct.findUnique({ where: { id } });
       if (product.version !== dto.version) throw new ConflictException('The product changed. Reload before saving.');
+      if (dto.allowBaseUnitOperations === false) {
+        if (!await tx.materialPresentation.count({ where: { productId: id, isActive: true, isBase: false, multiplier: { gt: 1 } } }))
+          throw new BadRequestException('Create an active package containing more than one base unit before restricting daily operations to packages.');
+        if (await tx.materialSaleLine.count({ where: { productId: id, multiplier: 1, sale: { status: 'CONFIRMED' } } }))
+          throw new ConflictException('Complete or cancel confirmed sales of single units before restricting this material to packages.');
+      }
       if (dto.isActive === false && (await tx.materialStock.count({ where: { productId: id, quantity: { gt: 0 } } }) ||
         await tx.materialSaleLine.count({ where: { productId: id, sale: { status: 'CONFIRMED' } } })))
         throw new ConflictException('A product with inventory or reserved sales cannot be deactivated.');
@@ -266,7 +280,7 @@ export class MaterialsInventoryService {
         ...(dto.name !== undefined ? { name: requiredText(dto.name, 'Product name') } : {}),
         ...(dto.description !== undefined ? { description: text(dto.description) } : {}),
         ...await this.catalogFields(tx, dto, product.categoryId),
-        isActive: dto.isActive, isSaleEnabled: dto.isSaleEnabled, version: { increment: 1 },
+        isActive: dto.isActive, isSaleEnabled: dto.isSaleEnabled, allowBaseUnitOperations: dto.allowBaseUnitOperations, version: { increment: 1 },
       } });
       return this.presentProduct(tx, id);
     });
@@ -279,6 +293,7 @@ export class MaterialsInventoryService {
       const unit = await this.unit(tx, dto.unitId);
       const product = await tx.materialProduct.findUnique({ where: { id: productId }, include: { baseUnit: true } });
       if (!product.isActive) throw new ConflictException('The product is inactive.');
+      if (dto.isPurchase || dto.isSaleEnabled) assertMaterialDailyOperation(product, { multiplier: dto.multiplier });
       if (dto.isSaleEnabled && !(dto.salePrice > 0)) throw new BadRequestException('Enter a positive sale price before enabling this presentation.');
       await tx.materialPresentation.create({ data: {
         productId, unitId: dto.unitId, multiplier: dto.multiplier,
@@ -300,6 +315,9 @@ export class MaterialsInventoryService {
       const presentation = await tx.materialPresentation.findUnique({ where: { id } });
       if (!presentation) throw new NotFoundException('Presentation not found. Reload the product.');
       if (presentation.version !== dto.version) throw new ConflictException('The presentation changed. Reload before saving.');
+      const product = await tx.materialProduct.findUnique({ where: { id: presentation.productId } });
+      if (dto.isPurchase === true || dto.isSaleEnabled === true) assertMaterialDailyOperation(product, presentation);
+      if (dto.isActive === false) await this.requireRemainingPackage(tx, product, id);
       if (dto.isActive === false && (presentation.isBase || await tx.materialStock.count({ where: { presentationId: id, quantity: { gt: 0 } } }) ||
         await tx.materialSaleLine.count({ where: { presentationId: id, sale: { status: 'CONFIRMED' } } })))
         throw new ConflictException('This presentation is required by existing stock, reservations or the base unit.');
@@ -332,6 +350,12 @@ export class MaterialsInventoryService {
     }
   }
 
+  private async requireRemainingPackage(tx: Tx, product: { id: number; allowBaseUnitOperations: boolean }, excludedId: number) {
+    if (product.allowBaseUnitOperations === false && !await tx.materialPresentation.count({ where: {
+      productId: product.id, id: { not: excludedId }, isActive: true, isBase: false, multiplier: { gt: 1 },
+    } })) throw new ConflictException('Keep at least one active package while daily base-unit operations are disabled.');
+  }
+
   async deletePresentation(id: number, dto: MaterialPresentationDeleteDto, actor: AuthUser) {
     this.staff(actor, true);
     return this.operation(dto.requestKey, { id, ...dto }, actor.id, 'DELETE_PRESENTATION', async tx => {
@@ -342,6 +366,8 @@ export class MaterialsInventoryService {
       if (!presentation) throw new NotFoundException('Presentation not found. Reload the product.');
       if (presentation.version !== dto.version) throw new ConflictException('The presentation changed. Reload before deleting.');
       if (presentation.isBase) throw new ConflictException('The base presentation cannot be deleted.');
+      const product = await tx.materialProduct.findUnique({ where: { id: presentation.productId } });
+      await this.requireRemainingPackage(tx, product, id);
       if (await tx.materialStock.count({ where: { presentationId: id, quantity: { not: 0 } } }))
         throw new ConflictException('This presentation has inventory and cannot be deleted.');
       if (await tx.materialSaleLine.count({ where: { presentationId: id } }))
@@ -418,12 +444,13 @@ export class MaterialsInventoryService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 
-  private async stockContext(tx: Tx, productId: number, presentationId: number, storeIds: number[]) {
+  private async stockContext(tx: Tx, productId: number, presentationId: number, storeIds: number[], dailyOperation = true) {
     await this.lockProducts(tx, [productId]);
     await this.lockStores(tx, storeIds);
     const product = await tx.materialProduct.findUnique({ where: { id: productId } });
     const presentation = await tx.materialPresentation.findUnique({ where: { id: presentationId } });
     if (!product.isActive || !presentation?.isActive || presentation.productId !== productId) throw new BadRequestException('Select an active presentation belonging to this product.');
+    if (dailyOperation) assertMaterialDailyOperation(product, presentation);
     return { product, presentation };
   }
 
@@ -459,7 +486,7 @@ export class MaterialsInventoryService {
   async repack(dto: MaterialRepackDto, actor: AuthUser) {
     this.staff(actor);
     return this.operation(dto.requestKey, dto, actor.id, dto.action, async tx => {
-      await this.stockContext(tx, dto.productId, dto.presentationId, [dto.storeId]);
+      await this.stockContext(tx, dto.productId, dto.presentationId, [dto.storeId], false);
       const before = await this.loadStock(tx, dto.productId, dto.storeId);
       const after = repackMaterial(before, dto.presentationId, dto.quantity, dto.action);
       const movement = await this.applyStock(tx, dto.productId, dto.storeId, before, after, {
@@ -490,7 +517,7 @@ export class MaterialsInventoryService {
   async adjust(dto: MaterialAdjustmentDto, actor: AuthUser) {
     this.staff(actor, true);
     return this.operation(dto.requestKey, dto, actor.id, 'ADJUST', async tx => {
-      const { product } = await this.stockContext(tx, dto.productId, dto.presentationId, [dto.storeId]);
+      const { product } = await this.stockContext(tx, dto.productId, dto.presentationId, [dto.storeId], false);
       if (product.version !== dto.version) throw new ConflictException('Stock changed since you started this count. Reload and count again.');
       const before = await this.loadStock(tx, dto.productId, dto.storeId);
       const after = { ...before, packs: before.packs.map(p => ({ ...p, quantity: p.id === dto.presentationId ? dto.quantity : p.quantity })) };

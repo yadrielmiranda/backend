@@ -8,6 +8,7 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { MaterialsInventoryService } from './materials-inventory.service';
+import { assertMaterialDailyOperation } from './materials-operation-policy';
 import { materialAvailability, MaterialStockError } from './materials-stock';
 import { allocateMaterialSale } from './materials-sale-allocation';
 import { CreateMaterialSaleDto, CustomerMaterialOrderDto, MaterialManualPaymentDto } from './materials-sales.dto';
@@ -226,6 +227,7 @@ export class MaterialsSalesService {
       const lines: Prisma.MaterialSaleLineCreateWithoutSaleInput[] = [];
       for (const input of dto.lines) {
         const p = presentations.find(p => p.id === input.presentationId)!;
+        assertMaterialDailyOperation(p.product, p);
         if (!p.isActive || !p.isSaleEnabled || !p.product.isActive || !p.product.isSaleEnabled || !p.salePrice?.gt(0)) throw new ConflictException('An item in your cart is no longer available for sale.');
         if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 1000000) throw new BadRequestException('Material quantities must be positive whole numbers.');
       }
@@ -301,6 +303,7 @@ export class MaterialsSalesService {
       if (locked.length !== ids.length) throw new ConflictException('A material presentation is no longer available. Reload the sale before saving.');
       const lines = dto.lines.map(input => {
         const p = locked.find(p => p.id === input.presentationId)!;
+        assertMaterialDailyOperation(p.product, p);
         if (!p.isActive || !p.isSaleEnabled || !p.product.isActive || !p.product.isSaleEnabled || !p.salePrice?.gt(0)) throw new BadRequestException(`${p.product.name}: this presentation is not enabled for sale with a positive price.`);
         if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 1000000) throw new BadRequestException('Sale quantities must be positive whole numbers.');
         return { storeId: dto.storeId, productId: p.productId, presentationId: p.id, productName: p.product.name, productCode: p.product.code, presentationName: p.name, multiplier: p.multiplier, quantity: input.quantity, unitPrice: p.salePrice, lineTotal: p.salePrice.mul(input.quantity) };
@@ -332,6 +335,7 @@ export class MaterialsSalesService {
       for (const line of sale.lines) {
         const p = presentations.find(p => p.id === line.presentationId);
         if (!p?.isActive || !p.isSaleEnabled || !p.product.isActive || !p.product.isSaleEnabled || p.multiplier !== line.multiplier) throw new ConflictException('A product or presentation in this draft is no longer available.');
+        assertMaterialDailyOperation(p.product, p);
       }
       try {
         const groups = new Map(sale.lines.map(l => [`${l.productId}:${l.storeId}`, { productId: l.productId, storeId: l.storeId }]));

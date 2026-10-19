@@ -45,7 +45,7 @@ function fixture() {
       if (key === 'categories' && data.categories.some(c => c.name.toLowerCase() === input.name.toLowerCase())) throw { code: 'P2002' };
       const id = (sequences.get(key) ?? 0) + 1;
       sequences.set(key, id);
-      const row = { id, version: 0, isActive: true, isSaleEnabled: false, isPurchase: false, salePrice: null, ...input };
+      const row = { id, version: 0, isActive: true, isBase: false, allowBaseUnitOperations: true, isSaleEnabled: false, isPurchase: false, salePrice: null, ...input };
       (data[key] as any[]).push(row); return row;
     }),
     update: jest.fn(async ({ where, data: update }: any) => patch(data[key].find(row => queryMatch(row, where)), update)),
@@ -86,6 +86,93 @@ function fixture() {
 }
 
 describe('Materials inventory service', () => {
+  describe('complete-package daily operations', () => {
+    const createRestricted = (f: ReturnType<typeof fixture>) => f.service.createProduct({
+      ...request(), name: 'Screws', baseUnitId: 1, purchaseUnitId: 2, purchaseMultiplier: 1000, allowBaseUnitOperations: false,
+    }, admin);
+
+    it('defaults existing workflows to allowed and requires a real package for a restricted new product', async () => {
+      const f = fixture();
+      expect((await f.product()).allowBaseUnitOperations).toBe(true);
+      await expect(f.service.createProduct({ ...request(), name: 'Screws', baseUnitId: 1, purchaseUnitId: 1,
+        purchaseMultiplier: 1, allowBaseUnitOperations: false }, admin)).rejects.toThrow('more than one');
+      expect(f.data.products).toHaveLength(1);
+    });
+
+    it.each([1, 3])('blocks base or 1x-alias presentation %i in receipts, issues and transfers without writes', async presentationId => {
+      const f = fixture(); await createRestricted(f);
+      await f.service.createPresentation(1, { ...request(), unitId: 3, multiplier: 1 }, admin);
+      f.data.presentations.find(p => p.id === presentationId).isPurchase = true;
+      const common = { productId: 1, presentationId, storeId: 1, quantity: 1000 };
+      await expect(f.service.receive({ ...request(), ...common, costPerPackage: 1 }, admin)).rejects.toThrow('complete packages only');
+      await expect(f.service.internalUse({ ...request(), ...common, recipient: 'Crew', note: 'Job' }, operator)).rejects.toThrow('complete packages only');
+      await expect(f.service.transfer({ ...request(), ...common, fromStoreId: 1, toStoreId: 2 }, operator)).rejects.toThrow('complete packages only');
+      expect(f.data.stocks).toHaveLength(0);
+      expect(f.data.movements).toHaveLength(0);
+    });
+
+    it('receives, repacks, issues and transfers whole packages while leaving authorized base adjustments available', async () => {
+      const f = fixture(); await createRestricted(f);
+      await f.service.createPresentation(1, { ...request(), unitId: 3, multiplier: 100 }, admin);
+      await f.service.receive({ ...request(), productId: 1, presentationId: 2, storeId: 1, quantity: 3, costPerPackage: 25 }, operator);
+      const opened = await f.service.repack({ ...request(), productId: 1, presentationId: 2, storeId: 1, quantity: 1, action: 'OPEN' }, operator);
+      expect(opened.product.totalBaseQuantity).toBe(3000);
+      const adjusted = await f.service.adjust({ ...request(), productId: 1, presentationId: 1, storeId: 1, quantity: 997,
+        version: opened.product.version, note: 'Three damaged screws' }, admin);
+      expect(adjusted.product.totalBaseQuantity).toBe(2997);
+      const packed = await f.service.repack({ ...request(), productId: 1, presentationId: 3, storeId: 1, quantity: 9, action: 'PACK' }, operator);
+      expect(packed.product.presentations.map(p => p.quantity)).toEqual([97, 2, 9]);
+      await f.service.internalUse({ ...request(), productId: 1, presentationId: 3, storeId: 1, quantity: 2, recipient: 'Crew', note: 'Job' }, operator);
+      const moved = await f.service.transfer({ ...request(), productId: 1, presentationId: 2, fromStoreId: 1, toStoreId: 2, quantity: 1 }, operator);
+      expect(moved.product.totalBaseQuantity).toBe(2797);
+      expect(moved.product.inventoryByStore.map(store => store.totalBaseQuantity)).toEqual([1797, 1000]);
+    });
+
+    it('rejects restricting a product with confirmed single-unit sales, but allows package reservations and canceled singles', async () => {
+      const f = fixture(); const product = await f.product();
+      f.data.lines.push({ productId: 1, presentationId: 1, multiplier: 1, sale: { status: 'CONFIRMED' } });
+      await expect(f.service.updateProduct(1, { ...request(), version: product.version, allowBaseUnitOperations: false }, admin)).rejects.toThrow('confirmed sales of single units');
+      expect(f.data.products[0].allowBaseUnitOperations).toBe(true);
+      f.data.lines[0].sale.status = 'CANCELED';
+      f.data.lines.push({ productId: 1, presentationId: 2, multiplier: 20, quantity: 1, storeId: 1, sale: { status: 'CONFIRMED' } });
+      f.data.stocks.push({ productId: 1, presentationId: 2, storeId: 1, quantity: 1 });
+      const restricted = await f.service.updateProduct(1, { ...request(), version: product.version, allowBaseUnitOperations: false }, admin);
+      expect(restricted.allowBaseUnitOperations).toBe(false);
+    });
+
+    it('requires an active package and protects the last active package from deactivation or deletion', async () => {
+      const f = fixture(); const product = await createRestricted(f);
+      await expect(f.service.deletePresentation(2, { ...request(), version: 0 }, admin)).rejects.toThrow('at least one active package');
+      await expect(f.service.updatePresentation(2, { ...request(), version: 0, isActive: false }, admin)).rejects.toThrow('at least one active package');
+      await f.service.updateProduct(1, { ...request(), version: product.version, allowBaseUnitOperations: true }, admin);
+      await f.service.deletePresentation(2, { ...request(), version: 0 }, admin);
+      const current = await f.service.product(1, admin);
+      await expect(f.service.updateProduct(1, { ...request(), version: current.version, allowBaseUnitOperations: false }, admin)).rejects.toThrow('active package');
+    });
+
+    it('allows replacing the purchase package and prevents enabling a single-unit sale or purchase under restriction', async () => {
+      const f = fixture(); await createRestricted(f);
+      await f.service.createPresentation(1, { ...request(), unitId: 3, multiplier: 100, isPurchase: true }, admin);
+      await f.service.deletePresentation(2, { ...request(), version: 0 }, admin);
+      await expect(f.service.updatePresentation(1, { ...request(), version: 0, isPurchase: true }, admin)).rejects.toThrow('complete packages only');
+      await expect(f.service.updatePresentation(1, { ...request(), version: 0, isSaleEnabled: true, salePrice: 1 }, admin)).rejects.toThrow('complete packages only');
+      await expect(f.service.createPresentation(1, { ...request(), unitId: 2, multiplier: 1, isPurchase: true }, admin)).rejects.toThrow('complete packages only');
+      expect(f.data.presentations.map(p => p.id)).toEqual([1, 3]);
+    });
+
+    it('checks the live package policy during delivery before changing stock', async () => {
+      const f = fixture(); await createRestricted(f);
+      await f.service.receive({ ...request(), productId: 1, presentationId: 2, storeId: 1, quantity: 1, costPerPackage: 25 }, operator);
+      const lines = [{ productId: 1, presentationId: 1, storeId: 1, quantity: 1 }];
+      const key = randomUUID();
+      await expect(f.service.operation(key, {}, admin.id, 'DELIVER', async tx => ({
+        movements: await f.service.deliverSale(tx, { id: 1, lines }, key, admin.id),
+      }))).rejects.toThrow('complete packages only');
+      expect(f.data.stocks[0].quantity).toBe(1);
+      expect(f.data.movements).toHaveLength(1);
+    });
+  });
+
   it('maintains categories idempotently and keeps optional catalog fields independent of stock', async () => {
     const f = fixture();
     const categoryRequest = { ...request(), name: ' Sealants ' };

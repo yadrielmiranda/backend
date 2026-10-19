@@ -76,9 +76,9 @@ function fixture() {
 
 function cartFixture() {
   const f = fixture();
-  const p = { id: 1, productId: 1, isBase: true, isActive: true, isSaleEnabled: true, multiplier: 1, name: 'Tube', salePrice: D(1), product: { id: 1, name: 'Caulking', code: 'MAT-1', isActive: true, isSaleEnabled: true } };
+  const p = { id: 1, productId: 1, isBase: true, isActive: true, isSaleEnabled: true, multiplier: 1, name: 'Tube', salePrice: D(1), product: { id: 1, name: 'Caulking', code: 'MAT-1', isActive: true, isSaleEnabled: true, allowBaseUnitOperations: true } };
   f.db.materialPresentation.findMany.mockResolvedValue([p]);
-  return { ...f, cart: { requestKey, lines: [{ presentationId: 1, quantity: 2 }] } };
+  return { ...f, presentation: p, cart: { requestKey, lines: [{ presentationId: 1, quantity: 2 }] } };
 }
 
 function customerOrderFixture() {
@@ -90,6 +90,35 @@ function customerOrderFixture() {
 }
 
 describe('Material sales with a concurrently deleted presentation', () => {
+  it.each([true, false])('rejects restricted single-unit staff, customer and draft sales (isBase=%s)', async isBase => {
+    const f = cartFixture();
+    f.presentation.product.allowBaseUnitOperations = false;
+    f.presentation.isBase = isBase;
+    await expect(f.service.create({ ...f.cart, storeId: 1, customerName: 'Buyer' }, admin)).rejects.toThrow('complete packages only');
+    await expect(f.service.createCustomerOrder(f.cart, customer)).rejects.toThrow('complete packages only');
+    f.sale.status = 'DRAFT';
+    await expect(f.service.confirm(1, admin)).rejects.toThrow('complete packages only');
+    expect(f.db.materialSale.create).not.toHaveBeenCalled();
+    expect(f.db.materialSale.update).not.toHaveBeenCalled();
+    expect(f.inventory.loadStock).not.toHaveBeenCalled();
+  });
+
+  it('rechecks policy after the product lock when creating a stale staff draft', async () => {
+    const f = cartFixture();
+    f.inventory.lockProducts.mockImplementation(async () => { f.presentation.product.allowBaseUnitOperations = false; });
+    await expect(f.service.create({ ...f.cart, storeId: 1, customerName: 'Buyer' }, admin)).rejects.toThrow('complete packages only');
+    expect(f.db.materialSale.create).not.toHaveBeenCalled();
+  });
+
+  it('allows a restricted whole-package customer purchase', async () => {
+    const f = cartFixture();
+    Object.assign(f.presentation, { id: 2, isBase: false, multiplier: 20, name: 'Box' });
+    f.presentation.product.allowBaseUnitOperations = false;
+    const result = await f.service.createCustomerOrder({ ...f.cart, lines: [{ presentationId: 2, quantity: 1 }] }, customer);
+    expect(result.status).toBe('CONFIRMED');
+    expect(f.db.materialSale.create.mock.calls[0][0].data.lines.create[0]).toMatchObject({ multiplier: 20, quantity: 1 });
+  });
+
   it('rejects a staff draft when the selected presentation disappears while acquiring the product lock', async () => {
     const f = cartFixture();
     f.inventory.lockProducts.mockImplementation(async () => {

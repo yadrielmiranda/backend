@@ -17,7 +17,7 @@ function fixture(count = 2) {
     store: { id: 3, name: 'Main warehouse', isActive: true },
     products: Array.from({ length: count }, (_, index) => ({
       id: index + 1, name: `Material ${index + 1}`, code: `MAT-${index + 1}`, imageUrl: null,
-      version: 4, isActive: true, baseUnit: { id: 1, name: 'Tube' },
+      version: 4, isActive: true, allowBaseUnitOperations: true, baseUnit: { id: 1, name: 'Tube' },
     })),
     presentations: Array.from({ length: count }, (_, index) => [
       { id: (index + 1) * 10 + 1, productId: index + 1, name: 'Tube', barcode: null, isBase: true, isActive: true, multiplier: 1 },
@@ -69,6 +69,16 @@ function fixture(count = 2) {
 }
 
 describe('Materials store inventory snapshot', () => {
+  it('exposes the policy to daily operations while allowing admin physical counts of restricted base quantities', async () => {
+    const f = fixture();
+    f.db().products[0].allowBaseUnitOperations = false;
+    const snapshot = await f.service.getInventory(3, operator);
+    expect(snapshot.products[0].allowBaseUnitOperations).toBe(false);
+    expect(f.tx.materialProduct.findMany.mock.calls[0][0].select.allowBaseUnitOperations).toBe(true);
+    await f.service.count(3, f.payload([{ productId: 1, version: 4, counts: [{ presentationId: 11, quantity: 7 }] }]), admin);
+    expect(f.db().stocks.find(stock => stock.presentationId === 11)?.quantity).toBe(7);
+  });
+
   it('reads all 250 products, including zero stock, in one consistent batched transaction', async () => {
     const f = fixture(250);
     const result = await f.service.getInventory(3, operator);

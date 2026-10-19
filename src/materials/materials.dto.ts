@@ -18,6 +18,7 @@ export class MaterialCategoryUpdateDto extends MaterialRequestDto {
   @IsOptional() @IsBoolean() isActive?: boolean;
 }
 export class MaterialProductCreateDto extends MaterialRequestDto {
+  @IsOptional() @IsBoolean() allowBaseUnitOperations?: boolean;
   @IsString() @Length(1, 200) name: string;
   @IsOptional() @IsString() @Length(0, 5000) description?: string;
   @IsOptional() @IsInt() @Min(1) categoryId?: number | null;
@@ -30,6 +31,7 @@ export class MaterialProductCreateDto extends MaterialRequestDto {
   @IsOptional() @IsString() @Length(0, 120) purchaseBarcode?: string;
 }
 export class MaterialProductUpdateDto extends MaterialRequestDto {
+  @IsOptional() @IsBoolean() allowBaseUnitOperations?: boolean;
   @IsInt() @Min(0) version: number;
   @IsOptional() @IsString() @Length(1, 200) name?: string;
   @IsOptional() @IsString() @Length(0, 5000) description?: string;
