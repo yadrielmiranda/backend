@@ -89,6 +89,37 @@ function customerOrderFixture() {
   return f;
 }
 
+describe('Material sales with a concurrently deleted presentation', () => {
+  it('rejects a staff draft when the selected presentation disappears while acquiring the product lock', async () => {
+    const f = cartFixture();
+    f.inventory.lockProducts.mockImplementation(async () => {
+      f.db.materialPresentation.findMany.mockResolvedValue([]);
+    });
+
+    await expect(f.service.create({ ...f.cart, storeId: 1, customerName: 'Walk-in Buyer' }, admin))
+      .rejects.toMatchObject({ status: 409, message: 'A material presentation is no longer available. Reload the sale before saving.' });
+    expect(f.inventory.lockProducts).toHaveBeenCalledWith(f.db, [1]);
+    expect(f.db.materialPresentation.findMany).toHaveBeenCalledTimes(2);
+    expect(f.db.materialSale.create).not.toHaveBeenCalled();
+    expect(f.inventory.loadStock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an online checkout when the selected presentation disappears while acquiring the product lock', async () => {
+    const f = cartFixture();
+    f.inventory.lockProducts.mockImplementation(async () => {
+      f.db.materialPresentation.findMany.mockResolvedValue([]);
+    });
+
+    await expect(f.service.createCustomerOrder(f.cart, customer))
+      .rejects.toMatchObject({ status: 409, message: 'An item in your cart is no longer available.' });
+    expect(f.inventory.lockProducts).toHaveBeenCalledWith(f.db, [1]);
+    expect(f.db.materialPresentation.findMany).toHaveBeenCalledTimes(2);
+    expect(f.db.materialSale.create).not.toHaveBeenCalled();
+    expect(f.inventory.loadStock).not.toHaveBeenCalled();
+    expect(f.stripe.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+});
+
 describe('Direct material sales customer identity', () => {
   it('snapshots a selected account while keeping the staff creator separate', async () => {
     const f = cartFixture();

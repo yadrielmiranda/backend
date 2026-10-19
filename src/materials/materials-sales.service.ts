@@ -217,6 +217,7 @@ export class MaterialsSalesService {
       if (initial.length !== ids.length) throw new BadRequestException('An item in your cart is no longer available.');
       await this.inventory.lockProducts(tx, initial.map(p => p.productId));
       const presentations = await tx.materialPresentation.findMany({ where: { id: { in: ids } }, include: { product: true } });
+      if (presentations.length !== ids.length) throw new ConflictException('An item in your cart is no longer available.');
       const stores = await tx.warehouseStore.findMany({ where: { isActive: true }, orderBy: { id: 'asc' } });
       if (!stores.length) throw new ConflictException('Materials are not currently available for pickup.');
       await this.inventory.lockStores(tx, stores.map(store => store.id));
@@ -297,6 +298,7 @@ export class MaterialsSalesService {
       await this.inventory.lockStores(tx, [dto.storeId]);
       // Re-read under the product locks used by catalog edits and stock operations.
       const locked = await tx.materialPresentation.findMany({ where: { id: { in: ids } }, include: { product: true } });
+      if (locked.length !== ids.length) throw new ConflictException('A material presentation is no longer available. Reload the sale before saving.');
       const lines = dto.lines.map(input => {
         const p = locked.find(p => p.id === input.presentationId)!;
         if (!p.isActive || !p.isSaleEnabled || !p.product.isActive || !p.product.isSaleEnabled || !p.salePrice?.gt(0)) throw new BadRequestException(`${p.product.name}: this presentation is not enabled for sale with a positive price.`);

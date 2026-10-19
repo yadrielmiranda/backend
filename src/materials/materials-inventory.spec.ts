@@ -13,6 +13,7 @@ function fixture() {
     stores: [{ id: 1, name: 'A', isActive: true }, { id: 2, name: 'B', isActive: true }],
   };
   const locks: string[] = [];
+  const sequences = new Map<string, number>();
   const queryMatch = (row: any, where: any = {}) => Object.entries(where).every(([key, value]: [string, any]) => {
     if (value === undefined) return true;
     if (key === 'sale') return row.sale?.status === value.status;
@@ -42,10 +43,24 @@ function fixture() {
       if (key === 'presentations' && input.barcode && data.presentations.some(p => p.barcode === input.barcode)) throw { code: 'P2002' };
       if (key === 'operations' && data.operations.some(o => o.requestKey === input.requestKey)) throw { code: 'P2002' };
       if (key === 'categories' && data.categories.some(c => c.name.toLowerCase() === input.name.toLowerCase())) throw { code: 'P2002' };
-      const row = { id: data[key].length + 1, version: 0, isActive: true, isSaleEnabled: false, isPurchase: false, salePrice: null, ...input };
+      const id = (sequences.get(key) ?? 0) + 1;
+      sequences.set(key, id);
+      const row = { id, version: 0, isActive: true, isSaleEnabled: false, isPurchase: false, salePrice: null, ...input };
       (data[key] as any[]).push(row); return row;
     }),
     update: jest.fn(async ({ where, data: update }: any) => patch(data[key].find(row => queryMatch(row, where)), update)),
+    delete: jest.fn(async ({ where }: any) => {
+      const index = data[key].findIndex(row => queryMatch(row, where));
+      if (index < 0) throw { code: 'P2025' };
+      return data[key].splice(index, 1)[0];
+    }),
+    deleteMany: jest.fn(async ({ where }: any) => {
+      const rows = data[key] as any[];
+      const remaining = rows.filter(row => !queryMatch(row, where));
+      const count = rows.length - remaining.length;
+      rows.splice(0, rows.length, ...remaining);
+      return { count };
+    }),
   });
   const db: any = {
     materialUnit: model('units'), materialCategory: model('categories'), materialProduct: model('products'), materialPresentation: model('presentations'),
@@ -198,5 +213,138 @@ describe('Materials inventory service', () => {
     f.data.presentations[1].multiplier = 1000000;
     await expect(f.service.receive({ ...request(), productId: 1, presentationId: 2, storeId: 1, quantity: 1000000, costPerPackage: 80 }, admin)).rejects.toThrow('supported limit');
     expect(f.data.stocks).toHaveLength(0);
+  });
+
+  describe('deleting unused presentations', () => {
+    it('removes an unused presentation, preserves its audit and safely replays a retry', async () => {
+      const f = fixture(); await f.product();
+      const dto = { ...request(), version: 0 };
+      const result = await f.service.deletePresentation(2, dto, admin);
+      expect(result).toMatchObject({ id: 2, productId: 1, replayed: false, deletedPresentation: { id: 2, multiplier: 20 } });
+      expect(f.data.presentations.map(p => p.id)).toEqual([1]);
+      expect(f.data.products[0].version).toBe(1);
+      expect(f.data.movements).toHaveLength(0);
+      expect(f.locks.at(-1)).toBe('products:1');
+      expect(f.data.operations.find(op => op.requestKey === dto.requestKey)).toMatchObject({ kind: 'DELETE_PRESENTATION', actorId: 1, result: { deletedPresentation: { id: 2 } } });
+      expect((await f.service.deletePresentation(2, dto, admin)).replayed).toBe(true);
+      expect(f.db.materialPresentation.delete).toHaveBeenCalledTimes(1);
+      expect(f.data.products[0].version).toBe(1);
+      await expect(f.service.deletePresentation(1, dto, admin)).rejects.toThrow('already used');
+      await expect(f.service.deletePresentation(2, { ...dto, version: 1 }, admin)).rejects.toThrow('already used');
+      await expect(f.service.deletePresentation(2, dto, { ...admin, id: 3 })).rejects.toThrow('already used');
+    });
+
+    it('allows an unused inactive presentation and removes only its empty stock rows', async () => {
+      const f = fixture(); await f.product();
+      f.data.presentations[1].isActive = false;
+      f.data.stocks.push({ presentationId: 2, productId: 1, storeId: 1, quantity: 0 }, { presentationId: 2, productId: 1, storeId: 2, quantity: 0 }, { presentationId: 1, productId: 1, storeId: 2, quantity: 5 });
+      await f.service.deletePresentation(2, { ...request(), version: 0 }, admin);
+      expect(f.data.stocks).toEqual([{ presentationId: 1, productId: 1, storeId: 2, quantity: 5 }]);
+    });
+
+    it.each(['operator', 'dealer', 'client'])('rejects %s without modifying the catalog', async role => {
+      const f = fixture(); await f.product();
+      await expect(f.service.deletePresentation(2, { ...request(), version: 0 }, { id: 7, role: { name: role } } as any)).rejects.toThrow('authorized staff');
+      expect(f.db.materialPresentation.delete).not.toHaveBeenCalled();
+    });
+
+    it('keeps the base presentation even when all stock is zero', async () => {
+      const f = fixture(); await f.product();
+      await expect(f.service.deletePresentation(1, { ...request(), version: 0 }, admin)).rejects.toThrow('base presentation');
+      expect(f.data.presentations).toHaveLength(2);
+      expect(f.data.products[0].version).toBe(0);
+    });
+
+    it.each([1, -1])('blocks nonzero stock (%i) even in an inactive store', async quantity => {
+      const f = fixture(); await f.product();
+      f.data.stores[1].isActive = false;
+      f.data.stocks.push({ productId: 1, presentationId: 2, storeId: 2, quantity });
+      await expect(f.service.deletePresentation(2, { ...request(), version: 0 }, admin)).rejects.toThrow('has inventory');
+      expect(f.db.materialPresentation.delete).not.toHaveBeenCalled();
+    });
+
+    it('keeps a presentation with receipt and withdrawal history after its balance returns to zero', async () => {
+      const f = fixture(); await f.product();
+      await f.service.receive({ ...request(), productId: 1, presentationId: 2, storeId: 1, quantity: 1, costPerPackage: 80 }, admin);
+      await f.service.internalUse({ ...request(), productId: 1, presentationId: 2, storeId: 1, quantity: 1, recipient: 'Installer', note: 'Job' }, operator);
+      expect(f.data.stocks[0].quantity).toBe(0);
+      await expect(f.service.deletePresentation(2, { ...request(), version: 0 }, admin)).rejects.toThrow('inventory movements');
+      expect(f.data.movements).toHaveLength(2);
+      expect(f.data.stocks).toHaveLength(1);
+    });
+
+    it.each(['changes', 'opened', 'countedPresentations'])('protects movement references stored only in %s details', async field => {
+      const f = fixture(); await f.product();
+      f.data.movements.push({ id: 1, productId: 1, presentationId: 1, details: { [field]: [{ presentationId: 2, quantity: 0 }] } });
+      await expect(f.service.deletePresentation(2, { ...request(), version: 0 }, admin)).rejects.toThrow('inventory movements');
+      expect(f.db.materialPresentation.delete).not.toHaveBeenCalled();
+    });
+
+    it('finds references beyond the first batch without mistaking other IDs for this presentation', async () => {
+      const f = fixture(); await f.product();
+      f.data.movements.push(...Array.from({ length: 200 }, (_, i) => ({ id: i + 1, productId: 1, presentationId: 1, details: { changes: [{ presentationId: 22, before: 0, after: 2 }] } })));
+      f.data.movements.push({ id: 201, productId: 1, presentationId: 1, details: { nested: { changes: [{ presentationId: 2 }] } } });
+      await expect(f.service.deletePresentation(2, { ...request(), version: 0 }, admin)).rejects.toThrow('inventory movements');
+      expect(f.db.materialMovement.findMany).toHaveBeenCalledTimes(2);
+    });
+
+    it('allows unused presentations even when other presentations of the product have history', async () => {
+      const f = fixture(); await f.product();
+      f.data.movements.push({ id: 1, productId: 1, presentationId: 1, details: { changes: [{ presentationId: 1, after: 2 }], note: 'presentationId: 2' } });
+      await f.service.deletePresentation(2, { ...request(), version: 0 }, admin);
+      expect(f.data.movements).toHaveLength(1);
+      expect(f.data.presentations.map(p => p.id)).toEqual([1]);
+    });
+
+    it.each(['DRAFT', 'CONFIRMED', 'CANCELED', 'DELIVERED'])('preserves references from %s sales', async status => {
+      const f = fixture(); await f.product();
+      f.data.lines.push({ presentationId: 2, productId: 1, quantity: 1, sale: { status } });
+      await expect(f.service.deletePresentation(2, { ...request(), version: 0 }, admin)).rejects.toThrow('linked to a sale');
+      expect(f.db.materialPresentation.delete).not.toHaveBeenCalled();
+    });
+
+    it('rejects stale versions and missing presentations', async () => {
+      const f = fixture(); await f.product();
+      await f.service.updatePresentation(2, { ...request(), version: 0, name: 'Renamed' }, admin);
+      await expect(f.service.deletePresentation(2, { ...request(), version: 0 }, admin)).rejects.toThrow('changed');
+      await expect(f.service.deletePresentation(999, { ...request(), version: 0 }, admin)).rejects.toThrow('not found');
+      expect(f.db.materialPresentation.delete).not.toHaveBeenCalled();
+    });
+
+    it('rechecks stock under the product lock before deleting', async () => {
+      const f = fixture(); await f.product();
+      const lock = f.service.lockProducts.bind(f.service);
+      jest.spyOn(f.service, 'lockProducts').mockImplementationOnce(async (tx, ids) => {
+        await lock(tx, ids);
+        f.data.stocks.push({ productId: 1, presentationId: 2, storeId: 1, quantity: 1 });
+      });
+      await expect(f.service.deletePresentation(2, { ...request(), version: 0 }, admin)).rejects.toThrow('has inventory');
+      expect(f.db.materialPresentation.delete).not.toHaveBeenCalled();
+    });
+
+    it.each(['delete', 'update'])('returns not found when a presentation disappears before the %s lock is acquired', async action => {
+      const f = fixture(); await f.product();
+      const lock = f.service.lockProducts.bind(f.service);
+      jest.spyOn(f.service, 'lockProducts').mockImplementationOnce(async (tx, ids) => {
+        await lock(tx, ids);
+        f.data.presentations.splice(1, 1);
+      });
+      const promise = action === 'delete'
+        ? f.service.deletePresentation(2, { ...request(), version: 0 }, admin)
+        : f.service.updatePresentation(2, { ...request(), version: 0, name: 'New name' }, admin);
+      await expect(promise).rejects.toThrow('not found');
+    });
+
+    it('rolls back empty-stock cleanup and audit on a restrictive foreign-key conflict', async () => {
+      const f = fixture(); await f.product();
+      f.data.stocks.push({ productId: 1, presentationId: 2, storeId: 1, quantity: 0 });
+      f.db.materialPresentation.delete.mockRejectedValueOnce({ code: 'P2003' });
+      const dto = { ...request(), version: 0 };
+      await expect(f.service.deletePresentation(2, dto, admin)).rejects.toThrow('in use');
+      expect(f.data.stocks).toHaveLength(1);
+      expect(f.data.presentations).toHaveLength(2);
+      expect(f.data.products[0].version).toBe(0);
+      expect(f.data.operations.some(op => op.requestKey === dto.requestKey)).toBe(false);
+    });
   });
 });

@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import {
-  MaterialAdjustmentDto, MaterialInternalUseDto, MaterialPresentationCreateDto, MaterialPresentationUpdateDto,
+  MaterialAdjustmentDto, MaterialInternalUseDto, MaterialPresentationCreateDto, MaterialPresentationUpdateDto, MaterialPresentationDeleteDto,
   MaterialProductCreateDto, MaterialProductUpdateDto, MaterialReceiptDto, MaterialRepackDto, MaterialTransferDto,
   MaterialUnitCreateDto, MaterialUnitUpdateDto,
   MaterialCategoryCreateDto, MaterialCategoryUpdateDto,
@@ -19,6 +19,12 @@ type MovementContext = {
   note?: string; recipient?: string; details?: any; costPerPackage?: number; supplier?: string; reference?: string;
 };
 const asJson = (value: unknown): any => JSON.parse(JSON.stringify(value));
+function referencesPresentation(value: Prisma.JsonValue, id: number): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(item => referencesPresentation(item, id));
+  if (value.presentationId === id || value.presentationId === String(id)) return true;
+  return Object.values(value).some(item => referencesPresentation(item, id));
+}
 function canonical(value: any): any {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().filter(k => value[k] !== undefined).map(k => [k, canonical(value[k])]));
@@ -292,6 +298,7 @@ export class MaterialsInventoryService {
       if (!initial) throw new NotFoundException('Presentation not found.');
       await this.lockProducts(tx, [initial.productId]);
       const presentation = await tx.materialPresentation.findUnique({ where: { id } });
+      if (!presentation) throw new NotFoundException('Presentation not found. Reload the product.');
       if (presentation.version !== dto.version) throw new ConflictException('The presentation changed. Reload before saving.');
       if (dto.isActive === false && (presentation.isBase || await tx.materialStock.count({ where: { presentationId: id, quantity: { gt: 0 } } }) ||
         await tx.materialSaleLine.count({ where: { presentationId: id, sale: { status: 'CONFIRMED' } } })))
@@ -306,6 +313,49 @@ export class MaterialsInventoryService {
       } });
       await tx.materialProduct.update({ where: { id: initial.productId }, data: { version: { increment: 1 } } });
       return this.presentProduct(tx, initial.productId);
+    });
+  }
+
+  private async presentationHasMovements(tx: Tx, id: number, productId: number) {
+    if (await tx.materialMovement.count({ where: { presentationId: id } })) return true;
+    // Opening packages and physical counts can reference a presentation only in the
+    // movement details. Read indexed product history in bounded batches, not just its balance.
+    let afterId = 0;
+    while (true) {
+      const movements = await tx.materialMovement.findMany({
+        where: { productId, id: { gt: afterId } }, select: { id: true, details: true },
+        orderBy: { id: 'asc' }, take: 200,
+      });
+      if (movements.some(movement => referencesPresentation(movement.details, id))) return true;
+      if (movements.length < 200) return false;
+      afterId = movements[movements.length - 1].id;
+    }
+  }
+
+  async deletePresentation(id: number, dto: MaterialPresentationDeleteDto, actor: AuthUser) {
+    this.staff(actor, true);
+    return this.operation(dto.requestKey, { id, ...dto }, actor.id, 'DELETE_PRESENTATION', async tx => {
+      const initial = await tx.materialPresentation.findUnique({ where: { id } });
+      if (!initial) throw new NotFoundException('Presentation not found. Reload the product.');
+      await this.lockProducts(tx, [initial.productId]);
+      const presentation = await tx.materialPresentation.findUnique({ where: { id } });
+      if (!presentation) throw new NotFoundException('Presentation not found. Reload the product.');
+      if (presentation.version !== dto.version) throw new ConflictException('The presentation changed. Reload before deleting.');
+      if (presentation.isBase) throw new ConflictException('The base presentation cannot be deleted.');
+      if (await tx.materialStock.count({ where: { presentationId: id, quantity: { not: 0 } } }))
+        throw new ConflictException('This presentation has inventory and cannot be deleted.');
+      if (await tx.materialSaleLine.count({ where: { presentationId: id } }))
+        throw new ConflictException('This presentation is linked to a sale and cannot be deleted.');
+      if (await this.presentationHasMovements(tx, id, presentation.productId))
+        throw new ConflictException('This presentation has inventory movements and cannot be deleted. You can deactivate it instead.');
+      await tx.materialStock.deleteMany({ where: { presentationId: id, quantity: 0 } });
+      await tx.materialPresentation.delete({ where: { id } });
+      await tx.materialProduct.update({ where: { id: presentation.productId }, data: { version: { increment: 1 } } });
+      // Preserve the deleted catalog entry in the existing operation audit; no stock movement is created.
+      return { id, productId: presentation.productId, deletedPresentation: presentation };
+    }).catch(error => {
+      if (error?.code === 'P2003') throw new ConflictException('This presentation is in use and cannot be deleted. Reload the product.');
+      throw error;
     });
   }
 

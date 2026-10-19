@@ -1,10 +1,10 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { Roles } from '@/auth/roles.decorator';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { MaterialsInventoryService } from './materials-inventory.service';
 import {
-  MaterialAdjustmentDto, MaterialInternalUseDto, MaterialPresentationCreateDto, MaterialPresentationUpdateDto,
+  MaterialAdjustmentDto, MaterialInternalUseDto, MaterialPresentationCreateDto, MaterialPresentationUpdateDto, MaterialPresentationDeleteDto,
   MaterialProductCreateDto, MaterialProductUpdateDto, MaterialReceiptDto, MaterialRepackDto, MaterialTransferDto,
   MaterialUnitCreateDto, MaterialUnitUpdateDto,
   MaterialCategoryCreateDto, MaterialCategoryUpdateDto,
@@ -28,6 +28,7 @@ export class MaterialsController {
   @Patch('products/:id') @Roles('admin') updateProduct(@Param('id', ParseIntPipe) id: number, @Body() dto: MaterialProductUpdateDto, @Req() req: Request) { return this.inventory.updateProduct(id, dto, req.user as AuthUser); }
   @Post('products/:id/presentations') @Roles('admin') createPresentation(@Param('id', ParseIntPipe) id: number, @Body() dto: MaterialPresentationCreateDto, @Req() req: Request) { return this.inventory.createPresentation(id, dto, req.user as AuthUser); }
   @Patch('presentations/:id') @Roles('admin') updatePresentation(@Param('id', ParseIntPipe) id: number, @Body() dto: MaterialPresentationUpdateDto, @Req() req: Request) { return this.inventory.updatePresentation(id, dto, req.user as AuthUser); }
+  @Delete('presentations/:id') @Roles('admin') deletePresentation(@Param('id', ParseIntPipe) id: number, @Body() dto: MaterialPresentationDeleteDto, @Req() req: Request) { return this.inventory.deletePresentation(id, dto, req.user as AuthUser); }
   @Post('receipts') receive(@Body() dto: MaterialReceiptDto, @Req() req: Request) { return this.inventory.receive(dto, req.user as AuthUser); }
   @Post('internal-use') internalUse(@Body() dto: MaterialInternalUseDto, @Req() req: Request) { return this.inventory.internalUse(dto, req.user as AuthUser); }
   @Post('repacks') repack(@Body() dto: MaterialRepackDto, @Req() req: Request) { return this.inventory.repack(dto, req.user as AuthUser); }

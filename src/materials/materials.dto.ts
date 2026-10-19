@@ -59,6 +59,9 @@ export class MaterialPresentationUpdateDto extends MaterialRequestDto {
   @IsOptional() @IsBoolean() isActive?: boolean;
   @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(99999999.99) salePrice?: number;
 }
+export class MaterialPresentationDeleteDto extends MaterialRequestDto {
+  @IsInt() @Min(0) version: number;
+}
 export class MaterialStockRequestDto extends MaterialRequestDto {
   @IsInt() @Min(1) productId: number;
   @IsInt() @Min(1) presentationId: number;
