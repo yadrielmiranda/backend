@@ -52,6 +52,7 @@ function argumentsFor(argv) {
     const arg = argv[index];
     if (arg === '--apply') options.apply = true;
     else if (arg === '--dry-run') options.apply = false;
+    else if (arg === '--include-pending-configs') options.includePendingConfigs = true;
     else if (['--source', '--catalog', '--verified-scope', '--output', '--target-host', '--target-database'].includes(arg)) {
       const value = argv[++index];
       if (!value || value.startsWith('--')) throw new Error(`Missing value for ${arg}`);
@@ -78,7 +79,7 @@ function writeReport(output, report) {
 async function main(argv) {
   const options = argumentsFor(argv);
   const source = readJson(options.source);
-  const mappingOptions = { configScopes: options['verified-scope'] ? readJson(options['verified-scope']) : {} };
+  const mappingOptions = { configScopes: options['verified-scope'] ? readJson(options['verified-scope']) : {}, includePendingConfigs: options.includePendingConfigs === true };
   let report;
   let result;
   let target = null;

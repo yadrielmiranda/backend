@@ -97,7 +97,7 @@ function selectSystem(row, catalog) {
   return unique(catalog.systems.filter(item => item.isActive && item.idBrand === brand.id && productIds.has(item.idProduct) && normalize(item.name).match(/^SERIE\s+(\d+)(?:\s|$)/)?.[1] === series), 'SYSTEM_UNAVAILABLE_OR_AMBIGUOUS');
 }
 
-function selectConfigs(row, system, catalog, scopes) {
+function selectConfigs(row, system, catalog, scopes, includePendingConfigs = false) {
   const configs = catalog.configs.filter(item => item.isActive && item.idProduct === system.idProduct && catalog.sysConfs.some(link => link.idSystem === system.id && link.idConfig === item.id));
   if (normalize(row.productLabel) === '375 SERIES P.WDW') return [unique(configs.filter(item => normalize(item.conf) === 'PICTURE WINDOW (O)'), 'PICTURE_CONFIG_UNAVAILABLE').id];
   if (normalize(row.productLabel) === '375 SERIES (SHAPES)') {
@@ -110,6 +110,8 @@ function selectConfigs(row, system, catalog, scopes) {
   if (Array.isArray(scope?.configNames) && scope.configNames.length && typeof scope.reason === 'string' && scope.reason.trim()) return scope.configNames.map(name => unique(configs.filter(item => normalize(item.conf) === normalize(name)), 'CONFIG_UNAVAILABLE_OR_AMBIGUOUS').id);
   // An exact single available configuration needs no extrapolation to other configurations.
   if (configs.length === 1) return [configs[0].id];
+  // User-confirmed series-wide scope for pending rows only; preserve prior imports.
+  if (configs.length > 1 && includePendingConfigs === true) return [null];
   throw new Error('CONFIG_SCOPE_REQUIRES_REVIEW');
 }
 
@@ -151,7 +153,7 @@ function planImport(source, catalog, options = {}) {
       const tint = availableOption(catalog, 'tints', 'color', selections.tint, system.idBrand, 'brandTints', 'idTint');
       const coating = availableOption(catalog, 'coatings', 'name', selections.coating, system.idBrand, 'brandCoatings', 'idCoating');
       const privacy = availableOption(catalog, 'privacies', 'name', selections.privacy, system.idBrand, 'brandPrivacies', 'idPrivacy');
-      const configs = selectConfigs(row, system, catalog, options.configScopes);
+      const configs = selectConfigs(row, system, catalog, options.configScopes, options.includePendingConfigs);
       for (const idConfig of configs) {
         const data = {
           idSystem: system.id, idCrystal: crystal.id, idTint: tint.id, idCoating: coating.id, idPrivacy: privacy.id, idConfig,

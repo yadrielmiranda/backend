@@ -126,6 +126,36 @@ test('multiple configurations require explicit scope and never get broad scope b
   assert.equal(broad.ready[0].appliesToAllConfigs, true);
 });
 
+test('confirmed pending-config scope preserves single configs, explicit scopes and other validations', () => {
+  const { catalog, input } = fixture();
+  const options = { includePendingConfigs: true };
+  assert.deepEqual(planImport(input, catalog, options), planImport(input, catalog));
+  catalog.configs.push({ id: 2, conf: 'XOX', idProduct: 1, isActive: true });
+  catalog.sysConfs.push({ idSystem: 2, idConfig: 2 });
+  assert.equal(planImport(input, catalog).rejected[0].reason, 'CONFIG_SCOPE_REQUIRES_REVIEW');
+  const plan = planImport(input, catalog, options);
+  assert.equal(plan.ready.length, 1);
+  assert.equal(plan.ready[0].idConfig, null);
+  assert.equal(plan.ready[0].appliesToAllConfigs, true);
+  assert.equal(plan.ready[0].activeKey, '2:2:1:2:1:*');
+  assert.equal(plan.ready[0].uFactor, '1.075000');
+  const explicit = planImport(input, catalog, { ...options, configScopes: { '100 SINGLE HUNG': { configNames: ['XO'], reason: 'Confirmed selection' } } });
+  assert.equal(explicit.ready[0].idConfig, 1);
+  input.rows[0].uFactor = '-';
+  assert.equal(planImport(input, catalog, options).rejected[0].reason, 'SOURCE_METRICS_MISSING');
+  input.rows[0].uFactor = '1.075';
+  catalog.systemCrystals = [];
+  assert.match(planImport(input, catalog, options).rejected[0].reason, /CRYSTAL_UNAVAILABLE/);
+});
+
+test('confirmed pending-config scope requires an available configuration', () => {
+  const { catalog, input } = fixture();
+  catalog.sysConfs = [];
+  const plan = planImport(input, catalog, { includePendingConfigs: true });
+  assert.equal(plan.ready.length, 0);
+  assert.equal(plan.rejected[0].reason, 'CONFIG_SCOPE_REQUIRES_REVIEW');
+});
+
 test('375 picture and shapes never share a configuration and unknown shape names remain excluded', () => {
   const { catalog, input } = fixture();
   catalog.brands = [{ id: 4, name: 'Eco Novo Systems', isActive: true }];
@@ -145,6 +175,7 @@ test('375 picture and shapes never share a configuration and unknown shape names
   assert.deepEqual(plan.ready.map(row => row.idConfig), [8, 9]);
   assert.equal(plan.summary.mappedSourceRows, 2);
   assert.ok(plan.ready.every(row => row.appliesToAllConfigs === false));
+  assert.deepEqual(planImport(input, catalog, { includePendingConfigs: true }), plan);
 });
 
 test('duplicate source rows for one selection are all quarantined', () => {
@@ -195,6 +226,8 @@ test('apply discards source fields and legacy units and identifies the same rati
 
 test('import defaults to dry run and rejects contradictory or stale-catalog apply', () => {
   assert.equal(argumentsFor([]).apply, false);
+  assert.equal(argumentsFor([]).includePendingConfigs, undefined);
+  assert.equal(argumentsFor(['--include-pending-configs', '--dry-run']).includePendingConfigs, true);
   assert.throws(() => argumentsFor(['--apply', '--dry-run']), /either/);
   assert.throws(() => argumentsFor(['--apply', '--catalog', 'catalog.json']), /live catalog/);
 });
