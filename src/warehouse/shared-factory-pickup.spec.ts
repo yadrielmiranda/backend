@@ -10,7 +10,8 @@ const tech = { id: 3, role: { name: 'technician' as const } };
 const second = { id: 4, role: { name: 'technician' as const } };
 const unassigned = { id: 6, role: { name: 'technician' as const } };
 const door = '1029975', slider = '1029967', fixed = '1096240';
-const scan = (barcode = door) => ({ barcode, requestKey: randomUUID() });
+const scan = (barcode = door, type: 'DOOR' | 'FRAME' | 'WINDOW' = barcode === fixed ? 'WINDOW' : 'DOOR') =>
+  ({ barcode: `${barcode}-${type}`, requestKey: randomUUID() });
 const partial = { cycle: 0, partialReason: 'NOT_READY_AT_FACTORY' as const, note: 'Return later' };
 function fixture() {
   const f = warehouseFixture();
@@ -69,7 +70,8 @@ describe('Shared factory pickups and admin reopening', () => {
 
   it('shares multiple technician scans, caps quantities and keeps the individual audit', async () => {
     const f = fixture(), run = await f.start();
-    const results = await Promise.allSettled([tech, second, otherAdmin, tech].map((actor) => f.service.factoryPickupScan(run.id, scan(), actor)));
+    const results = await Promise.allSettled([tech, second, otherAdmin, tech].map((actor, index) =>
+      f.service.factoryPickupScan(run.id, scan(door, index === 2 ? 'FRAME' : 'DOOR'), actor)));
     assert.equal(results.filter((r) => r.status === 'fulfilled').length, 3);
     assert.equal(results.filter((r) => r.status === 'rejected').length, 1);
     assert.equal(f.stocks[0].inTransit, 3); assert.equal(f.movements.length, 3);

@@ -2,15 +2,28 @@ import { BadRequestException } from '@nestjs/common';
 
 export const MAX_PARTS = 200;
 
-export function barcodeLine(value: unknown): string {
+export type FactoryPartType = 'DOOR' | 'FRAME' | 'WINDOW';
+
+export function parseFactoryBarcode(value: unknown): {
+  lineNumber: string;
+  partType?: FactoryPartType;
+} {
   if (typeof value !== 'string')
     throw new BadRequestException('Scan or enter a factory barcode.');
-  const match = value.trim().match(/^[Ii]?(\d{1,50})$/);
-  if (!match || /^0+$/.test(match[1]))
+  const match = value.trim().match(/^(?:I(\d{1,50})|(\d{1,50})(?:-(DOOR|FRAME|WINDOW))?)$/i);
+  const digits = match?.[1] ?? match?.[2];
+  if (!digits || /^0+$/.test(digits))
     throw new BadRequestException(
-      'Use the factory barcode (I followed by the line number).',
+      'Use a factory line number, I followed by the line number, or a line number followed by -DOOR, -FRAME or -WINDOW.',
     );
-  return match[1].replace(/^0+(?=\d)/, '');
+  return {
+    lineNumber: digits.replace(/^0+(?=\d)/, ''),
+    ...(match?.[3] ? { partType: match[3].toUpperCase() as FactoryPartType } : {}),
+  };
+}
+
+export function barcodeLine(value: unknown): string {
+  return parseFactoryBarcode(value).lineNumber;
 }
 
 export type PartsSource = {

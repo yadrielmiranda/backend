@@ -110,7 +110,7 @@ describe('signed customer deliveries', () => {
 
   it('rejects a key already used by a different warehouse movement', async () => {
     const f = fixture(), dto = f.dto();
-    await f.service.scan({ requestKey: dto.requestKey, barcode: door, action: 'RECEIVE', storeId: 1 }, admin);
+    await f.service.scan({ requestKey: dto.requestKey, barcode: door, partType: 'DOOR', action: 'RECEIVE', storeId: 1 }, admin);
     const before = f.snapshot();
     await expect(f.service.deliverToCustomer(dto, admin)).rejects.toThrow('another operation');
     expect(f.snapshot()).toEqual(before);

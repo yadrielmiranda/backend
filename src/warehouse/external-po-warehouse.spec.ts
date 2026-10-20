@@ -17,7 +17,7 @@ function fixture() {
     expectedParts: 3, inTransit: 0, onHand: 0, unassigned: 0, released: 0, version: 0, updatedAt: new Date(),
   });
   const service = new WarehouseService(f.db);
-  const scan = (action: 'COLLECT' | 'RECEIVE' | 'RELEASE', barcode = line, storeId = 1) =>
+  const scan = (action: 'COLLECT' | 'RECEIVE' | 'RELEASE', barcode = `${line}-DOOR`, storeId = 1) =>
     service.scan({ ...request(), barcode, action, ...(action === 'COLLECT' ? {} : { storeId }) }, admin);
   return { ...f, service, scan };
 }
@@ -48,7 +48,7 @@ describe('External PO warehouse inventory', () => {
   it('searches full external descriptions and groups sources with colliding numeric IDs independently', async () => {
     const f = fixture();
     await f.scan('RECEIVE');
-    await f.scan('RECEIVE', '1029975');
+    await f.scan('RECEIVE', '1029975-DOOR');
     const external = await f.service.inventory({ source: 'EXTERNAL', search: 'Bronze' }, admin);
     expect(external.items.map((s) => s.lineNumber)).toEqual([line]);
     expect((await f.service.inventory({ source: 'ORDER' }, admin)).items.map((s) => s.lineNumber)).toEqual(['1029975']);
@@ -67,8 +67,8 @@ describe('External PO warehouse inventory', () => {
     await f.service.setParts(line, { ...request(), expectedParts: 3, version: 0, reason: 'Confirmed physical parts' }, admin);
     await f.scan('RECEIVE');
     const count = await f.service.startCount({ ...request(), scope: 'ALL' }, admin);
-    await f.service.countScan(count.id, { ...request(), barcode: line }, admin);
-    await f.service.countScan(count.id, { ...request(), barcode: line }, admin);
+    await f.service.countScan(count.id, { ...request(), barcode: line, partType: 'DOOR' }, admin);
+    await f.service.countScan(count.id, { ...request(), barcode: line, partType: 'DOOR' }, admin);
     const summary = await f.service.count(count.id, {}, admin);
     expect(summary.items[0].stock.source).toBe('EXTERNAL');
     await f.service.closeCount(count.id, { action: 'COMPLETE', revision: summary.revision, reason: 'Found another part' }, admin);
@@ -96,7 +96,7 @@ describe('Mixed internal and external factory pickups', () => {
     expect(preview).toMatchObject({ key: 'external:1', source: 'EXTERNAL', orderId: null, externalPoId: 1, parts: 3 });
     const run = await f.service.startFactoryPickup({ poNumbers: ['281374', 'EX100'], technicianIds: [3] }, admin);
     expect(run.orders.map((po) => po.key)).toEqual(['order:1', 'external:1']);
-    const read = await f.service.factoryPickupScan(run.id, { ...request(), barcode: line }, tech);
+    const read = await f.service.factoryPickupScan(run.id, { ...request(), barcode: line, partType: 'DOOR' }, tech);
     expect(read.kind).toBe('COLLECTED');
     if (read.kind !== 'COLLECTED') throw new Error('Expected collection');
     expect(read.pickup.orders.find((po) => po.key === 'external:1')).toMatchObject({ collectedParts: 1, remainingParts: 2 });
@@ -108,16 +108,16 @@ describe('Mixed internal and external factory pickups', () => {
     await f.service.finishFactoryPickup(run.id, partial, tech);
     const reopened = await f.service.reopenFactoryPickup(run.id, { cycle: 0 }, admin);
     expect(reopened.cycle).toBe(1);
-    await f.service.factoryPickupScan(run.id, { ...request(), barcode: line }, tech);
+    await f.service.factoryPickupScan(run.id, { ...request(), barcode: line, partType: 'DOOR' }, tech);
     expect((await f.service.factoryPickup(run.id, tech)).collectedParts).toBe(1);
   });
 
   it('adds a scanned external PO to an internal pickup and protects active claims when reopening', async () => {
     const f = fixture();
     const run = await f.service.startFactoryPickup({ poNumbers: ['281374'], technicianIds: [3] }, admin);
-    const candidate = await f.service.factoryPickupScan(run.id, { ...request(), barcode: line }, tech);
+    const candidate = await f.service.factoryPickupScan(run.id, { ...request(), barcode: line, partType: 'DOOR' }, tech);
     expect(candidate).toMatchObject({ kind: 'PO_NOT_INCLUDED', candidate: { key: 'external:1', orderId: null, externalPoId: 1 } });
-    await f.service.factoryPickupScan(run.id, { ...request(), barcode: line, addPo: true }, tech);
+    await f.service.factoryPickupScan(run.id, { ...request(), barcode: line, partType: 'DOOR', addPo: true }, tech);
     await expect(f.service.startFactoryPickup({ poNumbers: ['EX100'], technicianIds: [3] }, admin)).rejects.toThrow('another active');
     await f.service.finishFactoryPickup(run.id, partial, tech);
     const second = await f.service.startFactoryPickup({ poNumbers: ['EX100'], technicianIds: [3] }, admin);

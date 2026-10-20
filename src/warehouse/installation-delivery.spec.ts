@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { randomUUID } from 'crypto';
 import { WarehouseService } from './warehouse.service';
+import { WarehouseReceiptItemDto } from './warehouse.dto';
 import { warehouseFixture } from '../../test/warehouse-fixture';
 
 // El servicio conserva la política de salida real; solo se aísla el cálculo del plan.
@@ -31,10 +32,16 @@ function fixture() {
   let pickupId: number | undefined;
   const stock = (barcode = door) => f.stocks.find((s) => s.lineNumber === barcode)!;
   const item = (barcode = door, quantity = 1) => ({ barcode, quantity, version: stock(barcode).version });
-  const dto = (items = [item()]) => ({ ...request(), installationJobId: job.id, installationAddress: address, items });
+  const dto = (items: WarehouseReceiptItemDto[] = [item()]) => ({ ...request(), installationJobId: job.id, installationAddress: address, items });
   const collect = async (quantity = 1, barcode = door) => {
     pickupId ??= (await service.startFactoryPickup({ poNumbers: ['281374'], technicianIds: [3] }, admin)).id;
-    for (let i = 0; i < quantity; i++) await service.factoryPickupScan(pickupId, { ...request(), barcode }, tech);
+    for (let i = 0; i < quantity; i++) {
+      const current = stock(barcode);
+      const type = barcode === door
+        ? current.inTransit + current.onHand + current.released < current.expectedParts - 1 ? 'DOOR' : 'FRAME'
+        : 'WINDOW';
+      await service.factoryPickupScan(pickupId, { ...request(), barcode, partType: type }, tech);
+    }
   };
   const snapshot = () => structuredClone({ stocks: f.stocks, movements: f.movements, balances: f.balances });
   const invariant = () => {
@@ -51,7 +58,7 @@ describe('physical delivery to installation', () => {
   it('delivers partial factory collections without creating warehouse stock', async () => {
     const f = fixture(); f.stores.splice(0);
     await f.collect(3);
-    const result = await f.service.deliverToInstallation(f.dto([f.item(door, 2)]), tech);
+    const result = await f.service.deliverToInstallation(f.dto([{ ...f.item(door, 2), parts: { DOOR: 2 } }]), tech);
     assert.equal(result.parts, 2); assert.equal(result.units, 1);
     assert.deepEqual(result.installation, { id: 71, address });
     assert.equal(f.stock().inTransit, 1); assert.equal(f.stock().onHand, 0); assert.equal(f.stock().released, 2);
@@ -78,7 +85,7 @@ describe('physical delivery to installation', () => {
 
   it('combines direct delivery and warehouse release without deducting the same quantity twice', async () => {
     const f = fixture(); await f.collect(3);
-    await f.service.receive({ ...request(), storeId: 2, items: [f.item(door, 2)] }, tech);
+    await f.service.receive({ ...request(), storeId: 2, items: [{ ...f.item(door, 2), parts: { DOOR: 2 } }] }, tech);
     const released = await f.service.scan({ ...request(), action: 'RELEASE', barcode: door, storeId: 2 }, admin);
     assert.deepEqual(released.movement.installation, { id: 71, address });
     await f.service.deliverToInstallation(f.dto(), tech);
@@ -141,12 +148,12 @@ describe('physical delivery to installation', () => {
 
   it('rejects reuse of a request key with another actor, destination or quantity', async () => {
     const f = fixture(); await f.collect(3);
-    const dto = f.dto(); await f.service.deliverToInstallation(dto, tech);
+    const dto = f.dto([{ ...f.item(), parts: { DOOR: 1 } }]); await f.service.deliverToInstallation(dto, tech);
     const before = f.snapshot();
     await assert.rejects(f.service.deliverToInstallation(dto, admin), /another operation/);
     await assert.rejects(f.service.deliverToInstallation({ ...dto, installationJobId: 99 }, tech), /another operation/);
     await assert.rejects(f.service.deliverToInstallation({ ...dto, installationAddress: 'Other site' }, tech), /another operation/);
-    await assert.rejects(f.service.deliverToInstallation({ ...dto, items: [{ ...dto.items[0], quantity: 2 }] }, tech), /another operation/);
+    await assert.rejects(f.service.deliverToInstallation({ ...dto, items: [{ ...dto.items[0], quantity: 2, parts: { DOOR: 2 } }] }, tech), /another operation/);
     assert.deepEqual(f.snapshot(), before);
   });
 
@@ -167,7 +174,7 @@ describe('physical delivery to installation', () => {
 
   it('rejects warehouse-only parts and over-delivery', async () => {
     const f = fixture();
-    await f.service.scan({ ...request(), action: 'RECEIVE', barcode: door, storeId: 1 }, admin);
+    await f.service.scan({ ...request(), action: 'RECEIVE', barcode: door, partType: 'DOOR', storeId: 1 }, admin);
     await assert.rejects(f.service.deliverToInstallation(f.dto(), admin), /in transit/);
     await f.collect(); const before = f.snapshot();
     await assert.rejects(f.service.deliverToInstallation(f.dto([f.item(door, 2)]), admin), /in transit/);
@@ -241,7 +248,7 @@ describe('physical delivery to installation', () => {
 
   it('reverses only the latest delivery and preserves its destination in the audit', async () => {
     const f = fixture(); await f.collect(3);
-    await f.service.deliverToInstallation(f.dto([f.item(door, 2)]), operator);
+    await f.service.deliverToInstallation(f.dto([{ ...f.item(door, 2), parts: { DOOR: 2 } }]), operator);
     const m = f.movements[f.movements.length - 1];
     await assert.rejects(f.service.undo(m.id, request(), { id: 9, role: { name: 'operator' } }), /own readings/);
     const undo = await f.service.undo(m.id, request(), admin);
@@ -262,7 +269,7 @@ describe('physical delivery to installation', () => {
   it('keeps ordinary warehouse pickup unchanged without an installation destination', async () => {
     const f = fixture(); f.order.estimate.installationJob = null;
     f.order.fulfillmentMethod = 'CUSTOMER_PICKUP'; f.order.status.name = 'Ready to pick up';
-    await f.service.scan({ ...request(), action: 'RECEIVE', barcode: door, storeId: 1 }, admin);
+    await f.service.scan({ ...request(), action: 'RECEIVE', barcode: door, partType: 'DOOR', storeId: 1 }, admin);
     const result = await f.service.scan({ ...request(), action: 'RELEASE', barcode: door, storeId: 1 }, admin);
     assert.equal(result.movement.installation, null); assert.equal(result.stock.released, 1); f.invariant();
   });

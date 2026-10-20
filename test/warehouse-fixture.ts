@@ -51,6 +51,7 @@ export function warehouseFixture() {
     onHand: 0,
     unassigned: 0,
     released: 0,
+    partBalances: null,
     version: 0,
     updatedAt: new Date(),
     pieceId: pieces[i].id,
@@ -340,6 +341,7 @@ export function warehouseFixture() {
       onHand: 0,
       unassigned: 0,
       released: 0,
+      partBalances: null,
       version: 0,
       updatedAt: new Date(),
       ...d,
@@ -359,6 +361,7 @@ export function warehouseFixture() {
       reversalOfId: null,
       countId: null,
       reason: null,
+      partDetails: null,
       createdAt: new Date(),
       ...Object.fromEntries(Object.entries(d).filter(([, value]) => value !== undefined)),
     })),
@@ -375,6 +378,7 @@ export function warehouseFixture() {
     })),
     warehouseCountLine: model(countLines, countLineView, (d) => ({
       counted: 0,
+      partDetails: null,
       ...d,
     })),
     factoryPickupRun: model(pickupRuns, pickupRunView, (d) => ({

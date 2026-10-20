@@ -16,7 +16,13 @@ const partial = { cycle: 0, partialReason: 'NOT_READY_AT_FACTORY' as const, note
 function fixture() {
   const f = warehouseFixture(), service = new WarehouseService(f.db);
   const start = (technicianIds = [3, 4], poNumbers = ['281374']) => service.startFactoryPickup({ technicianIds, poNumbers }, admin);
-  const collect = (id: number, barcode = door, actor: AuthUser = tech) => service.factoryPickupScan(id, { barcode, requestKey: randomUUID() }, actor);
+  const collect = (id: number, barcode = door, actor: AuthUser = tech) => {
+    const current = f.stocks.find(stock => stock.lineNumber === barcode);
+    const partType = [door, slider].includes(barcode)
+      ? current.inTransit + current.onHand + current.released < current.expectedParts - 1 ? 'DOOR' as const : 'FRAME' as const
+      : 'WINDOW' as const;
+    return service.factoryPickupScan(id, { barcode, partType, requestKey: randomUUID() }, actor);
+  };
   const dto = (items?: WarehouseCustomerDeliveryDto['items']): WarehouseCustomerDeliveryDto => ({
     requestKey: randomUUID(), source: 'TRANSIT', firstName: 'Maria', lastName: 'Recipient', signatureStrokes: signature(),
     items: items ?? f.stocks.filter((s) => s.inTransit > 0).map((s) => ({ barcode: `I${s.lineNumber}`, quantity: s.inTransit, version: s.version })),
@@ -177,7 +183,7 @@ describe('Technician customer handoffs from assigned factory pickups', () => {
 
   it('does not grant a historical crew access to quantities collected by the next crew', async () => {
     const f = fixture(), first = await f.start([3]); await f.collect(first.id);
-    await f.service.scan({ action: 'RECEIVE', barcode: door, storeId: 1, requestKey: randomUUID() }, admin);
+    await f.service.scan({ action: 'RECEIVE', barcode: door, partType: 'DOOR', storeId: 1, requestKey: randomUUID() }, admin);
     await f.service.finishFactoryPickup(first.id, partial, tech);
     const next = await f.start([4]); await f.collect(next.id, door, colleague);
     expect((await f.options()).total).toBe(0);
@@ -213,7 +219,7 @@ describe('Technician customer handoffs from assigned factory pickups', () => {
 
   it('ignores reversed collection and receipt pairs when reconstructing assigned transit quantities', async () => {
     const f = fixture(), run = await f.start(); await f.collect(run.id); await f.collect(run.id);
-    const received = await f.service.scan({ action: 'RECEIVE', barcode: door, storeId: 1, requestKey: randomUUID() }, admin);
+    const received = await f.service.scan({ action: 'RECEIVE', barcode: door, partType: 'DOOR', storeId: 1, requestKey: randomUUID() }, admin);
     expect((await f.options()).items[0].availableParts).toBe(1);
     await f.service.undo(received.movement.id, { requestKey: randomUUID() }, admin);
     expect((await f.options()).items[0].availableParts).toBe(2);
@@ -251,7 +257,7 @@ describe('Technician customer handoffs from assigned factory pickups', () => {
 
   it('does not include earlier received parts or unscanned stock in a current pickup delivery', async () => {
     const f = fixture(), first = await f.start([3]); await f.collect(first.id);
-    await f.service.scan({ action: 'RECEIVE', barcode: door, storeId: 1, requestKey: randomUUID() }, admin);
+    await f.service.scan({ action: 'RECEIVE', barcode: door, partType: 'DOOR', storeId: 1, requestKey: randomUUID() }, admin);
     await f.service.finishFactoryPickup(first.id, partial, tech);
     const next = await f.start([3]);
     f.stocks[3].inTransit = 1; // Legacy transit without collection evidence for either run.

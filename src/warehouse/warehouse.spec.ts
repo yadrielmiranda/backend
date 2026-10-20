@@ -27,7 +27,11 @@ function fixture() {
     action: 'COLLECT' | 'RECEIVE' | 'RELEASE',
     barcode = door,
     actor = admin,
-  ) => service.scan({ ...request(), action, barcode, ...(action === 'COLLECT' ? {} : { storeId: 1 }) }, actor);
+  ) => service.scan({
+    ...request(), action, barcode,
+    ...(barcode === door ? { partType: 'DOOR' as const } : {}),
+    ...(action === 'COLLECT' ? {} : { storeId: 1 }),
+  }, actor);
   return { ...f, service, scan };
 }
 
@@ -170,14 +174,14 @@ describe('warehouse movements', () => {
   );
   it('collects three shared-code parts into transit, then receives them into stock', async () => {
     const f = fixture();
-    for (let n = 0; n < 3; n++) await f.scan('COLLECT');
+    for (const type of ['DOOR', 'DOOR', 'FRAME']) await f.scan('COLLECT', `${door}-${type}`);
     expect(await f.service.unit(door, admin)).toMatchObject({
       inTransit: 3,
       onHand: 0,
       pending: 0,
     });
     await expect(f.scan('COLLECT')).rejects.toThrow('already accounted');
-    for (let n = 0; n < 3; n++) await f.scan('RECEIVE');
+    for (const type of ['DOOR', 'DOOR', 'FRAME']) await f.scan('RECEIVE', `${door}-${type}`);
     expect(await f.service.unit(door, admin)).toMatchObject({
       inTransit: 0,
       onHand: 3,
@@ -198,7 +202,7 @@ describe('warehouse movements', () => {
   });
   it('idempotently retries the same reading but allows distinct physical parts sharing a code', async () => {
     const f = fixture(),
-      dto = { ...request(), barcode: door, action: 'RECEIVE' as const, storeId: 1 };
+      dto = { ...request(), barcode: door, partType: 'DOOR' as const, action: 'RECEIVE' as const, storeId: 1 };
     await f.service.scan(dto, admin);
     expect((await f.service.scan(dto, admin)).replayed).toBe(true);
     await f.scan('RECEIVE');
@@ -445,7 +449,7 @@ describe('physical inventory count', () => {
     await expect(f.scan('RECEIVE')).rejects.toThrow('is open');
     const result = await f.service.countScan(
       count.id,
-      { ...request(), barcode: door },
+      { ...request(), barcode: door, partType: 'DOOR' as const },
       operator,
     );
     expect(result.counted).toBe(1);
@@ -456,7 +460,7 @@ describe('physical inventory count', () => {
     const f = fixture();
     await f.scan('RECEIVE');
     const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, operator),
-      dto = { ...request(), barcode: door };
+      dto = { ...request(), barcode: door, partType: 'DOOR' as const };
     const result = await f.service.countScan(count.id, dto, operator);
     expect((await f.service.countScan(count.id, dto, operator)).counted).toBe(
       1,
@@ -471,7 +475,7 @@ describe('physical inventory count', () => {
     const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, operator);
     await f.service.countScan(
       count.id,
-      { ...request(), barcode: door },
+      { ...request(), barcode: door, partType: 'DOOR' as const },
       operator,
     );
     const review = await f.service.count(count.id, {}, operator);
@@ -491,7 +495,7 @@ describe('physical inventory count', () => {
     const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, operator);
     await f.service.countScan(
       count.id,
-      { ...request(), barcode: door },
+      { ...request(), barcode: door, partType: 'DOOR' as const },
       operator,
     );
     const review = await f.service.count(count.id, {}, admin);
@@ -524,7 +528,7 @@ describe('physical inventory count', () => {
       before = await f.service.count(count.id, {}, admin);
     await f.service.countScan(
       count.id,
-      { ...request(), barcode: door },
+      { ...request(), barcode: door, partType: 'DOOR' as const },
       operator,
     );
     await expect(
@@ -565,7 +569,7 @@ describe('physical inventory count', () => {
     await f.service.closeCount(count.id, { action: 'CANCEL' }, operator);
     expect(f.stocks[0].onHand).toBe(1);
     await expect(
-      f.service.countScan(count.id, { ...request(), barcode: door }, operator),
+      f.service.countScan(count.id, { ...request(), barcode: door, partType: 'DOOR' as const }, operator),
     ).rejects.toThrow('closed');
     await f.scan('RECEIVE');
   });

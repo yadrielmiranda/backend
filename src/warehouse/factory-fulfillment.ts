@@ -2,6 +2,8 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash } from 'crypto';
 import { assertBalances } from './warehouse-parts';
+import { applyPartMovement, partTracking } from './warehouse-part-tracking';
+import { externalProductFamily } from './external-po/external-po-parser';
 
 // La recogida interna no corresponde a una entrega directa al cliente en fábrica.
 export function assertCompanyFactoryCollection(order: { fulfillmentMethod?: string }) {
@@ -21,6 +23,7 @@ export async function assertDirectFactoryPickup(
   const stocks = await tx.warehouseStock.findMany({
     where: { unit: { piece: { idEst: estimateId } } },
     orderBy: { lineNumber: 'asc' },
+    include: { storeBalances: true, unit: { include: { piece: { select: { prod: { select: { diagramFamily: true, kind: true } } } } } } },
   });
   if (stocks.some(stock => stock.inTransit > 0 || stock.onHand > 0 || stock.released > 0))
     throw new ConflictException(
@@ -43,9 +46,15 @@ export async function recordDirectFactoryPickup(
   for (const stock of stocks) {
     assertBalances({ ...stock, released: stock.expectedParts });
     const quantity = stock.expectedParts!;
+    const family = stock.unit.piece?.prod.diagramFamily ?? externalProductFamily(stock.unit.description ?? '');
+    const separateFrame = stock.unit.piece?.prod.kind !== 'LINEAR_MATERIAL' &&
+      (family === 'FRENCH_DOOR' || family === 'SLIDING_DOOR');
+    const typed = applyPartMovement(stock, quantity, separateFrame, {
+      quantity, releasedDelta: quantity, partQuantities: partTracking(stock, quantity, separateFrame).expected,
+    });
     const changed = await tx.warehouseStock.updateMany({
       where: { lineNumber: stock.lineNumber, version: stock.version },
-      data: { released: quantity, version: { increment: 1 } },
+      data: { released: quantity, partBalances: typed.partBalances as Prisma.InputJsonValue, version: { increment: 1 } },
     });
     if (changed.count !== 1)
       throw new ConflictException('Factory stock changed. Refresh the order before completing pickup.');
@@ -56,6 +65,7 @@ export async function recordDirectFactoryPickup(
         type: 'FACTORY_RELEASE',
         actorId,
         quantity,
+        partDetails: typed.partDetails as Prisma.InputJsonValue,
         releasedDelta: quantity,
         transitAfter: 0,
         onHandAfter: 0,

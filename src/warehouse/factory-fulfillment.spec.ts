@@ -58,6 +58,29 @@ describe('Internal collection and direct customer factory pickup', () => {
     await expect(f.warehouse.scan({ ...request(), barcode: '1096240', action: 'COLLECT' }, admin)).rejects.toThrow('direct factory pickup');
   });
 
+  it.each(['undo', 'parts review'])('keeps the saved part profile after %s and a later catalog family edit', async (setup) => {
+    const f = fixture(), line = f.stocks[0].lineNumber;
+    if (setup === 'undo') {
+      const received = await f.warehouse.scan({
+        ...request(), barcode: `${line}-FRAME`, action: 'RECEIVE', storeId: 1,
+      }, admin);
+      await f.warehouse.undo(received.movement.id, request(), admin);
+    } else {
+      await f.warehouse.setParts(line, {
+        ...request(), expectedParts: 3, version: 0, reason: 'Verified the existing physical part count',
+      }, admin);
+    }
+    const previousMovements = structuredClone(f.movements);
+    f.pieces[0].prod.diagramFamily = 'HORIZONTAL_SLIDER';
+    f.order.fulfillmentMethod = 'FACTORY_PICKUP';
+    await f.deliveries.completePickup(f.order.id, admin);
+    expect(f.stocks[0]).toMatchObject({ expectedParts: 3, released: 3, inTransit: 0, onHand: 0 });
+    expect((await f.warehouse.unit(line, admin)).partTracking).toMatchObject({
+      expected: { DOOR: 2, FRAME: 1 }, released: { DOOR: 2, FRAME: 1 },
+    });
+    expect(f.movements.slice(0, previousMovements.length)).toEqual(previousMovements);
+  });
+
   it('still requires Release payment for direct customer pickup', async () => {
     const f = fixture(); f.order.fulfillmentMethod = 'FACTORY_PICKUP';
     jest.mocked(assertScheduleMilestone).mockRejectedValue(new Error('Release unpaid'));

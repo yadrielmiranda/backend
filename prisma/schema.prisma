@@ -1741,6 +1741,8 @@ model WarehouseStock {
   lineNumber     String                 @id @db.VarChar(50)
   unit           FactoryUnit            @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
   expectedParts  Int?
+  // Null preserves legacy balances until their next typed movement.
+  partBalances   Json?
   inTransit      Int                    @default(0)
   onHand         Int                    @default(0)
   unassigned     Int                    @default(0)
@@ -2060,6 +2062,8 @@ model WarehouseMovement {
   onHandDelta         Int                   @default(0)
   releasedDelta       Int                   @default(0)
   quantity            Int                   @default(0)
+  // Exact typed balances and deltas for new movements; history stays unchanged.
+  partDetails         Json?
   fromStoreId         Int?
   fromStore           WarehouseStore?       @relation("WarehouseMovementFromStore", fields: [fromStoreId], references: [id], onDelete: Restrict)
   toStoreId           Int?
@@ -2278,6 +2282,7 @@ model WarehouseCountLine {
   stock        WarehouseStock @relation(fields: [lineNumber], references: [lineNumber], onDelete: Restrict)
   expected     Int
   counted      Int            @default(0)
+  partDetails  Json?
   stockVersion Int
 
   @@id([countId, lineNumber])

@@ -6,6 +6,7 @@ import {
   IsBoolean,
   IsIn,
   IsInt,
+  IsObject,
   IsOptional,
   IsString,
   IsUUID,
@@ -22,6 +23,7 @@ export class WarehouseRequestDto {
 }
 export class WarehouseScanDto extends WarehouseRequestDto {
   @IsString() @Length(1, 60) barcode: string;
+  @IsOptional() @IsIn(['DOOR', 'FRAME', 'WINDOW']) partType?: 'DOOR' | 'FRAME' | 'WINDOW';
   @IsIn(['COLLECT', 'RECEIVE', 'RELEASE']) action:
     | 'COLLECT'
     | 'RECEIVE'
@@ -31,6 +33,7 @@ export class WarehouseScanDto extends WarehouseRequestDto {
 }
 export class WarehouseReceiptItemDto {
   @IsString() @Length(1, 60) barcode: string;
+  @IsOptional() @IsObject() parts?: Partial<Record<'DOOR' | 'FRAME' | 'WINDOW' | 'UNKNOWN', number>>;
   @IsInt() @Min(1) @Max(200) quantity: number;
   @IsInt() @Min(0) version: number;
 }
@@ -85,6 +88,7 @@ export class FactoryPickupRunCreateDto extends FactoryPickupAssignmentsDto {
 
 export class FactoryPickupRunScanDto extends WarehouseRequestDto {
   @IsString() @Length(1, 60) barcode: string;
+  @IsOptional() @IsIn(['DOOR', 'FRAME', 'WINDOW']) partType?: 'DOOR' | 'FRAME' | 'WINDOW';
   @IsOptional() @IsBoolean() addPo?: boolean;
 }
 
@@ -110,6 +114,7 @@ export class FactoryPickupRunFinishDto extends FactoryPickupRunCycleDto {
 }
 export class WarehouseTransferDto extends WarehouseRequestDto {
   @IsString() @Length(1, 60) barcode: string;
+  @IsOptional() @IsObject() parts?: Partial<Record<'DOOR' | 'FRAME' | 'WINDOW' | 'UNKNOWN', number>>;
   @IsOptional() @IsInt() @Min(1) fromStoreId: number | null;
   @IsInt() @Min(1) toStoreId: number;
   @IsInt() @Min(1) @Max(200) quantity: number;
@@ -134,6 +139,7 @@ export class WarehouseCountStartDto extends WarehouseRequestDto {
 }
 export class WarehouseCountScanDto extends WarehouseRequestDto {
   @IsString() @Length(1, 60) barcode: string;
+  @IsOptional() @IsIn(['DOOR', 'FRAME', 'WINDOW']) partType?: 'DOOR' | 'FRAME' | 'WINDOW';
 }
 export class WarehouseCountCloseDto {
   @IsOptional() @IsString() @Length(64, 64) revision?: string;

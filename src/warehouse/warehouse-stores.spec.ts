@@ -16,7 +16,11 @@ const request = () => ({ requestKey: randomUUID() });
 function fixture() {
   const f = warehouseFixture(), service = new WarehouseService(f.db);
   const scan = (action: 'COLLECT' | 'RECEIVE' | 'RELEASE', storeId?: number | null, barcode = door) =>
-    service.scan({ ...request(), action, barcode, ...(storeId === undefined ? {} : { storeId }) }, admin);
+    service.scan({
+      ...request(), action, barcode,
+      ...(barcode === door ? { partType: 'DOOR' as const } : {}),
+      ...(storeId === undefined ? {} : { storeId }),
+    }, admin);
   const snapshot = () => structuredClone({ stocks: f.stocks, movements: f.movements, balances: f.balances });
   const invariant = () => {
     for (const stock of f.stocks) {
@@ -82,25 +86,30 @@ describe('configurable warehouse stores', () => {
     f.invariant();
   });
   it('splits parts sharing a barcode across stores and receives them only once', async () => {
-    const f = fixture(); for (let i = 0; i < 3; i++) await f.scan('COLLECT');
+    const f = fixture();
+    for (const type of ['DOOR', 'DOOR', 'FRAME']) await f.scan('COLLECT', undefined, `${door}-${type}`);
     await f.scan('RECEIVE', 1); await f.scan('RECEIVE', 2);
     const stock = await f.service.unit(door, admin);
     expect(stock).toMatchObject({ inTransit: 1, onHand: 2, unassigned: 0 });
     expect(stock.stores.map((s) => [s.id, s.onHand])).toEqual([[1, 1], [2, 1]]);
-    await f.scan('RECEIVE', 1);
+    await f.scan('RECEIVE', 1, `${door}-FRAME`);
     expect(f.balances).toHaveLength(2); f.invariant();
   });
   it('includes the selected store in scan idempotency', async () => {
-    const f = fixture(), dto = { ...request(), action: 'RECEIVE' as const, barcode: door, storeId: 1 };
+    const f = fixture(), dto = { ...request(), action: 'RECEIVE' as const, barcode: door, partType: 'DOOR' as const, storeId: 1 };
     await f.service.scan(dto, admin);
     expect((await f.service.scan(dto, admin)).replayed).toBe(true);
     await expect(f.service.scan({ ...dto, storeId: 2 }, admin)).rejects.toThrow('another operation');
     expect(f.stocks[0].onHand).toBe(1); f.invariant();
   });
   it('receives selected quantities from transit in one transaction', async () => {
-    const f = fixture(); for (let i = 0; i < 3; i++) await f.scan('COLLECT');
+    const f = fixture();
+    for (const type of ['DOOR', 'DOOR', 'FRAME']) await f.scan('COLLECT', undefined, `${door}-${type}`);
     await f.scan('COLLECT', undefined, fixed);
-    const result = await f.service.receive({ ...request(), storeId: 2, items: [await f.item(door, 2), await f.item(fixed)] }, operator);
+    const result = await f.service.receive({
+      ...request(), storeId: 2,
+      items: [{ ...await f.item(door, 2), parts: { DOOR: 2 } }, await f.item(fixed)],
+    }, operator);
     expect(result).toMatchObject({ parts: 3, units: 2, storeId: 2, replayed: false });
     expect(f.stocks[0]).toMatchObject({ inTransit: 1, onHand: 2, unassigned: 0 });
     expect(f.stocks[3]).toMatchObject({ inTransit: 0, onHand: 1 });
@@ -256,7 +265,7 @@ describe('configurable warehouse stores', () => {
     const f = fixture();
     await f.scan('RECEIVE', 1, door);
     await f.scan('RECEIVE', 2, door);
-    await f.scan('RECEIVE', 2, door);
+    await f.scan('RECEIVE', 2, `${door}-FRAME`);
     await f.scan('RECEIVE', 1, fixed);
     for (const method of ['inventory', 'inventoryByPo'] as const) {
       const main = await f.service[method]({ view: 'on_hand', storeId: '1', pageSize: '1' }, admin);
@@ -289,9 +298,9 @@ describe('configurable warehouse stores', () => {
     await expect(f.service.transfer({ ...request(), barcode: door, fromStoreId: 1, toStoreId: 2, quantity: 1, version: item.version }, admin)).rejects.toThrow('is open'); f.invariant();
   });
   it('adjusts only the counted store while preserving parts in other stores', async () => {
-    const f = fixture(); await f.scan('RECEIVE', 1); await f.scan('RECEIVE', 1); await f.scan('RECEIVE', 2);
+    const f = fixture(); await f.scan('RECEIVE', 1); await f.scan('RECEIVE', 1); await f.scan('RECEIVE', 2, `${door}-FRAME`);
     const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, admin);
-    await f.service.countScan(count.id, { ...request(), barcode: door }, operator);
+    await f.service.countScan(count.id, { ...request(), barcode: door, partType: 'DOOR' as const }, operator);
     const review = await f.service.count(count.id, {}, admin);
     expect(review).toMatchObject({ expected: 2, counted: 1, scope: 'STORE', store: { id: 1 } });
     await f.service.closeCount(count.id, { action: 'COMPLETE', revision: review.revision, reason: 'One part missing in Main' }, admin);
@@ -301,7 +310,7 @@ describe('configurable warehouse stores', () => {
   it('adds found parts to the counted store without changing other locations', async () => {
     const f = fixture(); await f.scan('RECEIVE', 2);
     const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 1 }, admin);
-    await f.service.countScan(count.id, { ...request(), barcode: door }, admin);
+    await f.service.countScan(count.id, { ...request(), barcode: door, partType: 'DOOR' as const }, admin);
     const review = await f.service.count(count.id, {}, admin);
     await f.service.closeCount(count.id, { action: 'COMPLETE', revision: review.revision, reason: 'Found part verified' }, admin);
     expect((await f.service.unit(door, admin)).stores.map((s) => [s.id, s.onHand])).toEqual([[1, 1], [2, 1]]); f.invariant();
@@ -334,9 +343,10 @@ describe('configurable warehouse stores', () => {
     expect(f.stores[0].isActive).toBe(false);
   });
   it('does not count the same capacity again in a different store', async () => {
-    const f = fixture(); for (let i = 0; i < 3; i++) await f.scan('RECEIVE', 1);
+    const f = fixture();
+    for (const type of ['DOOR', 'DOOR', 'FRAME']) await f.scan('RECEIVE', 1, `${door}-${type}`);
     const count = await f.service.startCount({ ...request(), scope: 'STORE', storeId: 2 }, admin);
-    await expect(f.service.countScan(count.id, { ...request(), barcode: door }, admin)).rejects.toThrow('exceeds'); f.invariant();
+    await expect(f.service.countScan(count.id, { ...request(), barcode: door, partType: 'DOOR' as const }, admin)).rejects.toThrow('exceeds'); f.invariant();
   });
   it('rejects inconsistent store balances instead of compounding them', async () => {
     const f = fixture(); await f.scan('RECEIVE', 1); f.stocks[0].unassigned = 1;

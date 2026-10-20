@@ -12,9 +12,12 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 import { assertScheduleMilestone } from '@/payment-plans/payment-schedule';
 import {
   barcodeLine,
+  parseFactoryBarcode,
   expectedPhysicalParts,
   assertBalances,
 } from './warehouse-parts';
+import { applyPartMovement, partTracking, resolvePartQuantities, reconcilePartCount } from './warehouse-part-tracking';
+import { externalProductFamily } from './external-po/external-po-parser';
 import { assertWarehouseRelease } from './warehouse-release';
 import { customerDeliverySignature } from './customer-delivery-signature';
 import { assertCompanyFactoryCollection } from './factory-fulfillment';
@@ -91,6 +94,74 @@ const hash = (value: unknown) =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const name = (user: { firstName: string; lastName: string }) =>
   `${user.firstName} ${user.lastName}`.trim();
+const partTypes = ['DOOR', 'FRAME', 'WINDOW', 'UNKNOWN'] as const;
+type PartType = typeof partTypes[number];
+type PartQuantities = Partial<Record<PartType, number>>;
+const zeroParts = (): Record<PartType, number> => ({ DOOR: 0, FRAME: 0, WINDOW: 0, UNKNOWN: 0 });
+function addParts(target: PartQuantities, source: PartQuantities) {
+  for (const type of partTypes) target[type] = (target[type] ?? 0) + (source[type] ?? 0);
+  return target;
+}
+function partMap(value: unknown, legacyQuantity = 0): Record<PartType, number> {
+  const result = zeroParts();
+  if (value && typeof value === 'object' && !Array.isArray(value))
+    for (const type of partTypes) result[type] = Number((value as PartQuantities)[type] ?? 0);
+  else result.UNKNOWN = legacyQuantity;
+  return result;
+}
+function locationParts(stock: Stock, storeId: number | null) {
+  const detail = tracking(stock);
+  return storeId === null ? detail.unassigned : detail.stores.find(store => store.id === storeId)?.parts ?? zeroParts();
+}
+type CountPartLine = { expected: number; counted: number; partDetails?: unknown };
+function countParts(line: CountPartLine) {
+  const detail = line.partDetails as { expected?: PartQuantities; counted?: PartQuantities } | null;
+  return { v: 1 as const, expected: partMap(detail?.expected, line.expected), counted: partMap(detail?.counted, line.counted) };
+}
+function countHasDifference(line: CountPartLine) {
+  const detail = countParts(line);
+  return line.expected !== line.counted || partTypes.some(type => detail.expected[type] !== detail.counted[type]);
+}
+function countLocationParts(stock: Stock, count: { scope: string; storeId: number | null }) {
+  return count.scope === 'ALL' ? tracking(stock).onHand : locationParts(stock, count.storeId);
+}
+
+function requestedPartType(barcode: string, explicit?: string) {
+  const parsed = parseFactoryBarcode(barcode);
+  if (explicit !== undefined && !['DOOR', 'FRAME', 'WINDOW'].includes(explicit))
+    throw new BadRequestException('Choose a valid physical part type.');
+  if (parsed.partType && explicit && parsed.partType !== explicit)
+    throw new BadRequestException('The selected part type does not match this barcode.');
+  return { lineNumber: parsed.lineNumber, partType: parsed.partType ?? explicit as 'DOOR' | 'FRAME' | 'WINDOW' | undefined };
+}
+function requestedParts(item: { barcode: string; quantity: number; version?: number; parts?: PartQuantities }) {
+  const parsed = parseFactoryBarcode(item.barcode);
+  let selected = item.parts;
+  if (selected !== undefined) {
+    if (!selected || typeof selected !== 'object' || Array.isArray(selected) ||
+        Object.keys(selected).some(key => !partTypes.includes(key as PartType)) ||
+        Object.values(selected).some(value => !Number.isInteger(value) || value < 0 || value > 200))
+      throw new BadRequestException('Enter valid quantities for each physical part type.');
+    selected = Object.fromEntries(partTypes.filter(type => (selected![type] ?? 0) > 0).map(type => [type, selected![type]!]));
+    if (Object.values(selected).reduce((sum, value) => sum + value, 0) !== item.quantity)
+      throw new BadRequestException('The part type quantities must equal the selected quantity.');
+  }
+  if (parsed.partType) {
+    if (selected && ((selected[parsed.partType] ?? 0) !== item.quantity || Object.keys(selected).length !== 1))
+      throw new BadRequestException('The selected part quantities do not match this barcode.');
+    selected = { [parsed.partType]: item.quantity };
+  }
+  return { lineNumber: parsed.lineNumber, quantity: item.quantity, ...(item.version === undefined ? {} : { version: item.version }),
+    ...(selected === undefined ? {} : { parts: selected }) };
+}
+function separateFrame(stock: Stock) {
+  if (stock.unit.piece?.prod.kind === 'LINEAR_MATERIAL') return false;
+  const family = stock.unit.piece?.prod.diagramFamily ?? externalProductFamily(stock.unit.description ?? '');
+  return family === 'FRENCH_DOOR' || family === 'SLIDING_DOOR';
+}
+function tracking(stock: Stock) {
+  return partTracking(stock, parts(stock), separateFrame(stock));
+}
 
 function parts(stock: Stock) {
   const p = stock.unit.piece;
@@ -132,6 +203,7 @@ function presentStock(stock: Stock) {
     installation: e && ['INSTALLATION_DELIVERY', 'COMPANY_DELIVERY'].includes(e.order?.fulfillmentMethod ?? '')
       ? installationDestination(e.installationJob) : null,
     expectedParts: expected,
+    partTracking: tracking(stock),
     inTransit: stock.inTransit,
     onHand: stock.onHand,
     unassigned: stock.unassigned,
@@ -167,6 +239,7 @@ function presentMovement(m: Movement) {
     lineNumber: m.lineNumber,
     type: m.type,
     quantity: m.quantity,
+    partDetails: m.partDetails ?? null,
     fromStore: m.fromStore,
     toStore: m.toStore,
     installation: m.installationJobId == null ? null : {
@@ -225,13 +298,14 @@ function countRevision(
     expected: number;
     counted: number;
     stockVersion: number;
+    partDetails?: unknown;
   }>,
 ) {
   return hash([
     id,
     [...lines]
       .sort((a, b) => a.lineNumber.localeCompare(b.lineNumber))
-      .map((l) => [l.lineNumber, l.expected, l.counted, l.stockVersion]),
+      .map((l) => [l.lineNumber, l.expected, l.counted, l.stockVersion, ...(l.partDetails == null ? [] : [l.partDetails])]),
   ]);
 }
 function paging(query: Query) {
@@ -258,9 +332,11 @@ function stockSearch(
     throw new BadRequestException('Search must be 150 characters or fewer.');
   if (!q) return {};
   const contains = { contains: q };
+  let lineSearch = q.replace(/^I(?=\d)/i, '');
+  try { lineSearch = parseFactoryBarcode(q).lineNumber; } catch { /* Free-text searches remain valid. */ }
   return {
     OR: [
-      { lineNumber: { contains: q.replace(/^I(?=\d)/i, '') } },
+      { lineNumber: { contains: lineSearch } },
       { unit: { OR: [
         { mark: contains }, { description: contains },
         { externalPo: { OR: [{ poNumber: contains }, { orderName: contains }, { supplierName: contains }] } },
@@ -366,6 +442,7 @@ export class WarehouseService {
       product: stock.product, system: stock.system, configuration: stock.configuration,
       orderNumber: stock.orderNumber, poNumber: stock.poNumber,
       expectedParts: stock.expectedParts, inTransit: stock.inTransit,
+      partTracking: stock.partTracking,
       onHand: stock.onHand, pending: stock.pending, version: stock.version,
       installation: stock.installation,
     };
@@ -408,7 +485,7 @@ export class WarehouseService {
     });
     if (pickupRunId !== undefined && !runs.length) throw new NotFoundException('Factory pickup not found.');
     const assigned = new Set(runs.map((run) => run.id));
-    const available = new Map<string, Array<{ pickupRunId: number; quantity: number }>>();
+    const available = new Map<string, Array<{ pickupRunId: number; quantity: number; parts: Record<PartType, number> }>>();
     if (!assigned.size) return available;
     const collections = await tx.warehouseMovement.findMany({
       where: { pickupRunId: { in: [...assigned] }, type: 'COLLECT', reversal: null, stock: { inTransit: { gt: 0 } },
@@ -421,31 +498,38 @@ export class WarehouseService {
     // a finished pickup must not grant access to another crew's later collection.
     const movements = await tx.warehouseMovement.findMany({
       where: { lineNumber: { in: candidates }, transitDelta: { not: 0 }, reversalOfId: null, reversal: null },
-      select: { lineNumber: true, pickupRunId: true, transitDelta: true }, orderBy: { id: 'asc' },
+      select: { lineNumber: true, pickupRunId: true, transitDelta: true, partDetails: true }, orderBy: { id: 'asc' },
     });
-    const lots = new Map<string, Array<{ pickupRunId: number | null; quantity: number }>>();
+    const lots = new Map<string, Array<{ pickupRunId: number | null; parts: Record<PartType, number> }>>();
     for (const movement of movements) {
       const current = lots.get(movement.lineNumber) ?? [];
       lots.set(movement.lineNumber, current);
-      if (movement.transitDelta > 0) {
-        current.push({ pickupRunId: movement.pickupRunId, quantity: movement.transitDelta });
-      } else {
-        let remaining = -movement.transitDelta;
+      const details = movement.partDetails as { deltas?: { inTransit?: PartQuantities } } | null;
+      const deltas = partMap(details?.deltas?.inTransit, movement.transitDelta);
+      const incoming = zeroParts();
+      for (const type of partTypes) {
+        if (deltas[type] > 0) incoming[type] = deltas[type];
+        let remaining = Math.max(0, -deltas[type]);
         for (const lot of current) {
-          // Technician handoffs retain their pickup run. General warehouse receipts
-          // and staff releases consume the oldest remaining transit quantities.
           if (movement.pickupRunId != null && lot.pickupRunId !== movement.pickupRunId) continue;
-          const quantity = Math.min(lot.quantity, remaining);
-          lot.quantity -= quantity; remaining -= quantity;
+          const quantity = Math.min(lot.parts[type], remaining);
+          lot.parts[type] -= quantity; remaining -= quantity;
           if (!remaining) break;
         }
+        if (remaining) throw new ConflictException('Transit part types do not match the recorded pickup quantities. Review this line before delivery.');
       }
+      if (Object.values(incoming).some(quantity => quantity > 0))
+        current.push({ pickupRunId: movement.pickupRunId, parts: incoming });
     }
     for (const [line, current] of lots) {
-      const byRun = new Map<number, number>();
-      for (const lot of current) if (lot.pickupRunId != null && assigned.has(lot.pickupRunId) && lot.quantity > 0)
-        byRun.set(lot.pickupRunId, (byRun.get(lot.pickupRunId) ?? 0) + lot.quantity);
-      if (byRun.size) available.set(line, [...byRun].map(([pickupRunId, quantity]) => ({ pickupRunId, quantity })));
+      const byRun = new Map<number, Record<PartType, number>>();
+      for (const lot of current) if (lot.pickupRunId != null && assigned.has(lot.pickupRunId) && Object.values(lot.parts).some(quantity => quantity > 0)) {
+        const quantities = byRun.get(lot.pickupRunId) ?? zeroParts();
+        addParts(quantities, lot.parts); byRun.set(lot.pickupRunId, quantities);
+      }
+      if (byRun.size) available.set(line, [...byRun].map(([pickupRunId, quantities]) => ({
+        pickupRunId, quantity: Object.values(quantities).reduce((sum, value) => sum + value, 0), parts: quantities,
+      })));
     }
     return available;
   }
@@ -494,7 +578,10 @@ export class WarehouseService {
           groups.set(source.key, group);
         }
         group.availableParts += quantity; group.pieces += 1;
-        group.lines.push({ ...this.technicianStock(unit), inTransit: quantity });
+        const availableTypes = zeroParts();
+        for (const lot of available.get(stock.lineNumber)!) addParts(availableTypes, lot.parts);
+        group.lines.push({ ...this.technicianStock(unit), inTransit: quantity,
+          partTracking: { ...unit.partTracking, inTransit: availableTypes } });
       }
       const filtered = [...groups.values()].filter((group) => !search || [
         group.poNumber, group.orderNumber, group.customerName, group.projectName,
@@ -897,12 +984,13 @@ export class WarehouseService {
     actor: AuthUser,
   ) {
     this.factoryPickupStaff(actor);
-    const lineNumber = barcodeLine(dto.barcode);
+    const { lineNumber, partType } = requestedPartType(dto.barcode, dto.partType);
     const requestHash = hash([
       actor.id,
       'PICKUP_COLLECT',
       pickupRunId,
       lineNumber,
+      ...(partType ? [{ partType }] : []),
     ]);
 
     return this.transaction(async (tx) => {
@@ -1004,6 +1092,7 @@ export class WarehouseService {
         transitDelta: 1,
         quantity: 1,
         pickupRunId,
+        partType,
       });
       return {
         kind: 'COLLECTED' as const,
@@ -1203,6 +1292,11 @@ export class WarehouseService {
       installationJobId?: number | null;
       installationAddress?: string | null;
       customerDeliveryId?: number;
+      partType?: 'DOOR' | 'FRAME' | 'WINDOW';
+      partQuantities?: PartQuantities;
+      sourcePartQuantities?: PartQuantities;
+      undoDetails?: unknown;
+      typedOverride?: ReturnType<typeof reconcilePartCount>;
     },
   ) {
     const { transitDelta = 0, onHandDelta = 0, releasedDelta = 0,
@@ -1215,6 +1309,10 @@ export class WarehouseService {
       released: stock.released + releasedDelta,
     };
     assertBalances(next);
+    const typed = data.typedOverride ?? applyPartMovement(stock, next.expectedParts, separateFrame(stock), {
+      quantity, transitDelta, onHandDelta, releasedDelta, fromStoreId, toStoreId,
+      partType: data.partType, partQuantities: data.partQuantities, sourcePartQuantities: data.sourcePartQuantities, undoDetails: data.undoDetails,
+    });
     const assigned = stock.storeBalances.reduce((sum, b) => sum + b.onHand, 0);
     if (stock.unassigned < 0 || assigned + stock.unassigned !== stock.onHand)
       throw new ConflictException('Store balances do not match warehouse stock. Review this unit before moving it.');
@@ -1231,7 +1329,7 @@ export class WarehouseService {
     }
     const changed = await tx.warehouseStock.updateMany({
       where: { lineNumber: stock.lineNumber, version: stock.version },
-      data: { ...next, unassigned, version: { increment: 1 } },
+      data: { ...next, unassigned, partBalances: typed.partBalances as Prisma.InputJsonValue, version: { increment: 1 } },
     });
     if (changed.count !== 1)
       throw new ConflictException(
@@ -1249,6 +1347,7 @@ export class WarehouseService {
       data: {
         lineNumber: stock.lineNumber,
         quantity,
+        partDetails: typed.partDetails as Prisma.InputJsonValue,
         fromStoreId,
         toStoreId,
         type: data.type,
@@ -1339,9 +1438,7 @@ export class WarehouseService {
       throw new BadRequestException('Select between 1 and 500 units per receipt.');
     if (dto.items.some((item) => !item || typeof item !== 'object'))
       throw new BadRequestException('Select valid receipt units.');
-    const items = dto.items.map((item) => ({
-      lineNumber: barcodeLine(item.barcode), quantity: item.quantity, version: item.version,
-    })).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
+    const items = dto.items.map(requestedParts).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
     if (new Set(items.map((i) => i.lineNumber)).size !== items.length ||
         items.some((i) => !Number.isInteger(i.quantity) || i.quantity < 1 || i.quantity > 200 ||
           !Number.isSafeInteger(i.version) || i.version < 0))
@@ -1375,7 +1472,7 @@ export class WarehouseService {
         await this.move(tx, stock, {
           type: 'RECEIVE', actorId: actor.id,
           requestKey: index === 0 ? dto.requestKey : hash([dto.requestKey, item.lineNumber]),
-          requestHash, quantity: item.quantity,
+          requestHash, quantity: item.quantity, partQuantities: item.parts,
           transitDelta: -item.quantity, onHandDelta: item.quantity,
           toStoreId: dto.storeId,
         });
@@ -1443,9 +1540,7 @@ export class WarehouseService {
     if (!Array.isArray(dto.items) || !dto.items.length || dto.items.length > 500 ||
         dto.items.some((item) => !item || typeof item !== 'object'))
       throw new BadRequestException('Select between 1 and 500 units per customer delivery.');
-    const items = dto.items.map((item) => ({
-      lineNumber: barcodeLine(item.barcode), quantity: item.quantity, version: item.version,
-    })).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
+    const items = dto.items.map(requestedParts).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
     if (new Set(items.map((item) => item.lineNumber)).size !== items.length ||
         items.some((item) => !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 200 ||
           !Number.isSafeInteger(item.version) || item.version < 0))
@@ -1468,7 +1563,8 @@ export class WarehouseService {
       const store = storeId !== null ? await tx.warehouseStore.findUniqueOrThrow({ where: { id: storeId } }) : null;
       const eligible = technician || dto.pickupRunId !== undefined
         ? await this.pickupTransitLots(tx, actor, items.map((item) => item.lineNumber), dto.pickupRunId) : null;
-      const selected: Array<{ stock: Stock; quantity: number; allocations?: Array<{ pickupRunId: number; quantity: number }> }> = [];
+      const selected: Array<{ stock: Stock; quantity: number; parts: PartQuantities;
+        allocations?: Array<{ pickupRunId: number; quantity: number; parts: Record<PartType, number>; sourceParts: Record<PartType, number> }> }> = [];
       for (const item of items) {
         const lots = eligible?.get(item.lineNumber) ?? [];
         if (eligible && lots.reduce((sum, lot) => sum + lot.quantity, 0) < item.quantity)
@@ -1481,23 +1577,47 @@ export class WarehouseService {
         const available = dto.source === 'TRANSIT' ? stock.inTransit : storeQuantity(stock, storeId);
         if (available < item.quantity)
           throw new BadRequestException(`Unit I${item.lineNumber} does not have that many parts ${dto.source === 'TRANSIT' ? 'in transit' : 'in the selected source store'}. No parts were released by this request.`);
-        let remaining = item.quantity;
-        const allocations = eligible ? lots.flatMap((lot) => {
-          const quantity = Math.min(lot.quantity, remaining); remaining -= quantity;
-          return quantity > 0 ? [{ pickupRunId: lot.pickupRunId, quantity }] : [];
-        }) : undefined;
-        selected.push({ stock, quantity: item.quantity, allocations });
+        const sourceParts = eligible ? lots.reduce((result, lot) => {
+          addParts(result, lot.parts); return result;
+        }, zeroParts()) : dto.source === 'TRANSIT' ? tracking(stock).inTransit : locationParts(stock, storeId);
+        const selectedParts = resolvePartQuantities(item.quantity, sourceParts, tracking(stock).types, undefined, item.parts);
+        let allocations: Array<{ pickupRunId: number; quantity: number; parts: Record<PartType, number>; sourceParts: Record<PartType, number> }> | undefined;
+        if (eligible) {
+          const byRun = new Map<number, Record<PartType, number>>();
+          const sourceByRun = new Map<number, Record<PartType, number>>();
+          const remainingLots = lots.map(lot => ({ ...lot, parts: { ...lot.parts } }));
+          for (const type of partTypes) {
+            let remaining = selectedParts[type] ?? 0;
+            for (const sourceType of type === 'UNKNOWN' ? ['UNKNOWN'] as const : [type, 'UNKNOWN'] as const) {
+              for (const lot of remainingLots) {
+                const quantity = Math.min(remaining, lot.parts[sourceType] ?? 0);
+                if (!quantity) continue;
+                const allocated = byRun.get(lot.pickupRunId) ?? zeroParts();
+                allocated[type] += quantity; byRun.set(lot.pickupRunId, allocated);
+                const consumed = sourceByRun.get(lot.pickupRunId) ?? zeroParts();
+                consumed[sourceType] += quantity; sourceByRun.set(lot.pickupRunId, consumed);
+                lot.parts[sourceType] -= quantity; remaining -= quantity;
+              }
+            }
+            if (remaining) throw new ForbiddenException('These part types are not available from the selected factory pickups.');
+          }
+          allocations = [...byRun].map(([pickupRunId, selected]) => ({
+            pickupRunId, parts: selected, sourceParts: sourceByRun.get(pickupRunId)!,
+            quantity: Object.values(selected).reduce((sum, value) => sum + value, 0),
+          }));
+        }
+        selected.push({ stock, quantity: item.quantity, parts: selectedParts, allocations });
       }
       // Keep commercial release requirements for internal orders, regardless of the recipient.
       const estimateIds = [...new Set(selected.flatMap(({ stock }) => stock.unit.piece ? [stock.unit.piece.idEst] : []))].sort((a, b) => a - b);
       for (const estimateId of estimateIds) await assertWarehouseRelease(tx, estimateId);
-      const receiptItems = selected.map(({ stock, quantity }) => {
+      const receiptItems = selected.map(({ stock, quantity, parts: selectedParts }) => {
         const unit = presentStock(stock);
         return {
           lineNumber: unit.lineNumber, barcode: unit.barcode, poNumber: unit.poNumber,
           source: unit.source, orderNumber: unit.orderNumber, mark: unit.mark,
           description: unit.description, product: unit.product, system: unit.system,
-          configuration: unit.configuration, quantity,
+          configuration: unit.configuration, quantity, parts: selectedParts,
         };
       });
       const recordedBy = await tx.user.findUniqueOrThrow({ where: { id: actor.id }, select: actorSelect });
@@ -1509,14 +1629,15 @@ export class WarehouseService {
         actorId: actor.id, actorName: name(recordedBy),
       } });
       let movementIndex = 0;
-      for (const { stock, quantity, allocations } of selected) {
-        const movements: Array<{ quantity: number; pickupRunId?: number }> = allocations ?? [{ quantity }];
+      for (const { stock, quantity, parts: selectedParts, allocations } of selected) {
+        const movements: Array<{ quantity: number; pickupRunId?: number; parts: PartQuantities; sourceParts?: PartQuantities }> = allocations ?? [{ quantity, parts: selectedParts }];
         for (const [index, movement] of movements.entries()) {
           await this.move(tx, index === 0 ? stock : await this.load(tx, stock.lineNumber), {
             type: 'RELEASE', actorId: actor.id, requestHash,
             requestKey: movementIndex++ === 0 ? dto.requestKey : hash(movement.pickupRunId === undefined
               ? [dto.requestKey, stock.lineNumber] : [dto.requestKey, stock.lineNumber, movement.pickupRunId]),
-            customerDeliveryId: delivery.id, quantity: movement.quantity, pickupRunId: movement.pickupRunId,
+            customerDeliveryId: delivery.id, quantity: movement.quantity, partQuantities: movement.parts,
+            sourcePartQuantities: movement.sourceParts, pickupRunId: movement.pickupRunId,
             transitDelta: dto.source === 'TRANSIT' ? -movement.quantity : 0,
             onHandDelta: dto.source === 'WAREHOUSE' ? -movement.quantity : 0,
             releasedDelta: movement.quantity, fromStoreId: dto.source === 'WAREHOUSE' ? storeId : null,
@@ -1538,9 +1659,7 @@ export class WarehouseService {
     if (!Array.isArray(dto.items) || !dto.items.length || dto.items.length > 500 ||
         dto.items.some((item) => !item || typeof item !== 'object'))
       throw new BadRequestException('Select between 1 and 500 units per release.');
-    const items = dto.items.map((item) => ({
-      lineNumber: barcodeLine(item.barcode), quantity: item.quantity, version: item.version,
-    })).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
+    const items = dto.items.map(requestedParts).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
     if (new Set(items.map((item) => item.lineNumber)).size !== items.length ||
         items.some((item) => !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 200 ||
           !Number.isSafeInteger(item.version) || item.version < 0))
@@ -1564,26 +1683,26 @@ export class WarehouseService {
       if (dto.storeId !== null) await this.lockStores(tx, [dto.storeId]);
       const store = dto.storeId === null ? null : await tx.warehouseStore.findUniqueOrThrow({ where: { id: dto.storeId } });
       const sourceName = store?.name ?? 'Unassigned';
-      const selected: Array<{ stock: Stock; quantity: number }> = [];
+      const selected: Array<{ stock: Stock; quantity: number; parts?: PartQuantities }> = [];
       for (const item of items) {
         const stock = await this.load(tx, item.lineNumber);
         if (stock.version !== item.version)
           throw new ConflictException(`Unit I${item.lineNumber} changed. Refresh and review the release. No parts were released by this request.`);
         if (storeQuantity(stock, dto.storeId) < item.quantity)
           throw new BadRequestException(`Unit I${item.lineNumber} does not have that many parts in the selected source store. No parts were released by this request.`);
-        selected.push({ stock, quantity: item.quantity });
+        selected.push({ stock, quantity: item.quantity, parts: item.parts });
       }
       // Match unsigned scan RELEASE: an installation is optional, but commercial checks are not.
       const estimateIds = [...new Set(selected.flatMap(({ stock }) => stock.unit.piece ? [stock.unit.piece.idEst] : []))].sort((a, b) => a - b);
       const installations = new Map<number, ReturnType<typeof installationDestination>>();
       for (const estimateId of estimateIds)
         installations.set(estimateId, (await assertWarehouseRelease(tx, estimateId))?.installation ?? null);
-      for (const [index, { stock, quantity }] of selected.entries()) {
+      for (const [index, { stock, quantity, parts: selectedParts }] of selected.entries()) {
         const installation = stock.unit.piece ? installations.get(stock.unit.piece.idEst) : null;
         await this.move(tx, stock, {
           type: 'RELEASE', actorId: actor.id, requestHash,
           requestKey: index === 0 ? dto.requestKey : hash([dto.requestKey, stock.lineNumber]),
-          quantity, onHandDelta: -quantity, releasedDelta: quantity, fromStoreId: dto.storeId,
+          quantity, partQuantities: selectedParts, onHandDelta: -quantity, releasedDelta: quantity, fromStoreId: dto.storeId,
           installationJobId: installation?.id, installationAddress: installation?.address,
           reason: `${reasonPrefix}${sourceName}`,
         });
@@ -1600,9 +1719,7 @@ export class WarehouseService {
     if (!Array.isArray(dto.items) || !dto.items.length || dto.items.length > 500 ||
         dto.items.some((item) => !item || typeof item !== 'object'))
       throw new BadRequestException('Select between 1 and 500 units per installation delivery.');
-    const items = dto.items.map((item) => ({
-      lineNumber: barcodeLine(item.barcode), quantity: item.quantity, version: item.version,
-    })).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
+    const items = dto.items.map(requestedParts).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
     if (new Set(items.map((i) => i.lineNumber)).size !== items.length ||
         items.some((i) => !Number.isInteger(i.quantity) || i.quantity < 1 || i.quantity > 200 ||
           !Number.isSafeInteger(i.version) || i.version < 0))
@@ -1650,7 +1767,7 @@ export class WarehouseService {
         await this.move(tx, stock, {
           type: 'INSTALLATION_DELIVERY', actorId: actor.id,
           requestKey: index === 0 ? dto.requestKey : hash([dto.requestKey, item.lineNumber]),
-          requestHash, quantity: item.quantity,
+          requestHash, quantity: item.quantity, partQuantities: item.parts,
           transitDelta: -item.quantity, releasedDelta: item.quantity,
           installationJobId: destination.id, installationAddress: destination.address,
         });
@@ -1660,14 +1777,15 @@ export class WarehouseService {
   }
   async transfer(dto: WarehouseTransferDto, actor: AuthUser) {
     this.staff(actor);
-    const lineNumber = barcodeLine(dto.barcode);
+    const requested = requestedParts(dto), { lineNumber } = requested;
     if (dto.fromStoreId === undefined ||
         (dto.fromStoreId !== null && (!Number.isSafeInteger(dto.fromStoreId) || dto.fromStoreId < 1)) ||
         !Number.isSafeInteger(dto.toStoreId) || dto.toStoreId < 1 || dto.fromStoreId === dto.toStoreId ||
         !Number.isInteger(dto.quantity) || dto.quantity < 1 || dto.quantity > 200 ||
         !Number.isSafeInteger(dto.version) || dto.version < 0)
       throw new BadRequestException('Choose different source and destination locations and a valid quantity.');
-    const requestHash = hash([actor.id, 'TRANSFER', lineNumber, dto.fromStoreId, dto.toStoreId, dto.quantity, dto.version]);
+    const requestHash = hash([actor.id, 'TRANSFER', lineNumber, dto.fromStoreId, dto.toStoreId, dto.quantity, dto.version,
+      ...(requested.parts ? [{ parts: requested.parts }] : [])]);
     return this.transaction(async (tx) => {
       const replay = await this.replay(tx, dto.requestKey, requestHash);
       if (replay) return replay;
@@ -1682,7 +1800,7 @@ export class WarehouseService {
       return this.move(tx, stock, {
         type: 'TRANSFER', actorId: actor.id,
         requestKey: dto.requestKey, requestHash,
-        quantity: dto.quantity, fromStoreId: dto.fromStoreId, toStoreId: dto.toStoreId,
+        quantity: dto.quantity, partQuantities: requested.parts, fromStoreId: dto.fromStoreId, toStoreId: dto.toStoreId,
       });
     });
   }
@@ -1933,10 +2051,10 @@ export class WarehouseService {
     // Defensa en servicio: no basta con ocultar la salida en el teléfono.
     if (actor.role?.name === 'technician' && !['COLLECT', 'RECEIVE'].includes(dto.action))
       throw new ForbiddenException('Technicians can only collect or receive parts.');
-    const lineNumber = barcodeLine(dto.barcode),
-      requestHash = hash(dto.storeId === undefined
+    const { lineNumber, partType } = requestedPartType(dto.barcode, dto.partType),
+      requestHash = hash([...(dto.storeId === undefined
         ? [actor.id, dto.action, lineNumber]
-        : [actor.id, dto.action, lineNumber, dto.storeId]);
+        : [actor.id, dto.action, lineNumber, dto.storeId]), ...(partType ? [{ partType }] : [])]);
     return this.transaction(async (tx) => {
       const replay = await this.replay(tx, dto.requestKey, requestHash);
       if (replay) return replay;
@@ -1963,7 +2081,8 @@ export class WarehouseService {
       }
       else if (dto.action === 'RECEIVE') {
         // Recibir permite llegada directa; si hay partes en tránsito, consume una.
-        deltas.transitDelta = stock.inTransit > 0 ? -1 : 0;
+        const transit = tracking(stock).inTransit;
+        deltas.transitDelta = stock.inTransit > 0 && (!partType || (transit[partType] ?? 0) > 0 || (transit.UNKNOWN ?? 0) > 0) ? -1 : 0;
         deltas.onHandDelta = 1;
       } else if (dto.action === 'RELEASE') {
         if (!stock.onHand)
@@ -1975,6 +2094,26 @@ export class WarehouseService {
         deltas.onHandDelta = -1;
         deltas.releasedDelta = 1;
       } else throw new BadRequestException('Invalid warehouse action.');
+      if (!parts(stock))
+        throw new BadRequestException('An administrator must set the expected physical parts for this unit first.');
+      const tracked = tracking(stock);
+      const sourceParts = deltas.transitDelta < 0 ? tracked.inTransit
+        : deltas.onHandDelta < 0 ? locationParts(stock, dto.storeId ?? null) : null;
+      let partQuantities: PartQuantities;
+      try {
+        partQuantities = resolvePartQuantities(1, sourceParts, tracked.types, partType);
+      } catch (error) {
+        const response = error instanceof BadRequestException ? error.getResponse() : null;
+        if (response && typeof response === 'object' &&
+            (response as { code?: string }).code === 'FACTORY_PART_QUANTITIES_REQUIRED') {
+          throw new BadRequestException({
+            code: 'FACTORY_PART_TYPE_REQUIRED',
+            message: 'Choose which factory part you are scanning.',
+            types: tracked.types.filter(type => (sourceParts?.[type] ?? 0) > 0 || (sourceParts?.UNKNOWN ?? 0) > 0),
+          });
+        }
+        throw error;
+      }
       return this.move(tx, stock, {
         ...deltas,
         type: dto.action,
@@ -1982,6 +2121,8 @@ export class WarehouseService {
         requestKey: dto.requestKey,
         requestHash,
         quantity: 1,
+        partType,
+        partQuantities,
         fromStoreId: dto.action === 'RELEASE' ? dto.storeId : null,
         toStoreId: dto.action === 'RECEIVE' ? dto.storeId : null,
         installationJobId: installation?.id,
@@ -2057,13 +2198,23 @@ export class WarehouseService {
       const stock = await this.load(tx, m.lineNumber);
       if (m.type === 'COUNT') {
         await this.openCount(tx, m.countId!);
+        const line = await tx.warehouseCountLine.findUniqueOrThrow({
+          where: { countId_lineNumber: { countId: m.countId!, lineNumber: m.lineNumber } },
+        });
+        const detail = countParts(line);
+        const reading = partMap((m.partDetails as { partQuantities?: PartQuantities } | null)?.partQuantities, 1);
+        for (const type of partTypes) {
+          if (reading[type] > detail.counted[type])
+            throw new ConflictException('This count reading is no longer available.');
+          detail.counted[type] -= reading[type];
+        }
         const changed = await tx.warehouseCountLine.updateMany({
           where: {
             countId: m.countId!,
             lineNumber: m.lineNumber,
             counted: { gt: 0 },
           },
-          data: { counted: { decrement: 1 } },
+          data: { counted: { decrement: 1 }, partDetails: detail as Prisma.InputJsonValue },
         });
         if (changed.count !== 1)
           throw new ConflictException(
@@ -2077,6 +2228,7 @@ export class WarehouseService {
           requestKey: dto.requestKey,
           requestHash,
           reversalOfId: m.id,
+          partQuantities: reading,
         });
       }
       await this.noCount(tx);
@@ -2101,6 +2253,7 @@ export class WarehouseService {
         reversalOfId: m.id,
         installationJobId: m.installationJobId,
         installationAddress: m.installationAddress,
+        undoDetails: m.partDetails,
       });
     });
   }
@@ -2164,6 +2317,7 @@ export class WarehouseService {
             lineNumber: s.lineNumber,
             expected: countQuantity(s, created),
             stockVersion: s.version,
+            partDetails: { v: 1, expected: countLocationParts(s, created), counted: {} } as Prisma.InputJsonValue,
           })),
         });
       }
@@ -2202,10 +2356,13 @@ export class WarehouseService {
         countId: id,
         stock: stockSearch(query.search),
       };
+      const allLines = await tx.warehouseCountLine.findMany({
+        where: { countId: id },
+        select: { lineNumber: true, expected: true, counted: true, stockVersion: true, partDetails: true },
+      });
+      const differing = allLines.filter(countHasDifference);
       if (query.differences === 'true')
-        where.counted = {
-          not: { equals: this.prisma.warehouseCountLine.fields.expected },
-        };
+        where.lineNumber = { in: differing.map(line => line.lineNumber) };
       const rows = await tx.warehouseCountLine.findMany({
         where,
         include: { stock: { include: stockInclude } },
@@ -2217,23 +2374,6 @@ export class WarehouseService {
         where: { countId: id },
         _sum: { expected: true, counted: true },
       });
-      const differences = await tx.warehouseCountLine.count({
-        where: {
-          countId: id,
-          counted: {
-            not: { equals: this.prisma.warehouseCountLine.fields.expected },
-          },
-        },
-      });
-      const allLines = await tx.warehouseCountLine.findMany({
-        where: { countId: id },
-        select: {
-          lineNumber: true,
-          expected: true,
-          counted: true,
-          stockVersion: true,
-        },
-      });
       return {
         ...count,
         revision: countRevision(id, allLines),
@@ -2242,13 +2382,16 @@ export class WarehouseService {
           expected: r.expected,
           counted: r.counted,
           difference: r.counted - r.expected,
+          expectedByType: countParts(r).expected,
+          countedByType: countParts(r).counted,
+          partDifference: countHasDifference(r),
         })),
         total: await tx.warehouseCountLine.count({ where }),
         page: p.page,
         pageSize: p.pageSize,
         expected: totals._sum.expected ?? 0,
         counted: totals._sum.counted ?? 0,
-        differences,
+        differences: differing.length,
       };
     });
   }
@@ -2263,11 +2406,14 @@ export class WarehouseService {
       requestKey: string;
       requestHash: string;
       reversalOfId?: number;
+      partQuantities?: PartQuantities;
     },
   ) {
+    const { partQuantities, ...movementData } = data;
     const movement = await tx.warehouseMovement.create({
       data: {
-        ...data,
+        ...movementData,
+        partDetails: { v: 1, partQuantities: partQuantities ?? { UNKNOWN: Math.abs(data.countDelta) } } as Prisma.InputJsonValue,
         quantity: Math.abs(data.countDelta),
         lineNumber: stock.lineNumber,
         transitAfter: stock.inTransit,
@@ -2296,8 +2442,8 @@ export class WarehouseService {
   }
   async countScan(id: number, dto: WarehouseCountScanDto, actor: AuthUser) {
     this.staff(actor);
-    const lineNumber = barcodeLine(dto.barcode),
-      requestHash = hash([actor.id, 'COUNT', id, lineNumber]);
+    const { lineNumber, partType } = requestedPartType(dto.barcode, dto.partType),
+      requestHash = hash([actor.id, 'COUNT', id, lineNumber, ...(partType ? [{ partType }] : [])]);
     return this.transaction(async (tx) => {
       const replay = await this.replay(tx, dto.requestKey, requestHash);
       if (replay) {
@@ -2320,6 +2466,7 @@ export class WarehouseService {
           lineNumber,
           expected: countQuantity(stock, count),
           stockVersion: stock.version,
+          partDetails: { v: 1, expected: countLocationParts(stock, count), counted: {} } as Prisma.InputJsonValue,
         },
         update: {},
       });
@@ -2328,9 +2475,20 @@ export class WarehouseService {
         throw new BadRequestException(
           'This reading exceeds the parts that can be in the warehouse. Review the readings, other stores, and transit or release records.',
         );
+      const detail = countParts(line), tracked = tracking(stock);
+      const reading = resolvePartQuantities(1, null, tracked.types, partType);
+      addParts(detail.counted, reading);
+      const scoped = countLocationParts(stock, count);
+      for (const type of partTypes) {
+        if (type === 'UNKNOWN') continue;
+        const elsewhere = (tracked.onHand[type] ?? 0) - (scoped[type] ?? 0)
+          + (tracked.inTransit[type] ?? 0) + (tracked.released[type] ?? 0);
+        if (detail.counted[type] + elsewhere > (tracked.expected[type] ?? 0))
+          throw new BadRequestException(`This reading exceeds the expected ${type} parts. Review the count and other locations.`);
+      }
       await tx.warehouseCountLine.update({
         where: { countId_lineNumber: { countId: id, lineNumber } },
-        data: { counted: { increment: 1 } },
+        data: { counted: { increment: 1 }, partDetails: detail as Prisma.InputJsonValue },
       });
       return this.countMovement(tx, stock, {
         countId: id,
@@ -2339,6 +2497,7 @@ export class WarehouseService {
         actorId: actor.id,
         requestKey: dto.requestKey,
         requestHash,
+        partQuantities: reading,
       });
     });
   }
@@ -2365,7 +2524,7 @@ export class WarehouseService {
           throw new ConflictException(
             'This count changed. Refresh and review its current differences before closing it.',
           );
-        const different = lines.filter((l) => l.counted !== l.expected);
+        const different = lines.filter(countHasDifference);
         if (different.length) {
           this.staff(actor, true);
           if (!dto.reason || dto.reason.trim().length < 3)
@@ -2379,7 +2538,12 @@ export class WarehouseService {
             throw new ConflictException(
               'Stock changed during this count. Cancel it and start a new count.',
             );
-          if (line.counted !== line.expected) {
+          if (countHasDifference(line)) {
+            const typed = countParts(line);
+            const reconciled = reconcilePartCount(line.stock, parts(line.stock), separateFrame(line.stock), {
+              storeId: count.storeId, allStores: count.scope === 'ALL',
+              expected: typed.expected, counted: typed.counted,
+            });
             await this.move(tx, line.stock, {
               type: 'ADJUST',
               actorId: actor.id,
@@ -2389,6 +2553,7 @@ export class WarehouseService {
                 id,
                 line.lineNumber,
                 line.counted,
+                typed.counted,
               ]),
               countId: id,
               onHandDelta: line.counted - line.expected,
@@ -2396,6 +2561,7 @@ export class WarehouseService {
               fromStoreId: line.counted < line.expected ? count.storeId : null,
               toStoreId: line.counted > line.expected ? count.storeId : null,
               reason: dto.reason!.trim(),
+              typedOverride: reconciled,
             });
           }
         }
