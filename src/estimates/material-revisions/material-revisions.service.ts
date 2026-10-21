@@ -19,7 +19,7 @@ import { refreshScheduledInstallation, synchronizeScheduleChanges } from '@/paym
 import { calculateEstimateDiscount } from '@/estimates/discounts/estimate-discount';
 import { calculateMaterialFinancials } from '@/orders/order-material-financials';
 import type { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
-import { assertBeforeFactory, assertNoOpenMaterialCheckout, isBeforeFactory, ownerCanAddBeforeRemeasurement } from './material-revision-policy';
+import { assertBeforeFactory, assertNoOpenMaterialCheckout, isBeforeFactory, ownerCanAddBeforeRemeasurement, requiresMaterialRevision, MATERIAL_REVISION_EDITABLE_MESSAGE } from './material-revision-policy';
 import { materialRevisionBaseHash, preserveAgreedPiecePrices, projectMaterialRevision, revisionJson, revisionProjectSummary,
   type MaterialRevisionItemSnapshot, type MaterialRevisionProposal } from './material-revision-snapshot';
 import { BeginMaterialRevisionDto, MaterialRevisionDecisionDto, MaterialRevisionPieceDto } from './material-revision.dto';
@@ -157,6 +157,7 @@ export class MaterialRevisionsService {
     const active = revisions.find(revision => revision.activeSlot === 1);
     const remeasurementPending = await this.prisma.estimateRevision.findFirst({ where: { estimateId, status: { in: ['DRAFT', 'PENDING_ADMIN_APPROVAL', 'PENDING_CUSTOMER_APPROVAL'] } }, select: { id: true } });
     const stageAllowed = ['Active', 'Ordered', 'Pending order review'].includes(estimate.status.name) && isBeforeFactory(estimate);
+    const revisionRequired = requiresMaterialRevision(estimate);
     const ownerAdd = ownerCanAddBeforeRemeasurement(estimate, actor.id);
     // En remedición, el personal continúa la misma revisión. Se conserva la
     // restricción existente: operator no recibe acceso a instalaciones ajenas.
@@ -171,12 +172,13 @@ export class MaterialRevisionsService {
         ? estimate.installationJob?.id ?? null : null,
       installationRevisionId,
       isOwner: estimate.idUser === actor.id,
-      canBegin: stageAllowed && !active && !remeasurementPending && (isPrivileged(actor) || ownerAdd),
-      canReviseExisting: stageAllowed && isPrivileged(actor),
+      canBegin: stageAllowed && revisionRequired && !active && !remeasurementPending && (isPrivileged(actor) || ownerAdd),
+      canReviseExisting: stageAllowed && isPrivileged(actor) && (revisionRequired || Boolean(active)),
       dealerPricing: estimate.user.role.name === 'dealer',
       defaultDealerMarkup: estimate.user.role.name === 'dealer' ? Number(estimate.pieces[0]?.dealerMarkup ?? 0) * 100 : 0,
       canRequestSignature: estimate.idUser === actor.id && actor.role?.name === 'dealer',
       unavailableReason: remeasurementPending ? 'Measurement changes and additional pieces are prepared together in the existing Installation revision.' : !stageAllowed ? 'Material revisions are available only before the order is sent to the manufacturer.'
+        : !revisionRequired && !active ? MATERIAL_REVISION_EDITABLE_MESSAGE
         : !isPrivileged(actor) && !ownerAdd && !active ? 'The owner can add units after the installation deposit is paid and before remeasurement begins. Contact the company for other material changes.' : null,
       pieces: estimate.pieces.map((piece: RevisionPieceRecord) => ({
         id: piece.id, label: label(piece), input: {
@@ -200,6 +202,8 @@ export class MaterialRevisionsService {
       await this.assertNoRemeasurementProposal(db, estimateId);
       if (await db.materialRevision.findFirst({ where: { estimateId, activeSlot: 1 } }))
         throw new ConflictException('This project already has a pending material revision. Open it instead.');
+      if (!requiresMaterialRevision(estimate))
+        throw new ConflictException(MATERIAL_REVISION_EDITABLE_MESSAGE);
       const last = await db.materialRevision.findFirst({ where: { estimateId }, orderBy: { version: 'desc' }, select: { version: true } });
       const signed = await db.estimateAgreement.findFirst({ where: { estimateId, signedAt: { not: null } }, select: { id: true } });
       const revision = await db.materialRevision.create({ data: {

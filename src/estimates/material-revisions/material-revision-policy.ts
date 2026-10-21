@@ -2,9 +2,34 @@ import { getPaymentSchedule } from '@/payment-plans/payment-schedule';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { paidPrincipal, paymentIsCovered } from '@/payments/payment-accounting';
+import { canEditUnpaidWaivedInstallation, canOwnerEditInstallationEstimate, hasStartedInstallationPayment } from '@/installation/installation-flow-policy';
+import { estimateDiscountConfig } from '../discounts/estimate-discount';
 
 export const OPEN_MATERIAL_REVISION_STATUSES = ['DRAFT', 'PENDING_APPROVAL', 'AWAITING_SIGNATURE'] as const;
 export const MATERIAL_REVISION_PENDING_MESSAGE = 'Finish or cancel the pending material revision before continuing.';
+export const MATERIAL_REVISION_EDITABLE_MESSAGE = 'This estimate is still editable. Edit the estimate directly instead of starting a material revision.';
+
+// Only existing material locks justify a new revision. An open revision must
+// not itself make an otherwise editable estimate eligible for another one.
+export function requiresMaterialRevision(estimate: any): boolean {
+  if (estimate.order || ['Ordered', 'Pending order review'].includes(estimate.status?.name) ||
+      estimate.promotionLockedAt || estimateDiscountConfig(estimate.manualDiscount)?.lockedAt) return true;
+
+  const payments = estimate.payments ?? [];
+  if (hasStartedInstallationPayment(payments.filter((payment: any) =>
+    payment.type === 'MATERIAL' || payment.type === 'INSTALLMENT'))) return true;
+
+  const job = estimate.installationJob;
+  if (!job || job.status === 'CANCELED') return false;
+  const installationPaymentStarted = hasStartedInstallationPayment([...payments, ...(job.payments ?? [])]);
+  if (installationPaymentStarted) return true;
+  if (canOwnerEditInstallationEstimate(job.status, false)) return false;
+  return !canEditUnpaidWaivedInstallation({
+    ...job,
+    quotes: job.quotes ?? [],
+    estimate: { ...estimate, payments },
+  });
+}
 
 // La ausencia de PO por sí sola no prueba que una orden no se haya enviado.
 // Además de estas comprobaciones se registra la confirmación explícita del personal.

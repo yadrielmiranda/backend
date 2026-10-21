@@ -61,6 +61,124 @@ function serviceFixture(e = beforeMeasurement()) {
   return { service, db, rows, e, setSigned: (value: boolean) => { signed = value; } };
 }
 
+describe('Material revisions require a protected estimate', () => {
+  function editableEstimate() {
+    const e = estimate();
+    Object.assign(e, {
+      status: { name: 'Active' }, order: null, payments: [], installationJob: null,
+      manualDiscount: null, promotionLockedAt: null,
+    });
+    return e;
+  }
+
+  const operator: AuthUser = { id: 8, role: { name: 'operator' } };
+
+  for (const actor of [admin, operator]) {
+    it.each([false, true])(
+      `directs ${actor.role.name} to normal editing without creating a revision (signed agreement: %s)`,
+      async signed => {
+        const f = serviceFixture(editableEstimate());
+        f.setSigned(signed);
+        const before = JSON.stringify(f.e);
+        const view = await f.service.get(35, actor);
+        assert.equal(view.canBegin, false);
+        assert.equal(view.canReviseExisting, false);
+        assert.match(view.unavailableReason ?? '', /edit/i);
+        await assert.rejects(() => f.service.begin(35, { reason: 'Change a window' }, actor), /edit/i);
+        assert.equal(f.rows.length, 0);
+        assert.equal(JSON.stringify(f.e), before);
+      },
+    );
+  }
+
+  it.each(['CANCELED', 'DEPOSIT_PAYMENT_PENDING', 'MATERIAL_PAYMENT_PENDING', 'PERMIT_PAYMENT_PENDING'])(
+    'keeps normal editing for the unpaid %s installation case',
+    async status => {
+      const e = editableEstimate();
+      e.installationJob = { ...beforeMeasurement().installationJob, status };
+      if (['MATERIAL_PAYMENT_PENDING', 'PERMIT_PAYMENT_PENDING'].includes(status)) {
+        e.installationJob.dealerMeasurementsAcceptedAt = new Date('2026-10-01T12:00:00Z');
+        e.installationJob.quotes = [{ status: 'APPROVED', approvalReason: 'DEALER_MEASUREMENTS', submittedAt: null, total: '500', lines: [] }];
+      }
+      const f = serviceFixture(e);
+      const view = await f.service.get(35, admin);
+      assert.equal(view.canBegin, false);
+      assert.equal(view.canReviseExisting, false);
+      assert.match(view.unavailableReason ?? '', /edit/i);
+      await assert.rejects(() => f.service.begin(35, { reason: 'Change a window' }, admin), /edit/i);
+      assert.equal(f.rows.length, 0);
+    },
+  );
+
+  for (const [label, protect] of [
+    ['paid material', (e: any) => { e.payments = [{ id: 22, type: 'MATERIAL', status: 'PAID', baseAmount: '100' }]; }],
+    ['paid installment', (e: any) => { e.payments = [{ id: 22, type: 'INSTALLMENT', sequence: 1, status: 'PAID', baseAmount: '100' }]; }],
+    ['refunded material payment', (e: any) => { e.payments = [{ id: 22, type: 'MATERIAL', status: 'REFUNDED', baseAmount: '100', refundedAmount: '100' }]; }],
+    ['reopened installment with payment history', (e: any) => { e.payments = [{ id: 22, type: 'INSTALLMENT', sequence: 1, status: 'PENDING', paidAt: new Date('2026-10-01T12:00:00Z'), baseAmount: '100' }]; }],
+    ['paid promotion', (e: any) => { e.promotionLockedAt = new Date('2026-10-01T12:00:00Z'); }],
+    ['paid discount', (e: any) => { e.manualDiscount = estimate().manualDiscount; }],
+    ['paid installation deposit', (e: any) => {
+      e.installationJob = { ...beforeMeasurement().installationJob, status: 'DEPOSIT_PAYMENT_PENDING' };
+      e.payments = beforeMeasurement().payments;
+    }],
+    ['installation measurement', (e: any) => { e.installationJob = beforeMeasurement().installationJob; }],
+    ['pending order review', (e: any) => { e.status.name = 'Pending order review'; }],
+    ['pending order', (e: any) => { e.status.name = 'Ordered'; e.order = estimate().order; }],
+  ] as const) {
+    it(`preserves the revision route for ${label}`, async () => {
+      const e = editableEstimate();
+      protect(e);
+      const f = serviceFixture(e);
+      const view = await f.service.get(35, admin);
+      assert.equal(view.canBegin, true);
+      assert.equal(view.canReviseExisting, true);
+      const begun = await f.service.begin(35, { reason: 'Update protected material', factoryNotSentConfirmed: true }, admin);
+      assert.equal(begun.current?.status, 'DRAFT');
+      assert.equal(f.rows.length, 1);
+      assert.equal(f.rows[0].activeSlot, 1);
+    });
+  }
+
+  it('keeps an existing draft readable, editable and cancelable when the original estimate is otherwise editable', async () => {
+    const f = serviceFixture(editableEstimate());
+    const before = JSON.stringify(f.e);
+    f.rows.push({
+      id: 1, estimateId: 35, version: 1, status: 'DRAFT', activeSlot: 1,
+      reason: 'Existing draft', createdById: admin.id, requiresSignature: false,
+      createdAt: new Date('2026-10-01T12:00:00Z'), updatedAt: new Date('2026-10-01T12:00:00Z'),
+      baseHash: materialRevisionBaseHash(f.e), originalSummary: null, revisedSummary: null,
+      items: [{ key: 'added-window', action: 'ADD', originalPieceId: null, label: 'Added window',
+        input: { qty: 1 }, pricing: { price: '100', customerPrice: '125' }, changeDescription: [] }],
+    });
+    const view = await f.service.get(35, admin);
+    assert.equal(view.canBegin, false);
+    assert.equal(view.canReviseExisting, true);
+    assert.equal(view.current?.canEdit, true);
+    assert.equal(view.current?.canCancel, true);
+    jest.spyOn(f.service as any, 'buildProposal').mockResolvedValue({ proposal: { pieces: [] }, summary: null });
+    const edited = await f.service.removeItem(35, 1, 'added-window', admin);
+    assert.equal(edited.current?.items.length, 0);
+    const canceled = await f.service.decide(35, 1, { decision: 'CANCEL' }, admin);
+    assert.equal(canceled.current, null);
+    assert.equal(canceled.canBegin, false);
+    assert.equal(canceled.canReviseExisting, false);
+    assert.equal(canceled.history[0].status, 'CANCELED');
+    assert.equal(JSON.stringify(f.e), before);
+  });
+
+  it('retains completed history without offering a new revision on an editable estimate', async () => {
+    const f = serviceFixture(editableEstimate());
+    f.rows.push({ id: 1, estimateId: 35, version: 1, status: 'APPLIED', activeSlot: null,
+      createdById: admin.id, items: [], originalSummary: null, revisedSummary: null });
+    const view = await f.service.get(35, admin);
+    assert.equal(view.canBegin, false);
+    assert.equal(view.canReviseExisting, false);
+    assert.equal(view.current, null);
+    assert.equal(view.history.length, 1);
+    assert.equal(view.history[0].status, 'APPLIED');
+  });
+});
+
 describe('Material revision scope and approval', () => {
   it('previews energy for new and changed revision pieces while retaining agreed values on unchanged glass', async () => {
     const f = serviceFixture();
