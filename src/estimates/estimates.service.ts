@@ -74,6 +74,10 @@ import {
   type EstimatePieceDiagramMetadata,
 } from './reporting/estimate-piece-diagram-metadata';
 import {
+  buildExternalDealerPresentation,
+  type ExternalDealerPresentation,
+} from './reporting/estimate-report-issuer';
+import {
   EstimateCustomerChargesService,
   type EstimateCustomerChargeSummary,
 } from './estimate-customer-charges.service';
@@ -149,6 +153,7 @@ export type EstimateWithRelations = Estimate & {
   customerChargesSummary?: EstimateCustomerChargeSummary | null;
   branding?: Branding | null;
   companyBranding?: Branding | null;
+  externalDealerPresentation?: ExternalDealerPresentation | null;
 };
 
 // vistas de PDF disponibles en la UI
@@ -1002,6 +1007,7 @@ export class EstimatesService {
       manualDiscountSummary: calculateEstimateDiscount(estimate),
       branding,
       companyBranding,
+      externalDealerPresentation: buildExternalDealerPresentation(estimate, branding),
     } as EstimateWithRelations;
   }
 

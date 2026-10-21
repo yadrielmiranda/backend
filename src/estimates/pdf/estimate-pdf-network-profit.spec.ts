@@ -144,7 +144,9 @@ describe('Administrative PDF participant profit breakdown', () => {
     const user: AuthUser = { id: 99, role: { name: role } };
     const service = new EstimatePdfService();
     await expect(service.generateEstimatePdfBuffer({ estimate, user, view: 'admin' })).resolves.toEqual(Buffer.from('pdf'));
-    expect(build).toHaveBeenCalledWith(estimate, 'admin', {}, 99, role);
+    expect(build).toHaveBeenCalledWith(estimate, 'admin', {}, 99, role, true);
+    expect(page.pdf.mock.calls[0][0].footerTemplate).toContain('This estimate is issued by Distributor Example, an independent distributor.');
+    expect(page.pdf.mock.calls[0][0].footerTemplate).toContain('href="http://www.authenticevolutionco.com"');
     const html = page.setContent.mock.calls[0][0] as string;
     expect(Boolean(breakdownHtml(html))).toBe(role === 'admin');
     expect(browser.close).toHaveBeenCalledTimes(1);

@@ -124,7 +124,7 @@ function buildService(estimate = sharedEstimateFixture()) {
       }),
     },
     branding: {
-      findFirst: jest.fn().mockResolvedValue({ name: 'Dealer Windows' }),
+      findFirst: jest.fn().mockResolvedValue({ name: 'Dealer Windows', type: 'DEALER', isActive: true }),
     },
     sysConf: {
       findMany: jest.fn().mockResolvedValue([
@@ -168,6 +168,78 @@ function buildService(estimate = sharedEstimateFixture()) {
 }
 
 describe('EstimatePublicShareService customer pricing modes', () => {
+  it.each(['detailed-token', 'total-token'])('exposes only owner display contacts for unbranded external link %s', async (token) => {
+    const estimate = sharedEstimateFixture();
+    Object.assign(estimate.user, {
+      firstName: 'Pepe', lastName: 'Ernandez',
+      phone: '+1 (999) 999-9999', email: 'pepe@example.com',
+      password: 'private-password', username: 'private-login',
+      markupOverride: '0.25', street: 'Private account address',
+    });
+    const { service, prisma } = buildService(estimate);
+    prisma.branding.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ type: 'COMPANY', isActive: true, name: 'Authentic Evolution' });
+
+    const result = await service.findPublicEstimateByToken(token);
+
+    expect(result.externalDealerPresentation).toEqual({
+      name: 'Pepe Ernandez', phone: '+1 (999) 999-9999', email: 'pepe@example.com',
+    });
+    expect(result).not.toHaveProperty('user');
+    expect(JSON.stringify(result)).not.toContain('private-password');
+    expect(JSON.stringify(result)).not.toContain('private-login');
+    expect(JSON.stringify(result)).not.toContain('Private account address');
+    expect(prisma.branding.findFirst).toHaveBeenNthCalledWith(1, {
+      where: { type: 'DEALER', userId: estimate.idUser, isActive: true },
+    });
+  });
+
+  it.each(['INTERNAL', 'EXTERNAL'])('keeps own branding unchanged for %s shared estimates', async (mode) => {
+    const estimate = sharedEstimateFixture();
+    estimate.user.dealerMode = estimate.dealerModeSnapshot = mode;
+    const { service, prisma } = buildService(estimate);
+    const branding = { name: 'Dealer Windows', type: 'DEALER', isActive: true };
+    prisma.branding.findFirst.mockResolvedValue(branding);
+
+    const result = await service.findPublicEstimateByToken('detailed-token');
+
+    expect(result.externalDealerPresentation).toBeNull();
+    expect(result.branding).toBe(branding);
+    expect(prisma.branding.findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not add an issuer to an internal shared estimate without branding', async () => {
+    const estimate = sharedEstimateFixture();
+    estimate.user.dealerMode = estimate.dealerModeSnapshot = 'INTERNAL';
+    const { service, prisma } = buildService(estimate);
+    prisma.branding.findFirst.mockResolvedValue(null);
+    const result = await service.findPublicEstimateByToken('detailed-token');
+    expect(result.externalDealerPresentation).toBeNull();
+  });
+
+  it.each([
+    { order: { id: 2 } },
+    { payments: [{ status: 'CANCELED', paidAt: new Date('2026-08-18') }] },
+  ])('keeps committed internal classification after the account becomes external', async (history) => {
+    const estimate = Object.assign(sharedEstimateFixture(), history);
+    estimate.dealerModeSnapshot = 'INTERNAL';
+    const { service, prisma } = buildService(estimate);
+    prisma.branding.findFirst.mockResolvedValue(null);
+
+    const result = await service.findPublicEstimateByToken('detailed-token');
+
+    expect(result.externalDealerPresentation).toBeNull();
+    expect(prisma.estimate.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      include: expect.objectContaining({
+        order: { select: { id: true } },
+        payments: { select: { status: true, paidAt: true } },
+      }),
+    }));
+    expect(result).not.toHaveProperty('order');
+    expect(result).not.toHaveProperty('payments');
+  });
+
   it('uses the discounted taxable subtotal in both detailed and total-only public quotes', async () => {
     const estimate = sharedEstimateFixture();
     estimate.dealerModeSnapshot = estimate.user.dealerMode = 'INTERNAL';

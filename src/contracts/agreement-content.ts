@@ -7,6 +7,7 @@ import { BrandingType, Prisma } from '@prisma/client';
 import { buildPublicEstimateData } from '@/estimates/public-share/public-estimate-data';
 import { estimateInstallationSummarySelect } from '@/estimates/reporting/estimate-installation-summary';
 import { attachEstimatePieceDiagramMetadata } from '@/estimates/reporting/estimate-piece-diagram-metadata';
+import { buildExternalDealerPresentation } from '@/estimates/reporting/estimate-report-issuer';
 
 export type AgreementPricingMode = 'detailed' | 'total';
 
@@ -14,7 +15,7 @@ export const agreementEstimateInclude = {
   user: { include: { role: true } },
   status: true,
   order: true,
-  payments: { select: { status: true } },
+  payments: { select: { status: true, paidAt: true } },
   installationJob: { select: estimateInstallationSummarySelect },
   customerCharges: { orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }] },
   pieces: {
@@ -474,7 +475,12 @@ export async function loadAgreementContent(
   );
   const snapshot = JSON.parse(
     JSON.stringify(
-      buildPublicEstimateData(estimate, branding, pieces, pricingMode),
+      {
+        ...buildPublicEstimateData(estimate, branding, pieces, pricingMode),
+        // Freeze the actual owner's presentation alongside the logo. Existing
+        // agreements keep their saved snapshot and document bytes unchanged.
+        externalDealerPresentation: buildExternalDealerPresentation(estimate, branding),
+      },
     ),
   );
   return { estimate, materialRevisionId, contentHash, legacyContentHash, ...scopes, snapshot };

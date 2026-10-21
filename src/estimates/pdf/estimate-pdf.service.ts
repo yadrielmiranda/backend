@@ -5,14 +5,6 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 import type { EstimateWithRelations, PdfView } from '../estimates.service';
 import { EstimatePdfHtmlBuilder } from './estimate-pdf-html.builder';
 
-const escapeHtml = (value: unknown) =>
-  String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-
 @Injectable()
 export class EstimatePdfService {
   private readonly logger = new Logger(EstimatePdfService.name);
@@ -72,7 +64,7 @@ export class EstimatePdfService {
         estimate,
         cookieHeader,
       });
-      const html = EstimatePdfHtmlBuilder.build(estimate, view, diagramRenders, user.id, viewerRole ?? undefined);
+      const html = EstimatePdfHtmlBuilder.build(estimate, view, diagramRenders, user.id, viewerRole ?? undefined, true);
       const page = await browser.newPage();
 
       await page.setContent(html, { waitUntil: 'networkidle0' });
@@ -97,22 +89,13 @@ export class EstimatePdfService {
         );
       });
 
-      const estimateNumber = escapeHtml(estimate.number);
-      const footerText = escapeHtml(
-        EstimatePdfHtmlBuilder.buildFooterText(estimate, view),
-      );
-
       const pdf = await page.pdf({
         format: 'Letter',
         printBackground: true,
         displayHeaderFooter: true,
         preferCSSPageSize: true,
         headerTemplate: '<span></span>',
-        footerTemplate: `
-          <div style="box-sizing:border-box;width:100%;padding:0 14mm;color:#64748b;font-family:Arial,Helvetica,sans-serif;font-size:8px;text-align:center;">
-            <div style="border-top:1px solid #dbe3ee;padding-top:6px;">${footerText}</div>
-            <div style="margin-top:3px;">Estimate #${estimateNumber} - Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>
-          </div>`,
+        footerTemplate: EstimatePdfHtmlBuilder.buildFooterTemplate(estimate, view, true),
       });
 
       return Buffer.from(pdf);

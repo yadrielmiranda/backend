@@ -6,6 +6,7 @@ import { buildNetworkProfitBreakdown } from '@/common/network-profit-breakdown';
 
 import type { EstimateWithRelations, PdfView } from '../estimates.service';
 import { isExternalDealerEstimate } from '../estimate-customer-charges.service';
+import { buildExternalDealerPresentation } from '../reporting/estimate-report-issuer';
 import {
   calculateMaterialFinancials,
   resolveMaterialSaleSubtotal,
@@ -410,6 +411,25 @@ const summaryRow = (
 `;
 
 export class EstimatePdfHtmlBuilder {
+  static buildFooterTemplate(
+    estimate: EstimateWithRelations,
+    view: PdfView = 'client',
+    showExternalDealerPresentation = false,
+  ): string {
+    const issuer = showExternalDealerPresentation
+      ? estimate.externalDealerPresentation !== undefined
+        ? estimate.externalDealerPresentation
+        : buildExternalDealerPresentation(estimate, estimate.branding)
+      : null;
+    const footerText = escapeHtml(this.buildFooterText(estimate, view));
+    return `
+          <div style="box-sizing:border-box;width:100%;padding:0 14mm;color:#64748b;font-family:Arial,Helvetica,sans-serif;font-size:8px;text-align:center;">
+            ${issuer ? `<div style="padding-bottom:6px;overflow-wrap:anywhere;">This estimate is issued by ${escapeHtml(issuer.name)}, an independent distributor.</div>` : ''}
+            <div style="border-top:1px solid #dbe3ee;padding-top:6px;">${issuer ? '<div style="margin-bottom:6px;">Generated with Authentic Evolution | <a href="http://www.authenticevolutionco.com" style="color:#64748b;text-decoration:none;">www.authenticevolutionco.com</a></div>' : ''}${footerText}</div>
+            <div style="margin-top:3px;">Estimate #${escapeHtml(estimate.number)} - Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>
+          </div>`;
+  }
+
   static buildFooterText(
     estimate: EstimateWithRelations,
     view: PdfView = 'client',
@@ -435,6 +455,7 @@ export class EstimatePdfHtmlBuilder {
     diagramRenders: PieceDiagramRenders = {},
     viewerId?: number,
     viewerRole?: string,
+    showExternalDealerPresentation = false,
   ): string {
     const reportKind = reportKindFor(view);
     const ownerIsDealer =
@@ -461,7 +482,14 @@ export class EstimatePdfHtmlBuilder {
     const materialProfits = earningsReport?.materialProfits;
     const internalDealer = ownerIsDealer && estimate.dealerModeSnapshot === 'INTERNAL';
     const branding = (estimate.branding ?? null) as Branding | null;
-    const brandingName = branding?.name?.trim() || '';
+    const issuer = showExternalDealerPresentation
+      ? estimate.externalDealerPresentation !== undefined
+        ? estimate.externalDealerPresentation
+        : buildExternalDealerPresentation(estimate, branding)
+      : null;
+    const brandingName = issuer ? issuer.name : branding?.name?.trim() || '';
+    const brandingPhone = issuer ? issuer.phone : branding?.phone;
+    const brandingEmail = issuer ? issuer.email : branding?.email;
     const brandingColor = normalizeBrandingColor(branding?.brandingColor);
     const brandingContrastColor = readableTextColor(brandingColor);
     const brandingLocality = [branding?.city, branding?.state]
@@ -470,7 +498,7 @@ export class EstimatePdfHtmlBuilder {
     const brandingCityLine = [brandingLocality, branding?.postalCode]
       .filter(Boolean)
       .join(' ');
-    const brandingAddress = [branding?.street, brandingCityLine]
+    const brandingAddress = issuer ? '' : [branding?.street, brandingCityLine]
       .filter(Boolean)
       .join(', ');
     const logo = branding?.logoUrl
@@ -1046,7 +1074,7 @@ export class EstimatePdfHtmlBuilder {
   <title>Estimate ${escapeHtml(estimate.number)} - ${escapeHtml(reportLabelFor(reportKind))}</title>
   <style>
     :root { --branding-color: ${brandingColor}; --branding-contrast-color: ${brandingContrastColor}; --report-text-color: #000000; }
-    @page { size: Letter portrait; margin: 12mm 12mm 18mm; }
+    @page { size: Letter portrait; margin: 12mm 12mm ${issuer ? '28mm' : '18mm'}; }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; background: #fff; color: var(--report-text-color); font-family: Arial, Helvetica, sans-serif; font-size: 10px; line-height: 1.35; -webkit-print-color-adjust: exact; print-color-adjust: exact; orphans: 3; widows: 3; }
     .report { width: 100%; }
@@ -1068,6 +1096,9 @@ export class EstimatePdfHtmlBuilder {
     .badge-proposed { border: 1px solid #93c5fd; background: #eff6ff; color: #1d4ed8; }
     .badge-preliminary { border: 1px solid #cbd5e1; background: #f8fafc; color: var(--report-text-color); }
     .logo-wrap { display: flex; align-items: center; justify-content: center; min-height: 112px; }
+    .logo-wrap.with-attribution { flex-direction: column; }
+    .platform-attribution { margin-top: 4px; color: #64748b; font-size: 8px; text-align: center; }
+    .brand.external-issuer { overflow-wrap: anywhere; }
     .brand-logo { display: block; width: 230px; height: 112px; max-width: 100%; object-fit: contain; }
     .brand { text-align: right; color: var(--report-text-color); }
     .brand-name { color: var(--branding-color); font-size: 16px; font-weight: 700; }
@@ -1180,8 +1211,8 @@ export class EstimatePdfHtmlBuilder {
 </head><body><main class="report">
   <header class="document-header">
     <div><h1>Estimate</h1><div class="number-label">Number</div><div class="estimate-number-row"><span class="estimate-number">${escapeHtml(estimate.number)}</span>${statusBadge}</div><div class="header-badges">${internalBadge}</div></div>
-    <div class="logo-wrap">${logo}</div>
-    <div class="brand">${brandingName ? `<div class="brand-name">${escapeHtml(brandingName)}</div>` : ''}${branding?.phone ? `<div class="brand-line">${escapeHtml(branding.phone)}</div>` : ''}${branding?.email ? `<div class="brand-line">${escapeHtml(branding.email)}</div>` : ''}${brandingAddress ? `<div class="brand-line">${escapeHtml(brandingAddress)}</div>` : ''}${branding?.website ? `<div class="brand-line">${escapeHtml(branding.website)}</div>` : ''}</div>
+    <div class="logo-wrap${issuer ? ' with-attribution' : ''}">${logo}${issuer ? '<div class="platform-attribution">Generated with Authentic Evolution</div>' : ''}</div>
+    <div class="brand${issuer ? ' external-issuer' : ''}">${brandingName ? `<div class="brand-name">${escapeHtml(brandingName)}</div>` : ''}${issuer ? '<div class="brand-line">Independent Distributor</div>' : ''}${brandingPhone ? `<div class="brand-line">${escapeHtml(brandingPhone)}</div>` : ''}${brandingEmail ? `<div class="brand-line">${escapeHtml(brandingEmail)}</div>` : ''}${brandingAddress ? `<div class="brand-line">${escapeHtml(brandingAddress)}</div>` : ''}${!issuer && branding?.website ? `<div class="brand-line">${escapeHtml(branding.website)}</div>` : ''}</div>
   </header>
   <section class="prepared-section">
     <div class="prepared-details"><div class="eyebrow">Prepared for</div><div class="prepared-name">${escapeHtml(preparedFor)}</div>${projectName ? `<div class="project-name">Project: ${escapeHtml(projectName)}</div>` : ''}</div>

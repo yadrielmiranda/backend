@@ -1,4 +1,4 @@
-import { agreementQuoteReport, changeOrderHtml } from './contract-pdf.service';
+import { agreementIssuerFooter, agreementQuoteReport, changeOrderHtml, ContractPdfService } from './contract-pdf.service';
 import { PaymentsService } from '@/payments/payments.service';
 import { PaymentType, Prisma } from '@prisma/client';
 import { getAgreementPaymentRequirement, requireSignedAgreementForPayment } from './agreement-payment';
@@ -147,6 +147,73 @@ function contentHash(estimate: any) {
 }
 
 describe('Contract content policy', () => {
+  it.each(['detailed', 'total'] as const)('renders frozen external issuer in %s agreements without inferring a synthetic owner', (mode) => {
+    const estimate = contractEstimateFixture();
+    const snapshot = {
+      ...buildPublicEstimateData(estimate, { type: 'COMPANY', name: 'Authentic Evolution', phone: 'company-phone', email: 'company@example.com' }, estimate.pieces, mode),
+      externalDealerPresentation: { name: 'Pepe <Ernandez>', phone: 'owner-phone', email: 'owner@example.com' },
+    };
+    const report = agreementQuoteReport(snapshot);
+    const view = mode === 'total' ? 'dealer_public_total' : 'dealer_public';
+    const html = EstimatePdfHtmlBuilder.build(report, view, {}, undefined, undefined, true);
+    const footer = EstimatePdfHtmlBuilder.buildFooterTemplate(report, view, true);
+    expect(html).toContain('Pepe &lt;Ernandez&gt;');
+    expect(html).toContain('owner-phone');
+    expect(html).toContain('owner@example.com');
+    expect(html).toContain('Generated with Authentic Evolution');
+    expect(html).not.toContain('company-phone');
+    expect(html).not.toContain('company@example.com');
+    expect(footer).toContain('This estimate is issued by Pepe &lt;Ernandez&gt;');
+    expect(footer).toContain('href="http://www.authenticevolutionco.com"');
+    expect(agreementContent(snapshot)).toEqual(agreementContent({ ...snapshot, externalDealerPresentation: undefined }));
+    expect(agreementScopes(snapshot)).toEqual(agreementScopes({ ...snapshot, externalDealerPresentation: undefined }));
+  });
+
+  it.each([undefined, null])('does not infer hybrid branding for a legacy/explicitly excluded agreement (%p)', (issuer) => {
+    const estimate = contractEstimateFixture();
+    const snapshot = {
+      ...buildPublicEstimateData(estimate, { type: 'COMPANY', name: 'Historical Company' }, estimate.pieces, 'detailed'),
+      externalDealerPresentation: issuer,
+    };
+    const report = agreementQuoteReport(snapshot);
+    const html = EstimatePdfHtmlBuilder.build(report, 'dealer_public', {}, undefined, undefined, Boolean(issuer));
+    expect(html).toContain('Historical Company');
+    expect(html).not.toContain('Generated with Authentic Evolution');
+    expect(html).not.toContain('Independent Distributor');
+    expect(agreementIssuerFooter(snapshot)).toBe('');
+  });
+
+  it('uses the saved issuer for new change orders and acceptance receipts', async () => {
+    const snapshot = {
+      branding: { name: 'Platform Company', phone: 'company-phone', email: 'company@example.com' },
+      number: '190001',
+      externalDealerPresentation: { name: 'Pepe <Ernandez>', phone: 'owner-phone', email: 'owner@example.com' },
+      changeOrder: { number: 2, baseRevision: 1, items: [], changedCharges: [], previousTotal: '100', newTotal: '120', difference: '20' },
+    };
+    const changeHtml = changeOrderHtml(snapshot);
+    expect(changeHtml).toContain('Pepe &lt;Ernandez&gt;');
+    expect(changeHtml).toContain('Independent Distributor');
+    expect(changeHtml).not.toContain('Platform Company');
+    expect(changeHtml).not.toContain('company-phone');
+    const page = { setContent: jest.fn(), pdf: jest.fn().mockResolvedValue(Buffer.from('pdf')) };
+    const service = new ContractPdfService();
+    jest.spyOn(service as any, 'browser').mockImplementation(async (work: any) => work({ newPage: async () => page }));
+    await service.receipt({ agreement: { snapshot, contract: { name: 'Dealer terms' }, pricingMode: 'detailed' }, signerName: 'Jane', strokes, signedAt: new Date() });
+    const receiptHtml = page.setContent.mock.calls[0][0];
+    expect(receiptHtml).toContain('Pepe &lt;Ernandez&gt;');
+    expect(receiptHtml).not.toContain('Platform Company');
+    expect(receiptHtml).not.toContain('company@example.com');
+    expect(page.pdf).toHaveBeenCalledWith(expect.objectContaining({
+      displayHeaderFooter: true,
+      footerTemplate: expect.stringContaining('This estimate is issued by Pepe &lt;Ernandez&gt;'),
+    }));
+    page.pdf.mockClear();
+    await service.changeOrder(snapshot);
+    expect(page.pdf).toHaveBeenCalledWith(expect.objectContaining({
+      footerTemplate: expect.stringContaining('href="http://www.authenticevolutionco.com"'),
+    }));
+  });
+
   it('detects changes to either simultaneous discount through the agreed amounts', () => {
     const estimate = contractEstimateFixture();
     estimate.dealerModeSnapshot = 'INTERNAL';
@@ -509,6 +576,58 @@ describe('Agreement acceptance, access and history', () => {
     signerName: 'Jane Rivera',
     signature: strokes,
     accepted: true,
+  });
+
+  it.each(['detailed', 'total'] as const)('freezes the actual unbranded external owner in new %s agreement snapshots', async (mode) => {
+    Object.assign(f.state().estimate[0].user, {
+      firstName: 'Pepe', lastName: 'Ernandez', phone: 'owner-phone', email: 'owner@example.com',
+      password: 'private-password',
+    });
+    f.state().branding.push({ id: 2, type: 'COMPANY', isActive: true, name: 'Authentic Evolution' });
+    const first = await ready(mode);
+    const row = f.state().estimateAgreement[0];
+    expect(row.snapshot.externalDealerPresentation).toEqual({ name: 'Pepe Ernandez', phone: 'owner-phone', email: 'owner@example.com' });
+    expect(row.snapshot).not.toHaveProperty('user');
+    expect(JSON.stringify(row.snapshot)).not.toContain('private-password');
+    const frozen = structuredClone(row.snapshot);
+    const hash = row.contentHash;
+    f.state().estimate[0].user.firstName = 'Changed';
+    f.state().estimate[0].user.email = 'changed@example.com';
+    f.state().branding.push({ id: 3, type: 'DEALER', userId: 7, isActive: true, name: 'New owner brand' });
+
+    expect((await ready(mode)).id).toBe(first.id);
+    expect(row.snapshot).toEqual(frozen);
+    expect(row.contentHash).toBe(hash);
+    expect(pdf.quote).toHaveBeenCalledTimes(1);
+    expect(await service.publicSnapshot(mode === 'total' ? `total_${token}` : token, first.id)).toEqual(frozen);
+  });
+
+  it.each(['INTERNAL', 'EXTERNAL'])('keeps new %s agreements with active owner branding unchanged', async (mode) => {
+    f.state().estimate[0].user.dealerMode = f.state().estimate[0].dealerModeSnapshot = mode;
+    f.state().branding.push({ id: 3, type: 'DEALER', userId: 7, isActive: true, name: 'Owner brand' });
+    await ready();
+    const snapshot = f.state().estimateAgreement[0].snapshot;
+    expect(snapshot.externalDealerPresentation).toBeNull();
+    expect(snapshot.branding.name).toBe('Owner brand');
+  });
+
+  it('keeps internal agreements without branding unchanged', async () => {
+    f.state().estimate[0].user.dealerMode = f.state().estimate[0].dealerModeSnapshot = 'INTERNAL';
+    await ready();
+    expect(f.state().estimateAgreement[0].snapshot.externalDealerPresentation).toBeNull();
+  });
+
+  it.each([false, true])('preserves legacy agreement snapshots and document hashes (signed: %s)', async (signed) => {
+    const first = await ready();
+    const row = f.state().estimateAgreement[0];
+    delete row.snapshot.externalDealerPresentation;
+    if (signed) await service.sign(token, first.id, input(first), {});
+    const frozen = structuredClone(row);
+
+    expect((await ready()).id).toBe(first.id);
+    expect(row).toEqual(frozen);
+    expect(await service.publicSnapshot(token, first.id)).not.toHaveProperty('externalDealerPresentation');
+    expect(pdf.quote).toHaveBeenCalledTimes(1);
   });
 
   function dealerNetwork() {

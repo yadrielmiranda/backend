@@ -20,6 +20,7 @@ import {
   isExternalDealerEstimate,
 } from '../estimate-customer-charges.service';
 import { attachEstimatePieceDiagramMetadata } from '../reporting/estimate-piece-diagram-metadata';
+import { buildExternalDealerPresentation } from '../reporting/estimate-report-issuer';
 
 @Injectable()
 export class EstimatePublicShareService {
@@ -188,7 +189,8 @@ export class EstimatePublicShareService {
         ],
       },
       include: {
-        payments: { select: { status: true } },
+        payments: { select: { status: true, paidAt: true } },
+        order: { select: { id: true } },
         user: {
           include: {
             role: true,
@@ -244,7 +246,10 @@ export class EstimatePublicShareService {
       this.resolveBrandingForDealerEstimate(estimate.idUser),
       attachEstimatePieceDiagramMetadata(this.prisma, estimate.pieces),
     ]);
-    return buildPublicEstimateData(estimate, branding, pieces, pricingMode);
+    return {
+      ...buildPublicEstimateData(estimate, branding, pieces, pricingMode),
+      externalDealerPresentation: buildExternalDealerPresentation(estimate, branding),
+    };
   }
 
   private buildCustomerDisplayName(estimate: {

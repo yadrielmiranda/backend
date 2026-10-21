@@ -33,6 +33,28 @@ export const AGREEMENT_CONSENT =
 export const CHANGE_ORDER_CONSENT =
   'I agree to the charges and updated total in this Change Order. The products and all other terms of the referenced signed agreement remain unchanged. I consent to sign electronically.';
 
+// Only new snapshots with an explicit issuer opt in. Legacy or signed documents
+// must never be reclassified from today's account or the synthetic report user.
+function agreementIssuerHeader(snapshot: any, title: string) {
+  const issuer = snapshot.externalDealerPresentation;
+  if (!issuer) return `<h1>${escapeHtml(title)}</h1>`;
+  return `<header style="display:grid;grid-template-columns:1fr 230px 1fr;gap:18px;align-items:start;border-bottom:1px solid #dbe3ee;padding-bottom:15px;margin-bottom:16px;break-inside:avoid;">
+    <h1 style="overflow-wrap:anywhere;">${escapeHtml(title)}</h1>
+    <div style="text-align:center;">${snapshot.branding?.logoUrl ? `<img src="${escapeHtml(snapshot.branding.logoUrl)}" alt="Logo" style="display:block;width:230px;height:112px;max-width:100%;object-fit:contain;"/>` : ''}<div style="font-size:8px;color:#64748b;">Generated with Authentic Evolution</div></div>
+    <div style="text-align:right;overflow-wrap:anywhere;"><strong style="font-size:15px;">${escapeHtml(issuer.name)}</strong><div style="font-size:9px;margin-top:4px;">Independent Distributor</div>${issuer.phone ? `<div style="font-size:9px;margin-top:6px;">${escapeHtml(issuer.phone)}</div>` : ''}${issuer.email ? `<div style="font-size:9px;margin-top:4px;">${escapeHtml(issuer.email)}</div>` : ''}</div>
+    </header>`;
+}
+
+export function agreementIssuerFooter(snapshot: any) {
+  const issuer = snapshot.externalDealerPresentation;
+  if (!issuer) return '';
+  return `<div style="box-sizing:border-box;width:100%;padding:0 14mm;color:#64748b;font:8px Arial,Helvetica,sans-serif;text-align:center;">
+    <div style="padding-bottom:6px;overflow-wrap:anywhere;">This estimate is issued by ${escapeHtml(issuer.name)}, an independent distributor.</div>
+    <div style="border-top:1px solid #dbe3ee;padding-top:6px;">Generated with Authentic Evolution | <a href="http://www.authenticevolutionco.com" style="color:#64748b;text-decoration:none;">www.authenticevolutionco.com</a></div>
+    <div style="margin-top:6px;">Estimate #${escapeHtml(snapshot.number)} - Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>
+    </div>`;
+}
+
 export function changeOrderHtml(snapshot: any) {
   const change = snapshot.changeOrder;
   const usd = (value: unknown) =>
@@ -49,14 +71,14 @@ export function changeOrderHtml(snapshot: any) {
     )
     .join('');
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    @page { size: Letter; margin: 18mm; } * { box-sizing: border-box; } body { font: 12px Arial,sans-serif; color: #111827; }
+    @page { size: Letter; margin: ${snapshot.externalDealerPresentation ? '18mm 18mm 30mm' : '18mm'}; } * { box-sizing: border-box; } body { font: 12px Arial,sans-serif; color: #111827; }
     h1 { font-size: 25px; margin-bottom: 8px; } h2 { font-size: 15px; margin-top: 26px; } .muted { color: #475569; line-height: 1.6; }
     table { width:100%; border-collapse:collapse; margin:20px 0; } th,td { text-align:left; padding:12px 8px; border-bottom:1px solid #e2e8f0; } th { background:#f8fafc; }
     td:nth-child(n+2),th:nth-child(n+2) { text-align:right; } tr { break-inside:avoid; }
     .totals { margin-top:22px; padding:16px; background:#ecfdf5; border:1px solid #a7f3d0; border-radius:8px; break-inside:avoid; }
     .row { display:flex; justify-content:space-between; gap:20px; margin:10px 0; } .total { font-size:18px; font-weight:bold; } p { line-height:1.6; }
-    </style></head><body><h1>Change Order #${escapeHtml(change.number)}</h1>
-    <div class="muted">${escapeHtml(snapshot.branding?.name)} · Estimate #${escapeHtml(snapshot.number)}<br>
+    </style></head><body>${agreementIssuerHeader(snapshot, `Change Order #${change.number}`)}
+    <div class="muted">${escapeHtml(snapshot.externalDealerPresentation?.name ?? snapshot.branding?.name)} · Estimate #${escapeHtml(snapshot.number)}<br>
     Prepared for ${escapeHtml(snapshot.customerFirstName)} ${escapeHtml(snapshot.customerLastName)}<br>
     Project: ${escapeHtml(snapshot.name)}<br>References signed agreement revision ${escapeHtml(change.baseRevision)}</div>
     <h2>Charges updated</h2>${
@@ -185,7 +207,10 @@ export class ContractPdfService {
       // La entrada al generador contiene exclusivamente la cotización pública congelada.
       const report = agreementQuoteReport(snapshot);
       const view = totalOnly ? 'dealer_public_total' : 'dealer_public';
-      const html = EstimatePdfHtmlBuilder.build(report as any, view, diagrams);
+      const showExternalDealerPresentation = Boolean(snapshot.externalDealerPresentation);
+      const html = EstimatePdfHtmlBuilder.build(
+        report as any, view, diagrams, undefined, undefined, showExternalDealerPresentation,
+      );
       const pdfPage = await browser.newPage();
       await pdfPage.setRequestInterception(true);
       pdfPage.on('request', (request) =>
@@ -203,7 +228,9 @@ export class ContractPdfService {
           displayHeaderFooter: true,
           preferCSSPageSize: true,
           headerTemplate: '<span></span>',
-          footerTemplate: `<div style="font:8px Arial;width:100%;text-align:center;padding:0 14mm;">${footer} - Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>`,
+          footerTemplate: showExternalDealerPresentation
+            ? EstimatePdfHtmlBuilder.buildFooterTemplate(report as any, view, true)
+            : `<div style="font:8px Arial;width:100%;text-align:center;padding:0 14mm;">${footer} - Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>`,
         }),
       );
     });
@@ -226,8 +253,8 @@ export class ContractPdfService {
     const row = (label: string, value: unknown) =>
       `<div class="row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
     const html = `<!doctype html><html><head><meta charset="utf-8"><style>
-      @page { size: Letter; margin: 18mm; } * { box-sizing: border-box; } body { font: 12px Arial,sans-serif; color: #111827; } h1 { font-size: 25px; margin: 0 0 8px; } h2 { font-size: 15px; margin: 25px 0 10px; } .sub { color: #475569; } .row { display: flex; justify-content: space-between; gap: 20px; border-bottom: 1px solid #e2e8f0; padding: 9px 0; } strong { text-align: right; overflow-wrap: anywhere; } .consent { line-height: 1.6; padding: 16px; background: #f8fafc; border: 1px solid #e2e8f0; } svg { width: 100%; height: 130px; border-bottom: 1px solid #64748b; } .note { margin-top: 20px; font-size: 10px; color: #475569; line-height: 1.5; }
-      </style></head><body><h1>Electronic acceptance</h1><div class="sub">${escapeHtml(snapshot.branding?.name)} · Estimate #${escapeHtml(snapshot.number)}</div>
+      @page { size: Letter; margin: ${snapshot.externalDealerPresentation ? '18mm 18mm 30mm' : '18mm'}; } * { box-sizing: border-box; } body { font: 12px Arial,sans-serif; color: #111827; } h1 { font-size: 25px; margin: 0 0 8px; } h2 { font-size: 15px; margin: 25px 0 10px; } .sub { color: #475569; } .row { display: flex; justify-content: space-between; gap: 20px; border-bottom: 1px solid #e2e8f0; padding: 9px 0; } strong { text-align: right; overflow-wrap: anywhere; } .consent { line-height: 1.6; padding: 16px; background: #f8fafc; border: 1px solid #e2e8f0; } svg { width: 100%; height: 130px; border-bottom: 1px solid #64748b; } .note { margin-top: 20px; font-size: 10px; color: #475569; line-height: 1.5; }
+      </style></head><body>${agreementIssuerHeader(snapshot, 'Electronic acceptance')}<div class="sub">${escapeHtml(snapshot.externalDealerPresentation?.name ?? snapshot.branding?.name)} · Estimate #${escapeHtml(snapshot.number)}</div>
       <h2>${agreement.baseAgreementId ? `Change Order #${escapeHtml(agreement.changeOrderNumber)}` : 'Agreement'}</h2>${agreement.baseAgreementId ? row('Referenced agreement revision', snapshot.changeOrder.baseRevision) : ''}${row('Customer report', agreement.pricingMode === 'total' ? 'Project total' : 'Detailed prices')}${row('Dealer contract', agreement.contract.name)}${row('Signed by', signerName)}${row('Signed at', formatAgreementSignedAt(signedAt))}
       <h2>Acceptance</h2><div class="consent">${escapeHtml(agreement.consentText ?? AGREEMENT_CONSENT)}</div><h2>Signature</h2><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 180">${paths}</svg>
       <p class="note">${agreement.baseAgreementId ? 'This acceptance applies to the Change Order included in this document and references the previously signed agreement. The products and all other terms remain unchanged.' : 'This acceptance applies to the saved estimate and dealer contract included in this document. Changes to the agreed products, prices or terms require a new acceptance.'}</p></body></html>`;
@@ -239,6 +266,11 @@ export class ContractPdfService {
           format: 'Letter',
           printBackground: true,
           preferCSSPageSize: true,
+          ...(snapshot.externalDealerPresentation ? {
+            displayHeaderFooter: true,
+            headerTemplate: '<span></span>',
+            footerTemplate: agreementIssuerFooter(snapshot),
+          } : {}),
         }),
       );
     });
@@ -253,6 +285,11 @@ export class ContractPdfService {
           format: 'Letter',
           printBackground: true,
           preferCSSPageSize: true,
+          ...(snapshot.externalDealerPresentation ? {
+            displayHeaderFooter: true,
+            headerTemplate: '<span></span>',
+            footerTemplate: agreementIssuerFooter(snapshot),
+          } : {}),
         }),
       );
     });
