@@ -469,6 +469,7 @@ export class EstimatePdfHtmlBuilder {
     const comparisonView =
       reportKind === 'dealer' || (reportKind === 'admin' && ownerIsDealer);
     const internalReport = reportKind === 'dealer' || reportKind === 'admin';
+    const showMarkup = internalReport && ownerIsDealer;
     const earningsReport = internalReport ? buildDealerEarningsReport(estimate) : null;
     const networkProfitBreakdown = reportKind === 'admin' && viewerRole === 'admin'
       ? estimate.networkProfitBreakdown ?? buildNetworkProfitBreakdown(estimate) : null;
@@ -620,6 +621,24 @@ export class EstimatePdfHtmlBuilder {
           customerCharges.customerTotalIncomplete
       : cityFeePending || installationAmountPending;
 
+    const pieceBreakdown = new Map<string, number>();
+    const totalPieces = estimate.pieces.reduce((total, piece) => {
+      const productName = String(piece.prod?.name ?? '').trim() || 'Product';
+      const qty = numberValue(piece.qty);
+      pieceBreakdown.set(productName, (pieceBreakdown.get(productName) ?? 0) + qty);
+      return total + qty;
+    }, 0);
+    const piecesBreakdownHtml = `
+      <div class="pieces-breakdown keep-together">
+        <div class="pieces-breakdown-header">
+          <h3>Pieces Breakdown</h3>
+          <div class="pieces-breakdown-qty"><span>Qty</span><strong>${totalPieces}</strong></div>
+        </div>
+        <div class="pieces-breakdown-items">${pieceBreakdown.size
+          ? Array.from(pieceBreakdown, ([name, qty]) => `${escapeHtml(name)}: ${qty}`).join(' | ')
+          : '<span class="pieces-breakdown-empty">No calculated pieces yet.</span>'}</div>
+      </div>`;
+
     const productCards = estimate.pieces.length
       ? estimate.pieces
           .map((piece: any, index: number) => {
@@ -661,6 +680,15 @@ export class EstimatePdfHtmlBuilder {
             const diagram = diagramSrc
               ? `<img src="${escapeHtml(diagramSrc)}" alt="Diagram for ${escapeHtml(displayMark)}" />`
               : '<div class="diagram-placeholder">Diagram unavailable</div>';
+            const dealerMarkup = piece.dealerMarkup == null ? null : Number(piece.dealerMarkup);
+            const markupHtml = showMarkup
+              ? `<div class="price-block markup-block">
+                  <div class="price-label">Markup</div>
+                  <div class="price-value">${dealerMarkup !== null && Number.isFinite(dealerMarkup)
+                    ? `${(dealerMarkup * 100).toFixed(2)}%`
+                    : '—'}</div>
+                </div>`
+              : '';
             const pricing = projectTotalOnly
               ? ''
               : `
@@ -668,6 +696,7 @@ export class EstimatePdfHtmlBuilder {
                   <div class="price-label">Unit Price</div>
                   <div class="price-value">${promotionPrice(unitPrice, originalUnitPrice)}</div>
                 </div>
+                ${markupHtml}
                 <div class="price-block subtotal-block price-success">
                   <div class="price-label">Subtotal</div>
                   <div class="price-value price-strong">${promotionPrice(subtotal, originalSubtotal)}</div>
@@ -1142,6 +1171,13 @@ export class EstimatePdfHtmlBuilder {
     .promotion-current { color: #07883f; }
     .empty { padding: 28px; border: 1px dashed #cbd5e1; border-radius: 9px; color: var(--report-text-color); text-align: center; }
     .summary-section { margin-top: 22px; break-inside: avoid-page; page-break-inside: avoid; }
+    .pieces-breakdown { margin-bottom: 18px; }
+    .pieces-breakdown-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+    .pieces-breakdown-header h3 { margin: 0; font-size: 11px; font-weight: 600; }
+    .pieces-breakdown-qty { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+    .pieces-breakdown-qty strong { min-width: 58px; padding: 5px 12px; border: 1px dashed #dbe3ee; border-radius: 6px; background: #f1f5f9; text-align: center; font-variant-numeric: tabular-nums; }
+    .pieces-breakdown-items { padding: 10px 12px; border: 1px solid #dbe3ee; border-radius: 6px; background: #f1f5f9; font-family: 'Courier New', monospace; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+    .pieces-breakdown-empty { color: #64748b; font-style: italic; }
     .summary-start { break-inside: avoid; page-break-inside: avoid; }
     .summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 10px; }
     .summary-grid.single-column { grid-template-columns: 1fr; }
@@ -1220,7 +1256,7 @@ export class EstimatePdfHtmlBuilder {
     <div class="dates"><div class="date-group"><div class="date-label">Date</div><div class="date-value">${escapeHtml(formatDate(estimate.date))}</div></div>${estimate.expiresAt && !estimate.promotionLockedAt && !estimateDiscountConfig(estimate.manualDiscount)?.lockedAt ? `<div class="date-group"><div class="date-label">Valid through</div><div class="date-value">${escapeHtml(estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString('en-US') : formatDate(estimate.expiresAt))}</div></div>` : ''}</div>
   </section>
   <section class="products-section"><div class="products-heading"><h2 class="section-heading">Product Details</h2><div class="illustration-note">Illustrations are visual references; written specifications govern.</div></div><div class="product-list">${productCards}</div></section>
-  <section class="summary-section">${projectSummaryHtml}</section>
+  <section class="summary-section">${piecesBreakdownHtml}${projectSummaryHtml}</section>
 </main></body></html>`;
   }
 }
