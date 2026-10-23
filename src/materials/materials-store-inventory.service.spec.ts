@@ -69,6 +69,21 @@ function fixture(count = 2) {
 }
 
 describe('Materials store inventory snapshot', () => {
+  it('offers technicians the same safe withdrawal availability without granting staff inventory or count access', async () => {
+    const f = fixture();
+    const technician = { id: 12, role: { name: 'technician' } } as const;
+    f.db().reservations.push({ productId: 1, presentationId: 12, storeId: 3, quantity: 2, status: 'CONFIRMED' });
+    const result = await f.service.getTechnicianInventory(3, technician);
+    expect(result.products[0]).toMatchObject({ totalBaseQuantity: 120, reservedBaseQuantity: 24, availableBaseQuantity: 96 });
+    const query = f.tx.materialProduct.findMany.mock.calls[0][0];
+    for (const field of ['costPerPackage', 'baseCost', 'salePrice', 'saleLines']) expect(query.select).not.toHaveProperty(field);
+    await expect(f.service.getInventory(3, technician)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(f.service.count(3, f.payload(), technician)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(f.service.getTechnicianInventory(3, operator)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(f.service.getTechnicianInventory(3, client)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(f.db().movements).toHaveLength(0);
+  });
+
   it('exposes the policy to daily operations while allowing admin physical counts of restricted base quantities', async () => {
     const f = fixture();
     f.db().products[0].allowBaseUnitOperations = false;

@@ -123,6 +123,7 @@ describe('Estimate financial refresh', () => {
       {
         config: null,
         summary: null,
+        dealerEarnings: null,
         paymentSchedule: null,
       },
     );

@@ -75,7 +75,7 @@ describe('External PO warehouse inventory', () => {
     expect((await f.service.unit(line, admin)).onHand).toBe(2);
   });
 
-  it('keeps external units out of installation deliveries and restricts technician releases', async () => {
+  it('keeps external units out of transit installation deliveries and requires warehouse stock for releases', async () => {
     const f = fixture();
     await f.scan('COLLECT');
     const pending = await f.service.technicianPending({}, tech);
@@ -84,7 +84,7 @@ describe('External PO warehouse inventory', () => {
       ...request(), installationJobId: 1, installationAddress: '1 Test St',
       items: [{ barcode: line, quantity: 1, version: 1 }],
     }, tech)).rejects.toThrow('External POs do not have an installation');
-    await expect(f.service.scan({ ...request(), action: 'RELEASE', barcode: line, storeId: 1 }, tech)).rejects.toThrow('Technicians can only');
+    await expect(f.service.scan({ ...request(), action: 'RELEASE', barcode: line, storeId: 1 }, tech)).rejects.toThrow('no parts');
     expect((await f.service.unit(line, admin)).inTransit).toBe(1);
   });
 });

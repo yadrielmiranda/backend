@@ -1,7 +1,7 @@
 import { reconcileChargeRefunds, recordStripeReceipt, refreshPaymentAccounting } from '@/payments/payment-ledger';
 import { attachLedgerStore } from '@/payments/testing/ledger-store';
 import { ConfigService } from '@nestjs/config';
-import { PaymentMethod, PaymentType, Prisma } from '@prisma/client';
+import { GlobalParameterKey, PaymentMethod, PaymentType, Prisma } from '@prisma/client';
 import Stripe from 'stripe';
 import { PaymentsService } from '@/payments/payments.service';
 import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
@@ -41,6 +41,7 @@ function fixture({
   deposit = 250,
   material = 8000,
   installation = 2000,
+  threshold = 0,
 } = {}) {
   const estimate: any = {
     id: 1,
@@ -106,6 +107,7 @@ function fixture({
     });
   const tx: any = {
     $queryRaw: jest.fn().mockResolvedValue([{ id: 1 }]),
+    referralAttribution: { findUnique: jest.fn().mockResolvedValue(null) },
     estimateAgreement: { findFirst: jest.fn().mockResolvedValue(null) },
     estimate: {
       findUnique: jest.fn(async (args) => {
@@ -127,7 +129,7 @@ function fixture({
       }),
     },
     globalParameter: {
-      findUnique: jest.fn(async () => ({ value: decimal(0.03) })),
+      findUnique: jest.fn(async ({ where }) => ({ value: decimal(where.key === GlobalParameterKey.MATERIAL_ONLY_UPFRONT_THRESHOLD ? threshold : 0.03) })),
     },
     installationJob: {
       update: jest.fn(async ({ data }) =>
@@ -256,6 +258,50 @@ function fixture({
     });
   return { ledger, refunds, intent, stripe, estimate, tx, service, workflow, actor, manual, approve, createSession };
 }
+
+describe('Material-only threshold through payment collection', () => {
+  it.each([false, true])('collects the full initial installment with an arbitrary threshold (public=%s)', async internal => {
+    const f = fixture({ material: 240, installation: 0, deposit: 0, threshold: 275.50, mode: internal ? 'INTERNAL' : 'EXTERNAL' });
+    if (internal) await f.service.createCheckoutSessionForPublicToken({
+      token: 'customer-link', type: PaymentType.INSTALLMENT, sequence: 1,
+    });
+    else await f.service.createCheckoutSessionForEstimate({
+      estimateId: 1, type: PaymentType.INSTALLMENT, sequence: 1, user: f.actor,
+    });
+    const payment = f.estimate.payments.find(p => p.type === 'INSTALLMENT');
+    expect(payment.baseAmount.toFixed(2)).toBe('240.00');
+    expect(payment.surchargeAmount.toFixed(2)).toBe('7.20');
+    expect(payment.amount.toFixed(2)).toBe('247.20');
+    expect(payment.processingCostSnapshot).toMatchObject({
+      components: { material: '247.20', installation: '0.00' },
+      materialSurcharge: '7.20',
+    });
+    expect(payment.processingCostSnapshot).not.toHaveProperty('allocationPending');
+    expect(f.estimate.paymentPlanSnapshot.locked.rows).toHaveLength(1);
+    expect(f.estimate.order).toBeNull();
+  });
+
+  it('keeps a partial upfront payment credited and requires the rest before creating the order', async () => {
+    const f = fixture({ material: 240, installation: 0, deposit: 0, threshold: 275.50 });
+    const pay = (customAmount: number, expectedBalance: number) => f.service.recordManualPayment({
+      estimateId: 1, type: PaymentType.INSTALLMENT, reference: 'upfront-partial',
+      customAmount, expectedBalance, method: PaymentMethod.CASH,
+      fundsVerified: true, actor: { id: 1, role: { name: 'admin' } },
+    });
+    await pay(120, 240);
+    expect(f.estimate.order).toBeNull();
+    expect(buildPaymentSchedule(f.estimate)?.rows).toMatchObject([
+      { milestone: 'ORDER', amount: '240.00', paid: '120.00', balance: '120.00' },
+    ]);
+    const firstReceipt = JSON.stringify(f.ledger.receipts[0]);
+    await pay(120, 120);
+    expect(f.tx.order.create).toHaveBeenCalledTimes(1);
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ total: '240.00', paid: '240.00', balance: '0.00', canRelease: true });
+    expect(f.ledger.receipts).toHaveLength(2);
+    expect(JSON.stringify(f.ledger.receipts[0])).toBe(firstReceipt);
+    expect(f.estimate.payments).toHaveLength(1);
+  });
+});
 
 describe('Installment payment workflow', () => {
   it('blocks pickup at the API until the material release installment has been paid', async () => {

@@ -146,7 +146,14 @@ export type PlanSnapshot = {
   planId: number | null;
   name: string;
   definition: PlanDefinition;
-  locked?: { amounts: ScheduleAmounts; rows: ScheduleRow[]; at: string };
+  // Regla vigente al calcular las cuotas; el primer pago conserva su resultado en locked.
+  materialOnlyUpfront?: { version: 1; threshold: string };
+  locked?: {
+    amounts: ScheduleAmounts; rows: ScheduleRow[]; at: string;
+    effectiveDefinition?: PlanDefinition;
+    materialOnlyUpfrontApplied?: boolean;
+    withInstallation?: boolean;
+  };
   adjustments?: Array<ScheduleRow & { amounts: ScheduleAmounts }>;
   // Solo para una revisión aprobada de una orden anterior a los planes.
   // Referencias a recibos originales; los importes se leen del pago, no se duplican.
@@ -161,13 +168,43 @@ export const money = (value: Decimal.Value) =>
 export const sumAmounts = (a: ScheduleAmounts) =>
   new Decimal(a.material).add(a.installation).add(a.permit).add(a.city);
 
+export function materialOnlyUpfrontStatus(
+  snapshot: PlanSnapshot,
+  amounts: ScheduleAmounts,
+  installation: boolean,
+): { threshold: string; applied: boolean } | undefined {
+  const rule = snapshot.materialOnlyUpfront;
+  if (rule?.version !== 1 || typeof rule.threshold !== 'string') return undefined;
+  let threshold: Decimal;
+  try { threshold = new Decimal(rule.threshold); } catch { return undefined; }
+  if (!threshold.isFinite() || threshold.lt(0) || threshold.decimalPlaces() > 2) return undefined;
+  return {
+    threshold: money(threshold),
+    applied: snapshot.locked
+      ? snapshot.locked.materialOnlyUpfrontApplied === true
+      : !installation && threshold.gt(0) && new Decimal(amounts.material).lte(threshold),
+  };
+}
+
+// Evaluar con el importe completo del estimado, nunca con una diferencia de revisión.
+export function effectivePlanDefinition(
+  snapshot: PlanSnapshot,
+  amounts: ScheduleAmounts,
+  installation: boolean,
+): PlanDefinition {
+  if (snapshot.locked) return snapshot.locked.effectiveDefinition ?? snapshot.definition;
+  return materialOnlyUpfrontStatus(snapshot, amounts, installation)?.applied
+    ? { ...snapshot.definition, withoutInstallation: [{ milestone: 'ORDER', basis: 'MATERIAL', percent: 100 }] }
+    : snapshot.definition;
+}
+
 export function planRows(
   snapshot: PlanSnapshot,
   amounts: ScheduleAmounts,
   installation: boolean,
 ): ScheduleRow[] {
   const steps =
-    snapshot.definition[
+    (snapshot.locked?.effectiveDefinition ?? snapshot.definition)[
       installation ? 'withInstallation' : 'withoutInstallation'
     ];
   const allocated: Partial<Record<Basis, Decimal>> = {};

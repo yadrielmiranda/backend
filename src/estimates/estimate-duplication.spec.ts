@@ -120,6 +120,41 @@ function fixture() {
 }
 
 describe('Independent estimate duplication', () => {
+  it('does not copy the source internal note into a separate estimate', async () => {
+    const f = fixture();
+    f.source.internalNote = {
+      text: 'Private note belonging to the original estimate', version: 3,
+      updatedAt: '2026-10-23T14:00:00Z', updatedById: 7,
+    };
+    const original = json(f.source);
+    await f.duplicate();
+    expect(f.created()[0]).not.toHaveProperty('internalNote');
+    expect(json(f.source)).toEqual(original);
+    expect(f.tx.estimate.update).not.toHaveBeenCalled();
+  });
+
+  it.each(['0', '500', '750.25'])('does not freeze a creation-only material rule when the configured threshold is %s', async threshold => {
+    const f = fixture();
+    f.source.paymentPlanSnapshot.materialOnlyUpfront = { version: 1, threshold: '150.00' };
+    const original = json(f.source);
+    f.tx.globalParameter.findUnique.mockImplementation(async ({ where }: any) => ({
+      value: where.key === 'MATERIAL_ONLY_UPFRONT_THRESHOLD' ? threshold
+        : where.key === 'SALES_TAX' ? '.08' : 30,
+    }));
+
+    await f.duplicate();
+    await f.service.createEmptyEstimate({ name: 'New estimate', customerTaxRate: .07 }, 7);
+
+    for (const estimate of f.created()) {
+      expect(estimate.paymentPlanSnapshot).not.toHaveProperty('materialOnlyUpfront');
+      expect(estimate.paymentPlanSnapshot).not.toHaveProperty('locked');
+      expect(estimate.paymentPlanSnapshot).not.toHaveProperty('adjustments');
+    }
+    expect(f.created()[1].units).toBe(0);
+    expect(json(f.source)).toEqual(original);
+    expect(f.tx.estimate.update).not.toHaveBeenCalled();
+  });
+
   it('captures current energy for the new copy without changing the source rating', async () => {
     const f = fixture();
     const oldSnapshot = { schemaVersion: 1, status: 'AVAILABLE', uFactor: '1.2', ratingId: 30 };

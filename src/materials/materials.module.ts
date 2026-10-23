@@ -8,6 +8,7 @@ import { MaterialsStoreInventoryService } from './materials-store-inventory.serv
 import { MaterialsStoreInventoryController } from './materials-store-inventory.controller';
 import { MaterialsStoreIssueController } from './materials-store-issue.controller';
 import { MaterialsStoreIssueService } from './materials-store-issue.service';
+import { MaterialsTechnicianController } from './materials-technician.controller';
 import { MaterialsImagesController } from './materials-images.controller';
 import { MaterialsSalesService } from './materials-sales.service';
 import { MaterialSaleEmailService } from './material-sale-email.service';
@@ -15,7 +16,7 @@ import { MaterialsSalesController, MaterialsPublicSalesController, MaterialsCust
 
 @Module({
   imports: [PrismaModule, ConfigModule, NotificationsModule],
-  controllers: [MaterialsController, MaterialsStoreInventoryController, MaterialsStoreIssueController, MaterialsImagesController, MaterialsSalesController, MaterialsPublicSalesController, MaterialsCustomerCatalogController],
+  controllers: [MaterialsController, MaterialsStoreInventoryController, MaterialsStoreIssueController, MaterialsTechnicianController, MaterialsImagesController, MaterialsSalesController, MaterialsPublicSalesController, MaterialsCustomerCatalogController],
   providers: [MaterialsInventoryService, MaterialsStoreInventoryService, MaterialsStoreIssueService, MaterialsSalesService, MaterialSaleEmailService],
   exports: [MaterialsInventoryService, MaterialsSalesService],
 })

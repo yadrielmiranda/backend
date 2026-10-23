@@ -136,9 +136,8 @@ describe('Technician customer handoffs from assigned factory pickups', () => {
     await expect(f.deliver(input, colleague)).rejects.toThrow('another operation');
   });
 
-  it('rejects warehouse delivery and administrative entrypoints for technicians', async () => {
+  it('keeps administrative entrypoints unavailable to technicians and dedicated routes unavailable to other roles', async () => {
     const f = fixture();
-    await expect(f.deliver({ ...f.dto(), source: 'WAREHOUSE', storeId: 1 })).rejects.toThrow(ForbiddenException);
     await expect(f.service.deliverToCustomer(f.dto(), tech)).rejects.toThrow(ForbiddenException);
     await expect(f.service.customerDelivery(1, tech)).rejects.toThrow(ForbiddenException);
     for (const role of ['admin', 'operator', 'client', 'dealer'] as const) {

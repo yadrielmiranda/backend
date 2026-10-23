@@ -1,15 +1,17 @@
 import { billingEstimate } from '@/dealer-network/dealer-network';
 import { changeOrderInstallments } from './change-order-installments';
-import { CANCELED_ESTIMATE, assertEstimateNotCanceled } from '@/estimates/estimate-lifecycle-policy';
+import { CANCELED_ESTIMATE, assertEstimateNotCanceled, hasEstimatePaymentHistory } from '@/estimates/estimate-lifecycle-policy';
 import { hasRefundHistory, paymentIsCovered } from '@/payments/payment-accounting';
 import { BadRequestException, ConflictException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { GlobalParameterKey, Prisma } from '@prisma/client';
 import { calculateEstimateDiscount } from '@/estimates/discounts/estimate-discount';
 import { internalCustomerChargeAdditionsForEstimate } from '@/estimates/estimate-customer-charges.summary';
 import {
   allocateSchedule,
   paymentsForSchedule,
   defaultPlan,
+  effectivePlanDefinition,
+  materialOnlyUpfrontStatus,
   Milestone,
   money,
   PlanSnapshot,
@@ -57,6 +59,40 @@ export async function resolveNewPlan(
   };
 }
 
+// Los estimados sin pagos usan la configuración vigente, sin depender de su fecha.
+// La lectura no escribe registros; el checkout guarda las condiciones al cobrar.
+export async function withCurrentPaymentPlan<T extends {
+  paymentPlanSnapshot?: unknown;
+  payments?: Array<Parameters<typeof hasEstimatePaymentHistory>[0][number] & {
+    stripeSessionId?: string | null;
+    stripePaymentIntentId?: string | null;
+  }>;
+  installationJob?: { status: string } | null;
+}>(db: Prisma.TransactionClient, estimate: T): Promise<T> {
+  const snapshot = planSnapshot(estimate.paymentPlanSnapshot);
+  if (!snapshot) return estimate;
+  if (hasEstimatePaymentHistory(estimate.payments ?? [])) {
+    if (snapshot.locked || !snapshot.materialOnlyUpfront) return estimate;
+    const preserved = { ...snapshot };
+    delete preserved.materialOnlyUpfront;
+    return { ...estimate, paymentPlanSnapshot: preserved };
+  }
+  if (estimate.installationJob && estimate.installationJob.status !== 'CANCELED') return estimate;
+  if (estimate.payments?.some(payment =>
+    (payment.status === 'PENDING' && payment.stripeSessionId) ||
+    (payment.stripePaymentIntentId && !payment.stripeSessionId),
+  )) return estimate;
+  const parameter = await db.globalParameter.findUnique({
+    where: { key: GlobalParameterKey.MATERIAL_ONLY_UPFRONT_THRESHOLD },
+  });
+  const current = { ...snapshot,
+    materialOnlyUpfront: { version: 1 as const, threshold: money(parameter?.value.toString() ?? '0') },
+  };
+  delete current.locked;
+  delete current.adjustments;
+  return { ...estimate, paymentPlanSnapshot: current };
+}
+
 export function scheduleAmounts(estimate: any): ScheduleAmounts {
   const additions = internalCustomerChargeAdditionsForEstimate(estimate);
   estimate = billingEstimate(estimate);
@@ -93,7 +129,8 @@ export function buildPaymentSchedule(estimate: any) {
       : estimate.installationJob;
   const quote = job?.quotes?.[0];
   const amounts = scheduleAmounts(estimate);
-  const installments = snapshot.locked?.rows ?? planRows(snapshot, amounts, Boolean(job));
+  const effectiveDefinition = effectivePlanDefinition(snapshot, amounts, Boolean(job));
+  const installments = snapshot.locked?.rows ?? planRows({ ...snapshot, definition: effectiveDefinition }, amounts, Boolean(job));
   const rows = [...installments, ...(snapshot.adjustments ?? [])];
   // La instalación exige las cuotas originales y los ajustes previos al trabajo.
   // La etapa COMPLETE no bloquea su inicio ni se cobra antes obligatoriamente.
@@ -244,7 +281,7 @@ export async function getPaymentSchedule(
     where: { id: estimateId },
     include: scheduleInclude,
   });
-  return estimate ? buildPaymentSchedule(estimate) : null;
+  return estimate ? buildPaymentSchedule(await withCurrentPaymentPlan(db, estimate)) : null;
 }
 
 export async function installmentContext(
@@ -254,10 +291,10 @@ export async function installmentContext(
   preview = false,
   allowAdvance = false,
 ) {
-  const estimate = await db.estimate.findUniqueOrThrow({
+  const estimate = await withCurrentPaymentPlan(db, await db.estimate.findUniqueOrThrow({
     where: { id: estimateId },
     include: scheduleInclude,
-  });
+  }));
   assertEstimateNotCanceled(estimate);
   const snapshot = planSnapshot(estimate.paymentPlanSnapshot);
   if (!snapshot)
@@ -277,16 +314,16 @@ export async function installmentContext(
       'This installment is not available for payment. Refresh the payment schedule.',
     );
   if (!preview && !snapshot.locked) {
+    const amounts = scheduleAmounts(estimate);
+    const withInstallation = Boolean(estimate.installationJob && estimate.installationJob.status !== 'CANCELED');
+    const effectiveDefinition = effectivePlanDefinition(snapshot, amounts, withInstallation);
+    const upfront = materialOnlyUpfrontStatus(snapshot, amounts, withInstallation);
     snapshot.locked = {
-      amounts: scheduleAmounts(estimate),
-      rows: planRows(
-        snapshot,
-        scheduleAmounts(estimate),
-        Boolean(
-          estimate.installationJob &&
-            estimate.installationJob.status !== 'CANCELED',
-        ),
-      ),
+      amounts,
+      rows: planRows({ ...snapshot, definition: effectiveDefinition }, amounts, withInstallation),
+      ...(upfront ? {
+        effectiveDefinition, materialOnlyUpfrontApplied: upfront.applied, withInstallation,
+      } : {}),
       at: new Date().toISOString(),
     };
     await db.estimate.update({
@@ -296,7 +333,7 @@ export async function installmentContext(
       },
     });
   }
-  return { row, schedule };
+  return { row, schedule, snapshot };
 }
 
 // Las modificaciones aprobadas son cargos separados; las cuotas originales y sus pagos no se reescriben.
@@ -315,11 +352,21 @@ export async function synchronizeScheduleChanges(
     estimate.installationJob?.status === 'CANCELED'
       ? null
       : estimate.installationJob;
-  if (job && job.quotes[0]?.status !== 'APPROVED' && !options.approvedMaterialRevision) return;
+  const unpaid = job
+    ? !estimate.order && !estimate.payments.some(
+      payment => payment.type === 'INSTALLMENT' && (payment.status === 'PAID' || payment.netPaidBaseAmount != null),
+    )
+    : !hasEstimatePaymentHistory(estimate.payments);
+  const scopeChanged = snapshot.locked.withInstallation !== undefined &&
+    snapshot.locked.withInstallation !== Boolean(job);
+  // Una instalación recién solicitada tiene cotización preliminar. Sin pagos,
+  // cancelar el checkout permite abandonar también las cuotas del alcance anterior.
+  if (job && job.quotes[0]?.status !== 'APPROVED' && !options.approvedMaterialRevision && !(unpaid && scopeChanged)) return;
   const current = scheduleAmounts(estimate);
   const previous =
     snapshot.adjustments?.at(-1)?.amounts ?? snapshot.locked.amounts;
   if (
+    !scopeChanged &&
     Object.keys(current).every(
       (key) =>
         current[key as keyof ScheduleAmounts] ===
@@ -328,17 +375,15 @@ export async function synchronizeScheduleChanges(
   )
     return;
   if (
-    estimate.payments.some((p) => p.status === 'PENDING' && p.stripeSessionId)
+    estimate.payments.some((p) =>
+      (p.status === 'PENDING' && p.stripeSessionId) ||
+      (p.stripePaymentIntentId && !p.stripeSessionId),
+    )
   )
     throw new ConflictException(
       'Cancel the open checkout before changing the payment schedule.',
     );
-  if (
-    !estimate.order &&
-    !estimate.payments.some(
-      (p) => p.type === 'INSTALLMENT' && (p.status === 'PAID' || p.netPaidBaseAmount != null),
-    )
-  ) {
+  if (unpaid) {
     // Un intento cancelado no fija una cotización aún editable. Se recalculan
     // sus porcentajes antes de confirmar la orden, conservando el mismo plan.
     delete snapshot.locked;

@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import Decimal from 'decimal.js';
-import { buildPaymentSchedule, scheduleInclude } from '@/payment-plans/payment-schedule';
+import { buildPaymentSchedule, scheduleInclude, withCurrentPaymentPlan } from '@/payment-plans/payment-schedule';
 
 export function paymentPreviewAfterSigning(schedule: NonNullable<ReturnType<typeof buildPaymentSchedule>>) {
   const due = schedule.rows
@@ -27,6 +27,6 @@ export async function changeOrderPaymentPreview(
   if (job && job.status !== 'CANCELED' && job.quotes?.[0]?.status !== 'APPROVED') return null;
   // Los escritores del presupuesto aprobado ya sincronizan las diferencias.
   // Esta consulta es de solo lectura y no altera los documentos firmados.
-  const schedule = buildPaymentSchedule(estimate);
+  const schedule = buildPaymentSchedule(await withCurrentPaymentPlan(db, estimate));
   return schedule && !schedule.materialRevisionPending ? paymentPreviewAfterSigning(schedule) : null;
 }

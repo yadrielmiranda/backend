@@ -1,7 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import Decimal from 'decimal.js';
 import { paymentPreviewAfterSigning } from './change-order-payment-preview';
-import { buildPaymentSchedule, scheduleInclude } from '@/payment-plans/payment-schedule';
+import { buildPaymentSchedule, scheduleInclude, withCurrentPaymentPlan } from '@/payment-plans/payment-schedule';
 import { projectMaterialRevision } from '@/estimates/material-revisions/material-revision-snapshot';
 
 // Solo importes del cliente. Nunca devuelve costos, márgenes, plan del dealer ni
@@ -28,7 +28,7 @@ export async function materialChangePreview(
       // Simula únicamente lo que ocurrirá al aplicar esta firma. No persiste ni
       // habilita checkout mientras la revisión real continúe pendiente.
       const projected = { ...projectMaterialRevision(estimate, revision), materialRevisions: [] };
-      const schedule = buildPaymentSchedule(projected);
+      const schedule = buildPaymentSchedule(await withCurrentPaymentPlan(db, projected));
       if (schedule) {
         paymentPreview = paymentPreviewAfterSigning(schedule);
       }

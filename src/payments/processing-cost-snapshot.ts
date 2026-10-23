@@ -1,5 +1,5 @@
 import type { Prisma } from '@prisma/client';
-import { planRows, planSnapshot, type PlanSnapshot, type ScheduleAmounts } from '@/payment-plans/payment-plan';
+import { effectivePlanDefinition, planRows, planSnapshot, type PlanSnapshot, type ScheduleAmounts } from '@/payment-plans/payment-plan';
 import { cents, distributeCents } from './payment-accounting';
 import { freezeInstallationProcessingShare, restoreInstallationProcessingShare, type InstallationProcessingShare } from './installation-processing-cost';
 export { buildInstallationProcessingShare, withInstallationProcessingShare } from './installation-processing-cost';
@@ -54,6 +54,8 @@ export function refundedProcessingComponents(saved: unknown, amount: { toString(
 // Cuotas PROJECT: el importe ya calculado manda. Se distribuyen sus centavos
 // proporcionalmente sobre los componentes restantes, sin recalcular el cobro.
 function componentRows(snapshot: PlanSnapshot, amounts: ScheduleAmounts, withInstallation: boolean) {
+  // Resolver antes de aislar componentes; los ajustes usan la definición ya fijada.
+  snapshot = { ...snapshot, definition: effectivePlanDefinition(snapshot, amounts, withInstallation) };
   const rows = planRows(snapshot, amounts, withInstallation);
   const steps = snapshot.definition[withInstallation ? 'withInstallation' : 'withoutInstallation'];
   if (steps.some(step => step.basis === 'PROJECT')) {

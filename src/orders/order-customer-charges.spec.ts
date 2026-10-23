@@ -1,4 +1,5 @@
 import { OrdersService } from './orders.service';
+import { buildPaymentSchedule } from '@/payment-plans/payment-schedule';
 
 function fixture() {
   const estimate = {
@@ -78,5 +79,57 @@ describe('Order customer installation prices', () => {
       expect(Number(order.dealerEarnings!.amount) + services).toBe(380);
     }
     expect(estimate.installationJob.quotes[0].status).toBe('REJECTED');
+  });
+});
+
+describe('Current material payment terms in order lists', () => {
+  it.each(['UNPAID', 'PAID', 'REFUNDED'])('matches order details without changing %s history', async paymentStatus => {
+    const snapshot = {
+      version: 1, name: 'Half now', planId: 1,
+      definition: {
+        withoutInstallation: [
+          { milestone: 'ORDER', basis: 'MATERIAL', percent: 50 },
+          { milestone: 'RELEASE', basis: 'MATERIAL', percent: 50 },
+        ],
+        withInstallation: [{ milestone: 'ORDER', basis: 'PROJECT', percent: 100 }],
+      },
+    };
+    const estimate = {
+      id: 9, idUser: 7, date: new Date('2024-01-01'), units: 1,
+      dealerModeSnapshot: 'EXTERNAL', status: { name: 'Ordered' },
+      user: { dealerMode: 'EXTERNAL', role: { name: 'dealer' } },
+      rateT: '300', priceT: '400', customerPriceT: '400', totalPayable: '400', customerTotalPayable: '400',
+      paymentPlanSnapshot: snapshot, customerCharges: [], installationJob: null,
+      order: { id: 1, status: { name: 'Awaiting release' } },
+      payments: paymentStatus === 'UNPAID' ? [] : [{
+        id: 20, type: 'INSTALLMENT', sequence: 1, status: paymentStatus, baseAmount: '200',
+        ...(paymentStatus === 'REFUNDED' ? { netPaidBaseAmount: '0', refundedAmount: '200' } : {}),
+      }],
+    };
+    const order = { id: 1, idEst: 9, userId: 7, status: estimate.order.status, estimate, deliveries: [], extraCharges: [] };
+    const db = {
+      order: { findMany: jest.fn(async () => [order]), findUnique: jest.fn(async () => order) },
+      estimate: { findUnique: jest.fn(async () => estimate) },
+      user: { findMany: jest.fn(async () => []) },
+      globalParameter: { findUnique: jest.fn(async () => ({ value: '500.00' })) },
+    };
+    const service = new OrdersService(db as any, {} as any, {} as any, {} as any);
+    const original = JSON.stringify(order);
+
+    for (const threshold of ['500.00', '250.00']) {
+      db.globalParameter.findUnique.mockResolvedValue({ value: threshold });
+      const expected = paymentStatus === 'UNPAID' && threshold === '500.00'
+        ? ['400.00'] : ['200.00', '200.00'];
+      const detail = await service.findOne(1);
+      expect(detail.paymentSchedule?.rows.map(row => row.amount)).toEqual(expected);
+      for (const actor of [{ id: 1, role: { name: 'admin' } }, { id: 7, role: { name: 'dealer' } }]) {
+        const [listed] = await service.findAllForUser(actor as any);
+        const schedule = buildPaymentSchedule({ ...listed.estimate, order: listed });
+        expect(schedule?.rows.map(row => row.amount)).toEqual(expected);
+        expect(listed.paymentAnchor).toBe('estimate-payment');
+      }
+      expect(JSON.stringify(order)).toBe(original);
+    }
+    if (paymentStatus !== 'UNPAID') expect(db.globalParameter.findUnique).not.toHaveBeenCalled();
   });
 });

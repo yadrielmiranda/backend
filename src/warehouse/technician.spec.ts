@@ -247,10 +247,10 @@ describe('Technician receiving scope', () => {
     await expect(f.service.technicianScan({ ...request(), barcode: `${door}-DOOR`, action: 'RECEIVE', storeId }, tech)).rejects.toThrow();
     expect(f.movements).toHaveLength(0);
   });
-  it('cannot release stock through the shared service or the technician service', async () => {
+  it('requires warehouse stock for releases through the shared or technician service', async () => {
     const f = fixture();
     for (const method of ['scan', 'technicianScan'] as const)
-      await expect(f.service[method]({ ...request(), barcode: `${door}-DOOR`, action: 'RELEASE', storeId: 1 }, tech)).rejects.toThrow(ForbiddenException);
+      await expect(f.service[method]({ ...request(), barcode: `${door}-DOOR`, action: 'RELEASE', storeId: 1 }, tech)).rejects.toThrow('no parts');
     expect(f.movements).toHaveLength(0);
   });
   it('cannot access inventory, movement history, transfers, adjustments, store management or counts', async () => {

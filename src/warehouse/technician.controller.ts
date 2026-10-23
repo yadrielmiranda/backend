@@ -15,6 +15,7 @@ import {
   FactoryPickupRunFinishDto,
   FactoryPickupRunScanDto,
   WarehouseReceiptDto,
+  WarehouseReleaseDto,
   WarehouseInstallationDeliveryDto,
   WarehouseCustomerDeliveryDto,
   WarehouseScanDto,
@@ -33,6 +34,18 @@ export class TechnicianController {
 
   @Get('pending') pending(@Query() query: Record<string, string>, @Req() req: Request) {
     return this.warehouse.technicianPending(query, req.user as AuthUser);
+  }
+
+  @Get('warehouse/inventory/po') warehouseInventoryByPo(@Query() query: Record<string, string>, @Req() req: Request) {
+    return this.warehouse.technicianWarehouseInventoryByPo(query, req.user as AuthUser);
+  }
+
+  @Get('warehouse/units/:barcode') warehouseUnit(@Param('barcode') barcode: string, @Req() req: Request) {
+    return this.warehouse.technicianWarehouseUnit(barcode, req.user as AuthUser);
+  }
+
+  @Get('warehouse/history') warehouseHistory(@Query() query: Record<string, string>, @Req() req: Request) {
+    return this.warehouse.technicianWarehouseHistory(query, req.user as AuthUser);
   }
 
   @Get('customer-delivery-options') customerDeliveryOptions(@Query() query: Record<string, string>, @Req() req: Request) {
@@ -81,6 +94,9 @@ export class TechnicianController {
 
   @Post('receipts') receive(@Body() dto: WarehouseReceiptDto, @Req() req: Request) {
     return this.warehouse.receive(dto, req.user as AuthUser);
+  }
+  @Post('releases') release(@Body() dto: WarehouseReleaseDto, @Req() req: Request) {
+    return this.warehouse.technicianRelease(dto, req.user as AuthUser);
   }
   @Post('installation-deliveries') deliverToInstallation(
     @Body() dto: WarehouseInstallationDeliveryDto, @Req() req: Request,

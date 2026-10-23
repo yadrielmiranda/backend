@@ -1,4 +1,5 @@
 import { buildPublicEstimateData } from './public-estimate-data';
+import { withCurrentPaymentPlan } from '@/payment-plans/payment-schedule';
 import { canShareEstimate } from './estimate-share-access';
 import {
   BadRequestException,
@@ -189,7 +190,7 @@ export class EstimatePublicShareService {
         ],
       },
       include: {
-        payments: { select: { status: true, paidAt: true } },
+        payments: true,
         order: { select: { id: true } },
         user: {
           include: {
@@ -242,13 +243,14 @@ export class EstimatePublicShareService {
     const pricingMode: CustomerReportPricingMode =
       estimate.publicTotalToken === normalizedToken ? 'total' : 'detailed';
     await this.notifyDealerPublicEstimateViewed(estimate);
-    const [branding, pieces] = await Promise.all([
+    const [branding, pieces, currentEstimate] = await Promise.all([
       this.resolveBrandingForDealerEstimate(estimate.idUser),
       attachEstimatePieceDiagramMetadata(this.prisma, estimate.pieces),
+      withCurrentPaymentPlan(this.prisma, estimate),
     ]);
     return {
-      ...buildPublicEstimateData(estimate, branding, pieces, pricingMode),
-      externalDealerPresentation: buildExternalDealerPresentation(estimate, branding),
+      ...buildPublicEstimateData(currentEstimate, branding, pieces, pricingMode),
+      externalDealerPresentation: buildExternalDealerPresentation(currentEstimate, branding),
     };
   }
 

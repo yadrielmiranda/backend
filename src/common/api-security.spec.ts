@@ -176,3 +176,52 @@ describe('Real HTTP authorization and response boundaries (H01–H04)', () => {
     expect(output.nested).toEqual({}); expect(output.pdf.toString()).toBe('PDF');
   });
 });
+
+describe('Internal material-only payment rule response privacy', () => {
+  it.each(['client', 'dealer', 'operator', 'technician', undefined, 'admin'])(
+    'preserves effective terms while restricting rule metadata for %s', role => {
+      const definition = {
+        withoutInstallation: [{ milestone: 'ORDER', basis: 'MATERIAL', percent: 100 }],
+        withInstallation: [{ milestone: 'ORDER', basis: 'PROJECT', percent: 100 }],
+      };
+      const rows = [{ sequence: 1, milestone: 'ORDER', title: 'Place order · 100% material', amount: '240.00' }];
+      const snapshot = {
+        version: 1,
+        name: 'Saved plan',
+        definition,
+        materialOnlyUpfront: { version: 1, threshold: '275.50' },
+        locked: {
+          effectiveDefinition: definition,
+          materialOnlyUpfrontApplied: true,
+          amounts: { material: '240.00', installation: '0.00', permit: '0.00', city: '0.00' },
+          rows,
+        },
+      };
+      const source = {
+        id: 1,
+        paymentPlanSnapshot: snapshot,
+        paymentSchedule: { rows, total: '240.00', balance: '240.00' },
+        nested: [{ estimate: { paymentPlanSnapshot: snapshot, paymentSchedule: { rows } } }],
+      };
+      const original = JSON.stringify(source);
+      const response = presentApiResponse(source, role ? { id: 7, role: { name: role } } as any : undefined);
+
+      for (const presented of [response, response.nested[0].estimate]) {
+        expect(presented.paymentPlanSnapshot.definition).toEqual(definition);
+        expect(presented.paymentPlanSnapshot.locked.effectiveDefinition).toEqual(definition);
+        expect(presented.paymentPlanSnapshot.locked.rows).toEqual(rows);
+        expect(presented.paymentSchedule.rows).toEqual(rows);
+        if (role === 'admin') {
+          expect(presented.paymentPlanSnapshot.materialOnlyUpfront).toEqual(snapshot.materialOnlyUpfront);
+          expect(presented.paymentPlanSnapshot.locked.materialOnlyUpfrontApplied).toBe(true);
+        } else {
+          expect(presented.paymentPlanSnapshot).not.toHaveProperty('materialOnlyUpfront');
+          expect(presented.paymentPlanSnapshot.locked).not.toHaveProperty('materialOnlyUpfrontApplied');
+        }
+      }
+      expect(response.paymentSchedule.total).toBe('240.00');
+      expect(response.paymentSchedule.balance).toBe('240.00');
+      expect(JSON.stringify(source)).toBe(original);
+    },
+  );
+});

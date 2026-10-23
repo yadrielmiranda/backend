@@ -32,7 +32,7 @@ export function assertEstimateNotCanceled(
 
 // Incluye recibos y devoluciones: cancelar no debe ocultar dinero ya recibido,
 // aunque el saldo neto haya vuelto a cero o la cuota se haya reabierto.
-export function assertNoEstimatePaymentHistory(
+export function hasEstimatePaymentHistory(
   payments: Array<
     AccountedPayment & {
       paidAt?: Date | string | null;
@@ -40,18 +40,22 @@ export function assertNoEstimatePaymentHistory(
     }
   >,
 ) {
-  if (
-    payments.some(
-      (payment) =>
-        ['PAID', 'REFUNDED'].includes(payment.status ?? '') ||
-        payment.paidAt ||
-        payment.receipts?.length ||
-        paidPrincipal(payment).gt(0) ||
-        decimalAmount(payment.refundedAmount).gt(0) ||
-        decimalAmount(payment.refundCreditAmount).gt(0) ||
-        payment.refundReviewPending,
-    )
-  )
+  return payments.some(
+    (payment) =>
+      ['PAID', 'REFUNDED'].includes(payment.status ?? '') ||
+      payment.paidAt ||
+      payment.receipts?.length ||
+      paidPrincipal(payment).gt(0) ||
+      decimalAmount(payment.refundedAmount).gt(0) ||
+      decimalAmount(payment.refundCreditAmount).gt(0) ||
+      payment.refundReviewPending,
+  );
+}
+
+export function assertNoEstimatePaymentHistory(
+  payments: Parameters<typeof hasEstimatePaymentHistory>[0],
+) {
+  if (hasEstimatePaymentHistory(payments))
     throw new ConflictException(
       'This estimate has payment or refund history and cannot be canceled or reactivated here.',
     );

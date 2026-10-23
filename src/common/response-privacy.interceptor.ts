@@ -14,6 +14,9 @@ const credentials = new Set([
 const referralAdministration = new Set([
   'referralProfile', 'referralTerms', 'roleDefaults', 'referralRoleDefaults',
 ]);
+const paymentPlanAdministration = new Set([
+  'materialOnlyUpfront', 'materialOnlyUpfrontApplied',
+]);
 const installationAdministration = new Set([
   'networkProfitBreakdown',
   'installationProcessingSummary', 'installationProcessing',
@@ -117,6 +120,8 @@ export function presentApiResponse(value: unknown, user?: AuthUser): any {
     return Object.fromEntries(Object.entries(input)
       .filter(([key]) => !credentials.has(key) && (!isUser || userFields.has(key)) &&
         (user?.role?.name === 'admin' || !referralAdministration.has(key)) &&
+        (user?.role?.name === 'admin' || !paymentPlanAdministration.has(key)) &&
+        (staff || dealer || key !== 'internalNote') &&
         (user?.role?.name === 'admin' || !installationAdministration.has(key)) &&
         (user?.role?.name === 'admin' || (key !== 'coverageSnapshot' && key !== 'estimatedMinutes' && key !== 'timeSnapshot')) &&
         (staff || (technician && key === 'poNumber') || !companyFinancials.has(key)) &&

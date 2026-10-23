@@ -8,8 +8,13 @@ import { DELIVERY_PARAMETER_KEYS } from '@/warehouse-delivery/warehouse-delivery
 export class GlobalParametersService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(): Promise<GlobalParameter[]> {
-    return this.prisma.globalParameter.findMany({ orderBy: { key: 'asc' } });
+  async findAll(includeInternal = false): Promise<GlobalParameter[]> {
+    return this.prisma.globalParameter.findMany({
+      ...(includeInternal ? {} : {
+        where: { key: { not: GlobalParameterKey.MATERIAL_ONLY_UPFRONT_THRESHOLD } },
+      }),
+      orderBy: { key: 'asc' },
+    });
   }
 
   async update(key: GlobalParameterKey, dto: UpdateGlobalParameterDto): Promise<GlobalParameter> {
@@ -30,6 +35,23 @@ export class GlobalParametersService {
       dec = new Prisma.Decimal(dto.value);
     } catch {
       throw new BadRequestException('Invalid numeric value.');
+    }
+
+    const isMaterialOnlyThreshold =
+      key === GlobalParameterKey.MATERIAL_ONLY_UPFRONT_THRESHOLD;
+    if (isMaterialOnlyThreshold) {
+      if (
+        !/^\d+(?:\.\d{1,2})?$/.test(dto.value) ||
+        !dec.isFinite() || dec.lt(0) || dec.gt('999999.99') ||
+        dec.decimalPlaces() > 2
+      ) {
+        throw new BadRequestException(
+          'Enter a USD amount from 0 to 999,999.99 with at most two decimal places. Zero disables the material-only full payment rule.',
+        );
+      }
+      if (dto.unit !== undefined && dto.unit !== 'USD') {
+        throw new BadRequestException('The material-only full payment threshold must use USD.');
+      }
     }
 
     if (
@@ -55,7 +77,7 @@ export class GlobalParametersService {
         where: { key },
         data: {
           description: dto.description,
-          unit: dto.unit,
+          unit: isMaterialOnlyThreshold ? 'USD' : dto.unit,
           value: dec,
         },
       });

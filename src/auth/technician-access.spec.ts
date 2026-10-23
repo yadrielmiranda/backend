@@ -5,6 +5,11 @@ import { AuthController } from './auth.controller';
 import { UsersController } from '@/users/users.controller';
 import { WarehouseController } from '@/warehouse/warehouse.controller';
 import { TechnicianController } from '@/warehouse/technician.controller';
+import { MaterialsController } from '@/materials/materials.controller';
+import { MaterialsStoreInventoryController } from '@/materials/materials-store-inventory.controller';
+import { MaterialsStoreIssueController } from '@/materials/materials-store-issue.controller';
+import { MaterialsTechnicianController } from '@/materials/materials-technician.controller';
+import { MaterialsSalesController, MaterialsCustomerCatalogController } from '@/materials/materials-sales.controller';
 import { validateAccessSession } from './access-session';
 import { presentApiResponse } from '@/common/response-privacy.interceptor';
 import { needsPlatformTerms } from '@/platform-terms/platform-terms.policy';
@@ -30,12 +35,36 @@ describe('Technician authentication and default-deny authorization', () => {
     'pickup',
     'pickupScan',
     'finishPickup',
+    'warehouseInventoryByPo',
+    'warehouseUnit',
+    'warehouseHistory',
+    'release',
   ])('allows the dedicated %s operation', (method) => {
     expect(allowed(TechnicianController, method)).toBe(true);
     for (const role of ['admin', 'operator', 'dealer', 'client']) expect(allowed(TechnicianController, method, role)).toBe(false);
   });
-  it.each(['inventory', 'scan', 'receive', 'deliverToInstallation', 'deliverToCustomer', 'customerDelivery', 'history', 'stores', 'counts', 'undo', 'transfer'])('denies the administrative warehouse %s endpoint', (method) => {
+  it.each(['inventory', 'inventoryByPo', 'unit', 'scan', 'receive', 'release', 'deliverToInstallation', 'deliverToCustomer', 'customerDelivery', 'history', 'stores', 'counts', 'undo', 'transfer'])('denies the administrative warehouse %s endpoint', (method) => {
     expect(allowed(WarehouseController, method)).toBe(false);
+  });
+  it.each(['getInventory', 'internalUse', 'history'])('allows the dedicated material %s operation only to technicians', (method) => {
+    expect(typeof MaterialsTechnicianController.prototype[method]).toBe('function');
+    expect(allowed(MaterialsTechnicianController, method)).toBe(true);
+    for (const role of ['admin', 'operator', 'dealer', 'client'])
+      expect(allowed(MaterialsTechnicianController, method, role)).toBe(false);
+  });
+  it.each([
+    [MaterialsController, 'receive'], [MaterialsController, 'internalUse'],
+    [MaterialsController, 'repack'], [MaterialsController, 'transfer'],
+    [MaterialsController, 'adjust'], [MaterialsController, 'history'],
+    [MaterialsStoreInventoryController, 'getInventory'], [MaterialsStoreInventoryController, 'count'],
+    [MaterialsStoreIssueController, 'internalUse'],
+    [MaterialsSalesController, 'list'], [MaterialsSalesController, 'get'],
+    [MaterialsSalesController, 'create'], [MaterialsSalesController, 'confirm'],
+    [MaterialsSalesController, 'deliver'], [MaterialsSalesController, 'recordPayment'],
+    [MaterialsCustomerCatalogController, 'catalog'], [MaterialsCustomerCatalogController, 'order'],
+  ])('keeps administrative material operations and material sales unavailable (%p.%s)', (controller, method) => {
+    expect(typeof controller.prototype[method]).toBe('function');
+    expect(allowed(controller, method)).toBe(false);
   });
   it.each(['pickups', 'pickup', 'pickupCustomerDeliveryOptions', 'pickupTechnicians', 'pickupPo', 'startPickup', 'assignPickup', 'pickupScan', 'finishPickup', 'reopenPickup'])(
     'restricts warehouse pickup endpoint %s to admins', (method) => {

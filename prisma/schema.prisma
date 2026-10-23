@@ -343,6 +343,7 @@ model User {
   installationPriceProfile   InstallationPriceProfile? @relation("UserInstallationPriceProfile", fields: [installationPriceProfileId], references: [id], onDelete: SetNull)
 
   estimates                         Estimate[]
+  estimateInternalNotesEdited       EstimateInternalNote[] @relation("EstimateInternalNoteEditor")
   payments                          Payment[]
   orders                            Order[]
   notifications                     Notification[]
@@ -1280,6 +1281,7 @@ enum GlobalParameterKey {
   DELIVERY_BASE_PRICE
   DELIVERY_INCLUDED_MILES
   DELIVERY_ADDITIONAL_MILE_PRICE
+  MATERIAL_ONLY_UPFRONT_THRESHOLD
 }
 
 model GlobalParameter {
@@ -1515,6 +1517,7 @@ model Estimate {
   revisions         EstimateRevision[]
   materialRevisions MaterialRevision[]
   customerCharges   EstimateCustomerCharge[]
+  internalNote      EstimateInternalNote?
 
   // --- CUSTOMER (dealer fills; not a relation) ---
   customerFirstName  String?  @db.VarChar(100)
@@ -1527,6 +1530,19 @@ model Estimate {
   customerPostalCode String?  @db.VarChar(20)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+}
+
+// Solo se consulta mediante el endpoint interno de notas; no forma parte del informe.
+model EstimateInternalNote {
+  estimateId  Int      @id
+  text        String   @db.Text
+  version     Int      @default(1)
+  updatedAt   DateTime @updatedAt
+  updatedById Int?
+  estimate    Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  updatedBy   User?    @relation("EstimateInternalNoteEditor", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([updatedById])
 }
 
 model EstimateCustomerCharge {

@@ -243,6 +243,19 @@ async function main() {
     },
   });
 
+  await prisma.globalParameter.upsert({
+    where: { key: GlobalParameterKey.MATERIAL_ONLY_UPFRONT_THRESHOLD },
+    update: {
+      description: 'Material-only estimates without payments require 100% upfront at or below this amount. Set 0 to disable.',
+    },
+    create: {
+      key: GlobalParameterKey.MATERIAL_ONLY_UPFRONT_THRESHOLD,
+      value: 0,
+      description: 'Material-only estimates without payments require 100% upfront at or below this amount. Set 0 to disable.',
+      unit: 'USD',
+    },
+  });
+
   console.log('Global parameters are up to date.');
 
   console.log(`Seeding finished.`);

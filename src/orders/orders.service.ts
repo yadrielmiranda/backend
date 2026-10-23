@@ -3,7 +3,7 @@ import { assertMaterialReadyForFactory } from '@/estimates/material-revisions/ma
 import { decimalAmount, hasRefundHistory, paidPrincipal, remainingRefundBalance } from '@/payments/payment-accounting';
 import { buildMaterialEarningsReport, referralReportMaterialRelations, referralReportOrderInclude } from '@/referrals/referral-report';
 import { buildNetworkProfitBreakdown } from '@/common/network-profit-breakdown';
-import { assertScheduleMilestone, buildPaymentSchedule, getPaymentSchedule } from '@/payment-plans/payment-schedule';
+import { assertScheduleMilestone, buildPaymentSchedule, getPaymentSchedule, withCurrentPaymentPlan } from '@/payment-plans/payment-schedule';
 // @/orders/orders.service.ts
 import {
   Injectable,
@@ -99,7 +99,7 @@ function withOrderEstimateSummary(estimate: Prisma.OrderGetPayload<{ include: ty
   };
 }
 
-function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof orderListInclude }>) {
+async function withOrderListSummary(db: Prisma.TransactionClient, order: Prisma.OrderGetPayload<{ include: typeof orderListInclude }>) {
   const job = order.estimate.installationJob;
   const reportQuote = job?.quotes.find(quote => quote.status !== 'REJECTED');
   const installationSummary = buildEstimateInstallationSummary(job
@@ -107,10 +107,10 @@ function withOrderListSummary(order: Prisma.OrderGetPayload<{ include: typeof or
     : null);
   // El resumen usa la última cotización vigente, igual que Estimates; el pago
   // conserva la cotización más reciente para respetar sus reglas de aprobación.
-  const estimate = {
+  const estimate = await withCurrentPaymentPlan(db, {
     ...order.estimate,
     installationJob: job ? { ...job, quotes: job.quotes.slice(0, 1) } : null,
-  };
+  });
   const { customerCharges, ...estimateResult } = estimate;
   const schedule = buildPaymentSchedule({ ...estimate, order });
   const activeInstallation = job && job.status !== 'CANCELED';
@@ -166,7 +166,7 @@ export class OrdersService {
       include: orderListInclude,
       orderBy: { date: 'desc' },
     });
-    return orders.map(withOrderListSummary);
+    return Promise.all(orders.map(order => withOrderListSummary(this.prisma, order)));
   }
 
   async findOne(id: number) {
@@ -748,13 +748,13 @@ export class OrdersService {
       include: orderListInclude,
       orderBy: { date: 'desc' },
     });
-    return orders.map((order) => ({
-      ...withOrderListSummary(order),
+    return Promise.all(orders.map(async (order) => ({
+      ...await withOrderListSummary(this.prisma, order),
       deliveries: order.deliveries.map((delivery) => ({
         ...delivery,
         internalReason: null,
       })),
-    }));
+    })));
   }
 
   async findOneForUser(id: number, user: AuthUser) {

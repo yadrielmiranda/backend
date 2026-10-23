@@ -1,4 +1,4 @@
-import { synchronizeScheduleChanges, refreshScheduledInstallation } from '@/payment-plans/payment-schedule';
+import { synchronizeScheduleChanges, refreshScheduledInstallation, withCurrentPaymentPlan } from '@/payment-plans/payment-schedule';
 import { assertEstimateNotCanceled } from '@/estimates/estimate-lifecycle-policy';
 import { createHash } from 'crypto';
 import { projectMaterialRevision } from '@/estimates/material-revisions/material-revision-snapshot';
@@ -15,7 +15,7 @@ export const agreementEstimateInclude = {
   user: { include: { role: true } },
   status: true,
   order: true,
-  payments: { select: { status: true, paidAt: true } },
+  payments: true,
   installationJob: { select: estimateInstallationSummarySelect },
   customerCharges: { orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }] },
   pieces: {
@@ -435,7 +435,7 @@ export async function loadAgreementContent(
   if (!persisted) return null;
   const revision = !options.ignorePendingMaterialRevision ? persisted.materialRevisions?.[0] : null;
   const materialRevisionId = revision?.id ?? null;
-  const estimate = projectMaterialRevision(persisted, revision);
+  const estimate = await withCurrentPaymentPlan(db, projectMaterialRevision(persisted, revision));
   // Se comparan los precios del cliente en ambas vistas, sin divulgar el desglose de la vista total.
   const detailed = buildPublicEstimateData(
     estimate,

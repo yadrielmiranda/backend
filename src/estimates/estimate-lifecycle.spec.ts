@@ -164,6 +164,51 @@ function fixture() {
 }
 
 describe('Estimate cancellation and reactivation', () => {
+  it.each(
+    ['recalculate', 'reactivate'].flatMap(action =>
+      [false, true].map(network => ({ action, network })),
+    ),
+  )('keeps unpaid estimates editable through $action without capturing a threshold (network: $network)', async ({ action, network }) => {
+    const f = fixture(), estimate = f.estimate();
+    estimate.paymentPlanSnapshot = {
+      ...plan,
+      ...(action === 'reactivate' ? {
+        locked: { at: 'old', rows: [], effectiveDefinition: plan.definition, materialOnlyUpfrontApplied: true },
+        adjustments: [],
+      } : {}),
+    };
+    estimate.payments = [{ id: 35, status: 'CANCELED', stripeSessionId: null, baseAmount: '50.00' }];
+    const originalPayments = JSON.parse(JSON.stringify(estimate.payments));
+    if (network) {
+      Object.assign(estimate.user, { username: 'subdealer', isActive: true, dealerMode: 'EXTERNAL',
+        parentDealerId: 1, networkMarkup: '.2', networkTaxRate: '.08' });
+      const root = { ...estimate.user, id: 1, username: 'root', parentDealerId: null };
+      f.tx.user.findUnique.mockImplementation(async ({ where }: any) => where.id === 1 ? root : estimate.user);
+      f.tx.user.findUniqueOrThrow = f.tx.user.findUnique;
+    }
+    f.tx.globalParameter.findUnique.mockImplementation(async ({ where }: any) => ({
+      value: where.key === 'MATERIAL_ONLY_UPFRONT_THRESHOLD' ? '750'
+        : where.key === 'SALES_TAX' ? '.08' : 30,
+    }));
+
+    if (action === 'reactivate') {
+      estimate.status.name = 'Canceled';
+      await f.service.reactivateEstimate(1, dealer);
+    } else await f.service.recalculateEstimate(1, dealer);
+
+    const saved = f.estimate().paymentPlanSnapshot;
+    expect(saved).not.toHaveProperty('materialOnlyUpfront');
+    expect(saved).not.toHaveProperty('locked');
+    expect(saved).not.toHaveProperty('adjustments');
+    expect(f.estimate().payments).toEqual(originalPayments);
+    expect(f.tx.payment.updateMany).not.toHaveBeenCalled();
+    expect(f.estimate().status.name).toBe('Active');
+    expect(f.calculate).toHaveBeenCalled();
+    expect(f.tx.globalParameter.findUnique).not.toHaveBeenCalledWith({
+      where: { key: 'MATERIAL_ONLY_UPFRONT_THRESHOLD' },
+    });
+  });
+
   it.each(['recalculate', 'reactivate'])('%s replaces old network tax with current terms while keeping customer tax', async action => {
     const f = fixture(), estimate = f.estimate();
     Object.assign(estimate.user, { username: 'subdealer', isActive: true, dealerMode: 'EXTERNAL',

@@ -1,5 +1,5 @@
-import { buildPaymentSchedule } from '@/payment-plans/payment-schedule';
-import { planSnapshot } from '@/payment-plans/payment-plan';
+import { buildPaymentSchedule, scheduleAmounts } from '@/payment-plans/payment-schedule';
+import { effectivePlanDefinition, planSnapshot } from '@/payment-plans/payment-plan';
 import {
   calculateEstimateDiscount,
   estimateDiscountConfig,
@@ -142,7 +142,10 @@ export function buildPublicEstimateData(
   const paymentPlan = planSnapshot(estimate.paymentPlanSnapshot);
   return {
     ...(paymentPlan && !hideDealerPromotions ? {
-      paymentPlanTerms: { name: paymentPlan.name, definition: paymentPlan.definition },
+      paymentPlanTerms: { name: paymentPlan.name, definition: effectivePlanDefinition(
+        paymentPlan, scheduleAmounts(estimate),
+        Boolean(estimate.installationJob && estimate.installationJob.status !== 'CANCELED'),
+      ) },
       paymentSchedule: buildPaymentSchedule(estimate),
     } : {}),
     id: estimate.id,

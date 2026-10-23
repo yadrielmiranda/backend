@@ -5569,7 +5569,7 @@ export class InstallationWorkflowService {
       if (requiresCityFeeAcceptance) cityFeeAmount = installment.row.amount;
       baseAmount = new Decimal(installment.row.balance);
       processingComponents = installmentProcessingComponents({
-        snapshot: estimate.paymentPlanSnapshot, amounts: scheduleAmounts(estimate),
+        snapshot: installment.snapshot, amounts: scheduleAmounts(estimate),
         customMaterialAmount: job ? '0.00' : additions.custom,
         withInstallation: Boolean(job), row: installment.row,
       });

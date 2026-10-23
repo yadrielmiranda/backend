@@ -5,6 +5,7 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 import { MaterialsInventoryService } from './materials-inventory.service';
 import { MaterialStoreCountDto } from './materials-store-inventory.dto';
 import { materialAvailability, MaterialStockError, MaterialStockState } from './materials-stock';
+import { assertMaterialsTechnician } from './materials-technician-access';
 
 type Tx = Prisma.TransactionClient;
 const productSelect = {
@@ -36,6 +37,15 @@ export class MaterialsStoreInventoryService {
   /** Fetch every product in one snapshot; physical counts must not silently stop at a catalog page. */
   async getInventory(storeId: number, actor: AuthUser) {
     this.inventory.staff(actor);
+    return this.readInventory(storeId);
+  }
+
+  async getTechnicianInventory(storeId: number, actor: AuthUser) {
+    assertMaterialsTechnician(actor);
+    return this.readInventory(storeId);
+  }
+
+  private async readInventory(storeId: number) {
     this.storeId(storeId);
     try {
       return await this.prisma.$transaction(async tx => {

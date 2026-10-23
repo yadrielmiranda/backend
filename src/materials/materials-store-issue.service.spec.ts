@@ -3,11 +3,12 @@ import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 import { MaterialsInventoryService } from './materials-inventory.service';
 import { MaterialsStoreIssueService } from './materials-store-issue.service';
-import { MaterialStoreIssueDto } from './materials-store-issue.dto';
+import { MaterialStoreIssueDto, TechnicianMaterialStoreIssueDto } from './materials-store-issue.dto';
 
 const admin = { id: 7, role: { name: 'admin' } } as const;
 const operator = { id: 8, role: { name: 'operator' } } as const;
 const client = { id: 9, role: { name: 'client' } } as const;
+const technician = { id: 10, firstName: 'Juan', lastName: 'Perez', username: 'juan', role: { name: 'technician' } } as const;
 const requestKey = '8a99dc20-45a2-42d9-9e5b-05b9b3134623';
 const otherKey = '8a99dc20-45a2-42d9-9e5b-05b9b3134624';
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -274,5 +275,98 @@ describe('Store issue input validation', () => {
     for (const field of ['recipient', 'note']) {
       expect(validateSync(plainToInstance(MaterialStoreIssueDto, { ...f.payload(), [field]: 123 }, { enableImplicitConversion: true }))).not.toHaveLength(0);
     }
+  });
+});
+
+describe('Technician installation material withdrawals', () => {
+  it('uses the signed-in technician and Installation even if the request spoofs identity or reason', async () => {
+    const f = fixture();
+    const result = await f.service.technicianInternalUse(3, {
+      ...f.payload([{ productId: 2, presentationId: 22, quantity: 2 }, { productId: 1, presentationId: 11, quantity: 3 }]),
+      recipient: 'Someone else', note: 'Sale', actorId: 7,
+    } as any, technician);
+    expect(result).toMatchObject({ recipient: 'Juan Perez', note: 'Installation', productCount: 2, replayed: false });
+    expect([f.quantity(11), f.quantity(12), f.quantity(22)]).toEqual([9, 9, 8]);
+    expect(f.db().movements).toHaveLength(2);
+    for (const movement of f.db().movements) expect(movement).toMatchObject({
+      actorId: 10, recipient: 'Juan Perez', note: 'Installation', kind: 'INTERNAL_USE',
+    });
+    expect(f.db().operations[requestKey].actorId).toBe(10);
+  });
+
+  it.each([
+    [{ id: 10, username: 'installer-10', role: { name: 'technician' } }, 'installer-10'],
+    [{ id: 10, role: { name: 'technician' } }, 'Technician #10'],
+  ])('records a stable account fallback when a technician has no full name', async (actor, recipient) => {
+    const f = fixture();
+    await f.service.technicianInternalUse(3, f.payload(), actor as any);
+    expect(f.db().movements[0]).toMatchObject({ actorId: 10, recipient });
+  });
+
+  it('replays the same confirmed withdrawal without deducting twice and rejects another actor or changed quantities', async () => {
+    const f = fixture();
+    const dto = { requestKey, lines: f.payload().lines };
+    const first = await f.service.technicianInternalUse(3, dto, technician);
+    const after = clone(f.db());
+    expect(await f.service.technicianInternalUse(3, dto, technician)).toEqual({ ...first, replayed: true });
+    expect(await f.service.technicianInternalUse(3, dto, { ...technician, firstName: 'Updated' })).toEqual({ ...first, replayed: true });
+    expect(f.db()).toEqual(after);
+    await expect(f.service.technicianInternalUse(3, dto, { ...technician, id: 11 })).rejects.toBeInstanceOf(ConflictException);
+    await expect(f.service.technicianInternalUse(3, { requestKey, lines: [{ ...dto.lines[0], quantity: 4 }] }, technician)).rejects.toBeInstanceOf(ConflictException);
+    expect(f.db()).toEqual(after);
+  });
+
+  it('preserves reservations and rolls back the whole withdrawal if one material is unavailable', async () => {
+    const f = fixture();
+    f.db().reservations.push({ productId: 2, presentationId: 22, storeId: 3, quantity: 10, status: 'CONFIRMED' });
+    const before = clone(f.db());
+    await expect(f.service.technicianInternalUse(3, f.payload([
+      { productId: 1, presentationId: 12, quantity: 1 }, { productId: 2, presentationId: 22, quantity: 1 },
+    ]), technician)).rejects.toThrow('Insufficient');
+    expect(f.db()).toEqual(before);
+    expect(f.tx.materialStock.upsert).not.toHaveBeenCalled();
+  });
+
+  it('continues to enforce complete-package restrictions for technicians', async () => {
+    const f = fixture();
+    f.db().products[0].allowBaseUnitOperations = false;
+    await expect(f.service.technicianInternalUse(3, f.payload(), technician)).rejects.toThrow('complete packages only');
+    expect(f.db().movements).toHaveLength(0);
+  });
+
+  it.each(['admin', 'operator', 'dealer', 'client'])('rejects %s on the dedicated technician operation', async role => {
+    const f = fixture();
+    await expect(f.service.technicianInternalUse(3, f.payload(), { ...technician, role: { name: role } } as any)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(f.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('does not grant technician access to the staff internal-use endpoint', async () => {
+    const f = fixture();
+    await expect(f.service.internalUse(3, f.payload(), technician)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(f.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts only a request key and valid lines, without requiring recipient or reason fields', () => {
+    const valid = { requestKey, lines: [{ productId: 1, presentationId: 11, quantity: 1 }] };
+    expect(validateSync(plainToInstance(TechnicianMaterialStoreIssueDto, valid, { enableImplicitConversion: true }))).toHaveLength(0);
+    for (const quantity of ['1', null, true, 0, -1, 1.5]) {
+      const dto = plainToInstance(TechnicianMaterialStoreIssueDto, { ...valid, lines: [{ ...valid.lines[0], quantity }] }, { enableImplicitConversion: true });
+      expect(validateSync(dto)).not.toHaveLength(0);
+    }
+  });
+
+  it('limits history to the authenticated account and internal use, ignoring spoofed account filters and excluding financial data', async () => {
+    const materialMovement = { findMany: jest.fn().mockResolvedValue([{ id: 1 }]), count: jest.fn().mockResolvedValue(1) };
+    const prisma: any = { materialMovement };
+    const service = new MaterialsStoreIssueService(prisma, new MaterialsInventoryService(prisma));
+    const result = await service.technicianHistory({ actorId: '7', kind: 'SALE_DELIVERY', page: '2', pageSize: '10' }, technician);
+    expect(result).toEqual({ items: [{ id: 1 }], total: 1, page: 2, pageSize: 10 });
+    expect(materialMovement.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { actorId: 10, kind: 'INTERNAL_USE' }, skip: 10, take: 10 }));
+    expect(materialMovement.count).toHaveBeenCalledWith({ where: { actorId: 10, kind: 'INTERNAL_USE' } });
+    const select = materialMovement.findMany.mock.calls[0][0].select;
+    for (const field of ['costPerPackage', 'totalCost', 'supplier', 'sale', 'details']) expect(select).not.toHaveProperty(field);
+    expect(select).toMatchObject({ quantity: true, createdAt: true, actorId: true });
+    await expect(service.technicianHistory({}, operator)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(materialMovement.findMany).toHaveBeenCalledTimes(1);
   });
 });

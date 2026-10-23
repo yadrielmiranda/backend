@@ -12,12 +12,15 @@ export class MaterialStoreIssueLineDto {
   @IsInt() @Min(1) @Max(1000000) quantity: number;
 }
 
-export class MaterialStoreIssueDto extends MaterialRequestDto {
+export class TechnicianMaterialStoreIssueDto extends MaterialRequestDto {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(1000)
+  @ValidateNested({ each: true }) @Type(() => MaterialStoreIssueLineDto)
+  lines: MaterialStoreIssueLineDto[];
+}
+
+export class MaterialStoreIssueDto extends TechnicianMaterialStoreIssueDto {
   @Transform(({ obj, key }) => obj[key])
   @IsString() @Length(1, 200) recipient: string;
   @Transform(({ obj, key }) => obj[key])
   @IsString() @Length(1, 1000) note: string;
-  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(1000)
-  @ValidateNested({ each: true }) @Type(() => MaterialStoreIssueLineDto)
-  lines: MaterialStoreIssueLineDto[];
 }

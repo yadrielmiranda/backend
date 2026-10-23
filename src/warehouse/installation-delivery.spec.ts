@@ -239,7 +239,8 @@ describe('physical delivery to installation', () => {
   it('allows only operational staff and gives technicians only the required destination data', async () => {
     const f = fixture(); await f.collect();
     for (const role of ['client', 'dealer']) await assert.rejects(f.service.deliverToInstallation(f.dto(), { id: 9, role: { name: role } } as any), /authorized staff/);
-    await assert.rejects(f.service.scan({ ...request(), barcode: door, action: 'RELEASE', storeId: 1 }, tech), /only collect or receive/);
+    // Warehouse releases are now allowed, but collected parts still in transit cannot be released from a store.
+    await assert.rejects(f.service.scan({ ...request(), barcode: door, action: 'RELEASE', storeId: 1 }, tech), /no parts of this unit in the warehouse/);
     const pending = await f.service.technicianPending({}, tech);
     assert.deepEqual(pending.items[0].installation, { id: 71, address });
     for (const key of ['customer', 'project', 'orderId', 'price', 'rate', 'payments', 'released']) assert(!(key in pending.items[0]));

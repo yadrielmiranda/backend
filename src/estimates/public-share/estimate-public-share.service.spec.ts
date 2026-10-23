@@ -233,7 +233,7 @@ describe('EstimatePublicShareService customer pricing modes', () => {
     expect(prisma.estimate.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       include: expect.objectContaining({
         order: { select: { id: true } },
-        payments: { select: { status: true, paidAt: true } },
+        payments: true,
       }),
     }));
     expect(result).not.toHaveProperty('order');

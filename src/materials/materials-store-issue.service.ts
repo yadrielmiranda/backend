@@ -2,9 +2,10 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { MaterialsInventoryService } from './materials-inventory.service';
-import { MaterialStoreIssueDto } from './materials-store-issue.dto';
+import { MaterialStoreIssueDto, TechnicianMaterialStoreIssueDto } from './materials-store-issue.dto';
 import { MaterialStockError, MaterialStockState, withdrawMaterial } from './materials-stock';
 import { assertMaterialDailyOperation } from './materials-operation-policy';
+import { assertMaterialsTechnician } from './materials-technician-access';
 
 const integer = (value: unknown, max = 2147483647): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= max;
@@ -35,12 +36,49 @@ export class MaterialsStoreIssueService {
 
   async internalUse(storeId: number, dto: MaterialStoreIssueDto, actor: AuthUser) {
     this.inventory.staff(actor);
+    return this.issue(storeId, dto, actor);
+  }
+
+  async technicianInternalUse(storeId: number, dto: TechnicianMaterialStoreIssueDto, actor: AuthUser) {
+    assertMaterialsTechnician(actor);
+    const recipient = [actor.firstName, actor.lastName].filter(Boolean).join(' ').trim()
+      || actor.username?.trim() || `Technician #${actor.id}`;
+    // Only quantities come from the request. The authenticated account owns the withdrawal.
+    return this.issue(storeId, {
+      requestKey: dto?.requestKey, lines: dto?.lines,
+      recipient: recipient.slice(0, 200), note: 'Installation',
+    }, actor);
+  }
+
+  async technicianHistory(query: Record<string, string>, actor: AuthUser) {
+    assertMaterialsTechnician(actor);
+    const page = Math.floor(Math.max(1, Math.min(100000, Number(query.page) || 1)));
+    const pageSize = Math.floor(Math.max(1, Math.min(100, Number(query.pageSize) || 25)));
+    const where = { actorId: actor.id, kind: 'INTERNAL_USE' };
+    const [items, total] = await Promise.all([
+      this.prisma.materialMovement.findMany({
+        where, select: {
+          id: true, operationKey: true, kind: true, quantity: true, deltaBaseUnits: true,
+          actorId: true, recipient: true, note: true, createdAt: true,
+          product: { select: { id: true, code: true, name: true } },
+          presentation: { select: { id: true, name: true, multiplier: true } },
+          store: { select: { id: true, name: true } },
+        }, orderBy: { id: 'desc' }, skip: (page - 1) * pageSize, take: pageSize,
+      }),
+      this.prisma.materialMovement.count({ where }),
+    ]);
+    return { items, total, page, pageSize };
+  }
+
+  private async issue(storeId: number, dto: MaterialStoreIssueDto, actor: AuthUser) {
     this.validate(storeId, dto);
     const lines = [...dto.lines].sort((a, b) => a.productId - b.productId || a.presentationId - b.presentationId);
     const productIds = [...new Set(lines.map(line => line.productId))];
     const recipient = dto.recipient.trim();
     const note = dto.note.trim();
-    return this.inventory.operation(dto.requestKey, { storeId, recipient, note, lines }, actor.id, 'STORE_INTERNAL_USE', async tx => {
+    // A profile-name change must not prevent retrying the same technician withdrawal.
+    const recipientIdentity = actor.role?.name === 'technician' ? { recipientId: actor.id } : { recipient };
+    return this.inventory.operation(dto.requestKey, { storeId, ...recipientIdentity, note, lines }, actor.id, 'STORE_INTERNAL_USE', async tx => {
       await this.inventory.lockProducts(tx, productIds);
       await this.inventory.lockStores(tx, [storeId]);
       const store = await tx.warehouseStore.findUnique({ where: { id: storeId }, select: { id: true, name: true, isActive: true } });

@@ -5,7 +5,10 @@ import {
   Body,
   Param,
   ParseEnumPipe,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
+import type { AuthUser } from '@/auth/types/auth-user.type';
 import { GlobalParametersService } from './global-parameters.service';
 import { UpdateGlobalParameterDto } from './dto/update-global-parameter.dto';
 import { Roles } from '@/auth/roles.decorator';
@@ -21,8 +24,8 @@ export class GlobalParametersController {
   // ✅ READ: todos los usuarios autenticados
   @Get()  
   @ApiOperation({ summary: 'Get all global parameters' })
-  findAll() {
-    return this.globalParametersService.findAll(); 
+  findAll(@Req() req: Request) {
+    return this.globalParametersService.findAll((req.user as AuthUser)?.role?.name === 'admin');
   }
 
   // 🔒 WRITE: solo admin

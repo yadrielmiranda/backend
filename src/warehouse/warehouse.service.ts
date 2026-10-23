@@ -448,6 +448,42 @@ export class WarehouseService {
     };
   }
 
+  private technicianWarehouseStock(stock: ReturnType<typeof presentStock>) {
+    return {
+      ...this.technicianStock(stock),
+      orderId: stock.orderId, customer: stock.customer, project: stock.project,
+      unassigned: stock.unassigned, stores: stock.stores, released: stock.released,
+      state: stock.state, updatedAt: stock.updatedAt,
+    };
+  }
+
+  private technicianWarehouseQuery(query: Query): Query {
+    if (query.storeId !== 'unassigned' &&
+        (!query.storeId || !/^[1-9]\d*$/.test(query.storeId) || !Number.isSafeInteger(Number(query.storeId))))
+      throw new BadRequestException('Choose the source store, or explicitly select Unassigned.');
+    return { ...query, view: 'on_hand', completePo: 'true' };
+  }
+
+  async technicianWarehouseInventoryByPo(query: Query, actor: AuthUser) {
+    this.technician(actor);
+    const result = await this.readInventoryByPo(this.technicianWarehouseQuery(query));
+    return { ...result, items: result.items.map(group => ({
+      ...group, units: group.units.map(unit => this.technicianWarehouseStock(unit)),
+    })) };
+  }
+
+  async technicianWarehouseUnit(barcode: string, actor: AuthUser) {
+    this.technician(actor);
+    const stock = await this.load(this.prisma, barcodeLine(barcode));
+    if (!stock.onHand) throw new NotFoundException('This unit has no parts in the warehouse.');
+    return this.technicianWarehouseStock(presentStock(stock));
+  }
+
+  async technicianWarehouseHistory(query: Query, actor: AuthUser) {
+    this.technician(actor);
+    return this.readHistory(query, { actorId: actor.id, type: 'RELEASE', onHandDelta: { lt: 0 } });
+  }
+
   async technicianState(actor: AuthUser) {
     this.technician(actor);
     return this.prisma.$transaction(async (tx) => {
@@ -536,6 +572,29 @@ export class WarehouseService {
 
   async technicianCustomerDeliveryOptions(query: Query, actor: AuthUser) {
     this.technician(actor);
+    if (query.source === 'WAREHOUSE') {
+      if (query.pickupRunId !== undefined)
+        throw new BadRequestException('Warehouse deliveries do not use a factory pickup.');
+      const result = await this.technicianWarehouseInventoryByPo({ ...query, source: undefined }, actor);
+      const storeId = query.storeId === 'unassigned' ? null : Number(query.storeId);
+      return {
+        items: result.items.map(group => ({
+          key: group.key, source: group.source, externalPoId: group.externalPoId,
+          supplierName: group.supplierName, orderId: group.orderId,
+          orderNumber: group.orderNumber, poNumber: group.poNumber,
+          customerName: group.customer, projectName: group.project,
+          expectedParts: group.units.some(unit => unit.expectedParts === null) ? null
+            : group.units.reduce((sum, unit) => sum + (unit.expectedParts ?? 0), 0),
+          availableParts: group.units.reduce((sum, unit) => sum + (storeId === null ? unit.unassigned
+            : unit.stores.find(store => store.id === storeId)?.onHand ?? 0), 0),
+          pieces: group.units.length, lines: group.units,
+        })),
+        total: result.total, page: result.page, pageSize: result.pageSize,
+        countOpen: result.activeCountId !== null,
+      };
+    }
+    if (query.source !== undefined && query.source !== 'TRANSIT')
+      throw new BadRequestException('Choose the delivery source.');
     const pickupRunId = query.pickupRunId === undefined ? undefined : Number(query.pickupRunId);
     if (query.pickupRunId !== undefined && (!/^[1-9]\d*$/.test(query.pickupRunId) || !Number.isSafeInteger(pickupRunId)))
       throw new BadRequestException('Choose a valid factory pickup.');
@@ -618,6 +677,7 @@ export class WarehouseService {
       movement: {
         id: result.movement.id, type: result.movement.type, quantity: result.movement.quantity,
         createdAt: result.movement.createdAt, toStore: result.movement.toStore,
+        fromStore: result.movement.fromStore,
       },
     };
   }
@@ -1494,7 +1554,7 @@ export class WarehouseService {
     if (!Number.isSafeInteger(id) || id < 1)
       throw new BadRequestException('Choose a valid customer delivery.');
     const delivery = await this.prisma.warehouseCustomerDelivery.findFirst({
-      where: { id, actorId: actor.id, source: 'TRANSIT' },
+      where: { id, actorId: actor.id },
     });
     if (!delivery) throw new NotFoundException('Customer delivery not found.');
     return presentCustomerDelivery(delivery);
@@ -1502,8 +1562,6 @@ export class WarehouseService {
 
   async technicianDeliverToCustomer(dto: WarehouseCustomerDeliveryDto, actor: AuthUser) {
     this.technician(actor);
-    if (dto.source !== 'TRANSIT')
-      throw new ForbiddenException('Technicians can deliver collected factory parts directly to customers.');
     return this.recordCustomerDelivery(dto, actor, true);
   }
 
@@ -1561,7 +1619,7 @@ export class WarehouseService {
       await this.noCount(tx);
       if (storeId !== null) await this.lockStores(tx, [storeId]);
       const store = storeId !== null ? await tx.warehouseStore.findUniqueOrThrow({ where: { id: storeId } }) : null;
-      const eligible = technician || dto.pickupRunId !== undefined
+      const eligible = (technician && dto.source === 'TRANSIT') || dto.pickupRunId !== undefined
         ? await this.pickupTransitLots(tx, actor, items.map((item) => item.lineNumber), dto.pickupRunId) : null;
       const selected: Array<{ stock: Stock; quantity: number; parts: PartQuantities;
         allocations?: Array<{ pickupRunId: number; quantity: number; parts: Record<PartType, number>; sourceParts: Record<PartType, number> }> }> = [];
@@ -1650,6 +1708,15 @@ export class WarehouseService {
 
   async release(dto: WarehouseReleaseDto, actor: AuthUser) {
     this.staff(actor);
+    return this.recordRelease(dto, actor);
+  }
+
+  async technicianRelease(dto: WarehouseReleaseDto, actor: AuthUser) {
+    this.technician(actor);
+    return this.recordRelease(dto, actor);
+  }
+
+  private async recordRelease(dto: WarehouseReleaseDto, actor: AuthUser) {
     if (typeof dto.requestKey !== 'string' ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(dto.requestKey))
       throw new BadRequestException('Enter a valid request identifier.');
@@ -1896,6 +1963,10 @@ export class WarehouseService {
 
   async inventoryByPo(query: Query, actor: AuthUser) {
     this.staff(actor);
+    return this.readInventoryByPo(query);
+  }
+
+  private async readInventoryByPo(query: Query) {
     const pagination = paging(query),
       where = this.inventoryWhere(query);
     return this.prisma.$transaction(async (tx) => {
@@ -2027,10 +2098,15 @@ export class WarehouseService {
   }
   async history(query: Query, actor: AuthUser) {
     this.staff(actor);
+    return this.readHistory(query);
+  }
+
+  private async readHistory(query: Query, scope: Prisma.WarehouseMovementWhereInput = {}) {
     const p = paging(query);
-    const where: Prisma.WarehouseMovementWhereInput = query.lineNumber
+    const filter: Prisma.WarehouseMovementWhereInput = query.lineNumber
       ? { lineNumber: barcodeLine(query.lineNumber) }
       : { stock: stockSearch(query.search) };
+    const where: Prisma.WarehouseMovementWhereInput = { ...filter, ...scope };
     return this.prisma.$transaction(async (tx) => ({
       items: (
         await tx.warehouseMovement.findMany({
@@ -2048,9 +2124,6 @@ export class WarehouseService {
   }
   async scan(dto: WarehouseScanDto, actor: AuthUser) {
     this.receivingStaff(actor);
-    // Defensa en servicio: no basta con ocultar la salida en el teléfono.
-    if (actor.role?.name === 'technician' && !['COLLECT', 'RECEIVE'].includes(dto.action))
-      throw new ForbiddenException('Technicians can only collect or receive parts.');
     const { lineNumber, partType } = requestedPartType(dto.barcode, dto.partType),
       requestHash = hash([...(dto.storeId === undefined
         ? [actor.id, dto.action, lineNumber]

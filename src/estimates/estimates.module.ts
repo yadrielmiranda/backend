@@ -20,6 +20,8 @@ import { EstimateCustomerChargesService } from './estimate-customer-charges.serv
 import { ContractsModule } from '@/contracts/contracts.module';
 import { EstimateShareEmailController } from './public-share/estimate-share-email.controller';
 import { EstimateShareEmailService } from './public-share/estimate-share-email.service';
+import { EstimateInternalNoteController } from './estimate-internal-note.controller';
+import { EstimateInternalNoteService } from './estimate-internal-note.service';
 
 @Module({
   imports: [PromotionsModule,
@@ -33,7 +35,7 @@ import { EstimateShareEmailService } from './public-share/estimate-share-email.s
     PaymentsModule,
     ContractsModule,
   ],
-  controllers: [EstimatesController, PublicEstimatesController, EstimateShareEmailController],
+  controllers: [EstimatesController, PublicEstimatesController, EstimateShareEmailController, EstimateInternalNoteController],
   providers: [
     EstimatesService,
     EstimatePdfService,
@@ -43,6 +45,7 @@ import { EstimateShareEmailService } from './public-share/estimate-share-email.s
     EstimatePublicShareService,
     EstimateCustomerChargesService,
     EstimateShareEmailService,
+    EstimateInternalNoteService,
   ],
 })
 export class EstimatesModule {}

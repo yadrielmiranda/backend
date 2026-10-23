@@ -22,6 +22,7 @@ import {
 } from './agreement-content';
 import { buildPublicEstimateData } from '@/estimates/public-share/public-estimate-data';
 import { defaultPlan } from '@/payment-plans/payment-plan';
+import { installmentContext } from '@/payment-plans/payment-schedule';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { ContractsController } from './contracts.controller';
 import { ROLES_KEY } from '@/auth/roles.decorator';
@@ -279,6 +280,37 @@ describe('Contract content policy', () => {
     expect(contentHash(e)).toBe(signed);
     e.paymentPlanSnapshot = {...e.paymentPlanSnapshot, definition:{...defaultPlan,withoutInstallation:[{milestone:'ORDER',basis:'MATERIAL',percent:50},{milestone:'RELEASE',basis:'MATERIAL',percent:50}]}};
     expect(contentHash(e)).not.toBe(signed);
+  });
+
+  it('shows effective upfront terms without exposing the internal threshold and preserves the signed content at checkout', async () => {
+    const e = contractEstimateFixture();
+    e.units = 1;
+    e.dealerModeSnapshot = 'INTERNAL'; e.user.dealerMode = 'INTERNAL';
+    e.paymentPlanSnapshot = {
+      version: 1, planId: 2, name: 'Material split',
+      definition: { ...defaultPlan, withoutInstallation: [
+        { milestone: 'ORDER', basis: 'MATERIAL', percent: 50 },
+        { milestone: 'RELEASE', basis: 'MATERIAL', percent: 50 },
+      ] },
+      materialOnlyUpfront: { version: 1, threshold: '1200.00' },
+    };
+    const before = buildPublicEstimateData(e, null, e.pieces, 'detailed');
+    expect(before.paymentPlanTerms?.definition.withoutInstallation).toEqual([
+      { milestone: 'ORDER', basis: 'MATERIAL', percent: 100 },
+    ]);
+    expect(before.paymentSchedule?.rows).toHaveLength(1);
+    expect(before.paymentSchedule?.rows[0].amount).toBe('1070.00');
+    expect(JSON.stringify(before)).not.toContain('materialOnlyUpfront');
+    const signed = contentHash(e);
+    const db: any = { globalParameter: { findUnique: async () => ({ value: new Prisma.Decimal(1200) }) }, estimate: {
+      findUniqueOrThrow: async () => e,
+      update: async ({ data }) => Object.assign(e, data),
+    } };
+    await installmentContext(db, e.id, 1);
+    expect(contentHash(e)).toBe(signed);
+    e.payments = [{ type: 'INSTALLMENT', status: 'PAID', sequence: 1, baseAmount: '1070.00' }];
+    e.order = { id: 20, status: { name: 'Ready to pick up' } };
+    expect(contentHash(e)).toBe(signed);
   });
 
   it.each(['detailed', 'total'] as const)(

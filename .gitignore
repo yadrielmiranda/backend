@@ -22,6 +22,10 @@ lerna-debug.log*
 .jest-cache/
 /outputs/test-temp/
 /outputs/jest-energy-pdf-cache/
+/outputs/technician-warehouse-tests/**/jest-transform-cache-*/
+/outputs/technician-warehouse-tests/**/haste-map-*
+/outputs/technician-warehouse-tests/**/perf-cache-*
+/src/node_modules/.cache/
 
 # IDEs and editors
 /.idea
