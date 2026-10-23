@@ -16,7 +16,14 @@ describe('factory barcode compatibility', () => {
     },
   );
 
-  it.each(['0-FRAME', '123-OTHER', '123-DOOR-extra', 'I123-DOOR', '123 -FRAME', '-WINDOW', null])(
+  it.each(['1134547-SIDELITE', '001134547-sidelite', ' 1134547-SiDeLiTe\r\n'])(
+    'counts sidelite label %s in the existing door-panel group', value => {
+      expect(parseFactoryBarcode(value)).toEqual({ lineNumber: '1134547', partType: 'DOOR' });
+      expect(barcodeLine(value)).toBe('1134547');
+    },
+  );
+
+  it.each(['0-FRAME', '123-OTHER', '123-DOOR-extra', 'I123-DOOR', '123 -FRAME', '-WINDOW', null, '0-SIDELITE', 'I123-SIDELITE', '123-SIDELITE-extra'])(
     'rejects an invalid factory barcode %s', value => {
       expect(() => parseFactoryBarcode(value)).toThrow();
     },

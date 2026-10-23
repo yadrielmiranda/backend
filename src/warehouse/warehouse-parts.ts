@@ -10,15 +10,18 @@ export function parseFactoryBarcode(value: unknown): {
 } {
   if (typeof value !== 'string')
     throw new BadRequestException('Scan or enter a factory barcode.');
-  const match = value.trim().match(/^(?:I(\d{1,50})|(\d{1,50})(?:-(DOOR|FRAME|WINDOW))?)$/i);
+  const match = value.trim().match(/^(?:I(\d{1,50})|(\d{1,50})(?:-(DOOR|SIDELITE|FRAME|WINDOW))?)$/i);
   const digits = match?.[1] ?? match?.[2];
   if (!digits || /^0+$/.test(digits))
     throw new BadRequestException(
-      'Use a factory line number, I followed by the line number, or a line number followed by -DOOR, -FRAME or -WINDOW.',
+      'Use a factory line number, I followed by the line number, or a line number followed by -DOOR, -SIDELITE, -FRAME or -WINDOW.',
     );
+  const suffix = match?.[3]?.toUpperCase();
+  // Sidelites share the existing door-panel quota; they do not add pieces.
+  const partType = suffix === 'SIDELITE' ? 'DOOR' : suffix as FactoryPartType | undefined;
   return {
     lineNumber: digits.replace(/^0+(?=\d)/, ''),
-    ...(match?.[3] ? { partType: match[3].toUpperCase() as FactoryPartType } : {}),
+    ...(partType ? { partType } : {}),
   };
 }
 

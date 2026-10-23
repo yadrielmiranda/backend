@@ -40,6 +40,47 @@ describe('factory panels and frames through warehouse operations', () => {
     expect(await f.unit(sliding)).toMatchObject({ onHand: 4, expectedParts: 4, state: 'COMPLETE' });
   });
 
+  it.each([[door, 2], [sliding, 3]] as const)(
+    'shares the panel quota between DOOR and SIDELITE for line %s while reserving the frame', async (line, panels) => {
+      const f = fixture();
+      await f.scan(`${line}-DOOR`);
+      for (let index = 1; index < panels; index++) await f.scan(`${line}-SIDELITE`);
+      const before = f.snapshot();
+      for (const type of ['DOOR', 'SIDELITE']) await expect(f.scan(`${line}-${type}`)).rejects.toThrow();
+      expect(f.snapshot()).toEqual(before);
+      expect(await f.unit(line)).toMatchObject({
+        expectedParts: panels + 1, onHand: panels, pending: 1, state: 'PARTIAL',
+        partTracking: { onHand: { DOOR: panels } },
+      });
+      await f.scan(`${line}-FRAME`);
+      expect(await f.unit(line)).toMatchObject({
+        expectedParts: panels + 1, onHand: panels + 1, state: 'COMPLETE',
+        partTracking: { expected: { DOOR: panels, FRAME: 1 }, onHand: { DOOR: panels, FRAME: 1 } },
+      });
+    },
+  );
+
+  it('moves a sidelite through collection, batch receipt and release using the existing panel balances', async () => {
+    const f = fixture();
+    await f.scan(`${door}-FRAME`, 'COLLECT');
+    await f.scan(`${door}-SIDELITE`, 'COLLECT');
+    await f.service.receive({
+      ...request(), storeId: 1, items: [{ barcode: `${door}-SIDELITE`, quantity: 1, version: 2, parts: { DOOR: 1 } }],
+    }, admin);
+    expect(await f.unit()).toMatchObject({
+      expectedParts: 3, inTransit: 1, onHand: 1,
+      partTracking: { inTransit: { FRAME: 1 }, onHand: { DOOR: 1 } },
+    });
+    const beforeRelease = (await f.unit()).partTracking;
+    const release = await f.scan(`${door}-SIDELITE`, 'RELEASE');
+    expect(await f.unit()).toMatchObject({
+      expectedParts: 3, inTransit: 1, onHand: 0, released: 1,
+      partTracking: { inTransit: { FRAME: 1 }, released: { DOOR: 1 } },
+    });
+    await f.service.undo(release.movement.id, request(), admin);
+    expect((await f.unit()).partTracking).toEqual(beforeRelease);
+  });
+
   it('asks for an explicit type on old door labels and accepts that choice', async () => {
     const f = fixture(), before = f.snapshot();
     await expect(f.scan(`I${door}`)).rejects.toMatchObject({
@@ -70,7 +111,7 @@ describe('factory panels and frames through warehouse operations', () => {
     await expect(f.scan(`${door}-WINDOW`)).rejects.toThrow();
   });
 
-  it('does not initialize or alter existing data just by looking up the new barcode', async () => {
+  it.each(['FRAME', 'SIDELITE'])('does not initialize or alter existing data just by looking up a %s barcode', async suffix => {
     const f = fixture();
     f.stocks[0].inTransit = 1;
     f.stocks[0].onHand = 1;
@@ -78,7 +119,7 @@ describe('factory panels and frames through warehouse operations', () => {
     f.stocks[0].released = 1;
     f.movements.push({ id: 99, lineNumber: door, quantity: 1, type: 'COLLECT', historical: true });
     const before = f.snapshot();
-    expect(await f.unit(`${door}-FRAME`)).toMatchObject({
+    expect(await f.unit(`${door}-${suffix}`)).toMatchObject({
       inTransit: 1, onHand: 1, released: 1,
       partTracking: { inTransit: { UNKNOWN: 1 }, onHand: { UNKNOWN: 1 }, released: { UNKNOWN: 1 } },
     });
@@ -91,8 +132,8 @@ describe('factory panels and frames through warehouse operations', () => {
     f.movements.push({ id: 90, lineNumber: door, quantity: 3, type: 'COLLECT', historical: true });
     const historical = structuredClone(f.movements[0]);
     await f.scan(`${door}-DOOR`);
-    await f.scan(`${door}-DOOR`);
-    await expect(f.scan(`${door}-DOOR`)).rejects.toThrow();
+    await f.scan(`${door}-SIDELITE`);
+    await expect(f.scan(`${door}-SIDELITE`)).rejects.toThrow();
     await f.scan(`${door}-FRAME`);
     expect(f.movements[0]).toEqual(historical);
     expect(await f.unit()).toMatchObject({ inTransit: 0, onHand: 3, expectedParts: 3 });
@@ -147,9 +188,9 @@ describe('factory panels and frames through warehouse operations', () => {
     expect(await f.unit()).toMatchObject({ onHand: 0, released: 1, partTracking: { released: { FRAME: 1 } } });
   });
 
-  it('does not duplicate a typed reading on retry and rejects reuse for a different type', async () => {
+  it.each(['DOOR', 'SIDELITE'])('does not duplicate a %s reading on retry and rejects reuse for a different type', async suffix => {
     const f = fixture();
-    const dto = { ...request(), barcode: `${door}-DOOR`, action: 'RECEIVE' as const, storeId: 1 };
+    const dto = { ...request(), barcode: `${door}-${suffix}`, action: 'RECEIVE' as const, storeId: 1 };
     await f.service.scan(dto, admin);
     expect((await f.service.scan(dto, admin)).replayed).toBe(true);
     await expect(f.service.scan({ ...dto, barcode: `${door}-FRAME` }, admin)).rejects.toThrow();
@@ -193,8 +234,9 @@ describe('factory panels and frames through warehouse operations', () => {
     const pickup = await f.service.startFactoryPickup({ poNumbers: ['281374'], technicianIds: [3] }, admin);
     const read = (type: string) => f.service.factoryPickupScan(pickup.id, { ...request(), barcode: `${door}-${type}` }, tech);
     await read('DOOR');
-    await read('DOOR');
+    await read('SIDELITE');
     await expect(read('DOOR')).rejects.toThrow();
+    await expect(read('SIDELITE')).rejects.toThrow();
     expect(f.stocks[0].inTransit).toBe(2);
     await read('FRAME');
     expect(f.stocks[0]).toMatchObject({ inTransit: 3, expectedParts: 3 });
