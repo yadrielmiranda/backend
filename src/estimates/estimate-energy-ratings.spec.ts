@@ -4,6 +4,7 @@ import Decimal from 'decimal.js';
 import { EstimatesService } from './estimates.service';
 import { buildEnergyPersistence } from '@/energy-ratings/energy-rating-lookup';
 import { InstallationWorkflowService } from '@/installation/installation-workflow.service';
+import { resolvePieceDesign } from '@/pieces/piece-design';
 
 const selection = {
   idBrand: 3,
@@ -340,6 +341,22 @@ describe('estimate energy integration', () => {
       selection: { idTint: 4 },
     });
     expect(f.tx.energyRating.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists the linked design frame when a bulk frame change targets the estimate', async () => {
+    const f = fixture();
+    Object.assign(f.piece, { idFC: 7, idDesign: 11, idDesignColor: 12,
+      designSnapshot: { version: 1, systemId: 10,
+        design: { id: 11, name: 'Solid', imageUrl: null },
+        color: { id: 12, name: 'Oak', hexCode: '#995522', idFrameColor: 7 } } });
+    f.tx.systemFrameColor = { findUnique: jest.fn(async () => ({ frameColor: { isActive: true } })) };
+    const calculate = f.calculator.calculatePieceMetrics.getMockImplementation()!;
+    f.calculator.calculatePieceMetrics.mockImplementation(async (input) => ({ ...await calculate(input), ...await resolvePieceDesign(f.tx, input) }));
+    await f.service.applyBulkPieceAttributeToEstimate(1, { idFC: 2 }, 7);
+    expect(f.piece.idFC).toBe(7);
+    expect(f.piece.price.toString()).toBe('100');
+    expect(f.tx.piece.update.mock.calls[0][0].data).toMatchObject({ idFC: 7,
+      designSnapshot: { color: { idFrameColor: 7 } } });
   });
 
   it('general markup updates leave old energy values and uncaptured legacy pieces untouched', async () => {

@@ -485,6 +485,20 @@ describe('factory unit matching', () => {
 });
 
 describe('factory import report marks', () => {
+  it('uses the saved garage design color in factory comparisons and restores the base frame without design', async () => {
+    const f = fixture();
+    Object.assign(f.pieces[0], { idDesign: 4, idDesignColor: 5, designSnapshot: {
+      version: 1, systemId: 1,
+      design: { id: 4, name: 'Custom design', imageUrl: null },
+      color: { id: 5, name: 'Oak', hexCode: '#995522' },
+    } });
+    expect((await f.service.get(1, admin)).pieces[0].frameColor).toBe('Oak');
+    expect(f.pieces[0]).toMatchObject({ idFC: 1, fColor: { color: 'Bronze' } });
+    Object.assign(f.pieces[0], { idDesign: null, idDesignColor: null });
+    expect((await f.service.get(1, admin)).pieces[0].frameColor).toBe('Bronze');
+    expect(f.db.piece.update).not.toHaveBeenCalled();
+  });
+
   it('matches 30 blank rows by their report ordinal when factory lines arrive in reverse order', async () => {
     const f = fixture();
     const template = f.pieces[0];

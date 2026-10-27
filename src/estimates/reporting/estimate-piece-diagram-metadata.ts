@@ -1,11 +1,13 @@
 import { DimensionMode } from '@prisma/client';
 
 import { PrismaService } from '@/prisma/prisma.service';
+import { pieceHasSolidGarageDesign } from '@/pieces/piece-design';
 
 export type EstimatePieceDiagramMetadata = {
   dimensionMode: DimensionMode;
   hasCoating: boolean;
   hasPrivacy: boolean;
+  garageMaxSectionHeightIn?: number;
 };
 
 type DiagramPieceInput = {
@@ -14,6 +16,9 @@ type DiagramPieceInput = {
   idBrand: number;
   idCoat: number | null;
   idPrivacy: number | null;
+  idDesign?: number | null;
+  idDesignColor?: number | null;
+  designSnapshot?: unknown;
 };
 
 function uniquePairs<T>(values: T[], keyFor: (value: T) => string) {
@@ -42,7 +47,7 @@ export async function attachEstimatePieceDiagramMetadata<
   );
   const coatingPairs = uniquePairs(
     pieces
-      .filter((piece) => piece.idCoat != null)
+      .filter((piece) => piece.idCoat != null && !pieceHasSolidGarageDesign(piece))
       .map((piece) => ({
         idBrand: piece.idBrand,
         idCoating: piece.idCoat as number,
@@ -51,7 +56,7 @@ export async function attachEstimatePieceDiagramMetadata<
   );
   const privacyPairs = uniquePairs(
     pieces
-      .filter((piece) => piece.idPrivacy != null)
+      .filter((piece) => piece.idPrivacy != null && !pieceHasSolidGarageDesign(piece))
       .map((piece) => ({
         idBrand: piece.idBrand,
         idPrivacy: piece.idPrivacy as number,
@@ -66,6 +71,7 @@ export async function attachEstimatePieceDiagramMetadata<
         idSystem: true,
         idConfig: true,
         dimensionMode: true,
+        system: { select: { garageMaxSectionHeightIn: true } },
       },
     }),
     coatingPairs.length > 0
@@ -96,6 +102,14 @@ export async function attachEstimatePieceDiagramMetadata<
       sysConf.dimensionMode,
     ]),
   );
+  const garageSectionHeightBySysConf = new Map(
+    sysConfs.flatMap((sysConf) => {
+      const height = Number(sysConf.system?.garageMaxSectionHeightIn);
+      return Number.isFinite(height) && height >= 1 && height <= 240
+        ? [[`${sysConf.idSystem}:${sysConf.idConfig}`, height] as const]
+        : [];
+    }),
+  );
   const coatingEnabledByBrand = new Map(
     brandCoatings.map((association) => [
       `${association.idBrand}:${association.idCoating}`,
@@ -112,13 +126,18 @@ export async function attachEstimatePieceDiagramMetadata<
   return pieces.map((piece) => ({
     ...piece,
     diagramMetadata: {
+      ...(garageSectionHeightBySysConf.has(`${piece.idSyst}:${piece.idConf}`)
+        ? { garageMaxSectionHeightIn: garageSectionHeightBySysConf.get(`${piece.idSyst}:${piece.idConf}`) }
+        : {}),
       dimensionMode:
         dimensionModeBySysConf.get(`${piece.idSyst}:${piece.idConf}`) ??
         DimensionMode.STANDARD,
       hasCoating:
+        !pieceHasSolidGarageDesign(piece) &&
         piece.idCoat != null &&
         coatingEnabledByBrand.get(`${piece.idBrand}:${piece.idCoat}`) === true,
       hasPrivacy:
+        !pieceHasSolidGarageDesign(piece) &&
         piece.idPrivacy != null &&
         privacyEnabledByBrand.get(`${piece.idBrand}:${piece.idPrivacy}`) ===
           true,

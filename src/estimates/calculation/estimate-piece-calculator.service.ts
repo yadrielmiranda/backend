@@ -18,9 +18,12 @@ import Decimal from "decimal.js";
 
 import { resolveBillablePricingDimensions } from "@/pricing/billable-dimensions";
 import { computeGlassOptionSurcharge } from "@/pricing/glass-option-surcharge";
+import { applyDesignBaseModifier, applyFrameBaseModifier, type FrameBaseModifier } from "@/pricing/frame-base-modifier";
 import { computeBasePrice } from "@/pricing/price-formula";
 import { resolvePieceComponents } from "@/pricing/piece-component-resolver";
 import { resolvePiecePanelCount } from "@/pieces/panel-count-resolver";
+import { resolvePieceDesign, type PieceDesignSnapshot } from '@/pieces/piece-design';
+import { garageDesignHasGlass } from '@/garage-designs/design-template';
 
 import { CreatePieceDto } from "@/pieces/dto/create-piece.dto";
 import { UpsertPieceDto } from "../dto/upsert-piece.dto";
@@ -56,6 +59,7 @@ export type CalculationCache = {
   pricing: Map<string, any>;
   linearPricing: Map<string, any>;
   systemFrameColor: Map<string, any>;
+  systemDesignColorModifier: Map<string, FrameBaseModifier | null>;
   brandTint: Map<string, any>;
   brandCoating: Map<string, any>;
   brandPrivacy: Map<string, any>;
@@ -63,6 +67,7 @@ export type CalculationCache = {
 };
 
 export type CalculatedMetricsInternal = {
+  designSnapshot?: PieceDesignSnapshot | null;
   networkPricing?: NetworkPiecePricing;
   regularPrice?: Decimal;
   regularCustomerPrice?: Decimal;
@@ -148,6 +153,7 @@ export class EstimatePieceCalculatorService {
       pricing: new Map(),
       linearPricing: new Map(),
       systemFrameColor: new Map(),
+      systemDesignColorModifier: new Map(),
       brandTint: new Map(),
       brandCoating: new Map(),
       brandPrivacy: new Map(),
@@ -301,7 +307,11 @@ export class EstimatePieceCalculatorService {
 
   async calculatePieceMetrics(pieceDto: CreatePieceDto | UpsertPieceDto, effectiveMarkup: Decimal,
     tx: PrismaTransactionClient, cache: CalculationCache): Promise<CalculatedPieceCombined> {
-    return applyNetworkPricing(await this.calculateBasePieceMetrics(pieceDto, effectiveMarkup, tx, cache), cache.networkSnapshot);
+    const design = await resolvePieceDesign(tx, pieceDto);
+    const normalized = design.idFC === undefined ? pieceDto : { ...pieceDto, idFC: design.idFC };
+    const hasGlass = garageDesignHasGlass(design.designSnapshot?.design.template) !== false;
+    const calculated = await this.calculateBasePieceMetrics(normalized, effectiveMarkup, tx, cache, design.idDesignColor, hasGlass);
+    return applyNetworkPricing({ ...calculated, ...design }, cache.networkSnapshot);
   }
 
   private async calculateBasePieceMetrics(
@@ -309,6 +319,8 @@ export class EstimatePieceCalculatorService {
     effectiveMarkup: Decimal,
     tx: PrismaTransactionClient,
     cache: CalculationCache,
+    resolvedDesignColorId: number | null,
+    hasGlass: boolean,
   ): Promise<CalculatedPieceCombined> {
     // usamos cache para evitar queries repetidas
     let product = cache.product.get(pieceDto.idProd);
@@ -321,6 +333,7 @@ export class EstimatePieceCalculatorService {
           name: true,
           kind: true,
           pricingMode: true,
+          allowMuntin: true,
           isActive: true,
         },
       });
@@ -338,6 +351,9 @@ export class EstimatePieceCalculatorService {
     if (!product.isActive) {
       throw new BadRequestException(`Product #${pieceDto.idProd} is inactive.`);
     }
+
+    const allowMuntin = product.allowMuntin !== false;
+    if (!allowMuntin) pieceDto = { ...pieceDto, muntin: null };
 
     if (!Number.isFinite(Number(pieceDto.qty)) || Number(pieceDto.qty) <= 0) {
       throw new BadRequestException("Quantity must be greater than zero.");
@@ -493,6 +509,9 @@ export class EstimatePieceCalculatorService {
         select: {
           idSystem: true,
           idFrameColor: true,
+          modifierEnabled: true,
+          basePriceMultiplier: true,
+          basePriceDeduction: true,
         },
       });
 
@@ -507,6 +526,32 @@ export class EstimatePieceCalculatorService {
         "The selected frame color is not available for the selected system.",
       );
     }
+
+    let designColorModifier: FrameBaseModifier | null = null;
+    if (resolvedDesignColorId !== null) {
+      const designColorKey = `${pieceDto.idSyst}-${resolvedDesignColorId}`;
+      if (!cache.systemDesignColorModifier.has(designColorKey)) {
+        const modifier = await tx.systemDesignColorModifier.findUnique({
+          where: {
+            idSystem_idDesignColor: {
+              idSystem: pieceDto.idSyst,
+              idDesignColor: resolvedDesignColorId,
+            },
+          },
+          select: {
+            modifierEnabled: true,
+            basePriceMultiplier: true,
+            basePriceDeduction: true,
+          },
+        });
+        cache.systemDesignColorModifier.set(designColorKey, modifier);
+      }
+      designColorModifier = cache.systemDesignColorModifier.get(designColorKey) ?? null;
+    }
+    // Design pricing includes the matching frame; these modifiers never stack.
+    const adjustBase = (base: Decimal) => resolvedDesignColorId !== null
+      ? applyDesignBaseModifier(base, designColorModifier)
+      : applyFrameBaseModifier(base, systemFrameColor);
 
     if (isLinearMaterial) {
       if (!pieceDto.width) {
@@ -589,7 +634,7 @@ export class EstimatePieceCalculatorService {
 
       const costPerInch = new Decimal(linearRule.costPerInch.toString());
 
-      const rate = widthIn.mul(costPerInch);
+      const rate = adjustBase(widthIn.mul(costPerInch));
 
       const markupAmount = rate.mul(effectiveMarkup);
       const price = rate.add(markupAmount);
@@ -673,144 +718,180 @@ export class EstimatePieceCalculatorService {
       throw new BadRequestException("Glass is required.");
     }
 
-    if (!pieceDto.idTint) {
-      throw new BadRequestException("Tint is required.");
-    }
+    let brandTint: any = null;
+    let brandCoating: any = null;
+    let brandPrivacy: any = null;
 
-    if (!pieceDto.idCoat) {
-      throw new BadRequestException("Coating is required.");
-    }
+    if (hasGlass) {
+      if (!pieceDto.idTint) {
+        throw new BadRequestException("Tint is required.");
+      }
 
-    if (!pieceDto.idPrivacy) {
-      throw new BadRequestException("Privacy is required.");
-    }
+      if (!pieceDto.idCoat) {
+        throw new BadRequestException("Coating is required.");
+      }
 
-    const brandTintKey = `${pieceDto.idBrand}-${pieceDto.idTint}`;
-    let brandTint = cache.brandTint.get(brandTintKey);
+      if (!pieceDto.idPrivacy) {
+        throw new BadRequestException("Privacy is required.");
+      }
 
-    if (!brandTint) {
-      const dbBrandTint = await tx.brandTint.findUnique({
-        where: {
-          idBrand_idTint: {
-            idBrand: pieceDto.idBrand,
-            idTint: pieceDto.idTint,
-          },
-        },
-        select: {
-          surchargeEnabled: true,
-          costoA: true,
-          costoB: true,
-          costoC: true,
-          tint: {
-            select: {
-              id: true,
-              isActive: true,
+      const brandTintKey = `${pieceDto.idBrand}-${pieceDto.idTint}`;
+      brandTint = cache.brandTint.get(brandTintKey);
+
+      if (!brandTint) {
+        const dbBrandTint = await tx.brandTint.findUnique({
+          where: {
+            idBrand_idTint: {
+              idBrand: pieceDto.idBrand,
+              idTint: pieceDto.idTint,
             },
           },
-        },
-      });
-
-      if (dbBrandTint) {
-        cache.brandTint.set(brandTintKey, dbBrandTint);
-        brandTint = dbBrandTint;
-      }
-    }
-
-    if (!brandTint || !brandTint.tint.isActive) {
-      throw new BadRequestException(
-        "The selected Tint is not available for the selected Brand.",
-      );
-    }
-
-    const brandCoatingKey = `${pieceDto.idBrand}-${pieceDto.idCoat}`;
-    let brandCoating = cache.brandCoating.get(brandCoatingKey);
-
-    if (!brandCoating) {
-      const dbBrandCoating = await tx.brandCoating.findUnique({
-        where: {
-          idBrand_idCoating: {
-            idBrand: pieceDto.idBrand,
-            idCoating: pieceDto.idCoat,
-          },
-        },
-        select: {
-          surchargeEnabled: true,
-          costoA: true,
-          costoB: true,
-          costoC: true,
-          coating: {
-            select: {
-              id: true,
-              isActive: true,
+          select: {
+            surchargeEnabled: true,
+            costoA: true,
+            costoB: true,
+            costoC: true,
+            tint: {
+              select: {
+                id: true,
+                isActive: true,
+              },
             },
           },
-        },
-      });
+        });
 
-      if (dbBrandCoating) {
-        cache.brandCoating.set(brandCoatingKey, dbBrandCoating);
-        brandCoating = dbBrandCoating;
+        if (dbBrandTint) {
+          cache.brandTint.set(brandTintKey, dbBrandTint);
+          brandTint = dbBrandTint;
+        }
       }
-    }
 
-    if (!brandCoating || !brandCoating.coating.isActive) {
-      throw new BadRequestException(
-        "The selected Coating is not available for the selected Brand.",
-      );
-    }
-
-    const brandPrivacyKey = `${pieceDto.idBrand}-${pieceDto.idPrivacy}`;
-    let brandPrivacy = cache.brandPrivacy.get(brandPrivacyKey);
-
-    if (!brandPrivacy) {
-      const dbBrandPrivacy = await tx.brandPrivacy.findUnique({
-        where: {
-          idBrand_idPrivacy: {
-            idBrand: pieceDto.idBrand,
-            idPrivacy: pieceDto.idPrivacy,
-          },
-        },
-        select: {
-          surchargeEnabled: true,
-          costoA: true,
-          costoB: true,
-          costoC: true,
-          privacy: {
-            select: {
-              id: true,
-              isActive: true,
-            },
-          },
-        },
-      });
-
-      if (dbBrandPrivacy) {
-        cache.brandPrivacy.set(brandPrivacyKey, dbBrandPrivacy);
-        brandPrivacy = dbBrandPrivacy;
-      }
-    }
-
-    if (!brandPrivacy || !brandPrivacy.privacy.isActive) {
-      throw new BadRequestException(
-        "The selected Privacy option is not available for the selected Brand.",
-      );
-    }
-
-    for (const [label, option] of [
-      ["Tint", brandTint],
-      ["Coating", brandCoating],
-      ["Privacy", brandPrivacy],
-    ] as const) {
-      if (
-        option.surchargeEnabled &&
-        (option.costoA == null ||
-          option.costoB == null ||
-          option.costoC == null)
-      ) {
+      if (!brandTint || !brandTint.tint.isActive) {
         throw new BadRequestException(
-          `${label} surcharge is enabled but its Area Cost, Perimeter Cost or Fixed Cost is incomplete.`,
+          "The selected Tint is not available for the selected Brand.",
         );
       }
+
+      const brandCoatingKey = `${pieceDto.idBrand}-${pieceDto.idCoat}`;
+      brandCoating = cache.brandCoating.get(brandCoatingKey);
+
+      if (!brandCoating) {
+        const dbBrandCoating = await tx.brandCoating.findUnique({
+          where: {
+            idBrand_idCoating: {
+              idBrand: pieceDto.idBrand,
+              idCoating: pieceDto.idCoat,
+            },
+          },
+          select: {
+            surchargeEnabled: true,
+            costoA: true,
+            costoB: true,
+            costoC: true,
+            coating: {
+              select: {
+                id: true,
+                isActive: true,
+              },
+            },
+          },
+        });
+
+        if (dbBrandCoating) {
+          cache.brandCoating.set(brandCoatingKey, dbBrandCoating);
+          brandCoating = dbBrandCoating;
+        }
+      }
+
+      if (!brandCoating || !brandCoating.coating.isActive) {
+        throw new BadRequestException(
+          "The selected Coating is not available for the selected Brand.",
+        );
+      }
+
+      const brandPrivacyKey = `${pieceDto.idBrand}-${pieceDto.idPrivacy}`;
+      brandPrivacy = cache.brandPrivacy.get(brandPrivacyKey);
+
+      if (!brandPrivacy) {
+        const dbBrandPrivacy = await tx.brandPrivacy.findUnique({
+          where: {
+            idBrand_idPrivacy: {
+              idBrand: pieceDto.idBrand,
+              idPrivacy: pieceDto.idPrivacy,
+            },
+          },
+          select: {
+            surchargeEnabled: true,
+            costoA: true,
+            costoB: true,
+            costoC: true,
+            privacy: {
+              select: {
+                id: true,
+                isActive: true,
+              },
+            },
+          },
+        });
+
+        if (dbBrandPrivacy) {
+          cache.brandPrivacy.set(brandPrivacyKey, dbBrandPrivacy);
+          brandPrivacy = dbBrandPrivacy;
+        }
+      }
+
+      if (!brandPrivacy || !brandPrivacy.privacy.isActive) {
+        throw new BadRequestException(
+          "The selected Privacy option is not available for the selected Brand.",
+        );
+      }
+
+      for (const [label, option] of [
+        ["Tint", brandTint],
+        ["Coating", brandCoating],
+        ["Privacy", brandPrivacy],
+      ] as const) {
+        if (
+          option.surchargeEnabled &&
+          (option.costoA == null ||
+            option.costoB == null ||
+            option.costoC == null)
+        ) {
+          throw new BadRequestException(
+            `${label} surcharge is enabled but its Area Cost, Perimeter Cost or Fixed Cost is incomplete.`,
+          );
+        }
+      }
+    } else {
+      // Keep existing selections for a later glass design, but never persist missing catalog IDs.
+      // Availability and surcharge configuration do not apply to a solid design.
+      const retainCatalogId = async (
+        id: number | null | undefined,
+        cachedAssociation: unknown,
+        find: (id: number) => PromiseLike<{ id: number } | null>,
+      ): Promise<number | null> => {
+        if (!Number.isSafeInteger(id) || Number(id) <= 0) return null;
+        if (cachedAssociation) return id!;
+        return (await find(id!)) ? id! : null;
+      };
+      const [idTint, idCoat, idPrivacy] = await Promise.all([
+        retainCatalogId(
+          pieceDto.idTint,
+          cache.brandTint.get(`${pieceDto.idBrand}-${pieceDto.idTint}`),
+          id => tx.tint.findUnique({ where: { id }, select: { id: true } }),
+        ),
+        retainCatalogId(
+          pieceDto.idCoat,
+          cache.brandCoating.get(`${pieceDto.idBrand}-${pieceDto.idCoat}`),
+          id => tx.coating.findUnique({ where: { id }, select: { id: true } }),
+        ),
+        retainCatalogId(
+          pieceDto.idPrivacy,
+          cache.brandPrivacy.get(`${pieceDto.idBrand}-${pieceDto.idPrivacy}`),
+          id => tx.privacy.findUnique({ where: { id }, select: { id: true } }),
+        ),
+      ]);
+      pieceDto = { ...pieceDto, idTint, idCoat, idPrivacy };
     }
 
     // screen solo se permite si SysConf.allowScreen = true
@@ -960,7 +1041,7 @@ export class EstimatePieceCalculatorService {
     const dimensionMode: DimensionMode =
       sysConf.dimensionMode ?? DimensionMode.STANDARD;
     const normalizeMuntin = (windowWall?: WindowWallMuntinGeometry) =>
-      this.muntinService.normalizePieceMuntinFromCatalog(
+      allowMuntin ? this.muntinService.normalizePieceMuntinFromCatalog(
         pieceDto.muntin,
         config.muntinLayout,
         tx as any,
@@ -969,7 +1050,7 @@ export class EstimatePieceCalculatorService {
           rules: catalogMuntinRules(sysConf.muntinAssignments ?? []),
         },
         windowWall,
-      );
+      ) : Promise.resolve(null);
     // Validate Window Wall dimensions before normalizing its shared grid.
     // One H/V selection is repeated in every physical glass cell.
     let normalizedMuntin = dimensionMode === DimensionMode.WINDOW_WALL ? null : await normalizeMuntin();
@@ -1321,7 +1402,7 @@ export class EstimatePieceCalculatorService {
         ? new Decimal(String(governingDims.widthIn)).div(windowWallPanelCount)
         : new Decimal(String(governingDims.widthIn));
 
-    const enabledGlassOptions = [brandTint, brandCoating, brandPrivacy].filter(
+    const enabledGlassOptions = (hasGlass ? [brandTint, brandCoating, brandPrivacy] : []).filter(
       (option) => option.surchargeEnabled,
     );
 
@@ -1577,9 +1658,10 @@ export class EstimatePieceCalculatorService {
       );
     }
 
+    const adjustedBaseRate = adjustBase(baseRate);
     const baseRateWithHighBottom = highBottomPercent
-      ? baseRate.mul(new Decimal(1).add(highBottomPercent.div(100)))
-      : baseRate;
+      ? adjustedBaseRate.mul(new Decimal(1).add(highBottomPercent.div(100)))
+      : adjustedBaseRate;
 
     const rate = baseRateWithHighBottom.add(glassOptionSurchargeRate);
 

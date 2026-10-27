@@ -56,6 +56,24 @@ function contentHash(estimate: any) {
   return sha256(canonicalJson(agreementContent(estimate)));
 }
 
+describe('Garage design in agreement content', () => {
+  it('preserves legacy hashes with a null pair, and detects design or color changes without a price change', () => {
+    const estimate = legacyFixture();
+    const originalHash = contentHash(estimate);
+    Object.assign(estimate.pieces[0], { idDesign: null, idDesignColor: null, designSnapshot: null });
+    expect(contentHash(estimate)).toBe(originalHash);
+    Object.assign(estimate.pieces[0], { idDesign: 4, idDesignColor: 5, designSnapshot: {
+      version: 1, systemId: 2,
+      design: { id: 4, name: 'Solid', imageUrl: null },
+      color: { id: 5, name: 'Oak', hexCode: '#995522' },
+    } });
+    const designedHash = contentHash(estimate);
+    expect(designedHash).not.toBe(originalHash);
+    estimate.pieces[0].idDesignColor = 6;
+    expect(contentHash(estimate)).not.toBe(designedHash);
+  });
+});
+
 describe('Energy values in agreement fingerprints', () => {
   it.each([undefined, null])('keeps historical hashes unchanged without an energy snapshot (%p)', (snapshot) => {
     const estimate = legacyFixture();

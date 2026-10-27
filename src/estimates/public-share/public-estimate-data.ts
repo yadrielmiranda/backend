@@ -1,3 +1,4 @@
+import { pieceDesignContent, pieceHasSolidGarageDesign } from '@/pieces/piece-design';
 import { buildPaymentSchedule, scheduleAmounts } from '@/payment-plans/payment-schedule';
 import { effectivePlanDefinition, planSnapshot } from '@/payment-plans/payment-plan';
 import {
@@ -203,7 +204,9 @@ export function buildPublicEstimateData(
 
     branding,
 
-    pieces: pieces.map((p) => ({
+    pieces: pieces.map((p) => {
+      const hasSolidDesign = pieceHasSolidGarageDesign(p);
+      return ({
       id: p.id,
       mark: p.mark,
       qty: p.qty,
@@ -230,10 +233,11 @@ export function buildPublicEstimateData(
       idSyst: p.idSyst,
       idConf: p.idConf,
       idFC: p.idFC,
-      idCryst: p.idCryst,
-      idTint: p.idTint,
-      idCoat: p.idCoat,
-      idPrivacy: p.idPrivacy,
+      ...pieceDesignContent(p),
+      idCryst: hasSolidDesign ? null : p.idCryst,
+      idTint: hasSolidDesign ? null : p.idTint,
+      idCoat: hasSolidDesign ? null : p.idCoat,
+      idPrivacy: hasSolidDesign ? null : p.idPrivacy,
 
       screen: p.screen,
       highBottom: p.highBottom,
@@ -241,7 +245,7 @@ export function buildPublicEstimateData(
 
       dpPosPsf: p.dpPosPsf,
       dpNegPsf: p.dpNegPsf,
-      energySnapshot: publicEnergySnapshot(p.energySnapshot),
+      energySnapshot: hasSolidDesign ? null : publicEnergySnapshot(p.energySnapshot),
 
       customerPrice: pricingMode === 'total' ? 0 : p.customerPrice,
       customerSubtotal: pricingMode === 'total' ? 0 : p.customerSubtotal,
@@ -256,10 +260,10 @@ export function buildPublicEstimateData(
       syst: p.syst,
       conf: p.conf,
       fColor: p.fColor,
-      cryst: p.cryst,
-      tin: p.tin,
-      coat: p.coat,
-      privacyOption: p.privacyOption,
+      cryst: hasSolidDesign ? null : p.cryst,
+      tin: hasSolidDesign ? null : p.tin,
+      coat: hasSolidDesign ? null : p.coat,
+      privacyOption: hasSolidDesign ? null : p.privacyOption,
 
       activeOption: p.activeOption,
       preparationOption: p.preparationOption,
@@ -267,7 +271,10 @@ export function buildPublicEstimateData(
       reinforcementOption: p.reinforcementOption,
 
       pieceMuntin: p.pieceMuntin,
-      diagramMetadata: p.diagramMetadata,
-    })),
+      diagramMetadata: hasSolidDesign && p.diagramMetadata
+        ? { ...p.diagramMetadata, hasCoating: false, hasPrivacy: false }
+        : p.diagramMetadata,
+      });
+    }),
   };
 }

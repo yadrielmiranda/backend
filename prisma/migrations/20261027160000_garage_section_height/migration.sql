@@ -1,0 +1,2 @@
+ALTER TABLE `System`
+  ADD COLUMN `garageMaxSectionHeightIn` DECIMAL(6, 2) NOT NULL DEFAULT 24.00;

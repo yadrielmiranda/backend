@@ -131,6 +131,25 @@ function fixture() {
 }
 
 describe('Installation replacement preview', () => {
+  it('persists the frame resolved by the calculator instead of the submitted frame', async () => {
+    const f = fixture();
+    const calculate = f.calculator.calculatePieceMetrics.getMockImplementation()!;
+    f.calculator.calculatePieceMetrics.mockImplementation(async (...args) => ({ ...await calculate(...args), idFC: 77, idDesign: 8, idDesignColor: 9 }));
+    const result = await (f.workflow as any).calculateReplacementPiece(54, f.piece, input, f.tx);
+    expect(result.replacementInput).toMatchObject({ idFC: 77, idDesign: 8, idDesignColor: 9 });
+    expect(input.idFC).toBe(2);
+  });
+  it('uses the calculated muntin in the stored replacement input without changing the source input', async () => {
+    const f = fixture();
+    const supplied = { ...input, muntin: { idPattern: 1, idType: null, panels: [] } };
+    const calculate = f.calculator.calculatePieceMetrics.getMockImplementation()!;
+    f.calculator.calculatePieceMetrics.mockImplementation(async (...args) => ({ ...await calculate(...args), muntin: null }));
+    const result = await (f.workflow as any).calculateReplacementPiece(54, f.piece, supplied, f.tx);
+    expect(result.calculated.muntin).toBeNull();
+    expect(result.replacementInput.muntin).toBeNull();
+    expect(supplied.muntin).toEqual({ idPattern: 1, idType: null, panels: [] });
+  });
+
   it.each(['admin', 'operator'] as const)(
     'allows %s to preview a color change on a paid, locked estimate without writing',
     async (role) => {
@@ -279,7 +298,7 @@ describe('Installation replacement preview', () => {
     expect(saved[3].promotions).toEqual(preview[3].promotions);
     const change = f.tx.estimateRevisionItem.upsert.mock.calls[0][0];
     expect(change.create.action).toBe('REPLACE');
-    expect(change.create.proposedPieceInput).toEqual({ ...input, mark: 'W1', qty: 1 });
+    expect(change.create.proposedPieceInput).toEqual({ ...input, mark: 'W1', qty: 1, muntin: null, idDesign: null, idDesignColor: null });
     expect(f.piece.idFC).toBe(1);
   });
 

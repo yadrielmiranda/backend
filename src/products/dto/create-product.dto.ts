@@ -3,6 +3,7 @@
 import { DiagramFamily, PricingMode, ProductKind } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -27,6 +28,10 @@ export class CreateProductDto {
   @IsOptional()
   @IsEnum(DiagramFamily)
   diagramFamily?: DiagramFamily;
+
+  @IsOptional()
+  @IsBoolean()
+  allowMuntin?: boolean;
 
   @IsOptional()
   @Type(() => Number)

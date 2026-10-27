@@ -14,6 +14,7 @@ import { ContractStorageService } from '@/contracts/contract-storage.service';
 import { assertNoPendingMaterialRevision } from './material-revisions/material-revision-policy';
 import { invalidateChangedAgreements, withAgreementTransaction } from '@/contracts/agreement-content';
 import { buildEnergyPersistence } from '@/energy-ratings/energy-rating-lookup';
+import { withStoredPieceDesign, pieceDesignPersistence } from '@/pieces/piece-design';
 import { calculateEstimateDiscount, estimateDiscountConfig, hasDiscountableInstallation, type EstimateDiscountConfig, type EstimateDiscountSummary } from './discounts/estimate-discount';
 import { UpdateEstimateDiscountDto } from './dto/estimate-discount.dto';
 import { ForbiddenException } from '@nestjs/common';
@@ -209,6 +210,7 @@ export class EstimatesService {
     piece: CalculatedPieceCombined,
   ): Omit<Prisma.PieceUncheckedCreateInput, 'idEst'> {
     return {
+      ...pieceDesignPersistence(piece),
       ...(piece.networkPricing ? { networkPricing: piece.networkPricing as unknown as Prisma.InputJsonValue } : {}),
       mark: piece.mark,
       screen: piece.screen ?? false,
@@ -576,6 +578,7 @@ export class EstimatesService {
   private buildPieceDtoFromPersistedPiece(
     piece: Piece & { pieceMuntin: Prisma.PieceMuntinGetPayload<{ include: { panels: true } }> | null },
     dealerMarkupPercent: number,
+    preserveDesign = true,
   ): CreatePieceDto {
     const extendedPiece = piece as PieceWithRelations & {
       sashHeight?: Prisma.Decimal | null;
@@ -598,7 +601,7 @@ export class EstimatesService {
           .filter((value) => Number.isFinite(value))
       : null;
 
-    return {
+    const input: CreatePieceDto = {
       mark: piece.mark,
 
       idProd: piece.idProd,
@@ -606,6 +609,8 @@ export class EstimatesService {
       idSyst: piece.idSyst,
       idConf: piece.idConf,
       idFC: piece.idFC,
+      idDesign: piece.idDesign ?? null,
+      idDesignColor: piece.idDesignColor ?? null,
 
       width: piece.width === null ? null : piece.width.toString(),
 
@@ -699,6 +704,7 @@ export class EstimatesService {
       // El calculador recibe porcentaje, por ejemplo 15.
       dealerMarkup: dealerMarkupPercent,
     };
+    return preserveDesign ? withStoredPieceDesign(input, piece) : input;
   }
 
   private async getEstimateExpirationDate(tx: PrismaTransactionClient) {
@@ -802,6 +808,7 @@ export class EstimatesService {
             idBrand: true, idProd: true, idSyst: true, idConf: true,
             idCryst: true, idTint: true, idCoat: true, idPrivacy: true,
             energyRatingId: true, energySnapshot: true,
+            idDesign: true, idDesignColor: true, designSnapshot: true,
           },
         });
         if (!piece) {
@@ -811,6 +818,7 @@ export class EstimatesService {
         }
         cache.promotions = this.promotionsForSavedPiece(estimate!, piece);
         existingPiece = piece;
+        withStoredPieceDesign(pieceDto, piece);
       } else {
         // Las piezas nuevas usan las ofertas vigentes del dueño del Estimate.
         cache.promotions = await this.promotions.eligible(estimate!.idUser);
@@ -1359,7 +1367,7 @@ export class EstimatesService {
       const calculated: CalculatedPieceCombined[] = [];
       for (const piece of source.pieces) {
         calculated.push(await this.pieceCalculator.calculatePieceMetrics(
-          this.buildPieceDtoFromPersistedPiece(piece, Number(piece.dealerMarkup) * 100),
+          this.buildPieceDtoFromPersistedPiece(piece, Number(piece.dealerMarkup) * 100, false),
           ownerMarkup, tx, cache,
         ));
       }
@@ -1823,6 +1831,7 @@ export class EstimatesService {
         beforeEstimate!,
         existingPiece,
       );
+      withStoredPieceDesign(dto, existingPiece);
 
       const calculatedPiece = await this.pieceCalculator.calculatePieceMetrics(
         dto,
@@ -2578,6 +2587,8 @@ export class EstimatesService {
         idSyst: p.idSyst,
         idConf: p.idConf,
         idFC: p.idFC,
+        idDesign: p.idDesign ?? null,
+        idDesignColor: p.idDesignColor ?? null,
 
         width: p.width == null ? null : p.width.toString(),
         height: p.height == null ? null : p.height.toString(),
@@ -2650,6 +2661,7 @@ export class EstimatesService {
       const calculatedPieces: CalculatedPieceCombined[] = [];
 
       for (const p of pieceDtos) {
+        withStoredPieceDesign(p, beforeEstimate.pieces.find(piece => piece.id === p.id));
         const result = await this.pieceCalculator.calculatePieceMetrics(
           p,
           effectiveMarkupDecimal,
@@ -2689,6 +2701,7 @@ export class EstimatesService {
         await tx.piece.update({
           where: { id: pieceId },
           data: {
+            ...pieceDesignPersistence(p),
             mark: p.mark,
             screen: p.screen ?? false,
             highBottom: p.highBottom ?? false,

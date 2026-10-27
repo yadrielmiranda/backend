@@ -186,6 +186,51 @@ function internalServiceEarningsFixture(): EstimateWithRelations {
   } as any);
 }
 
+describe('solid garage design output in PDFs', () => {
+  const designPiece = (template: unknown) => ({
+    idSyst: 33, idDesign: 7, idDesignColor: 8,
+    designSnapshot: {
+      version: 1, systemId: 33,
+      design: { id: 7, name: 'Custom pattern', imageUrl: null, template },
+      color: { id: 8, name: 'Custom finish', hexCode: '#875533' },
+    },
+    privacyOption: { name: 'Opaque option' },
+    energySnapshot: { status: 'AVAILABLE', uFactor: '1.1', shgc: '0.2', vlt: '0.3' },
+    dpPosPsf: '45', dpNegPsf: '-55',
+  });
+
+  it.each(['client', 'dealer_public', 'dealer_public_total', 'dealer_internal', 'admin'] as const)(
+    'omits internal glass, privacy and energy information while retaining the design and DP in %s', (view) => {
+      const estimate = estimateFixture(false);
+      Object.assign(estimate.pieces[0], designPiece({ version: 1, columns: [1], rows: [0.5, 0.5], cells: [['slat'], ['slat']] }));
+      const html = EstimatePdfHtmlBuilder.build(estimate, view);
+      expect(html).not.toContain('Glass:');
+      expect(html).not.toContain('3/16 + 3/16');
+      expect(html).not.toContain('Privacy:');
+      expect(html).not.toContain('Opaque option');
+      expect(html).not.toContain('NFRC:');
+      expect(html).not.toContain('Energy performance:');
+      expect(html).toContain('Design: Custom pattern');
+      expect(html).toContain('Design Color: Custom finish');
+      expect(html).toContain('PSF: +45.0 / -55.0');
+      expect(estimate.pieces[0].cryst?.glass).toBe('3/16 + 3/16');
+    },
+  );
+
+  it.each([
+    { version: 1, columns: [1], rows: [0.5, 0.5], cells: [['glass'], ['slat']] },
+    undefined,
+    { version: 1, columns: [1], rows: [1], cells: [] },
+  ])('keeps glass details for mixed, missing or invalid templates: %p', (template) => {
+    const estimate = estimateFixture(false);
+    Object.assign(estimate.pieces[0], designPiece(template));
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'client');
+    expect(html).toContain('Glass: 3/16 + 3/16 + Clear');
+    expect(html).toContain('Privacy: Opaque option');
+    expect(html).toContain('NFRC:');
+  });
+});
+
 describe('EstimatePdfHtmlBuilder', () => {
   it('shows frozen energy values with a bold NFRC label below design pressures, without units or their internal source', () => {
     const estimate = estimateFixture(false);
@@ -564,6 +609,33 @@ describe('EstimatePdfHtmlBuilder', () => {
     Object.assign(estimate.pieces[0], { promotionSnapshot: null });
     const ordinary = EstimatePdfHtmlBuilder.build(estimate, 'admin');
     expect(ordinary).not.toContain('<s class="price-original">');
+  });
+
+  it.each(['admin', 'dealer_public'] as const)('shows captured garage design and color safely in the %s PDF', role => {
+    const estimate = estimateFixture();
+    Object.assign(estimate.pieces[0], { idDesign: 4, idDesignColor: 5, designSnapshot: {
+      version: 1, systemId: 2,
+      design: { id: 4, name: 'Solid & <special>', imageUrl: null },
+      color: { id: 5, name: 'Oak & Gold', hexCode: '#995522' },
+    } });
+    const html = EstimatePdfHtmlBuilder.build(estimate, role);
+    expect(html).toContain('Design: Solid &amp; &lt;special&gt;');
+    expect(html).toContain('Design Color: Oak &amp; Gold');
+    expect(html).toContain('Frame Color: Oak &amp; Gold');
+    expect(html).not.toContain('Frame Color: Bronze');
+  });
+
+  it('does not use a stale garage design color after the design is removed', () => {
+    const estimate = estimateFixture();
+    Object.assign(estimate.pieces[0], { idDesign: null, idDesignColor: null, designSnapshot: {
+      version: 1, systemId: 2,
+      design: { id: 4, name: 'Solid', imageUrl: null },
+      color: { id: 5, name: 'Oak', hexCode: '#995522' },
+    } });
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'admin');
+    expect(html).toContain('Frame Color: Bronze');
+    expect(html).not.toContain('Frame Color: Oak');
+    expect(html).not.toContain('Design Color: Oak');
   });
 
   it('keeps the dealer customer PDF free of internal pricing', () => {

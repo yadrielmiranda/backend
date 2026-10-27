@@ -15,6 +15,14 @@ import {
 } from "./installation-flow-policy";
 
 describe("installation flow policy", () => {
+  it('keeps legacy revision fingerprints stable and distinguishes design selections at the same price', () => {
+    const piece = { idProd: 1, idBrand: 1, idSyst: 1, idFC: 1, width: '120', height: '100' };
+    const baseline = createEstimateRevisionPieceFingerprint(piece);
+    expect(createEstimateRevisionPieceFingerprint({ ...piece, idDesign: null, idDesignColor: null })).toBe(baseline);
+    const designed = createEstimateRevisionPieceFingerprint({ ...piece, idDesign: 1, idDesignColor: 2 });
+    expect(designed).not.toBe(baseline);
+    expect(createEstimateRevisionPieceFingerprint({ ...piece, idDesign: 1, idDesignColor: 3 })).not.toBe(designed);
+  });
   it("allows only admins to view every installation", () => {
     expect(canViewAllInstallations("admin")).toBe(true);
     expect(canViewAllInstallations("operator")).toBe(false);

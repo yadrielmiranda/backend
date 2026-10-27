@@ -155,6 +155,10 @@ export function createEstimateRevisionPieceFingerprint(
       idSyst: integerOrNull(piece.idSyst),
       idConf: integerOrNull(piece.idConf),
       idFC: integerOrNull(piece.idFC),
+      ...(piece.idDesign || piece.idDesignColor ? {
+        idDesign: integerOrNull(piece.idDesign),
+        idDesignColor: integerOrNull(piece.idDesignColor),
+      } : {}),
       ...canonicalDimensions,
       leftPanels: integerOrNull(piece.leftPanels),
       rightPanels: integerOrNull(piece.rightPanels),

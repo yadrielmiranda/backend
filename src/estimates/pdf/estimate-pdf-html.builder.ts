@@ -1,3 +1,5 @@
+import { matchingPieceDesignSnapshot, pieceFrameColorName } from '@/pieces/piece-frame-color';
+import { pieceHasSolidGarageDesign } from '@/pieces/piece-design';
 import { networkSnapshot, networkMaterialProfit, billingEstimate } from '@/dealer-network/dealer-network';
 import { calculateEstimateDiscount, estimateDiscountConfig } from '../discounts/estimate-discount';
 import type { Branding } from '@prisma/client';
@@ -287,6 +289,7 @@ const buildSpecialDimensionLines = (piece: any) => {
 };
 
 const buildPieceReportDetails = (piece: any): PieceReportDetails => {
+  const hasSolidDesign = pieceHasSolidGarageDesign(piece);
   const active =
     optionName(piece.activeOption) ??
     optionName(piece.actOpt) ??
@@ -312,10 +315,15 @@ const buildPieceReportDetails = (piece: any): PieceReportDetails => {
     )
     .join(' + ');
   const detailLines = [
-    `Frame Color: ${String(piece.fColor?.color ?? '').trim() || 'Not specified'}`,
+    `Frame Color: ${pieceFrameColorName(piece) ?? 'Not specified'}`,
   ];
+  const design = matchingPieceDesignSnapshot(piece);
+  if (design) {
+    detailLines.push(`Design: ${design.design.name}`);
+    detailLines.push(`Design Color: ${design.color.name}`);
+  }
 
-  if (glass) detailLines.push(`Glass: ${glass}`);
+  if (!hasSolidDesign && glass) detailLines.push(`Glass: ${glass}`);
   if (preparation) detailLines.push(`Preparation: ${preparation}`);
   if (sill) detailLines.push(`Sill: ${sill}`);
   if (reinforcement) detailLines.push(`Reinforcement: ${reinforcement}`);
@@ -324,7 +332,7 @@ const buildPieceReportDetails = (piece: any): PieceReportDetails => {
   const optionParts = [
     `Screen: ${piece.screen ? 'Yes' : 'No'}`,
     buildGridLine(piece),
-    `Privacy: ${piece.privacyOption?.name ?? 'None'}`,
+    ...(!hasSolidDesign ? [`Privacy: ${piece.privacyOption?.name ?? 'None'}`] : []),
   ];
   if (piece.highBottom) optionParts.push('High Bottom: Yes');
   detailLines.push(optionParts.join(' | '));
@@ -336,7 +344,7 @@ const buildPieceReportDetails = (piece: any): PieceReportDetails => {
   }
 
   const energy = piece.energySnapshot;
-  if (piece.prod?.kind !== 'LINEAR_MATERIAL' && energy?.status !== 'NOT_APPLICABLE') {
+  if (!hasSolidDesign && piece.prod?.kind !== 'LINEAR_MATERIAL' && energy?.status !== 'NOT_APPLICABLE') {
     const values = [energy?.uFactor, energy?.shgc, energy?.vlt].map((value) => {
       if (value == null || value === '') return null;
       const number = Number(value);

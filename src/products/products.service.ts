@@ -112,6 +112,7 @@ export class ProductsService {
           sortOrder,
           isActive: true,
           diagramFamily: data.diagramFamily,
+          allowMuntin: classification.kind === ProductKind.LINEAR_MATERIAL ? false : data.allowMuntin ?? true,
           ...classification,
         },
       });
@@ -158,6 +159,7 @@ export class ProductsService {
           sortOrder: data.sortOrder,
           isActive: data.isActive,
           diagramFamily: data.diagramFamily,
+          allowMuntin: classification.kind === ProductKind.LINEAR_MATERIAL ? false : data.allowMuntin ?? undefined,
           ...classification,
         },
       });

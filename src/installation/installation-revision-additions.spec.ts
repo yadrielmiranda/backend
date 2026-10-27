@@ -5,6 +5,7 @@ import { EstimatePieceCalculatorService } from '@/estimates/calculation/estimate
 import { MaterialRevisionsService } from '@/estimates/material-revisions/material-revisions.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import type { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
+import { resolvePieceDesign } from '@/pieces/piece-design';
 
 const admin: AuthUser = { id: 1, role: { name: 'admin' } };
 const d = (value: any) => new Decimal(String(value ?? 0));
@@ -201,6 +202,70 @@ async function confirmAll(f: ReturnType<typeof fixture>) {
 }
 
 describe('Combined remeasurement and added pieces', () => {
+  it('stores the calculated frame when changed measurements produce a proposal', async () => {
+    const f = fixture();
+    const calculate = f.calculator.calculatePieceMetrics.bind(f.calculator);
+    f.calculator.calculatePieceMetrics = async (...args) => ({ ...await calculate(...args), idFC: 77 });
+    await f.workflow.updateMeasurement(40, 20, { widthIn: 42 }, admin);
+    assert.equal(f.state.items[0].proposedPieceInput.idFC, 77);
+    assert.equal(f.state.pieces[0].idFC, 1);
+  });
+
+  it('uses the linked frame for added pieces and preserves its saved mapping when reusing the price', async () => {
+    const f = fixture();
+    const color = { id: 12, name: 'Oak', hexCode: '#995522', isActive: true, idFrameColor: 7 };
+    f.db.systemDesignOption = { findUnique: async () => ({
+      system: { idBrand: 1, idProduct: 1, isActive: true, allowDesign: true, brandProduct: { product: { diagramFamily: 'GARAGE_DOOR' } } },
+      design: { id: 11, name: 'Solid', imageUrl: null, isActive: true }, color,
+    }) };
+    f.db.systemFrameColor = { findUnique: async () => ({ frameColor: { isActive: true } }) };
+    f.db.designColor = { findUnique: async () => color };
+    const calculate = f.calculator.calculatePieceMetrics.bind(f.calculator);
+    f.calculator.calculatePieceMetrics = async (...args) => ({ ...await calculate(...args), ...await resolvePieceDesign(f.db, args[0]) });
+    const piece = newPiece({ idDesign: 11, idDesignColor: 12 });
+    await f.workflow.saveAddedPiece(40, { piece }, admin);
+    const item = f.state.items[0];
+    assert.equal(item.proposedPieceInput.idFC, 7);
+    assert.equal(item.calculatedSnapshot.designSnapshot.color.idFrameColor, 7);
+    const count = f.calls.length;
+    color.idFrameColor = 9;
+    await f.workflow.saveAddedPiece(40, { piece, measurementId: item.measurementId }, admin);
+    assert.equal(f.state.items[0].proposedPieceInput.idFC, 7);
+    assert.equal(f.calls.length, count);
+
+    // An old proposal without a saved frame link must migrate before price reuse.
+    f.state.items[0].proposedPieceInput.idFC = 1;
+    delete f.state.items[0].calculatedSnapshot.designSnapshot.color.idFrameColor;
+    await f.workflow.saveAddedPiece(40, { piece, measurementId: item.measurementId }, admin);
+    assert.equal(f.state.items[0].proposedPieceInput.idFC, 9);
+    assert.equal(f.state.items[0].calculatedSnapshot.designSnapshot.color.idFrameColor, 9);
+    assert.equal(f.calls.length, count + 1);
+    assert.equal(piece.idFC, 1);
+  });
+
+  it('stores the calculated muntin when new measurements produce a proposal', async () => {
+    const f = fixture();
+    const originalInput = f.engine.pieceInputFromMeasurement.bind(f.engine);
+    f.engine.pieceInputFromMeasurement = (...args: any[]) => ({ ...originalInput(...args), muntin: { idPattern: 1, idType: null, panels: [] } });
+    const calculate = f.calculator.calculatePieceMetrics.bind(f.calculator);
+    f.calculator.calculatePieceMetrics = async (...args) => ({ ...await calculate(...args), muntin: null });
+    await f.workflow.updateMeasurement(40, 20, { widthIn: 42 }, admin);
+    assert.equal(f.state.items[0].proposedPieceInput.muntin, null);
+    assert.equal(f.state.pieces[0].pieceMuntin, null);
+  });
+
+  it('clears an obsolete grid before reusing an unchanged draft addition price', async () => {
+    const f = fixture();
+    const muntin = { idPattern: 1, idType: null, panels: [] };
+    await f.workflow.saveAddedPiece(40, { piece: newPiece({ muntin }) }, admin);
+    const item = f.state.items[0];
+    const findProduct = f.db.product.findUnique;
+    f.db.product.findUnique = async (args: any) => ({ ...await findProduct(args), allowMuntin: false });
+    await f.workflow.saveAddedPiece(40, { piece: newPiece({ muntin }), measurementId: item.measurementId }, admin);
+    assert.equal(f.state.items[0].proposedPieceInput.muntin, null);
+    assert.equal(f.calls.at(-1).input.muntin, null);
+  });
+
   it('adds a piece to an already saved dimension revision without closing it', async () => {
     const f = fixture(); const before = copy([f.state.pieces, f.state.payments, f.state.estimate.dealerEarningsPlanSnapshot]);
     await f.workflow.updateMeasurement(40, 20, { widthIn: 42 }, admin);

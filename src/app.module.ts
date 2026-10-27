@@ -54,6 +54,7 @@ import { MaterialsModule } from './materials/materials.module';
 import { SmsConsentModule } from './sms/sms-consent.module';
 import { ReferralsModule } from './referrals/referrals.module';
 import { EnergyRatingsModule } from './energy-ratings/energy-ratings.module';
+import { GarageDesignsModule } from './garage-designs/garage-designs.module';
 
 @Module({
   imports: [
@@ -107,6 +108,7 @@ import { EnergyRatingsModule } from './energy-ratings/energy-ratings.module';
     WarehouseModule,
     MaterialsModule,
     EnergyRatingsModule,
+    GarageDesignsModule,
   ],
   controllers: [AppController],
   providers: [

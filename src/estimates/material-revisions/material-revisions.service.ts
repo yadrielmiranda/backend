@@ -1,3 +1,4 @@
+import { readPieceDesignSnapshot, withStoredPieceDesign } from '@/pieces/piece-design';
 import { networkSnapshot, canAccessOwner, billingEstimate } from '@/dealer-network/dealer-network';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -39,7 +40,7 @@ class MaterialPreviewCompleted<T> extends Error {
   constructor(readonly result: T) { super('Material preview completed'); }
 }
 const acceptance = 'I accept the listed material changes, quantities, prices and updated project total.';
-const inputKeys = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC', 'width', 'height', 'heightLeft', 'heightRight',
+const inputKeys = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC', 'idDesign', 'idDesignColor', 'width', 'height', 'heightLeft', 'heightRight',
   'legHeight', 'sashHeight', 'windowHeight', 'doorWidth', 'doorHeight', 'leftSideliteWidth', 'rightSideliteWidth',
   'leftPanels', 'rightPanels', 'panelCount', 'horizontalHeights', 'idCryst', 'idTint', 'idCoat', 'idPrivacy', 'screen',
   'highBottom', 'idActiveOption', 'idPreparationOption', 'idSillOption', 'idReinforcementOption', 'muntin', 'qty', 'dealerMarkup'];
@@ -246,6 +247,9 @@ export class MaterialRevisionsService {
       promotionContext: original.promotionSnapshot ? [original.promotionSnapshot] : [] })
       : await this.promotions.eligible(estimate.idUser, db);
     const markup = new Decimal(String(original?.markup ?? estimate.ownerMarkupSnapshot ?? 0));
+    withStoredPieceDesign(input, existingItem
+      ? { ...existingItem.input, designSnapshot: existingItem.pricing?.designSnapshot }
+      : original);
     let calculated = await this.calculator.calculatePieceMetrics(input, markup, db, cache);
     if (original) {
       const prior = await this.calculator.calculatePieceMetrics(this.installation.materialRevisionPieceInput(original), markup, db, cache);
@@ -259,6 +263,7 @@ export class MaterialRevisionsService {
     const money = (value: any) => Number(value?.toFixed?.(2) ?? value ?? 0);
     return {
       ...Object.fromEntries(inputKeys.map(key => [key, calculated[key]])),
+      designSnapshot: calculated.designSnapshot ?? null,
       rate: isPrivileged(actor) ? money(calculated.rate) : 0,
       markup: isPrivileged(actor) ? Number(calculated.markup) : 0,
       netProfit: isPrivileged(actor) ? money(calculated.netProfit) : 0,
@@ -295,6 +300,12 @@ export class MaterialRevisionsService {
   private describeChange(before: any, after: any): string[] {
     if (!before) return [`${after.qty} new unit(s)`, 'Dimensions and specifications shown in the revision item.'];
     const changes: string[] = [];
+    const priorDesign = readPieceDesignSnapshot(before.designSnapshot);
+    const nextDesign = readPieceDesignSnapshot(after.designSnapshot);
+    if ((before.idDesign ?? null) !== (after.idDesign ?? null))
+      changes.push(`Design: ${priorDesign?.design.name ?? 'None'} → ${nextDesign?.design.name ?? 'None'}`);
+    if ((before.idDesignColor ?? null) !== (after.idDesignColor ?? null))
+      changes.push(`Design color: ${priorDesign?.color.name ?? 'None'} → ${nextDesign?.color.name ?? 'None'}`);
     for (const [key, text, valueKey] of [
       ['prod', 'Product', 'name'], ['bran', 'Brand', 'name'], ['syst', 'System', 'name'], ['conf', 'Configuration', 'conf'],
       ['fColor', 'Frame color', 'color'], ['cryst', 'Glass', 'glass'], ['tin', 'Glass color', 'color'],

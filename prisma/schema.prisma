@@ -597,6 +597,7 @@ model Product {
   name      String
   sortOrder Int     @default(0)
   isActive  Boolean @default(true)
+  allowMuntin Boolean @default(true)
 
   kind        ProductKind @default(GLAZED_UNIT)
   pricingMode PricingMode @default(AREA_PERIMETER)
@@ -666,6 +667,15 @@ model System {
 
   allowHighBottom Boolean @default(false)
 
+  allowDesign          Boolean        @default(false)
+  garageMaxSectionHeightIn Decimal    @default(24) @db.Decimal(6, 2)
+  defaultDesignId      Int?
+  defaultDesignColorId Int?
+  defaultDesign        DesignPattern? @relation("SystemDefaultDesign", fields: [defaultDesignId], references: [id], onDelete: Restrict)
+  defaultDesignColor   DesignColor?   @relation("SystemDefaultDesignColor", fields: [defaultDesignColorId], references: [id], onDelete: Restrict)
+  designOptions        SystemDesignOption[]
+  designColorModifiers SystemDesignColorModifier[]
+
   defaultCrystalId Int?
   defaultCrystal   Crystal? @relation("SystemDefaultCrystal", fields: [defaultCrystalId], references: [id], onDelete: SetNull)
 
@@ -684,10 +694,81 @@ model System {
   updatedAt          DateTime            @updatedAt
 
   @@index([defaultCrystalId])
+  @@index([defaultDesignId])
+  @@index([defaultDesignColorId])
   @@index([defaultConfigId])
   @@index([isActive])
   @@index([idBrand, idProduct, sortOrder])
   @@index([idBrand, idProduct, isDefault])
+}
+
+model DesignPattern {
+  id        Int      @id @default(autoincrement())
+  name      String   @db.VarChar(100)
+  imageUrl  String?  @db.VarChar(2048)
+  template  Json?
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  systemOptions   SystemDesignOption[]
+  defaultSystems  System[] @relation("SystemDefaultDesign")
+  pieces          Piece[]
+
+  @@index([isActive, sortOrder])
+  @@map("design_patterns")
+}
+
+model DesignColor {
+  id         Int      @id @default(autoincrement())
+  name       String   @unique @db.VarChar(100)
+  hexCode    String   @default("#FFFFFF") @db.VarChar(7)
+  idFrameColor Int?
+  frameColor FrameColor? @relation(fields: [idFrameColor], references: [id], onDelete: Restrict)
+  isActive   Boolean  @default(true)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  systemOptions  SystemDesignOption[]
+  defaultSystems System[] @relation("SystemDefaultDesignColor")
+  systemModifiers SystemDesignColorModifier[]
+  pieces         Piece[]
+
+  @@index([isActive, sortOrder])
+  @@map("design_colors")
+}
+
+model SystemDesignOption {
+  idSystem      Int
+  idDesign      Int
+  idDesignColor Int
+  sortOrder     Int @default(0)
+
+  system System        @relation(fields: [idSystem], references: [id], onDelete: Cascade)
+  design DesignPattern @relation(fields: [idDesign], references: [id], onDelete: Restrict)
+  color  DesignColor   @relation(fields: [idDesignColor], references: [id], onDelete: Restrict)
+
+  @@id([idSystem, idDesign, idDesignColor])
+  @@index([idDesign])
+  @@index([idDesignColor])
+  @@map("system_design_options")
+}
+
+model SystemDesignColorModifier {
+  idSystem            Int
+  idDesignColor       Int
+  modifierEnabled     Boolean @default(false)
+  basePriceMultiplier Decimal @default(1) @db.Decimal(38, 20)
+  basePriceDeduction  Decimal @default(0) @db.Decimal(38, 20)
+
+  system System      @relation(fields: [idSystem], references: [id], onDelete: Cascade)
+  color  DesignColor @relation(fields: [idDesignColor], references: [id], onDelete: Restrict)
+
+  @@id([idSystem, idDesignColor])
+  @@index([idDesignColor])
+  @@map("system_design_color_modifiers")
 }
 
 model Config {
@@ -1042,6 +1123,7 @@ model FrameColor {
 
   pieces            Piece[]
   systemFrameColors SystemFrameColor[]
+  designColors      DesignColor[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1055,6 +1137,9 @@ model SystemFrameColor {
   idFrameColor Int
   sortOrder    Int     @default(0)
   isDefault    Boolean @default(false)
+  modifierEnabled     Boolean @default(false)
+  basePriceMultiplier Decimal @default(1) @db.Decimal(38, 20)
+  basePriceDeduction  Decimal @default(0) @db.Decimal(38, 20)
 
   system     System     @relation(fields: [idSystem], references: [id], onDelete: Cascade)
   frameColor FrameColor @relation(fields: [idFrameColor], references: [id], onDelete: Restrict)
@@ -1638,6 +1723,12 @@ model Piece {
   fColor               FrameColor @relation(fields: [idFC], references: [id])
   idFC                 Int
 
+  design         DesignPattern? @relation(fields: [idDesign], references: [id], onDelete: Restrict)
+  idDesign       Int?
+  designColor    DesignColor? @relation(fields: [idDesignColor], references: [id], onDelete: Restrict)
+  idDesignColor  Int?
+  designSnapshot Json?
+
   width        Decimal? @db.Decimal(10, 3)
   height       Decimal? @db.Decimal(10, 3)
   heightLeft   Decimal? @db.Decimal(10, 3)
@@ -1713,6 +1804,8 @@ model Piece {
   @@index([idConf])
   @@index([idPrivacy])
   @@index([idActiveOption])
+  @@index([idDesign])
+  @@index([idDesignColor])
   @@index([idPreparationOption])
   @@index([idSillOption])
   @@index([idReinforcementOption])

@@ -1,3 +1,5 @@
+import { pieceDesignContent, pieceDesignPersistence, readPieceDesignSnapshot, resolvePieceDesign, withStoredPieceDesign } from '@/pieces/piece-design';
+import { pieceFrameColorName } from '@/pieces/piece-frame-color';
 import { networkSnapshot, networkPieceTotals, billingAccountId, billingEstimate, canAccessOwner, descendantIds } from '@/dealer-network/dealer-network';
 import { assertNetworkEstimateCanProceed } from '@/dealer-network/network-access';
 import { assertNoOpenMaterialCheckout, assertNoPendingMaterialRevision } from '@/estimates/material-revisions/material-revision-policy';
@@ -199,6 +201,7 @@ export type RevisionPieceRecord = Prisma.PieceGetPayload<{
 export type FrozenPieceEnergy = Awaited<ReturnType<typeof buildEnergyPersistence>>;
 
 export type RevisionPiecePricingSnapshot = {
+  designSnapshot?: import('@/pieces/piece-design').PieceDesignSnapshot | null;
   energy?: { energyRatingId: number | null; energySnapshot: Prisma.JsonValue };
   networkPricing?: import("@/dealer-network/dealer-network").NetworkPiecePricing;
   regularPrice?: string;
@@ -634,6 +637,7 @@ export class InstallationWorkflowService {
       idSyst: piece.idSyst,
       idConf: piece.idConf,
       idFC: piece.idFC,
+      ...pieceDesignContent(piece),
       idCryst: piece.idCryst ?? null,
       idTint: piece.idTint ?? null,
       idCoat: piece.idCoat ?? null,
@@ -642,7 +646,7 @@ export class InstallationWorkflowService {
       brandName: piece.bran?.name ?? null,
       systemName: piece.syst?.name ?? null,
       configName: piece.conf?.conf ?? null,
-      frameColorName: piece.fColor?.color ?? null,
+      frameColorName: pieceFrameColorName(piece),
       crystalName: piece.cryst?.glass ?? null,
       tintName: piece.tin?.color ?? null,
       coatingName: piece.coat?.name ?? null,
@@ -713,13 +717,15 @@ export class InstallationWorkflowService {
     piece: RevisionPieceRecord,
     qty = 1,
   ): CreatePieceDto {
-    return {
+    return withStoredPieceDesign({
       mark: piece.mark,
       idProd: piece.idProd,
       idBrand: piece.idBrand,
       idSyst: piece.idSyst,
       idConf: piece.idConf,
       idFC: piece.idFC,
+      idDesign: piece.idDesign,
+      idDesignColor: piece.idDesignColor,
       width: piece.width?.toString(),
       height: piece.height?.toString(),
       heightLeft: piece.heightLeft?.toString(),
@@ -762,7 +768,7 @@ export class InstallationWorkflowService {
         : null,
       qty,
       dealerMarkup: Number(piece.dealerMarkup.toString()) * 100,
-    };
+    }, piece);
   }
 
   private pieceInputFromMeasurement(
@@ -836,13 +842,16 @@ export class InstallationWorkflowService {
       mark: input.mark.trim() || originalPiece.mark,
       qty: 1,
     };
+    withStoredPieceDesign(replacementInput, originalPiece);
     const calculated = await this.pieceCalculator.calculatePieceMetrics(
       replacementInput,
       await this.resolveEstimateOwnerMarkup(estimateId, tx),
       tx,
       await this.promotionRevisionCache(estimateId, tx, originalPiece),
     );
-    return { replacementInput, calculated };
+    return { replacementInput: { ...replacementInput, idFC: calculated.idFC,
+      idDesign: calculated.idDesign ?? null, idDesignColor: calculated.idDesignColor ?? null,
+      muntin: calculated.muntin ?? null }, calculated };
   }
 
   private originalRevisionSnapshot(piece: RevisionPieceRecord) {
@@ -851,6 +860,7 @@ export class InstallationWorkflowService {
       ...source,
       pieceInput: this.pieceInputFromPersisted(piece, 1),
       pricing: {
+        designSnapshot: readPieceDesignSnapshot(piece.designSnapshot),
         energy: { energyRatingId: piece.energyRatingId ?? null, energySnapshot: stripEnergySnapshotMetadata(piece.energySnapshot) ?? null },
         networkPricing: piece.networkPricing,
         rate: piece.rate.toString(),
@@ -910,6 +920,7 @@ export class InstallationWorkflowService {
         energyRatingId: energy.energyRatingId,
         energySnapshot: energy.energySnapshot === Prisma.DbNull ? null : energy.energySnapshot as Prisma.JsonValue,
       },
+      designSnapshot: calculated.designSnapshot ?? null,
       networkPricing: calculated.networkPricing,
       rate: calculated.rate.toFixed(2),
       price: calculated.price.toFixed(2),
@@ -1256,6 +1267,10 @@ export class InstallationWorkflowService {
         tx,
         await this.promotionRevisionCache(revision.estimateId, tx, measurement.piece),
       );
+      proposedInput.muntin = calculated.muntin ?? null;
+      proposedInput.idFC = calculated.idFC;
+      proposedInput.idDesign = calculated.idDesign ?? null;
+      proposedInput.idDesignColor = calculated.idDesignColor ?? null;
       pricing = this.jsonValue(await this.calculatedRevisionSnapshot(calculated, tx, measurement.piece));
     }
 
@@ -2798,7 +2813,7 @@ export class InstallationWorkflowService {
   }
 
   private additionPieceInput(calculated: CalculatedPieceCombined): CreatePieceDto {
-    const keys: (keyof CreatePieceDto)[] = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC',
+    const keys: (keyof CreatePieceDto)[] = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC', 'idDesign', 'idDesignColor',
       'width', 'height', 'heightLeft', 'heightRight', 'legHeight', 'sashHeight', 'windowHeight',
       'doorWidth', 'doorHeight', 'leftSideliteWidth', 'rightSideliteWidth', 'leftPanels', 'rightPanels',
       'panelCount', 'horizontalHeights', 'idCryst', 'idTint', 'idCoat', 'idPrivacy', 'screen', 'highBottom',
@@ -2817,8 +2832,14 @@ export class InstallationWorkflowService {
       throw new BadRequestException('Edit one added unit at a time. Use Add Piece for more units.');
     const input: CreatePieceDto = { ...dto, mark: dto.mark.trim(),
       dealerMarkup: job.estimate.user.role.name === 'dealer' ? Number(dto.dealerMarkup ?? 0) : 0 };
+    const product = await tx.product.findUnique({ where: { id: input.idProd }, select: { kind: true, allowMuntin: true } });
+    if (!product) throw new NotFoundException('Product not found.');
+    if (product.allowMuntin === false) input.muntin = null;
     const previousInput = existing?.proposedPieceInput as unknown as CreatePieceDto | undefined;
     const previous = existing?.calculatedSnapshot as RevisionPiecePricingSnapshot | undefined;
+    if (previousInput && previous) withStoredPieceDesign(input, { ...previousInput, designSnapshot: previous.designSnapshot });
+    const design = await resolvePieceDesign(tx, input);
+    if (design.idFC !== undefined) input.idFC = design.idFC;
     const cache = this.pieceCalculator.createCalculationCache();
     cache.networkSnapshot = networkSnapshot(job.estimate);
     // Una adición nueva usa promociones elegibles actuales; la unidad ya propuesta
@@ -2831,7 +2852,7 @@ export class InstallationWorkflowService {
     if (previous && previousInput && createEstimateRevisionPieceFingerprint(previousInput) === createEstimateRevisionPieceFingerprint(input)) {
       // Confirmar las mismas medidas no cambia el precio ya mostrado.
       const price = new Decimal(previous.price), customerPrice = new Decimal(previous.customerPrice);
-      calculated = { ...input, networkPricing: previous.networkPricing, rate: new Decimal(previous.rate), price, customerPrice, markup,
+      calculated = { ...input, ...design, networkPricing: previous.networkPricing, rate: new Decimal(previous.rate), price, customerPrice, markup,
         regularPrice: new Decimal(previous.regularPrice ?? previous.price),
         regularCustomerPrice: new Decimal(previous.regularCustomerPrice ?? previous.customerPrice),
         promotionSnapshot: previous.promotionSnapshot as CalculatedPieceCombined['promotionSnapshot'],
@@ -2847,8 +2868,6 @@ export class InstallationWorkflowService {
       previousInput && previous?.energy ? { ...previousInput, ...previous.energy } : undefined);
     // Se guardan solo especificaciones normalizadas, nunca los precios enviados por el navegador.
     const normalized = this.additionPieceInput(calculated);
-    const product = await tx.product.findUnique({ where: { id: calculated.idProd }, select: { kind: true } });
-    if (!product) throw new NotFoundException('Product not found.');
     return { input: normalized, pricing, calculated, productKind: product.kind };
   }
 
@@ -3940,6 +3959,7 @@ export class InstallationWorkflowService {
     const customerPrice = new Decimal(pricing.customerPrice);
     const quantity = new Decimal(qty);
     return {
+      ...pieceDesignPersistence({ ...input, designSnapshot: pricing.designSnapshot }),
       regularPrice: new Prisma.Decimal(pricing.regularPrice ?? pricing.price),
       regularCustomerPrice: new Prisma.Decimal(pricing.regularCustomerPrice ?? pricing.customerPrice),
       promotionSnapshot: pricing.promotionSnapshot ? pricing.promotionSnapshot as Prisma.InputJsonValue : Prisma.DbNull,

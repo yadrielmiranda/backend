@@ -120,6 +120,16 @@ function fixture() {
 }
 
 describe('Independent estimate duplication', () => {
+  it('persists a normalized null muntin in a new copy without changing the original saved grid', async () => {
+    const f = fixture(), original = json(f.source);
+    const calculate = f.calculate.getMockImplementation()!;
+    f.calculate.mockImplementation(async (...args) => ({ ...await calculate(...args), muntin: null }));
+    await f.duplicate();
+    expect(f.pieces()).toHaveLength(1);
+    expect(f.muntins()).toEqual([]);
+    expect(json(f.source)).toEqual(original);
+  });
+
   it('does not copy the source internal note into a separate estimate', async () => {
     const f = fixture();
     f.source.internalNote = {

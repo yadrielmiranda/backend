@@ -414,8 +414,9 @@ describe('Applying an approved material revision', () => {
     });
   });
 
-  it('preserves the existing muntin for dimension-only updates', async () => {
+  it('preserves the frozen approved muntin even when the current product disallows it', async () => {
     const f = fixture();
+    f.tx.product.findUnique.mockResolvedValue({ kind: 'GLAZED_UNIT', allowMuntin: false });
     const muntin = {
       idPattern: 1,
       idType: 2,

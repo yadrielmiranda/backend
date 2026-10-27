@@ -9,6 +9,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { createHash } from 'crypto';
 import { expectedPhysicalParts } from '@/warehouse/warehouse-parts';
+import { pieceFrameColorName } from '@/pieces/piece-frame-color';
 import { PrismaService } from '@/prisma/prisma.service';
 import { AuthUser } from '@/auth/types/auth-user.type';
 import { calculateMaterialFinancials } from '../order-material-financials';
@@ -88,7 +89,7 @@ function localPiece(piece: SourcePiece, index: number): LocalFactoryPiece {
         : piece.prod.diagramFamily,
     system: piece.syst.name,
     configuration: piece.conf.conf,
-    frameColor: piece.fColor.color,
+    frameColor: pieceFrameColorName(piece) ?? '',
     width: dimension(piece.width),
     height: dimension(piece.height),
     active: piece.activeOption?.name ?? '',

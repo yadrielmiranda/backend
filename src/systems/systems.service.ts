@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import {
   BillableHeightMode,
+  DiagramFamily,
   DimensionMode,
   PricingComponentType,
   Prisma,
@@ -17,13 +18,32 @@ import { UpdateSystemDto } from './dto/update-system.dto';
 import { UpdateSystemConfigDto } from './dto/update-system-config.dto';
 import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options.dto';
 import { UpdateSystemCrystalsDto } from './dto/update-system-crystals.dto';
-import { UpdateSystemFrameColorsDto } from './dto/update-system-frame-colors.dto';
+import {
+  FRAME_PRICE_DECIMAL_PATTERN,
+  UpdateSystemFrameColorItemDto,
+  UpdateSystemFrameColorsDto,
+} from './dto/update-system-frame-colors.dto';
 import { UpdateSystemConfigPricingComponentsDto } from './dto/update-system-config-pricing-components.dto';
 import {
   hasPanelCountSource,
   installationServiceRequiresPanelCount,
 } from '@/installation/panel-count-capability';
 import { MUNTIN_ASSIGNMENTS_INCLUDE, catalogMuntinRules, withMuntinRules } from './muntin-rules';
+import { SYSTEM_DESIGN_OPTIONS_INCLUDE } from './system-designs.service';
+
+function framePriceCoefficient(value: unknown, field: 'multiplier' | 'deduction'): Prisma.Decimal {
+  const text = typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+  if (!FRAME_PRICE_DECIMAL_PATTERN.test(text)) {
+    throw new BadRequestException(
+      `Base price ${field} must contain at most 18 integer digits and 20 decimal digits.`,
+    );
+  }
+  const coefficient = new Prisma.Decimal(text);
+  if (field === 'multiplier' && coefficient.lte(0)) {
+    throw new BadRequestException('Base price multiplier must be greater than zero.');
+  }
+  return coefficient;
+}
 
 @Injectable()
 export class SystemsService {
@@ -33,6 +53,7 @@ export class SystemsService {
     const system = await this.prisma.system.findUnique({
       where,
       include: {
+        designOptions: SYSTEM_DESIGN_OPTIONS_INCLUDE,
         brandProduct: {
           include: {
             brand: true,
@@ -107,6 +128,7 @@ export class SystemsService {
         { id: 'asc' },
       ],
       include: {
+        designOptions: SYSTEM_DESIGN_OPTIONS_INCLUDE,
         brandProduct: {
           include: { brand: true, product: true },
         },
@@ -158,6 +180,7 @@ export class SystemsService {
   async findAllWithConfigs(): Promise<System[]> {
     const systems = await this.prisma.system.findMany({
       include: {
+        designOptions: SYSTEM_DESIGN_OPTIONS_INCLUDE,
         sysconfs: {
           include: {
             muntinAssignments: MUNTIN_ASSIGNMENTS_INCLUDE,
@@ -373,6 +396,7 @@ export class SystemsService {
         idProduct: true,
         isActive: true,
         isDefault: true,
+        allowDesign: true,
       },
     });
 
@@ -398,6 +422,7 @@ export class SystemsService {
             isActive: true,
             kind: true,
             pricingMode: true,
+            diagramFamily: true,
           },
         },
         brand: {
@@ -417,6 +442,10 @@ export class SystemsService {
 
     const isLinearMaterial =
       brandProduct.product.kind === ProductKind.LINEAR_MATERIAL;
+
+    if (current.allowDesign && brandProduct.product.diagramFamily !== DiagramFamily.GARAGE_DOOR) {
+      throw new BadRequestException('Disable Design before moving this series to a non-Garage Door product.');
+    }
 
     if (isLinearMaterial && data.allowHighBottom) {
       throw new BadRequestException(
@@ -520,6 +549,7 @@ export class SystemsService {
     const system = await this.prisma.system.findUnique({
       where: { id: systemId },
       include: {
+        designOptions: SYSTEM_DESIGN_OPTIONS_INCLUDE,
         sysconfs: {
           include: {
             muntinAssignments: MUNTIN_ASSIGNMENTS_INCLUDE,
@@ -1710,6 +1740,9 @@ export class SystemsService {
         idFrameColor: association.idFrameColor,
         sortOrder: association.sortOrder,
         isDefault: association.isDefault,
+        modifierEnabled: association.modifierEnabled,
+        basePriceMultiplier: association.basePriceMultiplier.toFixed(),
+        basePriceDeduction: association.basePriceDeduction.toFixed(),
       })),
       frameColorsCatalog,
     };
@@ -1724,9 +1757,13 @@ export class SystemsService {
       select: {
         id: true,
         systemFrameColors: {
-          where: { isDefault: true },
-          select: { idFrameColor: true },
-          take: 1,
+          select: {
+            idFrameColor: true,
+            isDefault: true,
+            modifierEnabled: true,
+            basePriceMultiplier: true,
+            basePriceDeduction: true,
+          },
         },
       },
     });
@@ -1736,18 +1773,36 @@ export class SystemsService {
     }
 
     const existingDefaultFrameColorId =
-      system.systemFrameColors[0]?.idFrameColor ?? null;
-    const requestedFrameColors = (
+      system.systemFrameColors.find((association) => association.isDefault)?.idFrameColor ?? null;
+    const existingById = new Map(system.systemFrameColors.map((association) => [association.idFrameColor, association]));
+    const inputFrameColors: UpdateSystemFrameColorItemDto[] =
       data.frameColors ??
       (data.frameColorIds ?? []).map((frameColorId, index) => ({
         frameColorId,
         sortOrder: index,
         isDefault: frameColorId === existingDefaultFrameColorId,
-      }))
-    ).map((item) => ({
-      ...item,
-      isDefault: item.isDefault === true,
-    }));
+      }));
+    const requestedFrameColors = inputFrameColors.map((item) => {
+      const existing = existingById.get(item.frameColorId);
+      const modifierEnabled = item.modifierEnabled === undefined
+        ? existing?.modifierEnabled ?? false : item.modifierEnabled;
+      if (typeof modifierEnabled !== 'boolean') {
+        throw new BadRequestException('Frame color modifier must be active or inactive.');
+      }
+      return {
+        ...item,
+        isDefault: item.isDefault === true,
+        modifierEnabled,
+        basePriceMultiplier: framePriceCoefficient(
+          item.basePriceMultiplier === undefined ? existing?.basePriceMultiplier?.toFixed() ?? '1' : item.basePriceMultiplier,
+          'multiplier',
+        ),
+        basePriceDeduction: framePriceCoefficient(
+          item.basePriceDeduction === undefined ? existing?.basePriceDeduction?.toFixed() ?? '0' : item.basePriceDeduction,
+          'deduction',
+        ),
+      };
+    });
 
     const requestedDefaults = requestedFrameColors.filter(
       (item) => item.isDefault,
@@ -1794,6 +1849,9 @@ export class SystemsService {
             idFrameColor: item.frameColorId,
             sortOrder: item.sortOrder,
             isDefault: item.isDefault,
+            modifierEnabled: item.modifierEnabled,
+            basePriceMultiplier: item.basePriceMultiplier,
+            basePriceDeduction: item.basePriceDeduction,
           })),
         });
       }

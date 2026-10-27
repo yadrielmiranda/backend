@@ -41,6 +41,38 @@ function privateSnapshot() {
 }
 
 describe('Public estimate energy projection', () => {
+  it.each(['detailed', 'total'] as const)('omits internal glass data from a solid garage design in %s mode without mutating stored selections', mode => {
+    const piece = {
+      idSyst: 33, idDesign: 7, idDesignColor: 8,
+      idCryst: 1, idTint: 2, idCoat: 3, idPrivacy: 4,
+      cryst: { glass: 'Internal base crystal' }, tin: { color: 'Internal tint' },
+      coat: { name: 'Internal coating' }, privacyOption: { name: 'Internal privacy' },
+      energySnapshot: privateSnapshot(), dpPosPsf: '45', dpNegPsf: '-55',
+      diagramMetadata: { dimensionMode: 'STANDARD', hasCoating: true, hasPrivacy: true, garageMaxSectionHeightIn: 24 },
+      designSnapshot: {
+        version: 1, systemId: 33,
+        design: { id: 7, name: 'Any name', imageUrl: null, template: { version: 1, columns: [1], rows: [1], cells: [['slat']] } },
+        color: { id: 8, name: 'Finish', hexCode: '#885533' },
+      },
+    };
+    const before = JSON.parse(JSON.stringify(piece));
+    const projected = buildPublicEstimateData(estimateFixture(), null, [piece], mode).pieces[0];
+    expect(projected).toMatchObject({
+      idCryst: null, idTint: null, idCoat: null, idPrivacy: null,
+      cryst: null, tin: null, coat: null, privacyOption: null, energySnapshot: null,
+      idDesign: 7, idDesignColor: 8, dpPosPsf: '45', dpNegPsf: '-55',
+      diagramMetadata: { hasCoating: false, hasPrivacy: false, garageMaxSectionHeightIn: 24 },
+    });
+    expect(projected.designSnapshot).toEqual(piece.designSnapshot);
+    expect(piece).toEqual(before);
+
+    piece.designSnapshot.design.template.cells = [['glass']];
+    const withGlass = buildPublicEstimateData(estimateFixture(), null, [piece], mode).pieces[0];
+    expect(withGlass.cryst).toEqual(piece.cryst);
+    expect(withGlass.privacyOption).toEqual(piece.privacyOption);
+    expect(withGlass.energySnapshot?.status).toBe('AVAILABLE');
+  });
+
   it.each(['detailed', 'total'] as const)(
     'publishes values but no source or diagnostic metadata in %s pricing mode',
     (mode) => {
