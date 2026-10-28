@@ -147,6 +147,22 @@ describe('Google Places address lookup', () => {
     );
   });
 
+  it('identifies an incomplete selection separately from a provider outage', async () => {
+    get.mockReturnValue(of({ data: { addressComponents: address().filter(
+      (part) => !part.types.includes('street_number'),
+    ) } }));
+    try {
+      await service.details({ placeId, sessionToken });
+      throw new Error('Expected an incomplete-address error');
+    } catch (error) {
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as BadRequestException).getResponse()).toEqual({
+        code: 'ADDRESS_SUGGESTION_INCOMPLETE',
+        message: 'Select a complete US street address or enter the address manually.',
+      });
+    }
+  });
+
   it('maps full address components without replacing the municipality with its county', async () => {
     get.mockReturnValue(of({ data: { addressComponents: address() } }));
     await expect(service.details({ placeId, sessionToken })).resolves.toEqual({

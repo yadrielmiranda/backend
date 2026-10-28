@@ -41,6 +41,11 @@ const UNAVAILABLE_MESSAGE =
   'Address suggestions are temporarily unavailable. You can enter the address manually.';
 const INCOMPLETE_MESSAGE =
   'Select a complete US street address or enter the address manually.';
+const incompleteAddress = () =>
+  new BadRequestException({
+    code: 'ADDRESS_SUGGESTION_INCOMPLETE',
+    message: INCOMPLETE_MESSAGE,
+  });
 
 @Injectable()
 export class GooglePlacesService {
@@ -141,7 +146,7 @@ export class GooglePlacesService {
 
     const components = data?.addressComponents;
     if (!Array.isArray(components)) {
-      throw new BadRequestException(INCOMPLETE_MESSAGE);
+      throw incompleteAddress();
     }
     const component = (type: string, short = false): string => {
       const value = components.find((part) => part?.types?.includes(type));
@@ -168,7 +173,7 @@ export class GooglePlacesService {
       !/^[A-Z]{2}$/.test(state) ||
       !postalCode
     ) {
-      throw new BadRequestException(INCOMPLETE_MESSAGE);
+      throw incompleteAddress();
     }
     return {
       street: `${number} ${route}${unit ? ` #${unit}` : ''}`,

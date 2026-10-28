@@ -7,7 +7,10 @@ import {
 import { Prisma } from '@prisma/client';
 import Decimal from 'decimal.js';
 import { PrismaService } from '@/prisma/prisma.service';
-import { GoogleAddressValidationService } from '@/deliveries/google-address-validation.service';
+import {
+  AddressCorrectionRequiredException,
+  GoogleAddressValidationService,
+} from '@/deliveries/google-address-validation.service';
 import { GoogleRoutesService } from '@/deliveries/google-routes.service';
 import {
   installationAddress,
@@ -175,8 +178,20 @@ export class InstallationCoverageCalculationService {
       ReturnType<GoogleAddressValidationService['validateDeliveryAddress']>
     >;
     try {
-      destination = await this.addresses.validateDeliveryAddress(address);
+      destination = await this.addresses.validateDeliveryAddress(address, {
+        suggestCorrections: true,
+      });
     } catch (error) {
+      if (error instanceof AddressCorrectionRequiredException) {
+        const suggestedAddress = installationAddress(error.suggestedAddress);
+        if (suggestedAddress?.state === 'FL') {
+          throw new BadRequestException({
+            code: 'INSTALLATION_ADDRESS_CONFIRMATION_REQUIRED',
+            message: 'Google suggests a corrected installation address. Confirm it to continue.',
+            suggestedAddress,
+          });
+        }
+      }
       if (error instanceof BadRequestException)
         throw new BadRequestException(
           'We could not verify this installation address. Check the street, city, state and ZIP code.',

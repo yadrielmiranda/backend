@@ -19,6 +19,7 @@ import { InstallationPricingService } from './installation-pricing.service';
 import { presentApiResponse } from '@/common/response-privacy.interceptor';
 import { buildEstimateInstallationSummary } from '@/estimates/reporting/estimate-installation-summary';
 import { agreementScopes } from '@/contracts/agreement-content';
+import { AddressCorrectionRequiredException } from '@/deliveries/google-address-validation.service';
 
 const address = {
   street: '123 Customer St',
@@ -106,8 +107,78 @@ describe('Installation coverage calculation', () => {
     const f = fixture();
     const result = await f.service.prepare({ ...address, state: ' fl ' });
     expect(result.address.state).toBe('FL');
-    expect(f.addresses.validateDeliveryAddress).toHaveBeenCalledWith(address);
+    expect(f.addresses.validateDeliveryAddress).toHaveBeenCalledWith(address, { suggestCorrections: true });
   });
+
+  it('returns a public correction for confirmation before calculating a route', async () => {
+    const f = fixture();
+    const corrected = { ...address, city: 'Coral Gables', postalCode: '33144' };
+    f.addresses.validateDeliveryAddress.mockRejectedValueOnce(
+      new AddressCorrectionRequiredException({ ...corrected, placeId: 'PRIVATE', provider: 'secret' } as any),
+    );
+    const error = await f.service.prepare(address).catch(error => error);
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect(error.getResponse()).toEqual({
+      code: 'INSTALLATION_ADDRESS_CONFIRMATION_REQUIRED',
+      message: 'Google suggests a corrected installation address. Confirm it to continue.',
+      suggestedAddress: corrected,
+    });
+    expect(JSON.stringify(error.getResponse())).not.toMatch(/PRIVATE|secret|origin|placeId|provider/);
+    expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
+
+    f.addresses.validateDeliveryAddress.mockResolvedValueOnce({ ...corrected, placeId: 'verified-corrected-property' });
+    const result = await f.service.prepare(corrected);
+    expect(result.address).toEqual(corrected);
+    expect(f.addresses.validateDeliveryAddress).toHaveBeenLastCalledWith(corrected, { suggestCorrections: true });
+    expect(f.routes.calculateDrivingRoute).toHaveBeenCalledTimes(1);
+    expect(f.routes.calculateDrivingRoute.mock.calls[0][1]).toEqual({ ...corrected, placeId: 'verified-corrected-property' });
+  });
+
+  it('does not expose an incomplete or out-of-state correction', async () => {
+    const f = fixture();
+    for (const suggestion of [{ ...address, city: '' }, { ...address, state: 'GA' }]) {
+      f.addresses.validateDeliveryAddress.mockRejectedValueOnce(new AddressCorrectionRequiredException(suggestion));
+      const error = await f.service.prepare(address).catch(error => error);
+      expect(error.getResponse()).not.toHaveProperty('suggestedAddress');
+    }
+    expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
+  });
+
+  it.each(['requestInstallation', 'updateInstallationRequest'] as const)(
+    '%s leaves the installation untouched while waiting for address confirmation',
+    async method => {
+      const f = fixture();
+      f.prisma.estimate = { findUnique: jest.fn().mockResolvedValue({ idUser: 1 }) };
+      f.prisma.$transaction = jest.fn();
+      f.addresses.validateDeliveryAddress.mockRejectedValue(
+        new AddressCorrectionRequiredException({ ...address, city: 'Coral Gables' }),
+      );
+      const logs: any = { log: jest.fn() };
+      const workflow: any = new InstallationWorkflowService(
+        f.prisma, {} as never, logs, {} as never, {} as never, {} as never,
+      );
+      workflow.coverage = f.service;
+      workflow.findJob = jest.fn().mockResolvedValue({
+        id: 3, estimateId: 103,
+        estimate: { payments: [], order: null },
+        installationAddress: { ...address, street: '456 Previous St' },
+        quotes: [],
+      });
+      workflow.withAgreementJobTransaction = jest.fn();
+      const dto = {
+        installationAddress: address, installationAddressConfirmed: true,
+        permitRequested: false,
+      };
+      const error = await workflow[method](method === 'requestInstallation' ? 103 : 3, dto, {
+        id: 1, role: { name: 'dealer' },
+      }).catch(error => error);
+      expect(error.getResponse().code).toBe('INSTALLATION_ADDRESS_CONFIRMATION_REQUIRED');
+      expect(f.prisma.$transaction).not.toHaveBeenCalled();
+      expect(workflow.withAgreementJobTransaction).not.toHaveBeenCalled();
+      expect(logs.log).not.toHaveBeenCalled();
+      expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     [0, 'NONE'],

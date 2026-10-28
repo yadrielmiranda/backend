@@ -1,8 +1,11 @@
 import { HttpService } from '@nestjs/axios';
-import { ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { of } from 'rxjs';
-import { GoogleAddressValidationService } from './google-address-validation.service';
+import {
+  AddressCorrectionRequiredException,
+  GoogleAddressValidationService,
+} from './google-address-validation.service';
 
 describe('GoogleAddressValidationService', () => {
   const post = jest.fn();
@@ -271,5 +274,122 @@ describe('GoogleAddressValidationService', () => {
     await expect(service.validateDeliveryAddress(input)).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
+  });
+
+  describe('address correction confirmation', () => {
+    const entered = {
+      street: '1307 SW 57th Ave', city: 'West Miami', state: 'FL', postalCode: '33144',
+    };
+    const corrected = {
+      ...entered, city: 'Coral Gables', postalCode: '33144-5717',
+    };
+    // Based on the provider response for the reported West Miami address.
+    function correctedResult(): any {
+      return {
+        verdict: {
+          inputGranularity: 'PREMISE', validationGranularity: 'PREMISE',
+          geocodeGranularity: 'SUB_PREMISE', addressComplete: true,
+          hasReplacedComponents: true, possibleNextAction: 'CONFIRM',
+        },
+        address: {
+          postalAddress: {
+            regionCode: 'US', addressLines: ['1307 SW 57th Ave'],
+            locality: 'Coral Gables', administrativeArea: 'FL', postalCode: '33144-5717',
+          },
+          addressComponents: ['street_number', 'route', 'locality', 'administrative_area_level_1', 'postal_code'].map(type => ({
+            componentType: type, confirmationLevel: 'CONFIRMED',
+            ...(type === 'locality' ? { replaced: true } : {}),
+          })),
+        },
+        geocode: { placeId: 'verified-property' },
+        uspsData: { dpvConfirmation: 'Y' },
+      };
+    }
+    function respond(result = correctedResult()) {
+      post.mockReturnValue(of({ data: { result } }));
+    }
+
+    it('offers a fully verified corrected city only to callers supporting confirmation', async () => {
+      respond();
+      const error = await service.validateDeliveryAddress(entered, { suggestCorrections: true }).catch(error => error);
+      expect(error).toBeInstanceOf(AddressCorrectionRequiredException);
+      expect(error.suggestedAddress).toEqual(corrected);
+      expect(Object.keys(error.suggestedAddress).sort()).toEqual(['city', 'postalCode', 'state', 'street']);
+      await expect(service.validateDeliveryAddress(entered)).rejects.toThrow('We could not verify the address exactly as entered');
+    });
+
+    it('revalidates the confirmed correction through Google before accepting it', async () => {
+      respond();
+      const error = await service.validateDeliveryAddress(entered, { suggestCorrections: true }).catch(error => error);
+      const confirmedResult = correctedResult();
+      confirmedResult.verdict.hasReplacedComponents = false;
+      confirmedResult.verdict.possibleNextAction = 'ACCEPT';
+      confirmedResult.address.addressComponents.forEach(component => delete component.replaced);
+      respond(confirmedResult);
+      await expect(service.validateDeliveryAddress(error.suggestedAddress, { suggestCorrections: true })).resolves.toEqual({
+        ...corrected, placeId: 'verified-property',
+      });
+      expect(post).toHaveBeenCalledTimes(2);
+      expect(post.mock.calls[1][1].address).toEqual({
+        regionCode: 'US', administrativeArea: 'FL', locality: 'Coral Gables',
+        postalCode: '33144-5717', addressLines: ['1307 SW 57th Ave'],
+      });
+    });
+
+    it('preserves an entered apartment when the provider corrects the city but omits it from postal lines', async () => {
+      const result = correctedResult();
+      result.verdict.inputGranularity = 'SUB_PREMISE';
+      respond(result);
+      const unitAddress = { ...entered, street: '1307 SW 57th Ave Apt 108' };
+      const error = await service.validateDeliveryAddress(unitAddress, { suggestCorrections: true }).catch(error => error);
+      expect(error).toBeInstanceOf(AddressCorrectionRequiredException);
+      expect(error.suggestedAddress.street).toBe(unitAddress.street);
+    });
+
+    it('offers a corrected street only for a confirmed premise without an entered unit', async () => {
+      const result = correctedResult();
+      result.address.addressComponents[0].replaced = true;
+      respond(result);
+      const error = await service.validateDeliveryAddress({ ...entered, street: '1309 SW 57th Ave' }, { suggestCorrections: true }).catch(error => error);
+      expect(error).toBeInstanceOf(AddressCorrectionRequiredException);
+      expect(error.suggestedAddress.street).toBe('1307 SW 57th Ave');
+
+      result.verdict.inputGranularity = 'SUB_PREMISE';
+      const unitError = await service.validateDeliveryAddress({ ...entered, street: '1309 SW 57th Ave #108' }, { suggestCorrections: true }).catch(error => error);
+      expect(unitError).toBeInstanceOf(BadRequestException);
+      expect(unitError).not.toBeInstanceOf(AddressCorrectionRequiredException);
+    });
+
+    it.each([
+      ['an unconfirmed street number', (r: any) => { r.address.addressComponents[0].confirmationLevel = 'UNCONFIRMED_BUT_PLAUSIBLE'; }],
+      ['a missing street number', (r: any) => { r.address.missingComponentTypes = ['street_number']; }],
+      ['an unresolved token', (r: any) => { r.address.unresolvedTokens = ['unknown']; }],
+      ['a FIX verdict', (r: any) => { r.verdict.possibleNextAction = 'FIX'; }],
+      ['a broad geocode', (r: any) => { r.verdict.geocodeGranularity = 'ROUTE'; }],
+      ['an incomplete address', (r: any) => { r.verdict.addressComplete = false; }],
+      ['a non-deliverable address', (r: any) => { r.uspsData.dpvConfirmation = 'N'; }],
+      ['a missing place ID', (r: any) => { delete r.geocode.placeId; }],
+      ['missing confirmation evidence', (r: any) => { r.address.addressComponents = r.address.addressComponents.filter(c => c.componentType !== 'route'); }],
+      ['missing postal data', (r: any) => { delete r.address.postalAddress; }],
+      ['malformed postal lines', (r: any) => { r.address.postalAddress.addressLines = [null]; }],
+      ['a malformed city', (r: any) => { r.address.postalAddress.locality = { value: 'Coral Gables' }; }],
+      ['an invalid ZIP', (r: any) => { r.address.postalAddress.postalCode = '3314'; }],
+      ['an out-of-state correction', (r: any) => { r.address.postalAddress.administrativeArea = 'GA'; }],
+      ['a foreign address', (r: any) => { r.address.postalAddress.regionCode = 'CA'; }],
+    ])('does not suggest a correction with %s', async (_label, mutate) => {
+      const result = correctedResult();
+      mutate(result);
+      respond(result);
+      const error = await service.validateDeliveryAddress(entered, { suggestCorrections: true }).catch(error => error);
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(error).not.toBeInstanceOf(AddressCorrectionRequiredException);
+    });
+
+    it('does not propose the already entered address again', async () => {
+      respond();
+      const error = await service.validateDeliveryAddress(corrected, { suggestCorrections: true }).catch(error => error);
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(error).not.toBeInstanceOf(AddressCorrectionRequiredException);
+    });
   });
 });

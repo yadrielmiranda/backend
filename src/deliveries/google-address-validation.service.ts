@@ -23,6 +23,7 @@ type GoogleAddressValidationResponse = {
     verdict?: {
       inputGranularity?: string;
       validationGranularity?: string;
+      geocodeGranularity?: string;
       addressComplete?: boolean;
       hasUnconfirmedComponents?: boolean;
       hasInferredComponents?: boolean;
@@ -32,6 +33,13 @@ type GoogleAddressValidationResponse = {
     };
     address?: {
       formattedAddress?: string;
+      postalAddress?: {
+        regionCode?: string;
+        addressLines?: string[];
+        locality?: string;
+        administrativeArea?: string;
+        postalCode?: string;
+      };
       missingComponentTypes?: string[];
       unconfirmedComponentTypes?: string[];
       unresolvedTokens?: string[];
@@ -57,6 +65,14 @@ export type ValidatedDeliveryAddress = DeliveryRouteAddress & {
   placeId: string;
 };
 
+// Only callers with a confirmation UI opt into receiving a proposed address.
+// Accepting it means submitting it for validation again, never bypassing validation.
+export class AddressCorrectionRequiredException extends BadRequestException {
+  constructor(readonly suggestedAddress: DeliveryRouteAddress) {
+    super('Confirm the suggested address before continuing.');
+  }
+}
+
 const acceptedGranularities = new Set(['PREMISE', 'SUB_PREMISE']);
 const missingStreetComponents = new Set(['street_number', 'route']);
 const criticalComponents = new Set([
@@ -66,6 +82,57 @@ const criticalComponents = new Set([
   'administrative_area_level_1',
   'postal_code',
 ]);
+
+function correctedPostalAddress(
+  input: DeliveryRouteAddress,
+  result: NonNullable<GoogleAddressValidationResponse['result']>,
+): DeliveryRouteAddress | null {
+  const postal = result.address?.postalAddress;
+  const components = result.address?.addressComponents ?? [];
+  const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
+  const lines = postal?.addressLines;
+  if (
+    text(postal?.regionCode).toUpperCase() !== 'US' ||
+    !Array.isArray(lines) || !lines.length ||
+    lines.some(line => !text(line) || /[\r\n]/.test(line)) ||
+    !Array.from(criticalComponents).every(type => components.some(component =>
+      component.componentType === type &&
+      component.confirmationLevel === 'CONFIRMED' &&
+      component.unexpected !== true,
+    ))
+  ) return null;
+
+  const streetWasReplaced = components.some(component =>
+    component.replaced === true &&
+    missingStreetComponents.has(component.componentType ?? ''),
+  );
+  // A city/ZIP correction must not discard an apartment, floor, or other
+  // delivery detail supplied by the user, even if postalAddress omits it.
+  // For street corrections, only propose an unambiguous premise with no unit.
+  if (streetWasReplaced && (
+    result.verdict?.inputGranularity !== 'PREMISE' ||
+    components.some(component => ['subpremise', 'floor', 'room'].includes(component.componentType ?? '')) ||
+    /(?:#|\b(?:apt|apartment|unit|suite|ste|floor|flr|room|rm)\b)/i.test(input.street)
+  )) return null;
+
+  const suggestion = {
+    street: streetWasReplaced ? lines.map(text).join(', ') : input.street.trim(),
+    city: text(postal?.locality),
+    state: text(postal?.administrativeArea).toUpperCase(),
+    postalCode: text(postal?.postalCode),
+  };
+  if (
+    !suggestion.street || suggestion.street.length > 150 ||
+    !suggestion.city || suggestion.city.length > 100 ||
+    suggestion.state !== 'FL' ||
+    !/^\d{5}(?:-\d{4})?$/.test(suggestion.postalCode)
+  ) return null;
+  const comparable = (value: string) => value.trim().replace(/\s+/g, ' ').toUpperCase();
+  if ((Object.keys(suggestion) as Array<keyof DeliveryRouteAddress>).every(key =>
+    comparable(suggestion[key]) === comparable(input[key]),
+  )) return null;
+  return suggestion;
+}
 
 @Injectable()
 export class GoogleAddressValidationService {
@@ -78,6 +145,7 @@ export class GoogleAddressValidationService {
 
   async validateDeliveryAddress(
     input: DeliveryRouteAddress,
+    options: { suggestCorrections?: boolean } = {},
   ): Promise<ValidatedDeliveryAddress> {
     const apiKey = this.config.get<string>('GOOGLE_ROUTES_API_KEY')?.trim();
     if (!apiKey) {
@@ -221,6 +289,21 @@ export class GoogleAddressValidationService {
     );
 
     if (hasBlockingSignal) {
+      if (
+        options.suggestCorrections === true &&
+        replacedCriticalComponent &&
+        acceptedGranularities.has(verdict.validationGranularity ?? '') &&
+        acceptedGranularities.has(verdict.geocodeGranularity ?? '') &&
+        verdict.addressComplete === true &&
+        verdict.possibleNextAction !== 'FIX' &&
+        !missingCoreComponent && !unconfirmedCoreComponent &&
+        !unconfirmedCriticalComponent && !replacementDetailsMissing &&
+        !unconfirmedDetailsMissing && !unresolved.length &&
+        dpvConfirmation !== 'N' && placeId
+      ) {
+        const suggestion = correctedPostalAddress(input, result);
+        if (suggestion) throw new AddressCorrectionRequiredException(suggestion);
+      }
       if (missingStreet) {
         throw new BadRequestException(
           'Enter a complete street address, including the street number, and try again.',
