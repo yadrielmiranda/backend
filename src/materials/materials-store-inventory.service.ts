@@ -15,6 +15,7 @@ const productSelect = {
 type Product = Prisma.MaterialProductGetPayload<{ select: typeof productSelect }>;
 const presentationSelect = {
   id: true, productId: true, name: true, barcode: true, multiplier: true, isBase: true, isActive: true,
+  unit: { select: { id: true, name: true } },
 } satisfies Prisma.MaterialPresentationSelect;
 type Presentation = Prisma.MaterialPresentationGetPayload<{ select: typeof presentationSelect }>;
 type Stock = { productId: number; presentationId: number; quantity: number };

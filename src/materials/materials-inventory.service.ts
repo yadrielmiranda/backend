@@ -12,6 +12,7 @@ import {
 import { validateMaterialImageUrl } from './materials-images';
 import { assertMaterialDailyOperation } from './materials-operation-policy';
 import { materialAvailability, MaterialStockError, MaterialStockState, repackMaterial, withdrawMaterial } from './materials-stock';
+import { materialHistoryWhere } from './materials-history';
 
 type Tx = Prisma.TransactionClient;
 type Query = Record<string, string>;
@@ -531,14 +532,22 @@ export class MaterialsInventoryService {
   async history(query: Query, actor: AuthUser) {
     this.staff(actor);
     const { page, pageSize, skip } = paging(query);
-    const where: Prisma.MaterialMovementWhereInput = {};
-    for (const key of ['productId', 'storeId'] as const) if (query[key]) {
-      const id = Number(query[key]); if (!Number.isInteger(id) || id < 1) throw new BadRequestException('Invalid history filter.'); where[key] = id;
-    }
+    const where = materialHistoryWhere(query);
     const [items, total] = await Promise.all([
-      this.prisma.materialMovement.findMany({ where, include: { product: { select: { id: true, code: true, name: true } }, presentation: { select: { id: true, name: true, multiplier: true } }, store: { select: { id: true, name: true } } }, orderBy: { id: 'desc' }, skip, take: pageSize }),
+      this.prisma.materialMovement.findMany({ where, include: {
+        product: { select: { id: true, code: true, name: true, baseUnit: { select: { id: true, name: true } } } },
+        presentation: { select: { id: true, name: true, multiplier: true } },
+        store: { select: { id: true, name: true } },
+      }, orderBy: { id: 'desc' }, skip, take: pageSize }),
       this.prisma.materialMovement.count({ where }),
     ]);
-    return { items, total, page, pageSize };
+    const actorIds = [...new Set(items.flatMap(item => item.actorId == null ? [] : [item.actorId]))];
+    const users = actorIds.length ? await this.prisma.user.findMany({
+      where: { id: { in: actorIds } }, select: { id: true, firstName: true, lastName: true, username: true },
+    }) : [];
+    const actors = new Map(users.map(user => [user.id,
+      [user.firstName, user.lastName].map(part => part?.trim()).filter(Boolean).join(' ') || user.username?.trim() || `user #${user.id}`,
+    ]));
+    return { items: items.map(item => ({ ...item, actor: item.actorId == null ? 'system' : actors.get(item.actorId) || `user #${item.actorId}` })), total, page, pageSize };
   }
 }
