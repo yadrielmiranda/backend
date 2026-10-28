@@ -67,8 +67,12 @@ export class WarehouseCustomerDeliveryDto extends WarehouseRequestDto {
 }
 
 export class WarehouseInstallationDeliveryDto extends WarehouseRequestDto {
-  @IsInt() @Min(1) installationJobId: number;
-  @IsString() @Length(1, 500) installationAddress: string;
+  // Optional snapshots let older clients detect a changed destination. The
+  // selected PO remains the source of truth when no installation is recorded.
+  @ValidateIf((_object, value) => value !== undefined) @IsInt() @Min(1)
+  installationJobId?: number;
+  @ValidateIf((_object, value) => value !== undefined) @IsString() @Length(0, 500)
+  installationAddress?: string;
   @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500)
   @ValidateNested({ each: true }) @Type(() => WarehouseReceiptItemDto)
   items: WarehouseReceiptItemDto[];

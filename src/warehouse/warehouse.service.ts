@@ -1780,9 +1780,12 @@ export class WarehouseService {
 
   async deliverToInstallation(dto: WarehouseInstallationDeliveryDto, actor: AuthUser) {
     this.receivingStaff(actor);
-    if (!Number.isSafeInteger(dto.installationJobId) || dto.installationJobId < 1 ||
-        typeof dto.installationAddress !== 'string' || !dto.installationAddress.trim() || dto.installationAddress.length > 500)
-      throw new BadRequestException('Choose an installation and confirm its delivery address.');
+    if (dto.installationJobId !== undefined &&
+        (!Number.isSafeInteger(dto.installationJobId) || dto.installationJobId < 1))
+      throw new BadRequestException('Enter a valid installation identifier when provided.');
+    if (dto.installationAddress !== undefined &&
+        (typeof dto.installationAddress !== 'string' || dto.installationAddress.length > 500))
+      throw new BadRequestException('Enter a valid installation address when provided.');
     if (!Array.isArray(dto.items) || !dto.items.length || dto.items.length > 500 ||
         dto.items.some((item) => !item || typeof item !== 'object'))
       throw new BadRequestException('Select between 1 and 500 units per installation delivery.');
@@ -1800,33 +1803,38 @@ export class WarehouseService {
       if (prior) {
         if (prior.requestHash !== requestHash)
           throw new ConflictException('This request identifier was already used for another operation.');
-        return { ...summary, installation: { id: prior.installationJobId!, address: prior.installationAddress ?? '' }, replayed: true };
+        return { ...summary, installation: prior.installationJobId == null ? null
+          : { id: prior.installationJobId, address: prior.installationAddress ?? '' }, replayed: true };
       }
       await this.noCount(tx);
       const first = await this.load(tx, items[0].lineNumber);
-      if (!first.unit.piece)
-        throw new BadRequestException('External POs do not have an installation. Receive these parts in a store and use Release for their departure.');
-      const estimateId = first.unit.piece.idEst;
-      // Las mismas validaciones comerciales que Release; recoger y recibir siguen independientes.
-      const release = await assertWarehouseRelease(tx, estimateId);
-      const destination = release.installation;
-      if (!destination || destination.id !== dto.installationJobId)
-        throw new BadRequestException('The selected order is not assigned to this installation.');
-      if (release.fulfillmentMethod === 'INSTALLATION_DELIVERY') {
-        // Entregar con la cuadrilla conserva las cuotas previas al trabajo y cualquier cargo de entrega.
-        await assertScheduleMilestone(tx, estimateId, 'INSTALL');
-        if (!release.installationDeliveryCovered)
-          throw new BadRequestException('The delivery charge must be paid before delivering parts to the installation.');
+      const source = pickupSource(first), estimateId = first.unit.piece?.idEst;
+      let destination: ReturnType<typeof installationDestination> = null;
+      // A physical delivery can belong to an external PO or an older order
+      // without an installation address. Internal orders retain their payment
+      // and release requirements; supplied destination data is never trusted.
+      if (estimateId !== undefined) {
+        const release = await assertWarehouseRelease(tx, estimateId);
+        if (release.fulfillmentMethod === 'INSTALLATION_DELIVERY') {
+          await assertScheduleMilestone(tx, estimateId, 'INSTALL');
+          if (!release.installationDeliveryCovered)
+            throw new BadRequestException('The delivery charge must be paid before delivering parts to the installation.');
+        }
+        // Re-read after assertWarehouseRelease locks the estimate so the saved
+        // destination comes from the same protected state as its release checks.
+        const current = await this.load(tx, items[0].lineNumber);
+        destination = installationDestination(current.unit.piece?.estim.installationJob);
       }
-      if (!destination.address || destination.address !== dto.installationAddress)
+      if (dto.installationJobId !== undefined && destination?.id !== dto.installationJobId)
+        throw new BadRequestException('The selected order is not assigned to this installation.');
+      if (dto.installationAddress !== undefined && (destination?.address ?? '') !== dto.installationAddress)
         throw new ConflictException('The installation address changed. Refresh and confirm the destination again.');
-      // Una confirmación corresponde a una obra. El lote completo se revierte ante cualquier conflicto.
+      // Confirm one order or external PO at a time, including when neither has
+      // an installation record. The complete batch rolls back on any conflict.
       for (const [index, item] of items.entries()) {
         const stock = await this.load(tx, item.lineNumber);
-        if (!stock.unit.piece)
-          throw new BadRequestException('External POs do not have an installation. Receive these parts in a store and use Release for their departure.');
-        if (stock.unit.piece.idEst !== estimateId)
-          throw new BadRequestException('Select parts for one installation at a time. No parts were delivered by this request.');
+        if (pickupSource(stock).key !== source.key || stock.unit.piece?.idEst !== estimateId)
+          throw new BadRequestException('Select parts for one order or external PO at a time. No parts were delivered by this request.');
         if (stock.version !== item.version)
           throw new ConflictException(`Unit I${item.lineNumber} changed. Refresh the selection before delivering. No parts were delivered by this request.`);
         if (stock.inTransit < item.quantity)
@@ -1836,7 +1844,7 @@ export class WarehouseService {
           requestKey: index === 0 ? dto.requestKey : hash([dto.requestKey, item.lineNumber]),
           requestHash, quantity: item.quantity, partQuantities: item.parts,
           transitDelta: -item.quantity, releasedDelta: item.quantity,
-          installationJobId: destination.id, installationAddress: destination.address,
+          installationJobId: destination?.id, installationAddress: destination?.address || undefined,
         });
       }
       return { ...summary, installation: destination, replayed: false };

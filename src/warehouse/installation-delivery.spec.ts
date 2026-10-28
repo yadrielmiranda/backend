@@ -1,7 +1,9 @@
 import { strict as assert } from 'node:assert';
 import { randomUUID } from 'crypto';
+import { plainToInstance } from 'class-transformer';
+import { validateSync } from 'class-validator';
 import { WarehouseService } from './warehouse.service';
-import { WarehouseReceiptItemDto } from './warehouse.dto';
+import { WarehouseInstallationDeliveryDto, WarehouseReceiptItemDto } from './warehouse.dto';
 import { warehouseFixture } from '../../test/warehouse-fixture';
 
 // El servicio conserva la política de salida real; solo se aísla el cálculo del plan.
@@ -55,6 +57,16 @@ function fixture() {
 }
 
 describe('physical delivery to installation', () => {
+  it('accepts omitted or empty destination snapshots at the API boundary and rejects malformed values', () => {
+    const base = { ...request(), items: [{ barcode: door, quantity: 1, version: 0 }] };
+    for (const destination of [{}, { installationJobId: 71, installationAddress: '' }, { installationJobId: 71, installationAddress: address }]) {
+      assert.equal(validateSync(plainToInstance(WarehouseInstallationDeliveryDto, { ...base, ...destination })).length, 0);
+    }
+    for (const destination of [{ installationJobId: null }, { installationJobId: 0 }, { installationJobId: '71' }, { installationAddress: null }, { installationAddress: 17 }, { installationAddress: 'x'.repeat(501) }]) {
+      assert(validateSync(plainToInstance(WarehouseInstallationDeliveryDto, { ...base, ...destination })).length > 0);
+    }
+  });
+
   it('delivers partial factory collections without creating warehouse stock', async () => {
     const f = fixture(); f.stores.splice(0);
     await f.collect(3);
@@ -81,6 +93,87 @@ describe('physical delivery to installation', () => {
       assert.equal(m.onHandDelta, 0); assert.equal(m.fromStoreId, null); assert.equal(m.toStoreId, null);
     }
     f.invariant();
+  });
+
+  it('records a completed installation with no saved address without changing its commercial records', async () => {
+    const f = fixture(); await f.collect(3);
+    f.order.status.name = 'Installed'; f.job.status = 'COMPLETED';
+    (f.job as any).installationAddress = null;
+    const commercialBefore = structuredClone(f.order);
+    const result = await f.service.deliverToInstallation({
+      ...request(), installationJobId: f.job.id, installationAddress: '',
+      items: [f.item(door, 3)],
+    }, operator);
+    assert.deepEqual(result.installation, { id: f.job.id, address: '' });
+    assert.equal(f.stock().inTransit, 0); assert.equal(f.stock().released, 3); assert.equal(f.stock().onHand, 0);
+    assert.equal(f.balances.length, 0); assert.deepEqual(structuredClone(f.order), commercialBefore);
+    const movement = f.movements.find((m) => m.type === 'INSTALLATION_DELIVERY')!;
+    assert.equal(movement.installationJobId, f.job.id);
+    assert.equal(movement.installationAddress ?? '', '');
+    assert.equal(movement.actorId, operator.id); assert(movement.createdAt instanceof Date);
+    assert.equal((await f.service.inventory({ view: 'in_transit' }, admin)).total, 0);
+    f.invariant();
+  });
+
+  it('derives the linked installation and its address when optional destination fields are omitted', async () => {
+    const f = fixture(); await f.collect();
+    const dto = { ...request(), items: [f.item()] };
+    const result = await f.service.deliverToInstallation(dto, tech);
+    assert.deepEqual(result.installation, { id: f.job.id, address });
+    const before = f.snapshot();
+    f.job.installationAddress.street = '456 New Street';
+    const replay = await f.service.deliverToInstallation(dto, tech);
+    assert.equal(replay.replayed, true); assert.deepEqual(replay.installation, result.installation);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  it.each([true, false])('reads destination changes made before the estimate lock (snapshot supplied: %s)', async (supplied) => {
+    const f = fixture(); await f.collect();
+    const dto = supplied ? f.dto() : { ...request(), items: [f.item()] };
+    const before = f.snapshot();
+    f.db.$queryRaw = async (...args: any[]) => {
+      const sql = Array.isArray(args[0]) ? args[0].join('') : '';
+      if (sql.includes('FROM Estimate') && sql.includes('FOR UPDATE')) {
+        f.job.installationAddress.street = '456 New Street';
+      }
+      return [];
+    };
+    if (supplied) {
+      await assert.rejects(f.service.deliverToInstallation(dto, tech), /address changed/);
+      assert.deepEqual(f.snapshot(), before);
+    } else {
+      const result = await f.service.deliverToInstallation(dto, tech);
+      assert.equal(result.installation?.address, '456 New Street, Miami, FL 33101');
+      assert.equal(f.movements.find((m) => m.type === 'INSTALLATION_DELIVERY')!.installationAddress, result.installation?.address);
+    }
+  });
+
+  it('records an internal order without an installation and replays its null destination', async () => {
+    const f = fixture(); await f.collect();
+    f.order.estimate.installationJob = null;
+    f.order.fulfillmentMethod = 'CUSTOMER_PICKUP'; f.order.status.name = 'Ready to pick up';
+    const dto = { ...request(), items: [f.item()] };
+    const result = await f.service.deliverToInstallation(dto, admin);
+    assert.equal(result.installation, null); assert.equal(result.parts, 1);
+    const movement = f.movements.find((m) => m.type === 'INSTALLATION_DELIVERY')!;
+    assert.equal(movement.installationJobId, null); assert.equal(movement.installationAddress, null);
+    const before = f.snapshot();
+    assert.equal((await f.service.deliverToInstallation(dto, admin)).installation, null);
+    assert.deepEqual(f.snapshot(), before); f.invariant();
+  });
+
+  it('keeps internal release and installation payment requirements when no destination is supplied', async () => {
+    const f = fixture(); await f.collect();
+    (f.job as any).installationAddress = null;
+    const dto = { ...request(), items: [f.item()] }, before = f.snapshot();
+    f.db.releaseCovered = false;
+    await assert.rejects(f.service.deliverToInstallation(dto, admin), /Release installment/);
+    f.db.releaseCovered = true; f.db.installationCovered = false;
+    await assert.rejects(f.service.deliverToInstallation(dto, admin), /Installation installment/);
+    f.db.installationCovered = true;
+    (f.order.deliveries as any[]).push({ type: 'INSTALLATION_OVERRIDE', status: 'PENDING_PAYMENT', payment: { status: 'PENDING' } });
+    await assert.rejects(f.service.deliverToInstallation(dto, admin), /delivery charge/);
+    assert.deepEqual(f.snapshot(), before);
   });
 
   it('combines direct delivery and warehouse release without deducting the same quantity twice', async () => {
@@ -119,7 +212,7 @@ describe('physical delivery to installation', () => {
     await assert.rejects(f.service.deliverToInstallation(f.dto(), tech), /Delivery payment/);
     (f.order.deliveries as any[]).push({ status: 'SCHEDULED', payment: { status: 'PAID' } });
     const result = await f.service.deliverToInstallation(f.dto(), tech);
-    assert.equal(result.installation.id, 71);
+    assert.equal(result.installation?.id, 71);
     assert.equal(f.order.status.name, 'Preparing for pickup'); f.invariant();
   });
 
@@ -142,7 +235,7 @@ describe('physical delivery to installation', () => {
     await f.service.deliverToInstallation(dto, tech);
     const before = f.snapshot(); f.job.installationAddress.street = '456 New Street';
     const replay = await f.service.deliverToInstallation({ ...dto, items: [...dto.items].reverse() }, tech);
-    assert.equal(replay.replayed, true); assert.equal(replay.installation.address, address);
+    assert.equal(replay.replayed, true); assert.equal(replay.installation?.address, address);
     assert.deepEqual(f.snapshot(), before);
   });
 
@@ -200,7 +293,7 @@ describe('physical delivery to installation', () => {
     const f = fixture(); await f.collect(); await f.collect(1, fixed);
     f.pieces[3].idEst = 8;
     const before = f.snapshot();
-    await assert.rejects(f.service.deliverToInstallation(f.dto([f.item(), f.item(fixed)]), tech), /one installation/);
+    await assert.rejects(f.service.deliverToInstallation(f.dto([f.item(), f.item(fixed)]), tech), /one .*PO|one installation|one order/i);
     assert.deepEqual(f.snapshot(), before);
   });
 

@@ -75,17 +75,72 @@ describe('External PO warehouse inventory', () => {
     expect((await f.service.unit(line, admin)).onHand).toBe(2);
   });
 
-  it('keeps external units out of transit installation deliveries and requires warehouse stock for releases', async () => {
+  it('delivers external parts directly from transit without an installation or warehouse entry', async () => {
     const f = fixture();
+    const commercialLookup = jest.spyOn(f.db.order, 'findUnique');
     await f.scan('COLLECT');
     const pending = await f.service.technicianPending({}, tech);
     expect(pending.items[0]).toMatchObject({ source: 'EXTERNAL', externalPoId: 1, installation: null });
+    await expect(f.service.scan({ ...request(), action: 'RELEASE', barcode: line, storeId: 1 }, tech)).rejects.toThrow('no parts');
+    const dto = { ...request(), items: [{ barcode: line, quantity: 1, version: 1 }] };
+    expect(await f.service.deliverToInstallation(dto, tech)).toMatchObject({ units: 1, parts: 1, installation: null, replayed: false });
+    expect(await f.service.deliverToInstallation(dto, tech)).toMatchObject({ installation: null, replayed: true });
+    expect((await f.service.unit(line, admin))).toMatchObject({ inTransit: 0, onHand: 0, released: 1 });
+    expect(f.balances).toHaveLength(0); expect(commercialLookup).not.toHaveBeenCalled();
+    const movements = f.movements.filter((m) => m.type === 'INSTALLATION_DELIVERY');
+    expect(movements).toHaveLength(1);
+    expect(movements[0]).toMatchObject({ actorId: tech.id, quantity: 1, transitDelta: -1, onHandDelta: 0, releasedDelta: 1, installationJobId: null, installationAddress: null });
+    expect(movements[0].createdAt).toBeInstanceOf(Date);
+    const history = await f.service.history({ lineNumber: line }, admin);
+    expect(history.items.find((m) => m.type === 'INSTALLATION_DELIVERY')).toMatchObject({ lineNumber: line, quantity: 1, actorId: tech.id, installation: null });
+    expect(await f.service.unit(line, admin)).toMatchObject({ source: 'EXTERNAL', externalPoId: 1, poNumber: 'EX100' });
+    const undone = await f.service.undo(movements[0].id, request(), admin);
+    expect(undone.stock).toMatchObject({ inTransit: 1, onHand: 0, released: 0 });
+    expect(undone.movement.installation).toBeNull();
+  });
+
+  it('rejects a fabricated installation destination for external parts', async () => {
+    const f = fixture(); await f.scan('COLLECT');
+    const before = structuredClone({ stocks: f.stocks, movements: f.movements });
     await expect(f.service.deliverToInstallation({
       ...request(), installationJobId: 1, installationAddress: '1 Test St',
       items: [{ barcode: line, quantity: 1, version: 1 }],
-    }, tech)).rejects.toThrow('External POs do not have an installation');
-    await expect(f.service.scan({ ...request(), action: 'RELEASE', barcode: line, storeId: 1 }, tech)).rejects.toThrow('no parts');
-    expect((await f.service.unit(line, admin)).inTransit).toBe(1);
+    }, tech)).rejects.toThrow(/assigned|destination|installation/i);
+    await expect(f.service.deliverToInstallation({
+      ...request(), installationAddress: '1 Test St',
+      items: [{ barcode: line, quantity: 1, version: 1 }],
+    }, tech)).rejects.toThrow(/address|destination/i);
+    expect({ stocks: f.stocks, movements: f.movements }).toEqual(before);
+  });
+
+  it.each([1, 7])('rejects an internal order mixed with external PO %s even when source IDs collide', async (externalId) => {
+    const f = fixture();
+    f.externalPos[0].id = externalId;
+    f.stocks.find((stock) => stock.lineNumber === line)!.externalPoId = externalId;
+    await f.scan('COLLECT'); await f.scan('COLLECT', '1029975-DOOR');
+    const before = structuredClone({ stocks: f.stocks, movements: f.movements });
+    await expect(f.service.deliverToInstallation({
+      ...request(), items: [
+        { barcode: line, quantity: 1, version: 1 },
+        { barcode: '1029975', quantity: 1, version: 1 },
+      ],
+    }, tech)).rejects.toThrow(/one .*PO|one order/i);
+    expect({ stocks: f.stocks, movements: f.movements }).toEqual(before);
+  });
+
+  it('rejects parts from two external POs atomically', async () => {
+    const f = fixture(), secondLine = '880002';
+    f.externalPos.push({ ...f.externalPos[0], id: 2, poNumber: 'EX200' });
+    f.stocks.push({ ...f.stocks.find((stock) => stock.lineNumber === line), lineNumber: secondLine, externalPoId: 2 });
+    await f.scan('COLLECT'); await f.scan('COLLECT', `${secondLine}-DOOR`);
+    const before = structuredClone({ stocks: f.stocks, movements: f.movements });
+    await expect(f.service.deliverToInstallation({
+      ...request(), items: [
+        { barcode: line, quantity: 1, version: 1 },
+        { barcode: secondLine, quantity: 1, version: 1 },
+      ],
+    }, tech)).rejects.toThrow(/one .*PO|one order/i);
+    expect({ stocks: f.stocks, movements: f.movements }).toEqual(before);
   });
 });
 
