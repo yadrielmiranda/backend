@@ -66,13 +66,14 @@ describe('Material revisions require a protected estimate', () => {
   it('preserves a saved draft design frame and resolves a legacy draft link on recalculation', async () => {
     const f = serviceFixture();
     await f.service.begin(35, { reason: 'Add a garage door' }, admin);
-    const input = { mark: 'Garage', qty: 1, idProd: 2, idBrand: 3, idSyst: 10, idFC: 7, idDesign: 11, idDesignColor: 12 };
+    const input = { mark: 'Garage', qty: 1, idProd: 2, idBrand: 3, idSyst: 10, idFC: 7, idDesign: 11, idDesignColor: 12, frameColorBeforeDesignId: 2 };
     const snapshot: any = { version: 1, systemId: 10,
       design: { id: 11, name: 'Solid', imageUrl: null },
       color: { id: 12, name: 'Oak', hexCode: '#995522', idFrameColor: 7 } };
     f.rows[0].items = [{ key: 'garage', action: 'ADD', originalPieceId: null, input, pricing: { designSnapshot: snapshot } }];
     f.db.systemFrameColor = { findUnique: async () => ({ frameColor: { isActive: true } }) };
     f.db.designColor = { findUnique: async () => ({ idFrameColor: 19 }) };
+    f.db.frameColor = { findUnique: async () => ({ id: 2 }) };
     const service = f.service as any;
     service.calculator.calculatePieceMetrics = async (piece: any) => ({ ...piece, ...pricing(), ...await resolvePieceDesign(f.db, piece) });
     const calculate = () => service.calculate(f.db, f.e, f.rows[0], { itemKey: 'garage', piece: { ...input, idFC: 99 } }, admin);
@@ -80,6 +81,7 @@ describe('Material revisions require a protected estimate', () => {
     delete snapshot.color.idFrameColor;
     const migrated = await calculate();
     assert.equal(migrated.input.idFC, 19);
+    assert.equal(migrated.input.frameColorBeforeDesignId, 2);
     assert.equal(migrated.calculated.designSnapshot.color.idFrameColor, 19);
     assert.equal(input.idFC, 7);
   });
@@ -281,6 +283,13 @@ describe('Agreed prices, payments and factory safeguards', () => {
     assert.equal(materialRevisionBaseHash(e), hash);
     e.pieces[0].idDesign = 1; e.pieces[0].idDesignColor = 2;
     assert.notEqual(materialRevisionBaseHash(e), hash);
+  });
+  it('ignores remembered frame editing preferences in existing revision hashes', () => {
+    const e = estimate(); const hash = materialRevisionBaseHash(e);
+    for (const id of [null, 2, 99]) {
+      e.pieces[0].frameColorBeforeDesignId = id;
+      assert.equal(materialRevisionBaseHash(e), hash);
+    }
   });
   it('detects changed agreed data in the base hash', () => { const e = estimate(); const hash = materialRevisionBaseHash(e); e.pieces[0].idActiveOption = 2; assert.notEqual(materialRevisionBaseHash(e), hash); });
   it('ignores incidental catalog timestamps while preserving stored agreement data', () => { const e = estimate(); e.pieces[0].syst = { id: 1, updatedAt: '2026-01-01' }; const hash = materialRevisionBaseHash(e); e.pieces[0].syst.updatedAt = '2026-10-01'; assert.equal(materialRevisionBaseHash(e), hash); });

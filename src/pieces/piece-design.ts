@@ -15,6 +15,8 @@ type DesignInput = {
   idSyst: number;
   idDesign?: number | null;
   idDesignColor?: number | null;
+  idFC?: number;
+  frameColorBeforeDesignId?: number | null;
 };
 
 async function linkedFrameColor(db: Prisma.TransactionClient, idSystem: number, idFrameColor: number | null | undefined) {
@@ -33,6 +35,24 @@ async function linkedFrameColor(db: Prisma.TransactionClient, idSystem: number, 
 
 type StoredDesign = DesignInput & { designSnapshot?: unknown };
 const storedDesigns = new WeakMap<object, StoredDesign>();
+
+async function previousFrameColor(db: Prisma.TransactionClient, input: DesignInput, stored?: StoredDesign) {
+  // An omitted field from an older editor preserves saved memory. Existing
+  // design-linked idFC is never evidence of the frame chosen before the design.
+  const id = input.frameColorBeforeDesignId !== undefined
+    ? input.frameColorBeforeDesignId
+    : stored?.idDesign || stored?.idDesignColor
+      ? stored.frameColorBeforeDesignId
+      : stored?.idFC;
+  if (id == null) return null;
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new BadRequestException('The previous frame color must be a valid color ID.');
+  }
+  // Inactive colors may be remembered; availability is checked when restoring.
+  // Deleted colors (including old revision JSON) simply use the UI fallback.
+  const color = await db.frameColor.findUnique({ where: { id }, select: { id: true } });
+  return color ? id : null;
+}
 
 /** Only authenticated server workflows may attach a previously saved selection. */
 export function withStoredPieceDesign<T extends DesignInput>(input: T, stored?: StoredDesign | null): T {
@@ -74,7 +94,7 @@ export async function resolvePieceDesign(db: Prisma.TransactionClient, input: De
   const idDesign = (omitted && sameSystem ? stored.idDesign : input.idDesign) ?? null;
   const idDesignColor = (omitted && sameSystem ? stored.idDesignColor : input.idDesignColor) ?? null;
   if (idDesign === null && idDesignColor === null) {
-    return { idDesign: null, idDesignColor: null, designSnapshot: null };
+    return { idDesign: null, idDesignColor: null, designSnapshot: null, frameColorBeforeDesignId: null };
   }
   if (!Number.isSafeInteger(idDesign) || Number(idDesign) <= 0 ||
       !Number.isSafeInteger(idDesignColor) || Number(idDesignColor) <= 0) {
@@ -82,6 +102,7 @@ export async function resolvePieceDesign(db: Prisma.TransactionClient, input: De
   }
 
   const historical = sameSystem ? readPieceDesignSnapshot(stored.designSnapshot) : null;
+  const frameColorBeforeDesignId = await previousFrameColor(db, input, sameSystem ? stored : undefined);
   if (historical && stored.idDesign === idDesign && stored.idDesignColor === idDesignColor &&
       historical.systemId === input.idSyst && historical.design.id === idDesign &&
       historical.color.id === idDesignColor) {
@@ -89,7 +110,7 @@ export async function resolvePieceDesign(db: Prisma.TransactionClient, input: De
       where: { id: idDesignColor! }, select: { idFrameColor: true },
     }))?.idFrameColor;
     const idFC = await linkedFrameColor(db, input.idSyst, mappedFrame);
-    return { idDesign, idDesignColor, idFC,
+    return { idDesign, idDesignColor, idFC, frameColorBeforeDesignId,
       designSnapshot: { ...historical, color: { ...historical.color, idFrameColor: idFC } } };
   }
 
@@ -112,13 +133,14 @@ export async function resolvePieceDesign(db: Prisma.TransactionClient, input: De
     design: { id: option.design.id, name: option.design.name, imageUrl: option.design.imageUrl, ...(template ? { template } : {}) },
     color: { id: option.color.id, name: option.color.name, hexCode: option.color.hexCode, idFrameColor: idFC },
   };
-  return { idDesign, idDesignColor, idFC, designSnapshot };
+  return { idDesign, idDesignColor, idFC, designSnapshot, frameColorBeforeDesignId };
 }
 
-export function pieceDesignPersistence(piece: { idDesign?: number | null; idDesignColor?: number | null; designSnapshot?: unknown }) {
+export function pieceDesignPersistence(piece: { idDesign?: number | null; idDesignColor?: number | null; designSnapshot?: unknown; frameColorBeforeDesignId?: number | null }) {
   return {
     idDesign: piece.idDesign ?? null,
     idDesignColor: piece.idDesignColor ?? null,
+    frameColorBeforeDesignId: piece.idDesign && piece.idDesignColor ? piece.frameColorBeforeDesignId ?? null : null,
     designSnapshot: piece.idDesign && piece.idDesignColor && readPieceDesignSnapshot(piece.designSnapshot)
       ? piece.designSnapshot as Prisma.InputJsonValue : Prisma.DbNull,
   };

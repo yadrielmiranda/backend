@@ -1122,6 +1122,7 @@ model FrameColor {
   globalSortOrder Int     @default(0)
 
   pieces            Piece[]
+  piecesBeforeDesign Piece[] @relation("PieceFrameColorBeforeDesign")
   systemFrameColors SystemFrameColor[]
   designColors      DesignColor[]
 
@@ -1728,6 +1729,8 @@ model Piece {
   designColor    DesignColor? @relation(fields: [idDesignColor], references: [id], onDelete: Restrict)
   idDesignColor  Int?
   designSnapshot Json?
+  frameColorBeforeDesignId Int?
+  frameColorBeforeDesign FrameColor? @relation("PieceFrameColorBeforeDesign", fields: [frameColorBeforeDesignId], references: [id], onDelete: SetNull)
 
   width        Decimal? @db.Decimal(10, 3)
   height       Decimal? @db.Decimal(10, 3)
@@ -1806,6 +1809,7 @@ model Piece {
   @@index([idActiveOption])
   @@index([idDesign])
   @@index([idDesignColor])
+  @@index([frameColorBeforeDesignId])
   @@index([idPreparationOption])
   @@index([idSillOption])
   @@index([idReinforcementOption])

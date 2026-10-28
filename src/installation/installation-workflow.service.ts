@@ -726,6 +726,7 @@ export class InstallationWorkflowService {
       idFC: piece.idFC,
       idDesign: piece.idDesign,
       idDesignColor: piece.idDesignColor,
+      frameColorBeforeDesignId: piece.frameColorBeforeDesignId ?? null,
       width: piece.width?.toString(),
       height: piece.height?.toString(),
       heightLeft: piece.heightLeft?.toString(),
@@ -851,6 +852,7 @@ export class InstallationWorkflowService {
     );
     return { replacementInput: { ...replacementInput, idFC: calculated.idFC,
       idDesign: calculated.idDesign ?? null, idDesignColor: calculated.idDesignColor ?? null,
+      frameColorBeforeDesignId: calculated.frameColorBeforeDesignId ?? null,
       muntin: calculated.muntin ?? null }, calculated };
   }
 
@@ -1271,6 +1273,7 @@ export class InstallationWorkflowService {
       proposedInput.idFC = calculated.idFC;
       proposedInput.idDesign = calculated.idDesign ?? null;
       proposedInput.idDesignColor = calculated.idDesignColor ?? null;
+      proposedInput.frameColorBeforeDesignId = calculated.frameColorBeforeDesignId ?? null;
       pricing = this.jsonValue(await this.calculatedRevisionSnapshot(calculated, tx, measurement.piece));
     }
 
@@ -2813,7 +2816,7 @@ export class InstallationWorkflowService {
   }
 
   private additionPieceInput(calculated: CalculatedPieceCombined): CreatePieceDto {
-    const keys: (keyof CreatePieceDto)[] = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC', 'idDesign', 'idDesignColor',
+    const keys: (keyof CreatePieceDto)[] = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC', 'idDesign', 'idDesignColor', 'frameColorBeforeDesignId',
       'width', 'height', 'heightLeft', 'heightRight', 'legHeight', 'sashHeight', 'windowHeight',
       'doorWidth', 'doorHeight', 'leftSideliteWidth', 'rightSideliteWidth', 'leftPanels', 'rightPanels',
       'panelCount', 'horizontalHeights', 'idCryst', 'idTint', 'idCoat', 'idPrivacy', 'screen', 'highBottom',
@@ -4041,6 +4044,11 @@ export class InstallationWorkflowService {
     frozenEnergy?: FrozenPieceEnergy,
   ) {
     const pieceData = this.revisionPieceData(input, pricing, qty, mark);
+    // Revision JSON can outlive a deleted ordinary color. Only the editing
+    // preference is discarded; the agreed product and its pricing stay intact.
+    if (pieceData.frameColorBeforeDesignId != null && !await tx.frameColor.findUnique({
+      where: { id: pieceData.frameColorBeforeDesignId }, select: { id: true },
+    })) pieceData.frameColorBeforeDesignId = null;
     const product = await tx.product.findUnique({
       where: { id: pieceData.idProd }, select: { kind: true },
     });

@@ -40,7 +40,7 @@ class MaterialPreviewCompleted<T> extends Error {
   constructor(readonly result: T) { super('Material preview completed'); }
 }
 const acceptance = 'I accept the listed material changes, quantities, prices and updated project total.';
-const inputKeys = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC', 'idDesign', 'idDesignColor', 'width', 'height', 'heightLeft', 'heightRight',
+const inputKeys = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC', 'idDesign', 'idDesignColor', 'frameColorBeforeDesignId', 'width', 'height', 'heightLeft', 'heightRight',
   'legHeight', 'sashHeight', 'windowHeight', 'doorWidth', 'doorHeight', 'leftSideliteWidth', 'rightSideliteWidth',
   'leftPanels', 'rightPanels', 'panelCount', 'horizontalHeights', 'idCryst', 'idTint', 'idCoat', 'idPrivacy', 'screen',
   'highBottom', 'idActiveOption', 'idPreparationOption', 'idSillOption', 'idReinforcementOption', 'muntin', 'qty', 'dealerMarkup'];

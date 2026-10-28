@@ -611,6 +611,7 @@ export class EstimatesService {
       idFC: piece.idFC,
       idDesign: piece.idDesign ?? null,
       idDesignColor: piece.idDesignColor ?? null,
+      frameColorBeforeDesignId: piece.frameColorBeforeDesignId ?? null,
 
       width: piece.width === null ? null : piece.width.toString(),
 
@@ -809,6 +810,7 @@ export class EstimatesService {
             idCryst: true, idTint: true, idCoat: true, idPrivacy: true,
             energyRatingId: true, energySnapshot: true,
             idDesign: true, idDesignColor: true, designSnapshot: true,
+            idFC: true, frameColorBeforeDesignId: true,
           },
         });
         if (!piece) {
@@ -2589,6 +2591,7 @@ export class EstimatesService {
         idFC: p.idFC,
         idDesign: p.idDesign ?? null,
         idDesignColor: p.idDesignColor ?? null,
+        frameColorBeforeDesignId: p.frameColorBeforeDesignId ?? null,
 
         width: p.width == null ? null : p.width.toString(),
         height: p.height == null ? null : p.height.toString(),

@@ -18,7 +18,8 @@ function fixture() {
   const findUnique = jest.fn().mockResolvedValue(option);
   const frame = jest.fn().mockResolvedValue({ frameColor: { isActive: true } });
   const color = jest.fn().mockResolvedValue({ idFrameColor: 8 });
-  return { option, findUnique, frame, color, db: { systemDesignOption: { findUnique },
+  const previousFrame = jest.fn(async ({ where }) => ({ id: where.id, isActive: true }));
+  return { option, findUnique, frame, color, previousFrame, db: { systemDesignOption: { findUnique }, frameColor: { findUnique: previousFrame },
     systemFrameColor: { findUnique: frame }, designColor: { findUnique: color } } as unknown as Prisma.TransactionClient };
 }
 
@@ -43,7 +44,7 @@ describe('Piece design selections', () => {
   it('does not add a design to an ordinary piece or apply series defaults automatically', async () => {
     const { db, findUnique } = fixture();
     expect(await resolvePieceDesign(db, { idProd: 1, idBrand: 2, idSyst: 3 })).toEqual({
-      idDesign: null, idDesignColor: null, designSnapshot: null,
+      idDesign: null, idDesignColor: null, designSnapshot: null, frameColorBeforeDesignId: null,
     });
     expect(findUnique).not.toHaveBeenCalled();
   });
@@ -53,6 +54,72 @@ describe('Piece design selections', () => {
     const result = await resolvePieceDesign(db, { ...input, designSnapshot: { ...snapshot, color: { name: 'Forged' } } } as any);
     expect(result.designSnapshot).toEqual(snapshot);
     expect(result.idFC).toBe(8);
+  });
+
+  it('remembers the separately supplied ordinary frame while applying the linked design frame', async () => {
+    const f = fixture();
+    const result = await resolvePieceDesign(f.db, { ...input, idFC: 8, frameColorBeforeDesignId: 2 });
+    expect(result).toMatchObject({ idFC: 8, frameColorBeforeDesignId: 2 });
+    expect(pieceDesignPersistence(result).frameColorBeforeDesignId).toBe(2);
+    expect(f.previousFrame).toHaveBeenCalledWith({ where: { id: 2 }, select: { id: true } });
+  });
+
+  it('captures a saved ordinary frame when an older client enables a design without the memory field', async () => {
+    const f = fixture();
+    const stored = { idProd: 1, idBrand: 2, idSyst: 3, idFC: 2, idDesign: null, idDesignColor: null };
+    expect(await resolvePieceDesign(f.db, withStoredPieceDesign({ ...input, idFC: 8 }, stored)))
+      .toMatchObject({ idFC: 8, frameColorBeforeDesignId: 2 });
+    expect(await resolvePieceDesign(f.db, withStoredPieceDesign({ ...input, frameColorBeforeDesignId: 9 }, stored)))
+      .toMatchObject({ idFC: 8, frameColorBeforeDesignId: 9 });
+  });
+
+  it('preserves saved memory across legacy edits, design changes, and global frame overrides', async () => {
+    const f = fixture();
+    const stored = { ...input, idFC: 8, frameColorBeforeDesignId: 2, designSnapshot: snapshot };
+    for (const edited of [
+      { idProd: 1, idBrand: 2, idSyst: 3, idFC: 90 },
+      { ...input, idFC: 90 },
+      { ...input, idDesign: 14, idDesignColor: 15 },
+    ]) {
+      expect(await resolvePieceDesign(f.db, withStoredPieceDesign(edited, stored)))
+        .toMatchObject({ idFC: 8, frameColorBeforeDesignId: 2 });
+    }
+  });
+
+  it('does not guess a prior frame for old designs, new imports, or a different series', async () => {
+    const f = fixture();
+    for (const edited of [
+      withStoredPieceDesign({ ...input }, { ...input, idFC: 8, designSnapshot: snapshot }),
+      { ...input, idFC: 8 },
+      withStoredPieceDesign({ ...input }, { ...input, idSyst: 90, idFC: 8, frameColorBeforeDesignId: 2 }),
+    ]) {
+      expect((await resolvePieceDesign(f.db, edited)).frameColorBeforeDesignId).toBeNull();
+    }
+    expect(f.previousFrame).not.toHaveBeenCalled();
+  });
+
+  it('allows remembered inactive colors but normalizes deleted colors to no memory', async () => {
+    const f = fixture();
+    f.previousFrame.mockResolvedValue({ id: 2, isActive: false });
+    expect((await resolvePieceDesign(f.db, { ...input, frameColorBeforeDesignId: 2 })).frameColorBeforeDesignId).toBe(2);
+    f.previousFrame.mockResolvedValue(null as any);
+    expect((await resolvePieceDesign(f.db, { ...input, frameColorBeforeDesignId: 2 })).frameColorBeforeDesignId).toBeNull();
+  });
+
+  it.each([0, -1, 1.2, Number.NaN])('rejects invalid remembered frame IDs: %p', async id => {
+    const f = fixture();
+    await expect(resolvePieceDesign(f.db, { ...input, frameColorBeforeDesignId: id })).rejects.toThrow('previous frame color');
+    expect(f.previousFrame).not.toHaveBeenCalled();
+  });
+
+  it('clears memory when the design is removed and leaves the restored incoming frame alone', async () => {
+    const f = fixture();
+    const edited = withStoredPieceDesign({ ...input, idFC: 2, idDesign: null, idDesignColor: null, frameColorBeforeDesignId: 2 },
+      { ...input, idFC: 8, frameColorBeforeDesignId: 2, designSnapshot: snapshot });
+    const result = await resolvePieceDesign(f.db, edited);
+    expect({ ...edited, ...result }).toMatchObject({ idFC: 2, idDesign: null, frameColorBeforeDesignId: null });
+    expect(pieceDesignPersistence(result).frameColorBeforeDesignId).toBeNull();
+    expect(f.previousFrame).not.toHaveBeenCalled();
   });
 
   it('rejects an unlinked design color instead of keeping an unrelated frame', async () => {
@@ -134,7 +201,7 @@ describe('Piece design selections', () => {
     const legacy = withStoredPieceDesign({ idProd: 1, idBrand: 2, idSyst: 3 }, stored);
     expect((await resolvePieceDesign(db, legacy)).designSnapshot).toEqual(snapshot);
     const removed = withStoredPieceDesign({ ...input, idDesign: null, idDesignColor: null }, stored);
-    expect(await resolvePieceDesign(db, removed)).toEqual({ idDesign: null, idDesignColor: null, designSnapshot: null });
+    expect(await resolvePieceDesign(db, removed)).toEqual({ idDesign: null, idDesignColor: null, designSnapshot: null, frameColorBeforeDesignId: null });
     expect(pieceDesignPersistence(await resolvePieceDesign(db, removed)).designSnapshot).toBe(Prisma.DbNull);
   });
 

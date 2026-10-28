@@ -109,6 +109,13 @@ export class CreatePieceDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  frameColorBeforeDesignId?: number | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsNumberString()
   width?: string;
 

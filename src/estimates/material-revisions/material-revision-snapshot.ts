@@ -38,7 +38,8 @@ function stable(value: any): string {
 // Los cobros y la bitácora no cambian la huella; sí los importes/especificaciones acordados.
 export function materialRevisionBaseHash(estimate: any): string {
   const pieces = (estimate.pieces ?? []).map((piece: any) => {
-    const { createdAt, updatedAt, factoryUnits, prod, bran, syst, conf, fColor, cryst, tin, coat, privacyOption, activeOption, preparationOption, sillOption, reinforcementOption, pieceMuntin, energyRatingId, energySnapshot, idDesign, idDesignColor, designSnapshot, ...content } = piece;
+    const { createdAt, updatedAt, factoryUnits, prod, bran, syst, conf, fColor, cryst, tin, coat, privacyOption, activeOption, preparationOption, sillOption, reinforcementOption, pieceMuntin, energyRatingId, energySnapshot, idDesign, idDesignColor, designSnapshot, frameColorBeforeDesignId, frameColorBeforeDesign, ...content } = piece;
+    // The remembered editing preference is not part of the agreed product.
     // Additive nullable columns must not invalidate revisions created before energy support.
     return { ...content, ...pieceDesignContent({ idDesign, idDesignColor, designSnapshot }), ...(energyRatingId != null ? { energyRatingId } : {}), ...(energySnapshot != null ? { energySnapshot: stripEnergySnapshotMetadata(energySnapshot) } : {}), pieceMuntin: pieceMuntin ? { patternId: pieceMuntin.patternId, typeId: pieceMuntin.typeId, totalLites: pieceMuntin.totalLites, panels: pieceMuntin.panels.map((panel: any) => ({ panelIndex: panel.panelIndex, panelCode: panel.panelCode, horizontalLites: panel.horizontalLites, verticalLites: panel.verticalLites })) } : null };
   });

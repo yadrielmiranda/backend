@@ -345,17 +345,19 @@ describe('estimate energy integration', () => {
 
   it('persists the linked design frame when a bulk frame change targets the estimate', async () => {
     const f = fixture();
-    Object.assign(f.piece, { idFC: 7, idDesign: 11, idDesignColor: 12,
+    Object.assign(f.piece, { idFC: 7, idDesign: 11, idDesignColor: 12, frameColorBeforeDesignId: 1,
       designSnapshot: { version: 1, systemId: 10,
         design: { id: 11, name: 'Solid', imageUrl: null },
         color: { id: 12, name: 'Oak', hexCode: '#995522', idFrameColor: 7 } } });
     f.tx.systemFrameColor = { findUnique: jest.fn(async () => ({ frameColor: { isActive: true } })) };
+    f.tx.frameColor = { findUnique: jest.fn(async () => ({ id: 1 })) };
     const calculate = f.calculator.calculatePieceMetrics.getMockImplementation()!;
     f.calculator.calculatePieceMetrics.mockImplementation(async (input) => ({ ...await calculate(input), ...await resolvePieceDesign(f.tx, input) }));
     await f.service.applyBulkPieceAttributeToEstimate(1, { idFC: 2 }, 7);
     expect(f.piece.idFC).toBe(7);
+    expect(f.piece.frameColorBeforeDesignId).toBe(1);
     expect(f.piece.price.toString()).toBe('100');
-    expect(f.tx.piece.update.mock.calls[0][0].data).toMatchObject({ idFC: 7,
+    expect(f.tx.piece.update.mock.calls[0][0].data).toMatchObject({ idFC: 7, frameColorBeforeDesignId: 1,
       designSnapshot: { color: { idFrameColor: 7 } } });
   });
 
@@ -367,6 +369,36 @@ describe('estimate energy integration', () => {
     expect(f.tx.piece.update.mock.calls[0][0].data).not.toHaveProperty(
       'energySnapshot',
     );
+  });
+
+  it('returns remembered frame on reopen and clears it when saving a design removal', async () => {
+    const f = fixture();
+    Object.assign(f.piece, { idFC: 7, idDesign: 11, idDesignColor: 12, frameColorBeforeDesignId: 1,
+      designSnapshot: { version: 1, systemId: 10,
+        design: { id: 11, name: 'Solid', imageUrl: null },
+        color: { id: 12, name: 'Oak', hexCode: '#995522', idFrameColor: 7 } } });
+    f.tx.systemFrameColor = { findUnique: jest.fn(async () => ({ frameColor: { isActive: true } })) };
+    f.tx.frameColor = { findUnique: jest.fn(async () => ({ id: 1 })) };
+    const calculate = f.calculator.calculatePieceMetrics.getMockImplementation()!;
+    f.calculator.calculatePieceMetrics.mockImplementation(async (input) => ({ ...await calculate(input), ...await resolvePieceDesign(f.tx, input) }));
+    const { frameColorBeforeDesignId, ...legacyInput } = f.piece;
+    const preview = await f.service.calculateAndReturnPieceMetrics({ ...legacyInput } as any, 7, 1, 8);
+    expect(preview).toMatchObject({ idFC: 7, frameColorBeforeDesignId: 1 });
+    expect(f.tx.piece.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({ idFC: true, frameColorBeforeDesignId: true }),
+    }));
+    await f.service.updatePieceInEstimate(1, 8, { ...legacyInput, idFC: 1, idDesign: null, idDesignColor: null } as any, 7);
+    expect(f.piece).toMatchObject({ idFC: 1, idDesign: null, idDesignColor: null, frameColorBeforeDesignId: null });
+  });
+
+  it('keeps remembered frame in duplication and installation revision input/output adapters', () => {
+    const f = fixture();
+    Object.assign(f.piece, { idDesign: 11, idDesignColor: 12, frameColorBeforeDesignId: 1 });
+    const workflow: any = Object.create(InstallationWorkflowService.prototype);
+    const clone = (f.service as any).buildPieceDtoFromPersistedPiece(f.piece, 20, false);
+    expect(clone.frameColorBeforeDesignId).toBe(1);
+    expect(workflow.pieceInputFromPersisted(f.piece).frameColorBeforeDesignId).toBe(1);
+    expect(workflow.additionPieceInput(clone).frameColorBeforeDesignId).toBe(1);
   });
 
   it('revision saves preserve unchanged glass ratings and resolve normalized changed IDs', async () => {
@@ -438,5 +470,20 @@ describe('estimate energy integration', () => {
     );
     expect(f.piece.energySnapshot).toEqual(approvedEnergy.energySnapshot);
     expect(f.tx.energyRating.findMany).not.toHaveBeenCalled();
+  });
+
+  it('drops a deleted remembered color when an older revision is finally saved', async () => {
+    const f = fixture();
+    f.tx.frameColor = { findUnique: jest.fn(async () => null) };
+    f.tx.piece.findUniqueOrThrow = jest.fn(async () => f.piece);
+    const workflow: any = Object.create(InstallationWorkflowService.prototype);
+    workflow.pieceInputFromPersisted = jest.fn(() => ({ muntin: undefined }));
+    await workflow.saveRevisionPiece(1,
+      { ...selection, idFC: 7, idDesign: 11, idDesignColor: 12, frameColorBeforeDesignId: 99 },
+      { rate: '80', price: '100', customerPrice: '120', netProfit: '20', markup: '.25',
+        dealerMarkupDecimal: '.2', dpPosPsf: '30', dpNegPsf: '30', highBottomPercent: null },
+      1, 'W1', f.tx, f.piece);
+    expect(f.piece).toMatchObject({ idFC: 7, idDesign: 11, idDesignColor: 12, frameColorBeforeDesignId: null });
+    expect(f.piece.price.toString()).toBe('100');
   });
 });
