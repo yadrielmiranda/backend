@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import {
+  DiagramFamily,
   DimensionMode,
   DimensionRuleType,
   PricingComponentType,
@@ -407,6 +408,7 @@ export class EstimateDimensionValidationService {
           requiresWindowHeight: true,
           fixedPanelCount: true,
           conf: true,
+          prod: { select: { diagramFamily: true } },
         },
       }),
       tx.sysConf.findUnique({
@@ -570,6 +572,7 @@ export class EstimateDimensionValidationService {
       : policyRuleTypes.has(DimensionRuleType.SIDELITE);
 
     const expectsMain = policyRuleTypes.has(DimensionRuleType.MAIN);
+    const isPivotDoor = cfg?.prod?.diagramFamily === DiagramFamily.PIVOT_DOOR;
 
     const doorWidthRaw = (dto as any).doorWidth;
     const doorHeightRaw = (dto as any).doorHeight;
@@ -590,8 +593,9 @@ export class EstimateDimensionValidationService {
       rightSideliteWidthRaw != null &&
       rightSideliteWidthRaw !== '';
 
-    // XT/XXT se valida como una sola pieza: DOOR controla la altura
-    // de la puerta y MAIN controla la altura total del frame.
+    // DOOR controla la altura de la puerta y MAIN la altura total con transom.
+    // En Pivot Door, MAIN cubre el ancho de la puerta; las demás familias
+    // conservan el ancho de toda la apertura.
     const validatesDoorAndOpening = expectsDoor && expectsMain;
 
     let lowerComponentHeightIn = heightIn;
@@ -707,7 +711,7 @@ export class EstimateDimensionValidationService {
       if (validatesDoorAndOpening) {
         checks.push({
           ruleType: DimensionRuleType.MAIN,
-          widthIn: openWidth,
+          widthIn: isPivotDoor ? (resolvedDoorWidth ?? openWidth) : openWidth,
           heightIn,
           label: 'MAIN',
         });
@@ -803,7 +807,9 @@ export class EstimateDimensionValidationService {
 
       checks.push({
         ruleType: DimensionRuleType.MAIN,
-        widthIn: overallWidth,
+        widthIn: isPivotDoor && hasDoorWidth
+          ? num(doorWidthRaw, 'Door Width')
+          : overallWidth,
         heightIn,
         label: 'MAIN',
       });
