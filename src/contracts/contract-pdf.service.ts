@@ -218,8 +218,19 @@ export class ContractPdfService {
           ? request.continue()
           : request.abort(),
       );
-      await pdfPage.setContent(html, { waitUntil: 'networkidle0' });
+      // El PDF solo usa imágenes embebidas. Esperar inactividad de red puede
+      // agotar el tiempo de Chromium aunque el documento ya esté cargado.
+      await pdfPage.setContent(html, { waitUntil: 'load' });
       await pdfPage.emulateMediaType('print');
+      const imagesReady = await pdfPage.evaluate(() =>
+        Array.from(document.images).every(
+          (image) => image.complete && image.naturalWidth > 0,
+        ),
+      );
+      if (!imagesReady)
+        throw new ServiceUnavailableException(
+          'The estimate PDF images could not be loaded. Please try again.',
+        );
       const footer = `Estimate #${escapeHtml(snapshot.number)} - ${totalOnly ? 'Project total' : 'Detailed prices'}`;
       return Buffer.from(
         await pdfPage.pdf({
