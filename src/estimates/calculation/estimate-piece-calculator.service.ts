@@ -1585,6 +1585,13 @@ export class EstimatePieceCalculatorService {
           );
         }
 
+        // Pivot sidelites use the configured Door Height, or Opening Height
+        // when that field is not used. Physical glass surcharges stay unchanged.
+        const sideliteHeightIn = component.componentType === 'SIDELITE'
+          && product.diagramFamily === 'PIVOT_DOOR'
+          && sysConf.requiresDoorHeight
+          ? new Decimal(String(pieceDto.doorHeight))
+          : heightIn;
         const doorPricing = component.componentType === 'DOOR'
           && await this.usesPivotTransomDoorPricing(
             pieceDto, product.diagramFamily, component.sourceSysConf.config.conf, tx, cache,
@@ -1593,7 +1600,7 @@ export class EstimatePieceCalculatorService {
           ? pivotTransomDoorPricingDimensions(widthIn, heightIn, pieceDto.doorHeight)
           : resolveBillablePricingDimensions({
             actualWidthIn: widthIn,
-            actualHeightIn: heightIn,
+            actualHeightIn: sideliteHeightIn,
             minimumBillableWidthIn:
               component.sourceSysConf.minimumBillableWidthIn,
             minimumBillableHeightIn:
