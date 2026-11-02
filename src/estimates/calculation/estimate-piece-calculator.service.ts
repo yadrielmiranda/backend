@@ -21,6 +21,7 @@ import { computeGlassOptionSurcharge } from "@/pricing/glass-option-surcharge";
 import { applyDesignBaseModifier, applyFrameBaseModifier, type FrameBaseModifier } from "@/pricing/frame-base-modifier";
 import { computeBasePrice } from "@/pricing/price-formula";
 import { resolvePieceComponents } from "@/pricing/piece-component-resolver";
+import { isPivotTransomPricingCandidate, pivotTransomDoorPricingDimensions, usesPivot1500SgpDoorPricing } from "@/pricing/pivot-transom-pricing";
 import { resolvePiecePanelCount } from "@/pieces/panel-count-resolver";
 import { resolvePieceDesign, type PieceDesignSnapshot } from '@/pieces/piece-design';
 import { garageDesignHasGlass } from '@/garage-designs/design-template';
@@ -57,6 +58,7 @@ export type CalculationCache = {
   config: Map<number, ConfigSelect | null>;
   sysConf: Map<string, any>;
   pricing: Map<string, any>;
+  pivotTransomPricing: Map<string, boolean>;
   linearPricing: Map<string, any>;
   systemFrameColor: Map<string, any>;
   systemDesignColorModifier: Map<string, FrameBaseModifier | null>;
@@ -151,6 +153,7 @@ export class EstimatePieceCalculatorService {
       config: new Map(),
       sysConf: new Map(),
       pricing: new Map(),
+      pivotTransomPricing: new Map(),
       linearPricing: new Map(),
       systemFrameColor: new Map(),
       systemDesignColorModifier: new Map(),
@@ -185,6 +188,38 @@ export class EstimatePieceCalculatorService {
     }
 
     return true;
+  }
+
+  private async usesPivotTransomDoorPricing(
+    pieceDto: CreatePieceDto | UpsertPieceDto,
+    family: unknown,
+    configuration: string,
+    tx: PrismaTransactionClient,
+    cache: CalculationCache,
+  ): Promise<boolean> {
+    if (!isPivotTransomPricingCandidate(family, configuration)) return false;
+    const key = `${pieceDto.idBrand}-${pieceDto.idProd}-${pieceDto.idSyst}-${pieceDto.idCryst}`;
+    if (!cache.pivotTransomPricing.has(key)) {
+      const associated = await tx.systemCrystal.findUnique({
+        where: { idSystem_idCrystal: { idSystem: pieceDto.idSyst, idCrystal: Number(pieceDto.idCryst) } },
+        select: {
+          crystal: { select: { glass: true } },
+          system: { select: {
+            name: true, idBrand: true, idProduct: true,
+            brandProduct: { select: { brand: { select: { name: true } } } },
+          } },
+        },
+      });
+      cache.pivotTransomPricing.set(key, Boolean(associated
+        && associated.system.idBrand === pieceDto.idBrand
+        && associated.system.idProduct === pieceDto.idProd
+        && usesPivot1500SgpDoorPricing({
+          brand: associated.system.brandProduct.brand.name,
+          system: associated.system.name,
+          crystal: associated.crystal.glass,
+        })));
+    }
+    return cache.pivotTransomPricing.get(key)!;
   }
 
   private pricingRangeMatches(
@@ -333,6 +368,7 @@ export class EstimatePieceCalculatorService {
           name: true,
           kind: true,
           pricingMode: true,
+          diagramFamily: true,
           allowMuntin: true,
           isActive: true,
         },
@@ -1469,8 +1505,12 @@ export class EstimatePieceCalculatorService {
     if (pricingComponents.length === 0) {
       // XT/XXT se cotiza aquí como una sola pieza con Width + Opening Height.
       // Los rangos se evalúan con las dimensiones facturables.
-      const { widthIn: pricingWidthIn, heightIn: pricingHeightIn } =
-        resolveBillablePricingDimensions({
+      const doorPricing = await this.usesPivotTransomDoorPricing(
+        pieceDto, product.diagramFamily, config.conf, tx, cache,
+      );
+      const { widthIn: pricingWidthIn, heightIn: pricingHeightIn } = doorPricing
+        ? pivotTransomDoorPricingDimensions(directPricingWidthIn, new Decimal(String(governingDims.heightIn)), pieceDto.doorHeight)
+        : resolveBillablePricingDimensions({
           actualWidthIn: directPricingWidthIn,
           actualHeightIn: new Decimal(String(governingDims.heightIn)),
           minimumBillableWidthIn: sysConf.minimumBillableWidthIn,
@@ -1545,8 +1585,13 @@ export class EstimatePieceCalculatorService {
           );
         }
 
-        const { widthIn: billableWidthIn, heightIn: billableHeightIn } =
-          resolveBillablePricingDimensions({
+        const doorPricing = component.componentType === 'DOOR'
+          && await this.usesPivotTransomDoorPricing(
+            pieceDto, product.diagramFamily, component.sourceSysConf.config.conf, tx, cache,
+          );
+        const { widthIn: billableWidthIn, heightIn: billableHeightIn } = doorPricing
+          ? pivotTransomDoorPricingDimensions(widthIn, heightIn, pieceDto.doorHeight)
+          : resolveBillablePricingDimensions({
             actualWidthIn: widthIn,
             actualHeightIn: heightIn,
             minimumBillableWidthIn:
