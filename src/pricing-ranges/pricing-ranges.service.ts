@@ -4,7 +4,13 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { PricingMode, Prisma, PrismaClient, ProductKind } from "@prisma/client";
+import {
+  BillableHeightMode,
+  PricingMode,
+  Prisma,
+  PrismaClient,
+  ProductKind,
+} from "@prisma/client";
 
 import { PrismaService } from "@/prisma/prisma.service";
 import { LogsService } from "@/logs/logs.service";
@@ -69,6 +75,8 @@ export class PricingRangesService {
           },
         },
         select: {
+          billableHeightMode: true,
+          billableHeightFixedIn: true,
           pricingComponents: {
             select: {
               componentType: true,
@@ -104,6 +112,12 @@ export class PricingRangesService {
         "Component-priced configurations cannot have direct pricing ranges.",
       );
     }
+
+    return {
+      allowZeroHeight:
+        sysConf.billableHeightMode === BillableHeightMode.FIXED &&
+        sysConf.billableHeightFixedIn?.isZero() === true,
+    };
   }
 
   async findAvailableCrystals(
@@ -148,6 +162,7 @@ export class PricingRangesService {
   private parseDimension(
     value: string | Prisma.Decimal | null | undefined,
     label: string,
+    allowZero = false,
   ): Prisma.Decimal | null {
     if (value == null || value === "") {
       return null;
@@ -155,30 +170,43 @@ export class PricingRangesService {
 
     const dimension = new Prisma.Decimal(String(value));
 
-    if (!dimension.isFinite() || dimension.lte(0)) {
-      throw new BadRequestException(`${label} must be greater than zero.`);
+    if (!dimension.isFinite() || (allowZero ? dimension.lt(0) : dimension.lte(0))) {
+      throw new BadRequestException(
+        `${label} must be ${allowZero ? "zero or greater" : "greater than zero"}.`,
+      );
     }
 
     return dimension;
   }
 
-  private validateBounds(data: {
-    minWidthIn?: string | Prisma.Decimal | null;
-    minWidthInclusive?: boolean;
-    maxWidthIn?: string | Prisma.Decimal | null;
-    maxWidthInclusive?: boolean;
-    minHeightIn?: string | Prisma.Decimal | null;
-    minHeightInclusive?: boolean;
-    maxHeightIn?: string | Prisma.Decimal | null;
-    maxHeightInclusive?: boolean;
-  }) {
+  private validateBounds(
+    data: {
+      minWidthIn?: string | Prisma.Decimal | null;
+      minWidthInclusive?: boolean;
+      maxWidthIn?: string | Prisma.Decimal | null;
+      maxWidthInclusive?: boolean;
+      minHeightIn?: string | Prisma.Decimal | null;
+      minHeightInclusive?: boolean;
+      maxHeightIn?: string | Prisma.Decimal | null;
+      maxHeightInclusive?: boolean;
+    },
+    allowZeroHeight = false,
+  ) {
     const minWidthIn = this.parseDimension(data.minWidthIn, "Minimum width");
 
     const maxWidthIn = this.parseDimension(data.maxWidthIn, "Maximum width");
 
-    const minHeightIn = this.parseDimension(data.minHeightIn, "Minimum height");
+    const minHeightIn = this.parseDimension(
+      data.minHeightIn,
+      "Minimum height",
+      allowZeroHeight,
+    );
 
-    const maxHeightIn = this.parseDimension(data.maxHeightIn, "Maximum height");
+    const maxHeightIn = this.parseDimension(
+      data.maxHeightIn,
+      "Maximum height",
+      allowZeroHeight,
+    );
 
     if (
       minWidthIn == null &&
@@ -819,12 +847,16 @@ export class PricingRangesService {
   }
 
   async create(dto: CreatePricingRangeDto, actor: AuthUser) {
-    const bounds = this.validateBounds(dto);
     const rules = this.normalizeRules(dto.rules);
 
     try {
       const createdFull = await this.prisma.$transaction(async (tx) => {
-        await this.validateTarget(dto.idSystem, dto.idConfig, tx);
+        const { allowZeroHeight } = await this.validateTarget(
+          dto.idSystem,
+          dto.idConfig,
+          tx,
+        );
+        const bounds = this.validateBounds(dto, allowZeroHeight);
 
         const created = await tx.pricingRange.create({
           data: {
@@ -898,28 +930,35 @@ export class PricingRangesService {
       const result = await this.prisma.$transaction(async (tx) => {
         const before = await this.findOneOrThrow(id, tx);
 
-        await this.validateTarget(before.idSystem, before.idConfig, tx);
+        const { allowZeroHeight } = await this.validateTarget(
+          before.idSystem,
+          before.idConfig,
+          tx,
+        );
 
-        const bounds = this.validateBounds({
-          minWidthIn:
-            dto.minWidthIn !== undefined ? dto.minWidthIn : before.minWidthIn,
-          minWidthInclusive: dto.minWidthInclusive ?? before.minWidthInclusive,
-          maxWidthIn:
-            dto.maxWidthIn !== undefined ? dto.maxWidthIn : before.maxWidthIn,
-          maxWidthInclusive: dto.maxWidthInclusive ?? before.maxWidthInclusive,
-          minHeightIn:
-            dto.minHeightIn !== undefined
-              ? dto.minHeightIn
-              : before.minHeightIn,
-          minHeightInclusive:
-            dto.minHeightInclusive ?? before.minHeightInclusive,
-          maxHeightIn:
-            dto.maxHeightIn !== undefined
-              ? dto.maxHeightIn
-              : before.maxHeightIn,
-          maxHeightInclusive:
-            dto.maxHeightInclusive ?? before.maxHeightInclusive,
-        });
+        const bounds = this.validateBounds(
+          {
+            minWidthIn:
+              dto.minWidthIn !== undefined ? dto.minWidthIn : before.minWidthIn,
+            minWidthInclusive: dto.minWidthInclusive ?? before.minWidthInclusive,
+            maxWidthIn:
+              dto.maxWidthIn !== undefined ? dto.maxWidthIn : before.maxWidthIn,
+            maxWidthInclusive: dto.maxWidthInclusive ?? before.maxWidthInclusive,
+            minHeightIn:
+              dto.minHeightIn !== undefined
+                ? dto.minHeightIn
+                : before.minHeightIn,
+            minHeightInclusive:
+              dto.minHeightInclusive ?? before.minHeightInclusive,
+            maxHeightIn:
+              dto.maxHeightIn !== undefined
+                ? dto.maxHeightIn
+                : before.maxHeightIn,
+            maxHeightInclusive:
+              dto.maxHeightInclusive ?? before.maxHeightInclusive,
+          },
+          allowZeroHeight,
+        );
 
         const rules =
           dto.rules !== undefined
