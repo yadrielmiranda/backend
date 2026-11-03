@@ -124,7 +124,7 @@ export type ShapeKey =
   | 'PICTURE'
   | 'TRIANGLE_L' | 'TRIANGLE_R'
   | 'TRAPEZOID_L' | 'TRAPEZOID_R'
-  | 'OCTAGON'
+  | 'OCTAGON' | 'HEXAGON'
   | 'CIRCLE' | 'HALF_CIRCLE' | 'QUARTER_CIRCLE'
   | 'TOMBSTONE' | 'HALF_TOMBSTONE'
   | 'EYEBROW'   | 'HALF_EYEBROW'
@@ -138,6 +138,7 @@ const shapeFns: Record<ShapeKey, (d: DimsFt) => ShapeResult> = {
   TRAPEZOID_R: trapezoid,
   // Preserve the existing rectangular area/perimeter used for billing.
   OCTAGON: rect,
+  HEXAGON: rect,
   CIRCLE: circle,
   HALF_CIRCLE: halfCircle,
   QUARTER_CIRCLE: quarterCircle,
@@ -156,6 +157,7 @@ export function shapeKeyFromConf(conf: string): ShapeKey {
   if (k.includes('triangle')) return k.includes('left') ? 'TRIANGLE_L' : 'TRIANGLE_R';
   if (k.includes('trapezoid')) return k.includes('left') ? 'TRAPEZOID_L' : 'TRAPEZOID_R';
   if (k.includes('octagon')) return 'OCTAGON';
+  if (k.includes('hexagon')) return 'HEXAGON';
   if (k.includes('half circle')) return 'HALF_CIRCLE';
   if (k === 'circle') return 'CIRCLE';
   if (k.includes('quarter')) return 'QUARTER_CIRCLE';

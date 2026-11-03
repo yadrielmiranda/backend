@@ -59,6 +59,7 @@ function resolveShapeHeightIn(
     case 'CIRCLE':
     case 'QUARTER_CIRCLE':
     case 'OCTAGON':
+    case 'HEXAGON':
       return widthIn;
 
     case 'HALF_CIRCLE':
@@ -78,6 +79,7 @@ function hasDerivedShapeHeight(
     shape === 'CIRCLE' ||
     shape === 'HALF_CIRCLE' ||
     shape === 'OCTAGON' ||
+    shape === 'HEXAGON' ||
     shape === 'QUARTER_CIRCLE'
   );
 }

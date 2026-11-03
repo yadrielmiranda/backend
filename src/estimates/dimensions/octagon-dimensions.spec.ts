@@ -1,12 +1,12 @@
 import Decimal from 'decimal.js';
-import { BillableHeightMode, DimensionMode, DimensionRuleType } from '@prisma/client';
+import { BillableHeightMode, DimensionMode, DimensionRuleType, Prisma } from '@prisma/client';
 import { areaPerimeterFor } from '@/pricing/shape-geometry';
 import { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 import { EstimatePieceCalculatorService } from '../calculation/estimate-piece-calculator.service';
 import { EstimateMuntinService } from '../muntins/estimate-muntin.service';
 import { EstimateDimensionValidationService } from './estimate-dimension-validation.service';
 
-function fixture(conf = 'Octagon', ratedHeight = 24, billing = {}) {
+function fixture(conf = 'Octagon', ratedHeight = 24, billing = {}, width = 24) {
   // Real dimension validation and calculator; only catalog persistence is mocked.
   const dimensions = new EstimateDimensionValidationService();
   const calculator = new EstimatePieceCalculatorService(dimensions, new EstimateMuntinService());
@@ -21,7 +21,7 @@ function fixture(conf = 'Octagon', ratedHeight = 24, billing = {}) {
     sysConfReinforcementOption: { findMany: jest.fn(async () => []) },
     dimensionPolicy: { findFirst: jest.fn(async () => ({
       roundingRule: 'ROUND_UP_TO_NEXT',
-      rules: [{ ruleType: DimensionRuleType.MAIN, widthIn: 24, heightIn: ratedHeight,
+      rules: [{ ruleType: DimensionRuleType.MAIN, widthIn: width, heightIn: ratedHeight,
         dpPosPsf: 70, dpNegPsf: -70 }],
     })) },
     pricingRangeRule: { findMany: jest.fn(async () => []) },
@@ -36,17 +36,17 @@ function fixture(conf = 'Octagon', ratedHeight = 24, billing = {}) {
   for (const [map, field] of [
     [cache.brandTint, 'tint'], [cache.brandCoating, 'coating'], [cache.brandPrivacy, 'privacy'],
   ] as const) map.set('1-1', { [field]: { isActive: true }, surchargeEnabled: false });
-  const piece = (height?: string): CreatePieceDto => ({
+  const piece = (height?: string | null): CreatePieceDto => ({
     idProd: 1, idBrand: 1, idSyst: 1, idConf: 8, idFC: 1,
     idCryst: 1, idTint: 1, idCoat: 1, idPrivacy: 1,
-    width: '24', ...(height === undefined ? {} : { height }), qty: 1, mark: 'Octagon',
+    width: String(width), ...(height === undefined ? {} : { height }), qty: 1, mark: conf,
   });
   return { dimensions, calculator, tx, cache, piece };
 }
 
-describe('width-only Octagon dimensions', () => {
-  it.each([undefined, '0'])('uses 24 x 24 for governing dimensions and precheck when height is %s', async height => {
-    const f = fixture();
+describe.each(['Octagon', 'Hexagon'])('width-only %s dimensions', conf => {
+  it.each([undefined, '0', null, '99'])('uses 24 x 24 for governing dimensions, precheck and direct pricing when height is %s', async height => {
+    const f = fixture(conf);
     await expect(f.dimensions.computeGoverningDimsFromConfig(f.piece(height), f.tx))
       .resolves.toEqual({ widthIn: 24, heightIn: 24 });
     await expect(f.dimensions.validateAgainstDimensionPolicy(f.piece(height), f.tx))
@@ -61,28 +61,83 @@ describe('width-only Octagon dimensions', () => {
     } });
   });
 
-  it.each([['Circle', 24], ['Half Circle', 12]] as const)('preserves %s derived height', async (conf, height) => {
-    const f = fixture(conf, height);
-    await expect(f.dimensions.computeGoverningDimsFromConfig(f.piece('0'), f.tx))
-      .resolves.toEqual({ widthIn: 24, heightIn: height });
-    await expect(f.dimensions.validateAgainstDimensionPolicy(f.piece('0'), f.tx))
-      .resolves.toMatchObject({ ok: true, usedRange: { w: [24, 24], h: [height, height] } });
-  });
-
   it.each([
+    [{ billableHeightMode: BillableHeightMode.ACTUAL_HEIGHT }, '57.00'],
     [{ minimumBillableWidthIn: '36', minimumBillableHeightIn: '48' }, '131.00'],
     [{ billableHeightMode: BillableHeightMode.WIDTH_PERCENTAGE, billableHeightPercentOfWidth: '50' }, '37.00'],
     [{ billableHeightMode: BillableHeightMode.FIXED, billableHeightFixedIn: '0', minimumBillableHeightIn: '48' }, '17.00'],
   ])('retains configured billing dimensions %j and A/B/C rates', async (billing, expectedRate) => {
-    const f = fixture('Octagon', 24, billing);
+    const f = fixture(conf, 24, billing);
     const result = await f.calculator.calculatePieceMetrics(f.piece(), new Decimal(0), f.tx, f.cache);
     expect(result.rate.toFixed(2)).toBe(expectedRate);
     expect(result.dpPosPsf.toFixed(2)).toBe('70.00');
     expect(result.dpNegPsf.toFixed(2)).toBe('-70.00');
   });
 
-  it('keeps the existing rectangular area/perimeter convention for Octagon', () => {
-    expect(areaPerimeterFor('Octagon', { width: 2, height: 2 }))
+  it.each([
+    [{ billableHeightMode: BillableHeightMode.ACTUAL_HEIGHT }, 24, '57.00'],
+    [{ billableHeightMode: BillableHeightMode.WIDTH_PERCENTAGE, billableHeightPercentOfWidth: '50' }, 12, '37.00'],
+    [{ billableHeightMode: BillableHeightMode.FIXED, billableHeightFixedIn: '0' }, 0, '17.00'],
+  ])('selects the range with configured billable dimensions %j, retaining physical dimensions for rating', async (billing, billableHeight, expectedRate) => {
+    const f = fixture(conf, 24, billing);
+    f.tx.pricingRangeRule.findMany.mockResolvedValue([
+      rangeRule(24, 24, 1, 1, { costoA: '0', costoB: '0', costoC: '999' }),
+      rangeRule(24, 24, billableHeight, billableHeight),
+    ]);
+    const result = await f.calculator.calculatePieceMetrics(f.piece('99'), new Decimal(0), f.tx, f.cache);
+    expect(result.rate.toFixed(2)).toBe(expectedRate);
+    expect(result.dpPosPsf.toFixed(2)).toBe('70.00');
+    expect(result.dpNegPsf.toFixed(2)).toBe('-70.00');
+    expect(f.tx.pricingRangeRule.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { idCrystal: 1, range: { is: { idSystem: 1, idConfig: 8, isActive: true } } },
+    }));
+    expect(f.tx.pricingRule.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing rectangular area/perimeter convention', () => {
+    expect(areaPerimeterFor(conf, { width: 2, height: 2 }))
       .toEqual({ areaFt2: 4, perimeterFt: 8 });
   });
+});
+
+function rangeRule(
+  minWidth: number,
+  maxWidth: number,
+  minHeight: number,
+  maxHeight: number,
+  coefficients = { costoA: '7', costoB: '3', costoC: '5' },
+) {
+  return {
+    ...coefficients,
+    range: {
+      minWidthIn: new Prisma.Decimal(minWidth), maxWidthIn: new Prisma.Decimal(maxWidth),
+      minHeightIn: new Prisma.Decimal(minHeight), maxHeightIn: new Prisma.Decimal(maxHeight),
+      minWidthInclusive: true, maxWidthInclusive: true,
+      minHeightInclusive: true, maxHeightInclusive: true,
+    },
+  };
+}
+
+it.each([undefined, '0', null, '12'])('prices Serie 300 Hexagon at 48 x 48 using its imported range when supplied height is %s', async height => {
+  const f = fixture('Hexagon', 48, { billableHeightMode: BillableHeightMode.ACTUAL_HEIGHT }, 48);
+  // V097 row 1025, E300HX100_R001: both dimensions 12..60, 7/16 PVB.
+  f.tx.pricingRangeRule.findMany.mockResolvedValue([rangeRule(12, 60, 12, 60, {
+    costoA: '1.27058823529403691177',
+    costoB: '4.04602941176479768153',
+    costoC: '670.7901011029411',
+  })]);
+  const result = await f.calculator.calculatePieceMetrics(f.piece(height), new Decimal(0), f.tx, f.cache);
+  // 16 ft² * A + 16 ft * B + C, before additions or markup.
+  expect(result.rate.toFixed(2)).toBe('755.86');
+  expect(result.dpPosPsf.toFixed(2)).toBe('70.00');
+  expect(result.dpNegPsf.toFixed(2)).toBe('-70.00');
+  expect(f.tx.pricingRule.findUnique).not.toHaveBeenCalled();
+});
+
+it.each([['Circle', 24], ['Half Circle', 12]] as const)('preserves %s derived height', async (conf, height) => {
+  const f = fixture(conf, height);
+  await expect(f.dimensions.computeGoverningDimsFromConfig(f.piece('0'), f.tx))
+    .resolves.toEqual({ widthIn: 24, heightIn: height });
+  await expect(f.dimensions.validateAgainstDimensionPolicy(f.piece('0'), f.tx))
+    .resolves.toMatchObject({ ok: true, usedRange: { w: [24, 24], h: [height, height] } });
 });
