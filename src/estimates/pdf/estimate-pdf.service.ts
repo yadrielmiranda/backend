@@ -67,7 +67,9 @@ export class EstimatePdfService {
       const html = EstimatePdfHtmlBuilder.build(estimate, view, diagramRenders, user.id, viewerRole ?? undefined, true);
       const page = await browser.newPage();
 
-      await page.setContent(html, { waitUntil: 'networkidle0' });
+      // Esperamos el documento y sus recursos (incluido el logo por URL), sin
+      // depender de la inactividad global de red para poder imprimir.
+      await page.setContent(html, { waitUntil: 'load' });
       await page.emulateMediaType('print');
       await page.evaluate(async () => {
         await document.fonts?.ready;
