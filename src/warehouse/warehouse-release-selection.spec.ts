@@ -31,6 +31,63 @@ function fixture() {
 }
 
 describe('manual warehouse release selection', () => {
+  const poRelease = (items = [{ barcode: door, quantity: 2, version: 0, storeId: 1 }]) => ({
+    requestKey: randomUUID(), poKey: 'order:1', items,
+  });
+
+  it('keeps material, installation, delivery, fulfillment and readiness checks on the exact-PO endpoint', async () => {
+    for (const [change, message] of [
+      [(f) => { f.order.payment.status = 'PENDING'; }, 'Material payment'],
+      [(f) => { f.order.estimate.installationJob = { status: 'SCHEDULED', quotes: [], payments: [] }; }, 'Installation payment'],
+      [(f) => { f.order.fulfillmentMethod = 'COMPANY_DELIVERY'; }, 'Delivery payment'],
+      [(f) => { f.order.fulfillmentMethod = 'UNDECIDED'; }, 'Choose Pickup or Delivery'],
+      [(f) => { f.order.status.name = 'Draft'; }, 'ready'],
+    ] as const) {
+      const f = fixture(); change(f); const before = f.snapshot();
+      await expect(f.service.releaseWarehousePo(poRelease(), admin)).rejects.toThrow(message);
+      expect(f.snapshot()).toEqual(before);
+    }
+  });
+
+  it('records installation provenance and an unsigned summary from the exact-PO endpoint', async () => {
+    const f = fixture();
+    f.order.fulfillmentMethod = 'INSTALLATION_DELIVERY';
+    f.order.status.name = 'Preparing for pickup';
+    f.order.estimate.installationJob = {
+      id: 71, status: 'SCHEDULED', installationAddress: { street: '123 Test Street', city: 'Miami', state: 'FL', postalCode: '33101' },
+      quotes: [{ status: 'APPROVED', total: 0, lines: [] }], payments: [],
+    };
+    expect(await f.service.releaseWarehousePo(poRelease(), operator)).toEqual({
+      units: 1, parts: 2, stores: [{ storeId: 1, storeName: 'Main', parts: 2 }], replayed: false,
+    });
+    expect(f.movements[0]).toMatchObject({ installationJobId: 71, installationAddress: '123 Test Street, Miami, FL 33101', customerDeliveryId: null });
+    expect(f.customerDeliveries).toHaveLength(0);
+  });
+
+  it('does not allow the exact-PO endpoint to release a piece belonging to another source', async () => {
+    const f = fixture(); f.external(); const before = f.snapshot();
+    await expect(f.service.releaseWarehousePo(poRelease([{ barcode: fixed, quantity: 1, version: 0, storeId: 1 }]), admin))
+      .rejects.toThrow('exact PO');
+    expect(f.snapshot()).toEqual(before);
+  });
+
+  it('rolls back earlier origins when a later exact-PO release movement fails', async () => {
+    const f = fixture(); f.balances[0].onHand = 1;
+    f.balances.push({ lineNumber: door, storeId: 2, onHand: 2 });
+    const before = f.snapshot(), createMovement = f.db.warehouseMovement.create;
+    let writes = 0;
+    f.db.warehouseMovement.create = async (args) => {
+      if (++writes === 2) throw new Error('Synthetic later movement failure');
+      return createMovement(args);
+    };
+    await expect(f.service.releaseWarehousePo({ requestKey: randomUUID(), poKey: 'order:1', items: [
+      { barcode: door, quantity: 1, parts: { FRAME: 1 }, storeId: 1, version: 0 },
+      { barcode: door, quantity: 2, parts: { DOOR: 2 }, storeId: 2, version: 0 },
+    ] }, admin)).rejects.toThrow('Synthetic later movement failure');
+    expect(writes).toBe(2);
+    expect(f.snapshot()).toEqual(before);
+  });
+
   it('releases quantities without a signature, customer receipt or assigned installation', async () => {
     const f = fixture(), dto = f.dto();
     expect(await f.service.release(dto, admin)).toEqual({ units: 1, parts: 2, storeId: 1, storeName: 'Main', replayed: false });

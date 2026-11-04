@@ -13,6 +13,7 @@ import {
   Length,
   Max,
   Min,
+  ValidateBy,
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
@@ -53,6 +54,22 @@ export class WarehouseReleaseDto extends WarehouseRequestDto {
   items: WarehouseReceiptItemDto[];
 }
 
+export class WarehousePoReleaseItemDto extends WarehouseReceiptItemDto {
+  @ValidateIf((_object, value) => value !== null) @IsInt() @Min(1) @Max(2147483647)
+  storeId: number | null;
+}
+
+export class WarehousePoReleaseDto extends WarehouseRequestDto {
+  @ValidateBy({ name: 'validWarehousePoKey', validator: {
+    validate: isCustomerDeliveryPoKey,
+    defaultMessage: () => 'Choose a valid warehouse PO key.',
+  } })
+  poKey: string;
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(2000)
+  @ValidateNested({ each: true }) @Type(() => WarehousePoReleaseItemDto)
+  items: WarehousePoReleaseItemDto[];
+}
+
 export class WarehouseCustomerDeliveryDto extends WarehouseRequestDto {
   @IsIn(['TRANSIT', 'WAREHOUSE']) source: 'TRANSIT' | 'WAREHOUSE';
   @IsOptional() @IsInt() @Min(1) storeId?: number | null;
@@ -64,6 +81,86 @@ export class WarehouseCustomerDeliveryDto extends WarehouseRequestDto {
   @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500)
   @ValidateNested({ each: true }) @Type(() => WarehouseReceiptItemDto)
   items: WarehouseReceiptItemDto[];
+}
+
+export class CustomerDeliveryRunCreateDto extends WarehouseRequestDto {
+  // Absent creates a delivery that can collect from multiple warehouse locations.
+  // Explicit values are retained for safe retries from the earlier client.
+  @ValidateIf((_object, value) => value !== undefined && value !== null) @IsInt() @Min(1)
+  storeId?: number | null;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50)
+  @ValidateBy({ name: 'validDeliveryPoKey', validator: {
+    validate: isCustomerDeliveryPoKey,
+    defaultMessage: () => 'Choose valid warehouse PO keys.',
+  } }, { each: true })
+  poKeys?: string[];
+}
+
+export function isCustomerDeliveryPoKey(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^(order|external):[1-9]\d*$/.test(value)) return false;
+  return Number.isSafeInteger(Number(value.split(':')[1]));
+}
+
+export class CustomerDeliveryRunManualDto extends WarehouseRequestDto {
+  @ValidateBy({ name: 'validDeliveryPoKey', validator: {
+    validate: isCustomerDeliveryPoKey,
+    defaultMessage: () => 'Choose a valid warehouse PO key.',
+  } })
+  poKey: string;
+  @ValidateIf((_object, value) => value !== undefined) @IsInt() @Min(1) @Max(2147483647)
+  runId?: number;
+  // Omitted means all locations; explicit null means Unassigned.
+  @ValidateIf((_object, value) => value !== undefined && value !== null) @IsInt() @Min(1) @Max(2147483647)
+  storeId?: number | null;
+}
+
+export class CustomerDeliveryRunPosDto {
+  @ValidateIf((_object, value) => value !== undefined) @IsUUID('4')
+  requestKey?: string;
+
+  @ValidateIf((object, value) => value !== undefined || object.poKeys === undefined)
+  @ValidateBy({ name: 'exclusiveDeliveryPoSelection', validator: {
+    validate: (_value, args) => (args!.object as CustomerDeliveryRunPosDto).poKeys === undefined,
+    defaultMessage: () => 'Choose either PO keys or PO numbers, not both.',
+  } })
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50)
+  @IsString({ each: true }) @Length(1, 50, { each: true })
+  poNumbers?: string[];
+
+  @ValidateIf((object, value) => value !== undefined || object.poNumbers === undefined)
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50)
+  @ValidateBy({ name: 'validDeliveryPoKey', validator: {
+    validate: isCustomerDeliveryPoKey,
+    defaultMessage: () => 'Choose valid warehouse PO keys.',
+  } }, { each: true })
+  poKeys?: string[];
+}
+
+export class CustomerDeliveryRunScanDto extends WarehouseRequestDto {
+  @IsString() @Length(1, 60) barcode: string;
+  @IsOptional() @IsIn(['DOOR', 'FRAME', 'WINDOW']) partType?: 'DOOR' | 'FRAME' | 'WINDOW';
+  @IsOptional() @IsBoolean() addPo?: boolean;
+  @ValidateIf((_object, value) => value !== undefined && value !== null) @IsInt() @Min(1)
+  storeId?: number | null;
+}
+
+export class CustomerDeliveryRunRemovePoDto extends WarehouseRequestDto {
+  @ValidateBy({ name: 'validDeliveryPoKey', validator: {
+    validate: isCustomerDeliveryPoKey,
+    defaultMessage: () => 'Choose a valid warehouse PO key.',
+  } })
+  poKey: string;
+}
+
+export class CustomerDeliveryRunCloseDto extends WarehouseRequestDto {
+  @IsString() @Length(64, 64) revision: string;
+  @IsString() @Length(1, 100) firstName: string;
+  @IsString() @Length(1, 100) lastName: string;
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(100)
+  signatureStrokes: Array<Array<{ x: number; y: number }>>;
+  @IsOptional() @IsBoolean() acceptPartial?: boolean;
 }
 
 export class WarehouseInstallationDeliveryDto extends WarehouseRequestDto {

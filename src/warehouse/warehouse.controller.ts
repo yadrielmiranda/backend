@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -22,6 +23,7 @@ import {
   WarehouseCountStartDto,
   WarehouseReceiptDto,
   WarehouseReleaseDto,
+  WarehousePoReleaseDto,
   WarehouseCustomerDeliveryDto,
   WarehouseInstallationDeliveryDto,
   WarehouseTransferDto,
@@ -32,12 +34,74 @@ import {
   FactoryPickupRunCycleDto,
   FactoryPickupRunFinishDto,
   FactoryPickupRunScanDto,
+  CustomerDeliveryRunCreateDto,
+  CustomerDeliveryRunManualDto,
+  CustomerDeliveryRunPosDto,
+  CustomerDeliveryRunRemovePoDto,
+  CustomerDeliveryRunScanDto,
+  CustomerDeliveryRunCloseDto,
 } from './warehouse.dto';
 
 @Controller('warehouse')
 @Roles('admin', 'operator')
 export class WarehouseController {
   constructor(private readonly warehouse: WarehouseService) {}
+
+  @Get('customer-delivery-runs')
+  @Roles('admin', 'technician')
+  customerDeliveryRuns(@Query() query: Record<string, string>, @Req() req: Request) {
+    return this.warehouse.customerDeliveryRuns(query, req.user as AuthUser);
+  }
+  @Post('customer-delivery-runs')
+  @Roles('admin', 'technician')
+  startCustomerDeliveryRun(@Body() dto: CustomerDeliveryRunCreateDto, @Req() req: Request) {
+    return this.warehouse.startCustomerDeliveryRun(dto, req.user as AuthUser);
+  }
+  @Post('customer-delivery-runs/manual')
+  @Roles('admin', 'technician')
+  recordManualCustomerDeliveryRun(@Body() dto: CustomerDeliveryRunManualDto, @Req() req: Request) {
+    return this.warehouse.recordManualCustomerDeliveryRun(dto, req.user as AuthUser);
+  }
+  @Get('customer-delivery-runs/:id')
+  @Roles('admin', 'technician')
+  customerDeliveryRun(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.warehouse.customerDeliveryRun(id, req.user as AuthUser);
+  }
+  @Delete('customer-delivery-runs/:id')
+  @Roles('admin', 'technician')
+  deleteCustomerDeliveryRun(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.warehouse.deleteCustomerDeliveryRun(id, req.user as AuthUser);
+  }
+  @Get('customer-delivery-runs/:id/po-options')
+  @Roles('admin', 'technician')
+  customerDeliveryRunPoOptions(@Param('id', ParseIntPipe) id: number, @Query() query: Record<string, string>, @Req() req: Request) {
+    return this.warehouse.customerDeliveryRunPoOptions(id, query, req.user as AuthUser);
+  }
+  @Post('customer-delivery-runs/:id/pos')
+  @Roles('admin', 'technician')
+  addCustomerDeliveryRunPos(@Param('id', ParseIntPipe) id: number, @Body() dto: CustomerDeliveryRunPosDto, @Req() req: Request) {
+    return this.warehouse.addCustomerDeliveryRunPos(id, dto, req.user as AuthUser);
+  }
+  @Post('customer-delivery-runs/:id/remove-po')
+  @Roles('admin', 'technician')
+  removeCustomerDeliveryRunPo(@Param('id', ParseIntPipe) id: number, @Body() dto: CustomerDeliveryRunRemovePoDto, @Req() req: Request) {
+    return this.warehouse.removeCustomerDeliveryRunPo(id, dto, req.user as AuthUser);
+  }
+  @Post('customer-delivery-runs/:id/scan')
+  @Roles('admin', 'technician')
+  scanCustomerDeliveryRun(@Param('id', ParseIntPipe) id: number, @Body() dto: CustomerDeliveryRunScanDto, @Req() req: Request) {
+    return this.warehouse.scanCustomerDeliveryRun(id, dto, req.user as AuthUser);
+  }
+  @Post('customer-delivery-runs/:id/remove-part')
+  @Roles('admin', 'technician')
+  removeCustomerDeliveryRunPart(@Param('id', ParseIntPipe) id: number, @Body() dto: CustomerDeliveryRunScanDto, @Req() req: Request) {
+    return this.warehouse.removeCustomerDeliveryRunPart(id, dto, req.user as AuthUser);
+  }
+  @Post('customer-delivery-runs/:id/close')
+  @Roles('admin', 'technician')
+  closeCustomerDeliveryRun(@Param('id', ParseIntPipe) id: number, @Body() dto: CustomerDeliveryRunCloseDto, @Req() req: Request) {
+    return this.warehouse.closeCustomerDeliveryRun(id, dto, req.user as AuthUser);
+  }
 
   @Get('stores') stores(@Req() req: Request) {
     return this.warehouse.stores(req.user as AuthUser);
@@ -61,6 +125,16 @@ export class WarehouseController {
   }
   @Post('releases') release(@Body() dto: WarehouseReleaseDto, @Req() req: Request) {
     return this.warehouse.release(dto, req.user as AuthUser);
+  }
+  @Get('releases/po-options')
+  @Roles('admin', 'operator', 'technician')
+  warehousePoReleaseOptions(@Query() query: Record<string, string>, @Req() req: Request) {
+    return this.warehouse.warehousePoReleaseOptions(query, req.user as AuthUser);
+  }
+  @Post('releases/po')
+  @Roles('admin', 'operator', 'technician')
+  releaseWarehousePo(@Body() dto: WarehousePoReleaseDto, @Req() req: Request) {
+    return this.warehouse.releaseWarehousePo(dto, req.user as AuthUser);
   }
   @Post('customer-deliveries') deliverToCustomer(
     @Body() dto: WarehouseCustomerDeliveryDto, @Req() req: Request,

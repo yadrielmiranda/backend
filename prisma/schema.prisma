@@ -358,6 +358,7 @@ model User {
   branding                          Branding?
   warehouseMovements                WarehouseMovement[]
   warehouseCustomerDeliveries       WarehouseCustomerDelivery[]
+  customerDeliveryRuns              WarehouseCustomerDeliveryRun[]
   factoryPickupRunsCreated          FactoryPickupRun[]           @relation("FactoryPickupRunCreator")
   factoryPickupRunsClosed           FactoryPickupRun[]           @relation("FactoryPickupRunCloser")
   factoryPickupAssignments          FactoryPickupRunTechnician[]
@@ -1885,6 +1886,7 @@ model WarehouseStore {
   movementsFrom WarehouseMovement[]   @relation("WarehouseMovementFromStore")
   movementsTo   WarehouseMovement[]   @relation("WarehouseMovementToStore")
   customerDeliveries WarehouseCustomerDelivery[]
+  customerDeliveryRuns WarehouseCustomerDeliveryRun[]
   counts        WarehouseCount[]
   materialStocks MaterialStock[]
   materialMovements MaterialMovement[]
@@ -2230,6 +2232,8 @@ model WarehouseCustomerDelivery {
   lastName         String    @db.VarChar(100)
   signatureStrokes Json
   items            Json
+  pendingItems     Json?
+  orders           Json?
   totalPieces      Int
   totalParts       Int
   actorId          Int
@@ -2237,10 +2241,56 @@ model WarehouseCustomerDelivery {
   actorName        String    @db.VarChar(255)
   createdAt        DateTime  @default(now())
   movements        WarehouseMovement[]
+  run              WarehouseCustomerDeliveryRun?
 
   @@index([storeId, id])
   @@index([actorId])
   @@map("warehouse_customer_deliveries")
+}
+
+// A saved preparation remains separate from the signed stock release.
+model WarehouseCustomerDeliveryRun {
+  id            Int      @id @default(autoincrement())
+  requestKey    String   @unique @db.VarChar(64)
+  requestHash   String   @db.Char(64)
+  storeId       Int?
+  store         WarehouseStore? @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  storeName     String   @db.VarChar(80)
+  multiStore    Boolean  @default(false)
+  status        String   @default("ACTIVE") @db.VarChar(20)
+  version       Int      @default(0)
+  orders        Json
+  items         Json
+  snapshot      Json?
+  createdById   Int
+  createdBy     User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdByName String   @db.VarChar(255)
+  deliveryId    Int?     @unique
+  delivery      WarehouseCustomerDelivery? @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  closedAt      DateTime?
+  events        WarehouseCustomerDeliveryRunEvent[]
+
+  @@index([status, id])
+  @@index([storeId, id])
+  @@index([createdById])
+  @@map("warehouse_customer_delivery_runs")
+}
+
+model WarehouseCustomerDeliveryRunEvent {
+  id          Int      @id @default(autoincrement())
+  runId       Int
+  run         WarehouseCustomerDeliveryRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+  requestKey  String   @unique @db.VarChar(64)
+  requestHash String   @db.Char(64)
+  action      String   @db.VarChar(20)
+  actorId     Int
+  details     Json
+  createdAt   DateTime @default(now())
+
+  @@index([runId, id])
+  @@map("warehouse_customer_delivery_run_events")
 }
 
 enum FactoryPickupRunStatus {

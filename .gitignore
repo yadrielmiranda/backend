@@ -27,6 +27,14 @@ lerna-debug.log*
 /outputs/technician-warehouse-tests/**/perf-cache-*
 /src/node_modules/.cache/
 
+# Generated tool caches, including temporary preview/test folders
+**/.cache/
+**/jest-transform-cache-*/
+**/haste-map-*
+**/perf-cache-*
+**/node-compile-cache/
+*.tsbuildinfo
+
 # IDEs and editors
 /.idea
 .project

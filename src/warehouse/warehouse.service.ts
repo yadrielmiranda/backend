@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, WarehouseMovementType, WarehouseCustomerDelivery } from '@prisma/client';
+import { Prisma, WarehouseMovementType, WarehouseCustomerDelivery, WarehouseCustomerDeliveryRun } from '@prisma/client';
 import { createHash } from 'crypto';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
@@ -31,6 +31,7 @@ import {
   WarehouseCountStartDto,
   WarehouseReceiptDto,
   WarehouseReleaseDto,
+  WarehousePoReleaseDto,
   WarehouseCustomerDeliveryDto,
   WarehouseInstallationDeliveryDto,
   WarehouseTransferDto,
@@ -41,6 +42,13 @@ import {
   FactoryPickupRunCycleDto,
   FactoryPickupRunScanDto,
   FactoryPickupRunFinishDto,
+  CustomerDeliveryRunCreateDto,
+  CustomerDeliveryRunManualDto,
+  CustomerDeliveryRunPosDto,
+  CustomerDeliveryRunRemovePoDto,
+  CustomerDeliveryRunScanDto,
+  CustomerDeliveryRunCloseDto,
+  isCustomerDeliveryPoKey,
 } from './warehouse.dto';
 
 const actorSelect = {
@@ -270,6 +278,65 @@ function presentCustomerDelivery(delivery: WarehouseCustomerDelivery) {
     signatureStrokes: delivery.signatureStrokes, items: delivery.items,
     totalPieces: delivery.totalPieces, totalParts: delivery.totalParts,
     actor: delivery.actorName, createdAt: delivery.createdAt,
+    ...(delivery.pendingItems == null ? {} : { pendingItems: delivery.pendingItems }),
+    ...(delivery.orders == null ? {} : { orders: delivery.orders }),
+  };
+}
+
+type DeliveryRunOrder = ReturnType<typeof pickupSource>;
+type DeliveryRunLine = { lineNumber: string; quantity: number; parts: PartQuantities; storeId?: number | null; storeName?: string };
+type DeliveryRunAllocation = DeliveryRunLine & { storeId: number | null; storeName: string };
+type DeliveryRunOrigin = { storeId: number | null; storeName: string; quantity: number; parts: PartQuantities };
+function deliveryRunAllocations(run: WarehouseCustomerDeliveryRun): DeliveryRunAllocation[] {
+  return (run.items as DeliveryRunLine[]).map(line => ({
+    ...line, parts: { ...line.parts },
+    storeId: line.storeId === undefined ? run.storeId : line.storeId,
+    storeName: line.storeName ?? run.storeName,
+  }));
+}
+function deliveryRunAggregates(allocations: DeliveryRunAllocation[]) {
+  const grouped = new Map<string, { lineNumber: string; quantity: number; parts: PartQuantities; origins: DeliveryRunOrigin[] }>();
+  for (const allocation of allocations) {
+    const line = grouped.get(allocation.lineNumber) ?? { lineNumber: allocation.lineNumber, quantity: 0, parts: {}, origins: [] };
+    line.quantity += allocation.quantity; addParts(line.parts, allocation.parts);
+    line.origins.push({ storeId: allocation.storeId, storeName: allocation.storeName, quantity: allocation.quantity, parts: allocation.parts });
+    grouped.set(allocation.lineNumber, line);
+  }
+  return [...grouped.values()];
+}
+function validDeliveryStore(value: unknown): value is number | null {
+  return value === null || (Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= 2147483647);
+}
+// Simulate every source for one physical piece, so unclassified legacy balances
+// cannot be used twice or refined into too many panels/frames across locations.
+function validateDeliveryAllocations(stock: Stock, allocations: DeliveryRunAllocation[]) {
+  const simulated = { ...stock, storeBalances: stock.storeBalances.map(balance => ({ ...balance })) };
+  for (const line of allocations) {
+    if (line.quantity > storeQuantity(simulated, line.storeId)) throw new BadRequestException('No more parts of this piece are available at the selected location.');
+    const moved = applyPartMovement(simulated, parts(simulated), separateFrame(simulated), {
+      quantity: line.quantity, onHandDelta: -line.quantity, releasedDelta: line.quantity,
+      fromStoreId: line.storeId, partQuantities: line.parts,
+    });
+    simulated.partBalances = moved.partBalances as unknown as Prisma.JsonObject;
+    simulated.onHand -= line.quantity; simulated.released += line.quantity;
+    if (line.storeId === null) simulated.unassigned -= line.quantity;
+    else simulated.storeBalances.find(balance => balance.storeId === line.storeId)!.onHand -= line.quantity;
+  }
+  return simulated;
+}
+function deliveryRunKey(value: string) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
+    throw new BadRequestException('A valid request identifier is required.');
+}
+function deliveryRunItem(stock: Stock, quantity: number, selectedParts: PartQuantities, unknownQuantity = false, origins?: DeliveryRunOrigin[]) {
+  const unit = presentStock(stock);
+  return {
+    lineNumber: unit.lineNumber, barcode: unit.barcode, poNumber: unit.poNumber,
+    source: unit.source, orderNumber: unit.orderNumber, mark: unit.mark,
+    description: unit.description, product: unit.product, system: unit.system,
+    configuration: unit.configuration, quantity, parts: selectedParts,
+    ...(unknownQuantity ? { unknownQuantity: true } : {}),
+    ...(origins ? { origins } : {}),
   };
 }
 function storeQuantity(stock: Stock, storeId: number | null): number {
@@ -1264,7 +1331,9 @@ export class WarehouseService {
       } catch (e) {
         if (
           e instanceof Prisma.PrismaClientKnownRequestError &&
-          ['P2034', 'P2002'].includes(e.code)
+          (['P2034', 'P2002'].includes(e.code) ||
+            // MySQL reports deadlocks in explicit row-lock queries as P2010.
+            (e.code === 'P2010' && String(e.meta?.code) === '1213'))
         ) {
           if (attempt < 2) continue;
           throw new ConflictException(
@@ -1540,6 +1609,534 @@ export class WarehouseService {
       return { ...summary, storeName: store.name, replayed: false };
     }, 60000);
   }
+  private async deliveryRunRecord(tx: Tx, id: number, lock = false, includeDeleted = false) {
+    if (!Number.isSafeInteger(id) || id < 1) throw new BadRequestException('Choose a valid customer delivery.');
+    if (lock) await tx.$queryRaw`SELECT id FROM warehouse_customer_delivery_runs WHERE id = ${id} FOR UPDATE`;
+    const run = await tx.warehouseCustomerDeliveryRun.findUnique({ where: { id } });
+    if (!run || (run.status === 'DELETED' && !includeDeleted)) throw new NotFoundException('Customer delivery not found.');
+    return run;
+  }
+
+  private assertDeliveryRunActive(run: WarehouseCustomerDeliveryRun) {
+    if (run.status !== 'ACTIVE') throw new ConflictException('This delivery is already closed.');
+  }
+
+  private async canDeleteCustomerDeliveryRun(tx: Tx, run: WarehouseCustomerDeliveryRun) {
+    if (run.status !== 'ACTIVE' || run.deliveryId !== null || deliveryRunAllocations(run).length) return false;
+    return !(await tx.warehouseCustomerDeliveryRunEvent.findFirst({
+      where: { runId: run.id, action: { in: ['SCAN', 'MANUAL'] } }, select: { id: true },
+    }));
+  }
+
+  private async deliveryRunPo(tx: Tx, value: string): Promise<DeliveryRunOrder> {
+    const poNumber = pickupPoNumber(value);
+    const order = await tx.order.findUnique({ where: { poNumber }, select: { id: true, number: true, poNumber: true } });
+    const external = order ? null : await tx.factoryPo.findFirst({ where: { poNumber, orderId: null } });
+    if (!order && !external) throw new NotFoundException(`PO ${poNumber} not found.`);
+    const source: DeliveryRunOrder = external
+      ? { key: `external:${external.id}`, source: 'EXTERNAL', orderId: null, externalPoId: external.id, orderNumber: '', poNumber: external.poNumber }
+      : { key: `order:${order!.id}`, source: 'ORDER', orderId: order!.id, externalPoId: null, orderNumber: order!.number, poNumber: order!.poNumber! };
+    const count = await tx.warehouseStock.count({ where: { unit: this.deliveryRunPoWhere(source) } });
+    if (!count) throw new BadRequestException(`PO ${poNumber} has no factory pieces. Import its factory JSON first.`);
+    return source;
+  }
+
+  private deliveryRunPoWhere(source: DeliveryRunOrder): Prisma.FactoryUnitWhereInput {
+    return source.externalPoId !== null ? { externalPoId: source.externalPoId } : { piece: { estim: { order: { id: source.orderId! } } } };
+  }
+
+  private async deliveryRunPoKey(tx: Tx, key: string): Promise<DeliveryRunOrder> {
+    const [kind, value] = key.split(':'), id = Number(value);
+    // These source IDs are MySQL signed INTs. Larger safe integers cannot exist.
+    if (id > 2147483647) throw new NotFoundException('Selected PO not found. Refresh the available POs.');
+    if (kind === 'order') {
+      const order = await tx.order.findUnique({ where: { id }, select: { id: true, number: true, poNumber: true } });
+      if (!order?.poNumber) throw new NotFoundException('Selected PO not found. Refresh the available POs.');
+      return { key, source: 'ORDER', orderId: id, externalPoId: null, orderNumber: order.number, poNumber: order.poNumber };
+    }
+    const external = await tx.factoryPo.findFirst({ where: { id, orderId: null } });
+    if (!external) throw new NotFoundException('Selected External PO not found. Refresh the available POs.');
+    return { key, source: 'EXTERNAL', orderId: null, externalPoId: id, orderNumber: '', poNumber: external.poNumber };
+  }
+
+  private async deliveryRunView(tx: Tx, run: WarehouseCustomerDeliveryRun) {
+    const receipt = run.deliveryId === null ? null : await tx.warehouseCustomerDelivery.findUnique({ where: { id: run.deliveryId } });
+    if (run.status === 'CLOSED' && run.snapshot) {
+      const snapshot = run.snapshot as Record<string, any>;
+      return {
+        ...snapshot, status: run.status, multiStore: run.multiStore, updatedAt: run.updatedAt, canDelete: false,
+        orders: (snapshot.orders ?? []).map((order: Record<string, unknown>) => ({ ...order, canRemove: false })),
+        allocations: snapshot.allocations ?? (snapshot.items ?? []).map((item: Record<string, unknown>) => ({ ...item, storeId: run.storeId, storeName: run.storeName })),
+        closedAt: run.closedAt, deliveryId: run.deliveryId, delivery: receipt ? presentCustomerDelivery(receipt) : null,
+      };
+    }
+    const sources = run.orders as DeliveryRunOrder[];
+    const savedAllocations = deliveryRunAllocations(run), scanned = deliveryRunAggregates(savedAllocations);
+    // Include every PO line, even when it is not yet collected or is in another store.
+    const stocks = sources.length ? await tx.warehouseStock.findMany({
+      where: { unit: { OR: sources.map(source => this.deliveryRunPoWhere(source)) } },
+      include: stockInclude, orderBy: { lineNumber: 'asc' },
+    }) : [];
+    const items: ReturnType<typeof deliveryRunItem>[] = [];
+    const allocations: Array<ReturnType<typeof deliveryRunItem> & { storeId: number | null; storeName: string }> = [];
+    const pendingItems: ReturnType<typeof deliveryRunItem>[] = [];
+    const orders = sources.map(source => ({ ...source, totalPieces: 0, totalParts: 0, pendingPieces: 0, pendingParts: 0, unknownPending: false }));
+    for (const stock of stocks) {
+      const source = pickupSource(stock), order = orders.find(order => order.key === source.key)!;
+      const line = scanned.find(line => line.lineNumber === stock.lineNumber);
+      if (line) {
+        items.push(deliveryRunItem(stock, line.quantity, line.parts, false, line.origins));
+        allocations.push(...line.origins.map(origin => ({ ...deliveryRunItem(stock, origin.quantity, origin.parts), storeId: origin.storeId, storeName: origin.storeName })));
+        order.totalPieces++; order.totalParts += line.quantity;
+      }
+      const expected = parts(stock), remaining = expected == null ? 0 : Math.max(0, expected - stock.released - (line?.quantity ?? 0));
+      if (remaining || expected == null) {
+        const detail = tracking(stock);
+        let pendingParts: PartQuantities = {};
+        if (expected != null) {
+          // Legacy releases may not identify their physical type. Preserve that uncertainty.
+          if ((detail.released.UNKNOWN ?? 0) > 0 && detail.types.length > 1) pendingParts = { UNKNOWN: remaining };
+          else for (const type of detail.types) {
+            const released = (detail.released[type] ?? 0) + (detail.types.length === 1 ? detail.released.UNKNOWN ?? 0 : 0);
+            const quantity = Math.max(0, (detail.expected[type] ?? 0) - released - (line?.parts[type] ?? 0));
+            if (quantity) pendingParts[type] = quantity;
+          }
+        }
+        pendingItems.push(deliveryRunItem(stock, remaining, pendingParts, expected == null));
+        order.pendingPieces++; order.pendingParts += remaining; order.unknownPending ||= expected == null;
+      }
+    }
+    if (items.length !== scanned.length) throw new ConflictException('A saved delivery piece no longer belongs to its PO. Contact an administrator.');
+    const revision = hash([run.id, run.version, run.multiStore, sources, savedAllocations, stocks.map(stock => [stock.lineNumber, stock.version]), items, pendingItems]);
+    return {
+      id: run.id, status: run.status, source: 'WAREHOUSE' as const, multiStore: run.multiStore,
+      canDelete: await this.canDeleteCustomerDeliveryRun(tx, run),
+      storeId: run.storeId, storeName: run.multiStore ? 'Multiple locations' : run.storeName,
+      createdById: run.createdById, createdBy: run.createdByName, createdAt: run.createdAt,
+      updatedAt: run.updatedAt, closedAt: run.closedAt, revision,
+      orders: orders.map(order => ({ ...order, canRemove: run.status === 'ACTIVE' && order.totalParts === 0 })),
+      items, allocations, pendingItems,
+      totalPieces: items.length, totalParts: scanned.reduce((sum, line) => sum + line.quantity, 0),
+      pendingPieces: pendingItems.length, pendingParts: pendingItems.reduce((sum, item) => sum + item.quantity, 0),
+      hasPending: pendingItems.length > 0, deliveryId: run.deliveryId,
+      delivery: receipt ? presentCustomerDelivery(receipt) : null,
+    };
+  }
+
+  async customerDeliveryRuns(query: Query, actor: AuthUser) {
+    this.factoryPickupStaff(actor);
+    const p = paging(query);
+    if (query.status && !['ACTIVE', 'CLOSED'].includes(query.status)) throw new BadRequestException('Choose a valid delivery status.');
+    const storeId = query.storeId === 'unassigned' ? null : query.storeId === undefined ? undefined : Number(query.storeId);
+    if (storeId !== null && storeId !== undefined && (!Number.isSafeInteger(storeId) || storeId < 1)) throw new BadRequestException('Choose a valid store.');
+    return this.prisma.$transaction(async tx => {
+      const where = { status: query.status ?? { in: ['ACTIVE', 'CLOSED'] }, ...(storeId === undefined ? {} : { storeId }) };
+      const runs = await tx.warehouseCustomerDeliveryRun.findMany({ where, orderBy: { id: 'desc' }, skip: (p.page - 1) * Math.min(p.take, 50), take: Math.min(p.take, 50) });
+      const items = [] as Awaited<ReturnType<WarehouseService['deliveryRunView']>>[];
+      for (const run of runs) items.push(await this.deliveryRunView(tx, run));
+      return { items, total: await tx.warehouseCustomerDeliveryRun.count({ where }), page: p.page, pageSize: Math.min(p.take, 50) };
+    }, { timeout: 60000 });
+  }
+
+  async customerDeliveryRun(id: number, actor: AuthUser) {
+    this.factoryPickupStaff(actor);
+    return this.prisma.$transaction(async tx => this.deliveryRunView(tx, await this.deliveryRunRecord(tx, id)), { timeout: 60000 });
+  }
+
+  async deleteCustomerDeliveryRun(id: number, actor: AuthUser) {
+    this.factoryPickupStaff(actor);
+    return this.transaction(async tx => {
+      const run = await this.deliveryRunRecord(tx, id, true, true);
+      if (run.status === 'DELETED') return { id, deleted: true as const };
+      this.assertDeliveryRunActive(run);
+      if (!(await this.canDeleteCustomerDeliveryRun(tx, run))) throw new ConflictException({
+        code: 'DELIVERY_HAS_SCANS', message: 'Only deliveries that have never had recorded parts can be deleted.',
+      });
+      // Preserve the create request and audit trail so an old retry cannot recreate it.
+      await tx.warehouseCustomerDeliveryRun.update({ where: { id }, data: { status: 'DELETED', version: { increment: 1 } } });
+      await tx.warehouseCustomerDeliveryRunEvent.create({ data: {
+        runId: id, requestKey: `delivery-run-delete:${id}`, requestHash: hash([actor.id, id, 'DELETE']),
+        action: 'DELETE', actorId: actor.id, details: { orders: run.orders },
+      } });
+      return { id, deleted: true as const };
+    }, 60000);
+  }
+
+  async customerDeliveryRunPoOptions(id: number, query: Query, actor: AuthUser) {
+    this.factoryPickupStaff(actor);
+    const run = await this.deliveryRunRecord(this.prisma, id); this.assertDeliveryRunActive(run);
+    // This dedicated delivery endpoint exposes only stocked PO options. The
+    // technician's general inventory endpoint retains its explicit-store scope.
+    const result = await this.readInventoryByPo({
+      search: query.search, page: query.page, pageSize: query.pageSize,
+      view: 'on_hand', storeId: 'all', completePo: 'true',
+    });
+    return actor.role.name === 'technician' ? { ...result, items: result.items.map(group => ({
+      ...group, units: group.units.map(unit => this.technicianWarehouseStock(unit)),
+    })) } : result;
+  }
+
+  async recordManualCustomerDeliveryRun(dto: CustomerDeliveryRunManualDto, actor: AuthUser) {
+    this.factoryPickupStaff(actor); deliveryRunKey(dto.requestKey);
+    if (!isCustomerDeliveryPoKey(dto.poKey)) throw new BadRequestException('Choose a valid warehouse PO key.');
+    if (dto.runId !== undefined && (!Number.isSafeInteger(dto.runId) || dto.runId < 1 || dto.runId > 2147483647))
+      throw new BadRequestException('Choose a valid delivery.');
+    const explicitStore = dto.storeId !== undefined;
+    if (explicitStore && !validDeliveryStore(dto.storeId)) throw new BadRequestException('Choose a valid source store.');
+    const requestHash = hash([actor.id, 'DELIVERY_RUN_MANUAL', dto.poKey, dto.runId ?? null,
+      explicitStore ? { storeId: dto.storeId } : 'ALL']);
+    return this.transaction(async tx => {
+      let run = dto.runId === undefined ? null : await this.deliveryRunRecord(tx, dto.runId, true);
+      const prior = await tx.warehouseCustomerDeliveryRunEvent.findUnique({ where: { requestKey: dto.requestKey } });
+      if (prior) {
+        if (prior.requestHash !== requestHash || (run && prior.runId !== run.id))
+          throw new ConflictException('This request identifier was already used for another operation.');
+        return this.deliveryRunView(tx, run ?? await this.deliveryRunRecord(tx, prior.runId, true));
+      }
+      if (await tx.warehouseCustomerDeliveryRun.findUnique({ where: { requestKey: dto.requestKey } }))
+        throw new ConflictException('This request identifier was already used for another operation.');
+      if (run) this.assertDeliveryRunActive(run);
+      await this.noCount(tx);
+      const source = await this.deliveryRunPoKey(tx, dto.poKey);
+      const sources = run ? [...run.orders as DeliveryRunOrder[]] : [];
+      if (!sources.some(order => order.key === source.key)) sources.push(source);
+      if (sources.length > 50) throw new BadRequestException('A delivery can include at most 50 POs.');
+      const matching = await tx.warehouseStock.findMany({ where: {
+        unit: this.deliveryRunPoWhere(source), onHand: { gt: 0 },
+        ...(explicitStore ? dto.storeId === null ? { unassigned: { gt: 0 } }
+          : { storeBalances: { some: { storeId: dto.storeId!, onHand: { gt: 0 } } } } : {}),
+      }, select: { lineNumber: true, storeBalances: { where: { onHand: { gt: 0 } }, select: { storeId: true } } },
+        orderBy: { lineNumber: 'asc' } });
+      if (!matching.length) throw new ConflictException('This PO has no available parts at the selected warehouse location. Refresh the inventory.');
+      const allocations = run ? deliveryRunAllocations(run) : [];
+      const savedStocks = allocations.length ? await tx.warehouseStock.findMany({ where: {
+        unit: this.deliveryRunPoWhere(source), lineNumber: { in: allocations.map(line => line.lineNumber) },
+      }, select: { lineNumber: true, storeBalances: { where: { onHand: { gt: 0 } }, select: { storeId: true } } } }) : [];
+      const selectedStocks = [...new Map([...matching, ...savedStocks].map(stock => [stock.lineNumber, stock])).values()]
+        .sort((a, b) => a.lineNumber.localeCompare(b.lineNumber));
+      if (new Set([...allocations.map(line => line.lineNumber), ...matching.map(line => line.lineNumber)]).size > 500)
+        throw new BadRequestException('A delivery can include at most 500 pieces.');
+      await this.lockStores(tx, [
+        ...(explicitStore && dto.storeId !== null ? [dto.storeId!] : []),
+        ...selectedStocks.flatMap(stock => stock.storeBalances.map(balance => balance.storeId)),
+      ]);
+      const additions: DeliveryRunAllocation[] = [];
+      for (const entry of selectedStocks) {
+        const stock = await this.load(tx, entry.lineNumber);
+        if (pickupSource(stock).key !== dto.poKey) throw new ConflictException('This piece no longer belongs to the selected PO. Refresh the inventory.');
+        const existing = allocations.filter(line => line.lineNumber === stock.lineNumber);
+        const remaining = validateDeliveryAllocations(stock, existing);
+        const detail = tracking(remaining);
+        const origins = explicitStore ? [dto.storeId!] : [null, ...stock.storeBalances.map(balance => balance.storeId)];
+        for (const storeId of origins) {
+          const quantity = storeQuantity(remaining, storeId);
+          if (!quantity) continue;
+          const selectedParts: PartQuantities = { ...locationParts(remaining, storeId) };
+          if (selectedParts.UNKNOWN) {
+            if (detail.types.length !== 1) throw new ConflictException({ code: 'DELIVERY_MANUAL_TYPES_REQUIRED',
+              message: `Piece ${stock.lineNumber} has unclassified physical parts. Record its part types before delivering this PO manually.` });
+            selectedParts[detail.types[0]] = (selectedParts[detail.types[0]] ?? 0) + selectedParts.UNKNOWN;
+            delete selectedParts.UNKNOWN;
+          }
+          const partsToAdd = resolvePartQuantities(quantity, locationParts(remaining, storeId), detail.types, undefined, selectedParts);
+          const allocation = { lineNumber: stock.lineNumber, storeId,
+            storeName: storeId === null ? 'Unassigned' : stock.storeBalances.find(balance => balance.storeId === storeId)!.store.name,
+            quantity, parts: partsToAdd };
+          const saved = allocations.find(line => line.lineNumber === stock.lineNumber && line.storeId === storeId);
+          if (saved) { saved.quantity += quantity; addParts(saved.parts, partsToAdd); }
+          else allocations.push(allocation);
+          additions.push(allocation);
+        }
+        validateDeliveryAllocations(stock, allocations.filter(line => line.lineNumber === stock.lineNumber));
+      }
+      if (allocations.length > 2000) throw new BadRequestException('A delivery can include at most 2000 piece locations.');
+      if (!run) {
+        const creator = await tx.user.findUniqueOrThrow({ where: { id: actor.id }, select: actorSelect });
+        run = await tx.warehouseCustomerDeliveryRun.create({ data: {
+          requestKey: dto.requestKey, requestHash, storeId: null, storeName: 'Multiple locations', multiStore: true,
+          orders: sources, items: allocations, createdById: actor.id, createdByName: name(creator),
+        } });
+      } else if (additions.length || sources.length !== (run.orders as DeliveryRunOrder[]).length || !run.multiStore) {
+        run = await tx.warehouseCustomerDeliveryRun.update({ where: { id: run.id }, data: {
+          orders: sources, items: allocations, multiStore: true, version: { increment: 1 },
+        } });
+      }
+      // A manual selection records physical parts, so preserve its history even if corrected to zero later.
+      await tx.warehouseCustomerDeliveryRunEvent.create({ data: {
+        runId: run.id, requestKey: dto.requestKey, requestHash, action: 'MANUAL', actorId: actor.id,
+        details: { poKey: dto.poKey, scope: explicitStore ? { storeId: dto.storeId } : 'ALL', allocations: additions },
+      } });
+      return this.deliveryRunView(tx, run);
+    }, 60000);
+  }
+
+  async startCustomerDeliveryRun(dto: CustomerDeliveryRunCreateDto, actor: AuthUser) {
+    this.factoryPickupStaff(actor); deliveryRunKey(dto.requestKey);
+    let poKeys: string[] | undefined;
+    if (dto.poKeys !== undefined) {
+      if (dto.storeId !== undefined) throw new BadRequestException('Choose the source storage location when scanning, not when adding POs.');
+      if (!Array.isArray(dto.poKeys) || !dto.poKeys.length || dto.poKeys.length > 50) throw new BadRequestException('Choose between 1 and 50 POs.');
+      if (!dto.poKeys.every(isCustomerDeliveryPoKey)) throw new BadRequestException('Choose valid warehouse PO keys.');
+      poKeys = [...new Set(dto.poKeys)].sort();
+    }
+    const multiStore = dto.storeId === undefined, storeId = dto.storeId ?? null;
+    if (!multiStore && !validDeliveryStore(dto.storeId)) throw new BadRequestException('Choose a valid source store.');
+    // Preserve earlier request hashes exactly so an uncertain create remains recoverable.
+    const requestHash = hash(poKeys ? [actor.id, 'DELIVERY_RUN_CREATE_MULTI', poKeys]
+      : multiStore ? [actor.id, 'DELIVERY_RUN_CREATE_MULTI'] : [actor.id, 'DELIVERY_RUN_CREATE', storeId]);
+    return this.transaction(async tx => {
+      const prior = await tx.warehouseCustomerDeliveryRun.findUnique({ where: { requestKey: dto.requestKey } });
+      if (prior) {
+        if (prior.requestHash !== requestHash) throw new ConflictException('This request identifier was already used for another operation.');
+        const existing = await this.deliveryRunRecord(tx, prior.id, true, true);
+        if (existing.status === 'DELETED') throw new ConflictException({ code: 'DELIVERY_DELETED', message: 'This delivery was deleted. Create a new delivery to continue.' });
+        return this.deliveryRunView(tx, existing);
+      }
+      const sources: DeliveryRunOrder[] = [];
+      for (const key of poKeys ?? []) {
+        const source = await this.deliveryRunPoKey(tx, key);
+        const available = await tx.warehouseStock.count({ where: {
+          unit: this.deliveryRunPoWhere(source), onHand: { gt: 0 },
+        } });
+        if (!available) throw new ConflictException(`PO ${source.poNumber} has no available parts in the warehouse. Refresh the available POs.`);
+        sources.push(source);
+      }
+      if (storeId !== null) await this.lockStores(tx, [storeId], [storeId]);
+      const store = storeId === null ? null : await tx.warehouseStore.findUniqueOrThrow({ where: { id: storeId } });
+      const creator = await tx.user.findUniqueOrThrow({ where: { id: actor.id }, select: actorSelect });
+      const run = await tx.warehouseCustomerDeliveryRun.create({ data: {
+        requestKey: dto.requestKey, requestHash, storeId, multiStore, storeName: multiStore ? 'Multiple locations' : store?.name ?? 'Unassigned',
+        orders: sources, items: [], createdById: actor.id, createdByName: name(creator),
+      } });
+      return this.deliveryRunView(tx, run);
+    });
+  }
+
+  async addCustomerDeliveryRunPos(id: number, dto: CustomerDeliveryRunPosDto, actor: AuthUser) {
+    this.factoryPickupStaff(actor);
+    if (dto.requestKey !== undefined) deliveryRunKey(dto.requestKey);
+    const byKey = dto.poKeys !== undefined;
+    if (byKey === (dto.poNumbers !== undefined)) throw new BadRequestException('Choose either PO keys or PO numbers, not both.');
+    const requested = byKey ? dto.poKeys : dto.poNumbers;
+    if (!Array.isArray(requested) || !requested.length || requested.length > 50) throw new BadRequestException('Choose between 1 and 50 POs.');
+    const choices = [...new Set(requested.map(value => {
+      if (!byKey) return pickupPoNumber(value);
+      if (!isCustomerDeliveryPoKey(value)) throw new BadRequestException('Choose valid warehouse PO keys.');
+      return value;
+    }))].sort();
+    const requestHash = hash([actor.id, id, 'ADD_PO', byKey ? 'KEYS' : 'NUMBERS', choices]);
+    return this.transaction(async tx => {
+      const run = await this.deliveryRunRecord(tx, id, true);
+      if (dto.requestKey !== undefined) {
+        const prior = await tx.warehouseCustomerDeliveryRunEvent.findUnique({ where: { requestKey: dto.requestKey } });
+        if (prior) {
+          if (prior.requestHash !== requestHash || prior.runId !== id) throw new ConflictException('This request identifier was already used for another operation.');
+          return this.deliveryRunView(tx, run);
+        }
+      }
+      this.assertDeliveryRunActive(run);
+      const sources = [...run.orders as DeliveryRunOrder[]];
+      for (const choice of choices) {
+        if (byKey && sources.some(existing => existing.key === choice)) continue;
+        const source = byKey ? await this.deliveryRunPoKey(tx, choice) : await this.deliveryRunPo(tx, choice);
+        if (sources.some(existing => existing.key === source.key)) continue;
+        if (byKey) {
+          const available = await tx.warehouseStock.count({ where: {
+            unit: this.deliveryRunPoWhere(source), onHand: { gt: 0 },
+          } });
+          if (!available) throw new ConflictException(`PO ${source.poNumber} has no available parts in the warehouse. Refresh the available POs.`);
+        }
+        sources.push(source);
+      }
+      if (sources.length > 50) throw new BadRequestException('A delivery can include at most 50 POs.');
+      const unchanged = sources.length === (run.orders as DeliveryRunOrder[]).length && (!byKey || run.multiStore);
+      const next = unchanged ? run : await tx.warehouseCustomerDeliveryRun.update({ where: { id }, data: {
+        orders: sources, ...(byKey ? { multiStore: true, items: deliveryRunAllocations(run) } : {}), version: { increment: 1 },
+      } });
+      if (dto.requestKey !== undefined) {
+        // Record no-ops too: a retry after a later removal must not restore that PO.
+        await tx.warehouseCustomerDeliveryRunEvent.create({ data: {
+          runId: id, requestKey: dto.requestKey, requestHash, action: 'ADD_PO', actorId: actor.id,
+          details: { ...(byKey ? { poKeys: choices } : { poNumbers: choices }),
+            addedPoKeys: sources.filter(source => !(run.orders as DeliveryRunOrder[]).some(prior => prior.key === source.key)).map(source => source.key) },
+        } });
+      }
+      return this.deliveryRunView(tx, next);
+    }, 60000);
+  }
+
+  async removeCustomerDeliveryRunPo(id: number, dto: CustomerDeliveryRunRemovePoDto, actor: AuthUser) {
+    this.factoryPickupStaff(actor); deliveryRunKey(dto.requestKey);
+    if (!isCustomerDeliveryPoKey(dto.poKey)) throw new BadRequestException('Choose a valid warehouse PO key.');
+    const requestHash = hash([actor.id, id, 'REMOVE_PO', dto.poKey]);
+    return this.transaction(async tx => {
+      const run = await this.deliveryRunRecord(tx, id, true);
+      const prior = await tx.warehouseCustomerDeliveryRunEvent.findUnique({ where: { requestKey: dto.requestKey } });
+      if (prior) {
+        if (prior.requestHash !== requestHash || prior.runId !== id) throw new ConflictException('This request identifier was already used for another operation.');
+        return this.deliveryRunView(tx, run);
+      }
+      this.assertDeliveryRunActive(run);
+      const sources = run.orders as DeliveryRunOrder[];
+      const source = sources.find(order => order.key === dto.poKey);
+      const lineNumbers = [...new Set(deliveryRunAllocations(run).map(line => line.lineNumber))];
+      if (source && lineNumbers.length) {
+        const stocks = await tx.warehouseStock.findMany({
+          where: { lineNumber: { in: lineNumbers } }, include: stockInclude,
+        });
+        if (stocks.length !== lineNumbers.length || stocks.some(stock => !sources.some(order => order.key === pickupSource(stock).key)))
+          throw new ConflictException('A saved delivery piece no longer belongs to its PO. Contact an administrator.');
+        if (stocks.some(stock => pickupSource(stock).key === dto.poKey)) throw new ConflictException({
+          code: 'DELIVERY_PO_HAS_SCANS', message: `PO ${source.poNumber} has scanned parts in this delivery. Correct those scans before removing the PO.`,
+        });
+      }
+      const next = source ? await tx.warehouseCustomerDeliveryRun.update({ where: { id }, data: {
+        orders: sources.filter(order => order.key !== dto.poKey), version: { increment: 1 },
+      } }) : run;
+      // Record even an absent-PO request: retrying it after a later add must not remove that new addition.
+      await tx.warehouseCustomerDeliveryRunEvent.create({ data: {
+        runId: id, requestKey: dto.requestKey, requestHash, action: 'REMOVE_PO', actorId: actor.id,
+        details: { poKey: dto.poKey, poNumber: source?.poNumber ?? null, removed: Boolean(source) },
+      } });
+      return this.deliveryRunView(tx, next);
+    }, 60000);
+  }
+
+  async scanCustomerDeliveryRun(id: number, dto: CustomerDeliveryRunScanDto, actor: AuthUser) {
+    return this.changeCustomerDeliveryRunPart(id, dto, actor, false);
+  }
+
+  async removeCustomerDeliveryRunPart(id: number, dto: CustomerDeliveryRunScanDto, actor: AuthUser) {
+    return this.changeCustomerDeliveryRunPart(id, dto, actor, true);
+  }
+
+  private async changeCustomerDeliveryRunPart(id: number, dto: CustomerDeliveryRunScanDto, actor: AuthUser, remove: boolean) {
+    this.factoryPickupStaff(actor); deliveryRunKey(dto.requestKey);
+    const parsed = requestedPartType(dto.barcode, dto.partType);
+    const action = remove ? 'REMOVE' : 'SCAN';
+    const explicitStore = dto.storeId !== undefined;
+    if (explicitStore && !validDeliveryStore(dto.storeId)) throw new BadRequestException('Choose a valid source store.');
+    // addPo is permission to include a missing PO, not the identity of a physical reading.
+    // Keep the old hash when source was omitted so an uncertain legacy reading
+    // remains recoverable even after another user upgrades or closes the run.
+    const requestHash = hash([actor.id, id, action, parsed.lineNumber, parsed.partType ?? null,
+      ...(explicitStore ? [{ storeId: dto.storeId }] : [])]);
+    return this.transaction(async tx => {
+      const run = await this.deliveryRunRecord(tx, id, true);
+      const prior = await tx.warehouseCustomerDeliveryRunEvent.findUnique({ where: { requestKey: dto.requestKey } });
+      if (prior) {
+        if (prior.requestHash !== requestHash || prior.runId !== id) throw new ConflictException('This request identifier was already used for another operation.');
+        return this.deliveryRunView(tx, run);
+      }
+      this.assertDeliveryRunActive(run);
+      if (run.multiStore && !explicitStore) throw new BadRequestException({ code: 'DELIVERY_STORE_REQUIRED', message: 'Choose the source storage location before scanning or correcting a part.' });
+      const storeId = explicitStore ? dto.storeId! : run.storeId;
+      if (storeId !== null) await this.lockStores(tx, [storeId]);
+      const sourceStore = storeId === null ? null : await tx.warehouseStore.findUniqueOrThrow({ where: { id: storeId } });
+      const sourceStoreName = sourceStore?.name ?? 'Unassigned';
+      const stock = await this.load(tx, parsed.lineNumber), source = pickupSource(stock);
+      const detail = tracking(stock);
+      const selectedParts = resolvePartQuantities(1, null, detail.types, parsed.partType);
+      const type = Object.keys(selectedParts)[0] as PartType;
+      const sources = [...run.orders as DeliveryRunOrder[]];
+      const lines = deliveryRunAllocations(run);
+      let line = lines.find(line => line.lineNumber === stock.lineNumber && line.storeId === storeId);
+      if (remove) {
+        if (!line || !(line.parts[type] ?? 0)) throw new BadRequestException('This physical part has not been scanned from that location into this delivery.');
+        line.quantity--; line.parts[type] = line.parts[type]! - 1;
+        if (!line.parts[type]) delete line.parts[type];
+        if (!line.quantity) lines.splice(lines.indexOf(line), 1);
+      } else {
+        await this.noCount(tx);
+        if (!line) {
+          if (!lines.some(saved => saved.lineNumber === stock.lineNumber) && new Set(lines.map(saved => saved.lineNumber)).size >= 500)
+            throw new BadRequestException('A delivery can include at most 500 pieces.');
+          line = { lineNumber: stock.lineNumber, storeId, storeName: sourceStoreName, quantity: 0, parts: {} }; lines.push(line);
+        }
+        line.quantity++; addParts(line.parts, selectedParts);
+        validateDeliveryAllocations(stock, lines.filter(saved => saved.lineNumber === stock.lineNumber));
+      }
+      if (!sources.some(order => order.key === source.key)) {
+        if (remove) throw new BadRequestException('This piece has not been scanned into this delivery.');
+        if (dto.addPo !== true) throw new ConflictException({ code: 'DELIVERY_PO_NOT_INCLUDED', message: `PO ${source.poNumber} is not included in this delivery. Include this PO and record the scanned part?`, poNumber: source.poNumber });
+        if (sources.length >= 50) throw new BadRequestException('A delivery can include at most 50 POs.');
+        sources.push(source);
+      }
+      const next = await tx.warehouseCustomerDeliveryRun.update({ where: { id }, data: {
+        orders: sources, items: lines, multiStore: run.multiStore || explicitStore, version: { increment: 1 },
+      } });
+      await tx.warehouseCustomerDeliveryRunEvent.create({ data: {
+        runId: id, requestKey: dto.requestKey, requestHash, action, actorId: actor.id,
+        details: { lineNumber: stock.lineNumber, partType: type, storeId, storeName: sourceStoreName,
+          addedPo: !((run.orders as DeliveryRunOrder[]).some(order => order.key === source.key)) },
+      } });
+      return this.deliveryRunView(tx, next);
+    }, 60000);
+  }
+
+  async closeCustomerDeliveryRun(id: number, dto: CustomerDeliveryRunCloseDto, actor: AuthUser) {
+    this.factoryPickupStaff(actor); deliveryRunKey(dto.requestKey);
+    const cleanName = (value: unknown) => {
+      const clean = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+      if (!clean || clean.length > 100 || /[\u0000-\u001f\u007f]/.test(clean)) throw new BadRequestException('Enter the recipient first and last name (1–100 characters each).');
+      return clean;
+    };
+    const firstName = cleanName(dto.firstName), lastName = cleanName(dto.lastName);
+    const signatureStrokes = customerDeliverySignature(dto.signatureStrokes);
+    const requestHash = hash([actor.id, id, 'DELIVERY_RUN_CLOSE', dto.revision, firstName, lastName, signatureStrokes, dto.acceptPartial === true]);
+    return this.transaction(async tx => {
+      const run = await this.deliveryRunRecord(tx, id, true);
+      const prior = await tx.warehouseCustomerDeliveryRunEvent.findUnique({ where: { requestKey: dto.requestKey } });
+      if (prior) {
+        if (prior.requestHash !== requestHash || prior.runId !== id) throw new ConflictException('This request identifier was already used for another operation.');
+        return this.deliveryRunView(tx, run);
+      }
+      this.assertDeliveryRunActive(run);
+      const lines = deliveryRunAllocations(run).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber) || (a.storeId ?? 0) - (b.storeId ?? 0));
+      if (!lines.length) throw new BadRequestException('Scan at least one physical part before closing this delivery.');
+      await this.noCount(tx);
+      await this.lockStores(tx, lines.flatMap(line => line.storeId === null ? [] : [line.storeId]));
+      const selected: Stock[] = [];
+      for (const lineNumber of [...new Set(lines.map(line => line.lineNumber))]) {
+        const stock = await this.load(tx, lineNumber);
+        try { validateDeliveryAllocations(stock, lines.filter(line => line.lineNumber === lineNumber)); }
+        catch (error) {
+          if (error instanceof BadRequestException) throw new ConflictException('Scanned parts are no longer available at their saved locations. Review and correct the delivery before signing again.');
+          throw error;
+        }
+        selected.push(stock);
+      }
+      const view = await this.deliveryRunView(tx, run);
+      if (typeof dto.revision !== 'string' || dto.revision !== view.revision) throw new ConflictException({ code: 'DELIVERY_REVIEW_CHANGED', message: 'This delivery or its pending parts changed. Review the updated summary and collect the signature again.' });
+      if (view.hasPending && dto.acceptPartial !== true) throw new ConflictException({ code: 'DELIVERY_INCOMPLETE', message: 'Some POs still have pending pieces or parts. Review the pending summary and confirm this partial delivery.' });
+      const estimates = [...new Set(selected.flatMap(stock => stock.unit.piece ? [stock.unit.piece.idEst] : []))].sort((a, b) => a - b);
+      for (const estimateId of estimates) await assertWarehouseRelease(tx, estimateId);
+      if (await tx.warehouseCustomerDelivery.findUnique({ where: { requestKey: dto.requestKey } }) || await tx.warehouseMovement.findUnique({ where: { requestKey: dto.requestKey } })) throw new ConflictException('This request identifier was already used for another operation.');
+      const recordedBy = await tx.user.findUniqueOrThrow({ where: { id: actor.id }, select: actorSelect });
+      const origins = new Map(lines.map(line => [line.storeId, line.storeName]));
+      const receiptStore = origins.size === 1 ? { storeId: lines[0].storeId, storeName: lines[0].storeName } : { storeId: null, storeName: 'Multiple locations' };
+      const delivery = await tx.warehouseCustomerDelivery.create({ data: {
+        requestKey: dto.requestKey, requestHash, source: 'WAREHOUSE', ...receiptStore,
+        firstName, lastName, signatureStrokes, items: view.items, pendingItems: view.pendingItems, orders: view.orders,
+        totalPieces: view.totalPieces, totalParts: view.totalParts, actorId: actor.id, actorName: name(recordedBy),
+      } });
+      // Reload after every allocation: one physical piece can have several source
+      // locations, and each move must use the updated global and typed balances.
+      for (const [index, line] of lines.entries()) await this.move(tx, await this.load(tx, line.lineNumber), {
+        type: 'RELEASE', actorId: actor.id, requestHash,
+        requestKey: index === 0 ? dto.requestKey : hash([dto.requestKey, line.lineNumber, ...(run.multiStore ? [line.storeId] : [])]),
+        customerDeliveryId: delivery.id, quantity: line.quantity, partQuantities: line.parts,
+        onHandDelta: -line.quantity, releasedDelta: line.quantity, fromStoreId: line.storeId,
+      });
+      const next = await tx.warehouseCustomerDeliveryRun.update({ where: { id }, data: {
+        status: 'CLOSED', deliveryId: delivery.id, closedAt: new Date(), version: { increment: 1 },
+        snapshot: JSON.parse(JSON.stringify(view)) as Prisma.InputJsonValue,
+      } });
+      await tx.warehouseCustomerDeliveryRunEvent.create({ data: { runId: id, requestKey: dto.requestKey, requestHash, action: 'CLOSE', actorId: actor.id, details: { deliveryId: delivery.id, revision: dto.revision } } });
+      return this.deliveryRunView(tx, next);
+    }, 60000);
+  }
+
   async customerDelivery(id: number, actor: AuthUser) {
     this.staff(actor);
     if (!Number.isSafeInteger(id) || id < 1)
@@ -1709,6 +2306,116 @@ export class WarehouseService {
   async release(dto: WarehouseReleaseDto, actor: AuthUser) {
     this.staff(actor);
     return this.recordRelease(dto, actor);
+  }
+
+  async warehousePoReleaseOptions(query: Query, actor: AuthUser) {
+    this.receivingStaff(actor);
+    if (!isCustomerDeliveryPoKey(query.poKey)) throw new BadRequestException('Choose a valid warehouse PO key.');
+    const scope = query.storeId ?? 'all';
+    const storeId = scope === 'all' ? undefined : scope === 'unassigned' ? null : Number(scope);
+    if (storeId !== undefined && storeId !== null && (!/^[1-9]\d*$/.test(scope) || !validDeliveryStore(storeId)))
+      throw new BadRequestException('Choose a valid warehouse source.');
+    return this.prisma.$transaction(async tx => {
+      const source = await this.deliveryRunPoKey(tx, query.poKey!);
+      const rows = await tx.warehouseStock.findMany({ where: {
+        unit: this.deliveryRunPoWhere(source), onHand: { gt: 0 },
+        ...(storeId === undefined ? {} : storeId === null ? { unassigned: { gt: 0 } }
+          : { storeBalances: { some: { storeId, onHand: { gt: 0 } } } }),
+      }, include: stockInclude, orderBy: { lineNumber: 'asc' }, take: 501 });
+      if (rows.length > 500) throw new BadRequestException('This PO has more than 500 available pieces. Choose a warehouse location or release a smaller selection.');
+      const activeCount = await tx.warehouseCount.findUnique({ where: { activeSlot: 1 }, select: { id: true } });
+      const units = rows.map(stock => {
+        const unit = presentStock(stock);
+        const scoped = storeId === undefined ? unit : {
+          ...unit, onHand: storeQuantity(stock, storeId), unassigned: storeId === null ? unit.unassigned : 0,
+          stores: storeId === null ? [] : unit.stores.filter(store => store.id === storeId),
+          partTracking: { ...unit.partTracking, onHand: locationParts(stock, storeId),
+            unassigned: storeId === null ? unit.partTracking.unassigned : {},
+            stores: storeId === null ? [] : unit.partTracking.stores.filter(store => store.id === storeId) },
+        };
+        return actor.role.name === 'technician' ? this.technicianWarehouseStock(scoped) : scoped;
+      });
+      return { group: { ...source, supplierName: units[0]?.supplierName ?? '', customer: units[0]?.customer ?? '',
+        project: units[0]?.project ?? '', units }, activeCountId: activeCount?.id ?? null };
+    }, { timeout: 60000 });
+  }
+
+  async releaseWarehousePo(dto: WarehousePoReleaseDto, actor: AuthUser) {
+    this.receivingStaff(actor); deliveryRunKey(dto.requestKey);
+    if (!isCustomerDeliveryPoKey(dto.poKey)) throw new BadRequestException('Choose a valid warehouse PO key.');
+    if (!Array.isArray(dto.items) || !dto.items.length || dto.items.length > 2000 || dto.items.some(item => !item || typeof item !== 'object'))
+      throw new BadRequestException('Choose between 1 and 2000 piece locations.');
+    const items = dto.items.map(item => {
+      if (!validDeliveryStore(item.storeId)) throw new BadRequestException('Choose the source store, or explicitly select Unassigned.');
+      return { ...requestedParts(item), storeId: item.storeId };
+    }).sort((a, b) => a.lineNumber.localeCompare(b.lineNumber) || (a.storeId ?? 0) - (b.storeId ?? 0));
+    if (items.some(item => !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 200 ||
+      !Number.isSafeInteger(item.version) || item.version! < 0) ||
+      new Set(items.map(item => `${item.lineNumber}:${item.storeId}`)).size !== items.length)
+      throw new BadRequestException('Choose each piece location once and enter valid quantities and versions.');
+    const versions = new Map<string, number>();
+    for (const item of items) {
+      if (versions.has(item.lineNumber) && versions.get(item.lineNumber) !== item.version)
+        throw new BadRequestException('All locations of a piece must have the same reviewed stock version.');
+      versions.set(item.lineNumber, item.version!);
+    }
+    if (versions.size > 500) throw new BadRequestException('A release can include at most 500 pieces.');
+    const requestHash = hash([actor.id, 'PO_BATCH_RELEASE', dto.poKey, items]);
+    const movementKeys = items.map((item, index) => index === 0 ? dto.requestKey : hash([dto.requestKey, item.lineNumber, item.storeId]));
+    const summary = { units: versions.size, parts: items.reduce((sum, item) => sum + item.quantity, 0) };
+    const reasonPrefix = 'Installation release from: ';
+    const summarizeStores = (names: Map<number | null, string>) => [...new Set(items.map(item => item.storeId))].map(storeId => ({
+      storeId, storeName: names.get(storeId) ?? 'Unassigned', parts: items.filter(item => item.storeId === storeId).reduce((sum, item) => sum + item.quantity, 0),
+    }));
+    return this.transaction(async tx => {
+      const prior = await tx.warehouseMovement.findUnique({ where: { requestKey: dto.requestKey }, include: movementInclude });
+      if (prior) {
+        if (prior.requestHash !== requestHash) throw new ConflictException('This request identifier was already used for another operation.');
+        const movements = await tx.warehouseMovement.findMany({ where: { requestKey: { in: movementKeys } }, include: movementInclude });
+        if (movements.length !== items.length || movements.some(movement => movement.requestHash !== requestHash))
+          throw new ConflictException('This release audit is incomplete. Contact an administrator before continuing.');
+        return { ...summary, stores: summarizeStores(new Map(movements.map(movement => [movement.fromStoreId,
+          movement.reason?.startsWith(reasonPrefix) ? movement.reason.slice(reasonPrefix.length) : movement.fromStore?.name ?? 'Unassigned']))), replayed: true };
+      }
+      if (await tx.warehouseCustomerDelivery.findUnique({ where: { requestKey: dto.requestKey } }))
+        throw new ConflictException('This request identifier was already used for another operation.');
+      await this.noCount(tx);
+      const source = await this.deliveryRunPoKey(tx, dto.poKey);
+      await this.lockStores(tx, items.flatMap(item => item.storeId === null ? [] : [item.storeId]));
+      const stocks = new Map<string, Stock>(), sourceNames = new Map<number | null, string>([[null, 'Unassigned']]);
+      const selected: Array<(typeof items)[number] & { parts: PartQuantities }> = [];
+      for (const [lineNumber, version] of versions) {
+        const stock = await this.load(tx, lineNumber);
+        if (pickupSource(stock).key !== source.key)
+          throw new BadRequestException('Every selected piece must belong to this exact PO. No parts were released by this request.');
+        if (stock.version !== version)
+          throw new ConflictException(`Unit I${lineNumber} changed. Refresh and review the release. No parts were released by this request.`);
+        stocks.set(lineNumber, stock);
+        for (const balance of stock.storeBalances) sourceNames.set(balance.storeId, balance.store.name);
+        const allocations = items.filter(item => item.lineNumber === lineNumber).map(item => ({ ...item,
+          parts: resolvePartQuantities(item.quantity, locationParts(stock, item.storeId), tracking(stock).types, undefined, item.parts),
+          storeName: sourceNames.get(item.storeId) ?? 'Unassigned',
+        }));
+        validateDeliveryAllocations(stock, allocations);
+        selected.push(...allocations);
+      }
+      const estimateIds = [...new Set([...stocks.values()].flatMap(stock => stock.unit.piece ? [stock.unit.piece.idEst] : []))].sort((a, b) => a - b);
+      const installations = new Map<number, ReturnType<typeof installationDestination>>();
+      for (const estimateId of estimateIds)
+        installations.set(estimateId, (await assertWarehouseRelease(tx, estimateId))?.installation ?? null);
+      for (const [index, item] of selected.entries()) {
+        // Earlier origins of the same piece already advanced its version and balances.
+        const stock = await this.load(tx, item.lineNumber);
+        const installation = stock.unit.piece ? installations.get(stock.unit.piece.idEst) : null;
+        await this.move(tx, stock, {
+          type: 'RELEASE', actorId: actor.id, requestHash, requestKey: movementKeys[index],
+          quantity: item.quantity, partQuantities: item.parts, onHandDelta: -item.quantity, releasedDelta: item.quantity,
+          fromStoreId: item.storeId, installationJobId: installation?.id, installationAddress: installation?.address,
+          reason: `${reasonPrefix}${sourceNames.get(item.storeId) ?? 'Unassigned'}`,
+        });
+      }
+      return { ...summary, stores: summarizeStores(sourceNames), replayed: false };
+    }, 60000);
   }
 
   async technicianRelease(dto: WarehouseReleaseDto, actor: AuthUser) {

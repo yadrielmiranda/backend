@@ -62,6 +62,20 @@ External units share warehouse stores, pickup runs, counts, transfers and moveme
 
 `node scripts/test-external-po-mysql.cjs` verifies the migration and inventory lifecycle in a disposable local MySQL database built from migration history, without importing user files or altering application data. It requires the local MySQL client.
 
+## Saved warehouse customer deliveries
+
+Before starting the updated server, apply `20261104170000_persistent_customer_delivery_runs` and `20261104210000_customer_delivery_multiple_stores` with `npx prisma migrate deploy`, then run `npx prisma generate` and `npm run build`. Both migrations are additive: existing signed receipts and inventory movements are preserved. Stop the local Node server before generating Prisma on Windows if it has locked the Prisma engine file.
+
+Administrators and technicians create a saved delivery without choosing a storage location, select its available POs, and then choose the current source location for scanning. The `/warehouse/customer-delivery-runs` endpoints persist every accepted reading with its source; reopening the run restores its POs, quantities and origins. `GET /:id/po-options` lists POs with stock anywhere in the warehouse for these roles, while the technician's general inventory endpoint retains its existing explicit-location restriction. The PO picker submits source keys (`order:<id>` or `external:<id>`) to `POST /:id/pos`; the endpoint also retains the legacy PO-number input and accepts only one input list per request. New keyed choices must have warehouse stock, and already included keys remain unchanged on retry. An unexpected PO requires explicit inclusion before its reading is saved. Corrections remove one typed part from one explicit source through a separate, audited action. A saved preparation does not release inventory.
+
+New creation uses `{requestKey}` and returns `multiStore: true`. Scan and correction requests include `storeId` (`null` means Unassigned). The run exposes aggregated `items` for the customer and separate `allocations` for each piece/location; item `origins` preserve the typed quantities from each location. Older active deliveries retain their saved source and scans, then upgrade on keyed PO additions or explicit-source scans. Pending requests from the older client can replay their original no-source request key after upgrade or close.
+
+Closing requires a current review revision, recipient name and signature, and explicit confirmation when POs remain incomplete. One close transaction validates and releases every saved source allocation, then freezes one signed receipt with the parts delivered from each location and all pending pieces and parts from the included POs, including lines not yet received. A piece scanned from several locations counts once in the piece total; previous releases and the aggregated current scans are deducted once from pending quantities. Unknown historical part types remain identified as unclassified instead of inventing a breakdown. A changed review must be reviewed and signed again; retried scans and close requests use their original request keys to avoid duplicates. Existing direct deliveries from factory pickups and historical closed receipts retain their original behavior.
+
+Administrators and technicians can remove an unscanned PO with `POST /:id/remove-po` (`requestKey`, `poKey`), including when other POs have saved parts. A PO with saved parts must have those readings corrected first. Removal is audited and safe to retry after the PO is added again. `DELETE /:id` removes an active delivery only if it has never recorded a scan; a prior scan still prevents deletion after its correction. Deleted deliveries disappear from lists and cannot be reopened or recreated by replaying their original request. Their audit records remain available internally. These operations do not change inventory and require no additional migration.
+
+`node scripts/test-customer-delivery-runs-mysql.cjs` exercises this workflow in a disposable local MySQL database; it never migrates or writes application data.
+
 ## Compile and run the project
 
 ```bash
