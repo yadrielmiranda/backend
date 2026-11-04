@@ -1665,6 +1665,7 @@ export class WarehouseService {
       const snapshot = run.snapshot as Record<string, any>;
       return {
         ...snapshot, status: run.status, multiStore: run.multiStore, updatedAt: run.updatedAt, canDelete: false,
+        availableStorages: [],
         orders: (snapshot.orders ?? []).map((order: Record<string, unknown>) => ({ ...order, canRemove: false })),
         allocations: snapshot.allocations ?? (snapshot.items ?? []).map((item: Record<string, unknown>) => ({ ...item, storeId: run.storeId, storeName: run.storeName })),
         closedAt: run.closedAt, deliveryId: run.deliveryId, delivery: receipt ? presentCustomerDelivery(receipt) : null,
@@ -1680,8 +1681,19 @@ export class WarehouseService {
     const items: ReturnType<typeof deliveryRunItem>[] = [];
     const allocations: Array<ReturnType<typeof deliveryRunItem> & { storeId: number | null; storeName: string }> = [];
     const pendingItems: ReturnType<typeof deliveryRunItem>[] = [];
+    const availableStorages = new Map<number | null, { storeId: number | null; storeName: string }>();
     const orders = sources.map(source => ({ ...source, totalPieces: 0, totalParts: 0, pendingPieces: 0, pendingParts: 0, unknownPending: false }));
     for (const stock of stocks) {
+      // Saved scans do not leave stock until the delivery closes. Show every
+      // location that still physically holds parts of one of this run's POs.
+      if (stock.onHand > 0) {
+        for (const balance of stock.storeBalances) {
+          if (balance.onHand > 0 && balance.store.isActive)
+            availableStorages.set(balance.storeId, { storeId: balance.storeId, storeName: balance.store.name });
+        }
+        if (stock.unassigned > 0)
+          availableStorages.set(null, { storeId: null, storeName: 'Unassigned' });
+      }
       const source = pickupSource(stock), order = orders.find(order => order.key === source.key)!;
       const line = scanned.find(line => line.lineNumber === stock.lineNumber);
       if (line) {
@@ -1715,6 +1727,8 @@ export class WarehouseService {
       createdById: run.createdById, createdBy: run.createdByName, createdAt: run.createdAt,
       updatedAt: run.updatedAt, closedAt: run.closedAt, revision,
       orders: orders.map(order => ({ ...order, canRemove: run.status === 'ACTIVE' && order.totalParts === 0 })),
+      availableStorages: [...availableStorages.values()].sort((a, b) =>
+        Number(a.storeId === null) - Number(b.storeId === null) || a.storeName.localeCompare(b.storeName) || (a.storeId ?? 0) - (b.storeId ?? 0)),
       items, allocations, pendingItems,
       totalPieces: items.length, totalParts: scanned.reduce((sum, line) => sum + line.quantity, 0),
       pendingPieces: pendingItems.length, pendingParts: pendingItems.reduce((sum, item) => sum + item.quantity, 0),
