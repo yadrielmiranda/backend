@@ -4,7 +4,8 @@ import { DuplicateEstimateDto } from './dto/duplicate-estimate.dto';
 import { assertEstimateDuplicationAccess, estimateDuplicationInclude } from './estimate-duplication';
 import { resolveNewPlan, getPaymentSchedule } from '@/payment-plans/payment-schedule';
 import { PaymentsService } from '@/payments/payments.service';
-import { CANCELED_ESTIMATE, assertEstimateLifecycleAccess, assertEstimateNotCanceled, assertNoEstimatePaymentHistory } from './estimate-lifecycle-policy';
+import { CANCELED_ESTIMATE, assertEstimateLifecycleAccess, assertEstimateNotCanceled, assertNoEstimatePaymentHistory, hasEstimatePaymentHistory } from './estimate-lifecycle-policy';
+import { canDeleteEstimateInstallation } from './estimate-deletion-policy';
 import { type DealerEarningsSummary } from '@/common/dealer-earnings';
 import { buildNetworkProfitBreakdown, type NetworkProfitBreakdown } from '@/common/network-profit-breakdown';
 import { buildMaterialEarningsReport, referralReportOrderInclude, referralReportMaterialRelations, type ReferralCostsSummary, type ReferralMaterialProfitsSummary } from '@/referrals/referral-report';
@@ -100,6 +101,20 @@ type BulkPieceAttributeUpdate = {
   idCoat?: number;
 };
 
+const estimateInstallationLifecycleSelect = {
+  ...estimateInstallationSummarySelect,
+  dealerMeasurementsAcceptedAt: true,
+  _count: { select: { quotes: true } },
+  quotes: {
+    ...estimateInstallationSummarySelect.quotes,
+    select: {
+      ...estimateInstallationSummarySelect.quotes.select,
+      approvalReason: true,
+      submittedAt: true,
+    },
+  },
+} satisfies Prisma.InstallationJobSelect;
+
 // --- Tipos con Relaciones (para salida final) ---
 type PieceWithRelations = Piece & {
   prod: Prisma.ProductGetPayload<{}>;
@@ -149,7 +164,7 @@ export type EstimateWithRelations = Estimate & {
   installationJob?: Pick<
     Prisma.InstallationJobGetPayload<{}>,
     'id' | 'status'
-  > | null;
+  > & { canDeleteWithEstimate?: boolean } | null;
   installationSummary?: EstimateInstallationReportSummary | null;
   customerChargesSummary?: EstimateCustomerChargeSummary | null;
   branding?: Branding | null;
@@ -364,7 +379,7 @@ export class EstimatesService {
         materialRevisions: referralReportMaterialRelations.materialRevisions,
         payments: true,
         customerCharges: true,
-        installationJob: { select: estimateInstallationSummarySelect },
+        installationJob: { select: estimateInstallationLifecycleSelect },
         pieces: {
           orderBy: { id: 'asc' },
           include: {
@@ -409,7 +424,8 @@ export class EstimatesService {
       networkProfitBreakdown: buildNetworkProfitBreakdown(estimate),
       dealerNetwork: networkPresentation(estimate),
       installationJob: estimate.installationJob
-        ? { id: estimate.installationJob.id, status: estimate.installationJob.status }
+        ? { id: estimate.installationJob.id, status: estimate.installationJob.status,
+            canDeleteWithEstimate: canDeleteEstimateInstallation(estimate, estimate.installationJob) }
         : null,
       paymentSchedule: await getPaymentSchedule(tx, estimateId),
     };
@@ -935,7 +951,7 @@ export class EstimatesService {
         customerCharges: {
           orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
         },
-        installationJob: { select: estimateInstallationSummarySelect },
+        installationJob: { select: estimateInstallationLifecycleSelect },
         pieces: {
           orderBy: { id: 'asc' },
           include: {
@@ -999,6 +1015,7 @@ export class EstimatesService {
       ? {
           id: estimate.installationJob.id,
           status: estimate.installationJob.status,
+          canDeleteWithEstimate: canDeleteEstimateInstallation(estimate, estimate.installationJob),
         }
       : null;
 
@@ -1075,7 +1092,7 @@ export class EstimatesService {
         order: { include: referralReportOrderInclude },
         ...referralReportMaterialRelations,
         payments: true,
-        installationJob: { select: estimateInstallationSummarySelect },
+        installationJob: { select: estimateInstallationLifecycleSelect },
       },
       orderBy: { date: 'desc' },
     });
@@ -1087,7 +1104,8 @@ export class EstimatesService {
       manualDiscountSummary: calculateEstimateDiscount(estimate),
       installationSummary: buildEstimateInstallationSummary(estimate.installationJob),
       installationJob: estimate.installationJob
-        ? { id: estimate.installationJob.id, status: estimate.installationJob.status } : null,
+        ? { id: estimate.installationJob.id, status: estimate.installationJob.status,
+            canDeleteWithEstimate: canDeleteEstimateInstallation(estimate, estimate.installationJob) } : null,
     }));
   }
 
@@ -2906,8 +2924,20 @@ export class EstimatesService {
         include: {
           status: true,
           order: true,
-          payments: true,
-          installationJob: { select: { status: true } },
+          payments: { include: { receipts: { select: { id: true } } } },
+          installationJob: {
+            select: {
+              id: true,
+              status: true,
+              dealerMeasurementsAcceptedAt: true,
+              _count: { select: { quotes: true } },
+              quotes: {
+                orderBy: { version: 'desc' },
+                take: 1,
+                select: { status: true, approvalReason: true, submittedAt: true },
+              },
+            },
+          },
           pieces: { orderBy: { id: 'asc' } },
         },
       });
@@ -2923,20 +2953,18 @@ export class EstimatesService {
         );
       }
 
-      if (
-        estimate.installationJob &&
-        estimate.installationJob.status !== InstallationJobStatus.CANCELED
-      ) {
+      if (!canDeleteEstimateInstallation(estimate, estimate.installationJob)) {
         throw new BadRequestException(
           `Estimate #${estimate.number} cannot be deleted while its installation workflow is active.`,
         );
       }
 
       if (
+        hasEstimatePaymentHistory(estimate.payments) ||
         estimate.payments.some(
           (payment) =>
-            payment.status === PaymentStatus.PAID ||
-            Boolean(payment.stripeSessionId),
+            Boolean(payment.stripeSessionId) ||
+            Boolean(payment.stripePaymentIntentId),
         )
       ) {
         throw new BadRequestException(
@@ -2953,6 +2981,11 @@ export class EstimatesService {
 
       const beforeSnapshot = EstimateAuditSnapshotBuilder.build(estimate);
 
+      // Remove the calculation and its dependent records under the estimate lock.
+      // A later failure rolls back both the installation and the estimate deletion.
+      if (estimate.installationJob) {
+        await tx.installationJob.delete({ where: { id: estimate.installationJob.id } });
+      }
       await tx.piece.deleteMany({ where: { idEst: where.id } });
       await tx.estimate.delete({ where: { id: where.id } });
 
@@ -2965,8 +2998,9 @@ export class EstimatesService {
         message: `Estimate deleted (#${estimate.number})`,
         before: beforeSnapshot,
         after: null,
-        meta: { source: 'EstimatesService.deleteEstimate' },
-      });
+        meta: { source: 'EstimatesService.deleteEstimate',
+          ...(estimate.installationJob ? { installationJobId: estimate.installationJob.id } : {}) },
+      }, tx);
 
       return estimate as unknown as Estimate;
     });
