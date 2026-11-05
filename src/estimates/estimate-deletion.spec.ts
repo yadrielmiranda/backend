@@ -1,5 +1,9 @@
 import { InstallationJobStatus, PaymentType } from '@prisma/client';
 import { EstimatesService } from './estimates.service';
+import type { AuthUser } from '@/auth/types/auth-user.type';
+
+const owner: AuthUser = { id: 7, role: { name: 'dealer' } };
+const admin: AuthUser = { id: 99, role: { name: 'admin' } };
 
 function fixture() {
   let state: any = {
@@ -69,9 +73,9 @@ function waiveDeposit(f: ReturnType<typeof fixture>, status = 'MATERIAL_PAYMENT_
   });
 }
 
-async function expectBlocked(f: ReturnType<typeof fixture>, message: string) {
+async function expectBlocked(f: ReturnType<typeof fixture>, message: string, actor = owner) {
   const before = structuredClone(f.state());
-  await expect(f.service.deleteEstimate({ id: 1 }, 7)).rejects.toThrow(message);
+  await expect(f.service.deleteEstimate({ id: 1 }, actor)).rejects.toThrow(message);
   expect(f.state()).toEqual(before);
   expect(f.tx.installationJob.delete).not.toHaveBeenCalled();
   expect(f.tx.piece.deleteMany).not.toHaveBeenCalled();
@@ -83,7 +87,7 @@ async function expectBlocked(f: ReturnType<typeof fixture>, message: string) {
 describe('Estimate deletion with a calculated installation', () => {
   it('deletes the preliminary installation and estimate in one locked transaction', async () => {
     const f = fixture();
-    const deleted = await f.service.deleteEstimate({ id: 1 }, 7);
+    const deleted = await f.service.deleteEstimate({ id: 1 }, owner);
     expect(deleted.id).toBe(1);
     expect(f.state()).toMatchObject({ estimate: null, installation: null });
     expect(f.prisma.$transaction).toHaveBeenCalledTimes(1);
@@ -109,7 +113,7 @@ describe('Estimate deletion with a calculated installation', () => {
   it.each(['PENDING', 'CANCELED'])('allows an unpaid %s payment record without a checkout', async status => {
     const f = fixture();
     f.state().estimate.payments = [{ type: 'INSTALLATION_DEPOSIT', status, baseAmount: '500' }];
-    await f.service.deleteEstimate({ id: 1 }, 7);
+    await f.service.deleteEstimate({ id: 1 }, owner);
     expect(f.state().estimate).toBeNull();
     expect(f.state().installation).toBeNull();
   });
@@ -118,7 +122,7 @@ describe('Estimate deletion with a calculated installation', () => {
     const f = fixture();
     if (status) f.state().installation.status = status;
     else f.state().installation = null;
-    await f.service.deleteEstimate({ id: 1 }, 7);
+    await f.service.deleteEstimate({ id: 1 }, owner);
     expect(f.state().estimate).toBeNull();
     expect(f.tx.installationJob.delete).toHaveBeenCalledTimes(status ? 1 : 0);
   });
@@ -127,7 +131,7 @@ describe('Estimate deletion with a calculated installation', () => {
     'deletes the initial calculation with a waived deposit in %s', async status => {
       const f = fixture();
       waiveDeposit(f, status);
-      await f.service.deleteEstimate({ id: 1 }, 7);
+      await f.service.deleteEstimate({ id: 1 }, owner);
       expect(f.state().estimate).toBeNull();
       expect(f.state().installation).toBeNull();
     },
@@ -206,8 +210,71 @@ describe('Estimate deletion with a calculated installation', () => {
         throw new Error('Audit failed');
       });
     }
-    await expect(f.service.deleteEstimate({ id: 1 }, 7)).rejects.toThrow('failed');
+    await expect(f.service.deleteEstimate({ id: 1 }, owner)).rejects.toThrow('failed');
     expect(f.tx.installationJob.delete).toHaveBeenCalledTimes(1);
     expect(f.state()).toEqual(before);
+  });
+});
+
+describe('Estimate deletion authorization', () => {
+  it.each(['dealer', 'client', 'admin'])(
+    'allows an administrator to delete an eligible %s estimate and records the administrator', async role => {
+      const f = fixture();
+      f.state().estimate.user = { id: 7, role: { name: role } };
+      if (role === 'admin') f.state().estimate.idUser = admin.id;
+      await f.service.deleteEstimate({ id: 1 }, admin);
+      expect(f.state().estimate).toBeNull();
+      expect(f.state().installation).toBeNull();
+      expect(f.logs.log).toHaveBeenCalledWith(expect.objectContaining({
+        userId: admin.id,
+        before: expect.objectContaining({ idUser: role === 'admin' ? admin.id : 7 }),
+      }), f.tx);
+    },
+  );
+
+  it.each(['dealer', 'client', 'operator', 'technician'] as const)(
+    'preserves deletion of the authenticated %s owner’s eligible estimate', async name => {
+      const f = fixture();
+      const actor: AuthUser = { id: 7, role: { name } };
+      await f.service.deleteEstimate({ id: 1 }, actor);
+      expect(f.state().estimate).toBeNull();
+      expect(f.logs.log).toHaveBeenCalledWith(expect.objectContaining({ userId: 7 }), f.tx);
+    },
+  );
+
+  it.each(['operator', 'dealer', 'client', 'technician'] as const)(
+    'rejects an unrelated %s, even when the dealer network allows assistance', async name => {
+      const f = fixture();
+      f.state().estimate.dealerNetwork = { canAssist: true, canPay: true };
+      f.state().estimate.user = { id: 7, parentDealerId: 99 };
+      await expectBlocked(f, 'not found', { id: 99, role: { name } });
+      expect(f.tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        f.tx.estimate.findUnique.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it.each([
+    { label: 'paid installation', message: 'payment process', change: (s: any) => {
+      s.estimate.payments = [{ type: 'INSTALLATION_DEPOSIT', status: 'PAID' }];
+    } },
+    { label: 'open checkout', message: 'payment process', change: (s: any) => {
+      s.estimate.payments = [{ type: 'PERMIT', status: 'PENDING', stripeSessionId: 'cs_open' }];
+    } },
+    { label: 'refunded payment', message: 'payment process', change: (s: any) => {
+      s.estimate.payments = [{ type: 'MATERIAL', status: 'REFUNDED' }];
+    } },
+    { label: 'existing order', message: 'order', change: (s: any) => { s.estimate.order = { id: 30 }; } },
+    { label: 'signed agreement', message: 'signed agreement', change: (s: any) => {
+      s.agreements.push({ signedAt: new Date() });
+    } },
+    { label: 'installation in progress', message: 'installation workflow', change: (s: any) => {
+      s.installation.status = 'IN_PROGRESS';
+    } },
+    { label: 'canceled estimate', message: 'canceled', change: (s: any) => { s.estimate.status.name = 'Canceled'; } },
+  ])('does not let an administrator bypass $label', async ({ message, change }) => {
+    const f = fixture();
+    change(f.state());
+    await expectBlocked(f, message, admin);
   });
 });

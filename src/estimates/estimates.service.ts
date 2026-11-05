@@ -1139,26 +1139,6 @@ export class EstimatesService {
     return estimate;
   }
 
-  async assertEstimateOwnerOrThrow(id: number, user: AuthUser) {
-    const estimate = await this.prisma.estimate.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        idUser: true,
-        status: { select: { id: true, name: true } },
-      },
-    });
-
-    if (!estimate)
-      throw new NotFoundException(`Estimate with ID #${id} not found.`);
-
-    if (estimate.idUser !== user.id) {
-      throw new NotFoundException(`Estimate with ID #${id} not found.`);
-    }
-
-    return estimate;
-  }
-
   // =====================================================
   // FLUJO PERSISTENTE
   // =====================================================
@@ -2914,7 +2894,7 @@ export class EstimatesService {
   // --- deleteEstimate ---
   async deleteEstimate(
     where: Prisma.EstimateWhereUniqueInput,
-    userId: number,
+    actor: AuthUser,
   ): Promise<Estimate> {
     const discardedFiles: string[] = [];
     const deleted = await this.prisma.$transaction(async (tx) => {
@@ -2942,7 +2922,9 @@ export class EstimatesService {
         },
       });
 
-      if (!estimate) {
+      // Recheck ownership under the same lock as the deletion. Only admins may
+      // delete another user's estimate; operator and network access do not apply.
+      if (!estimate || (estimate.idUser !== actor.id && actor.role?.name !== 'admin')) {
         throw new NotFoundException(`Estimate #${where.id} not found.`);
       }
       assertEstimateNotCanceled(estimate);
@@ -2994,7 +2976,7 @@ export class EstimatesService {
         action: 'DELETE',
         entityType: 'Estimate',
         entityId: estimate.id,
-        userId,
+        userId: actor.id,
         message: `Estimate deleted (#${estimate.number})`,
         before: beforeSnapshot,
         after: null,

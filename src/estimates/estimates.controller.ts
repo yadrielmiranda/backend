@@ -576,9 +576,6 @@ export class EstimatesController {
   @Delete(':id')
   async remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     const user = req.user as AuthUser;
-
-    await this.estimatesService.assertEstimateOwnerOrThrow(id, user);
-
-    return this.estimatesService.deleteEstimate({ id }, user.id);
+    return this.estimatesService.deleteEstimate({ id }, user);
   }
 }
