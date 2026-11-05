@@ -8,7 +8,8 @@ Usage:
   python scripts/extract-pricing-ranges.py --input ranges.xlsx --output ranges.json
 
 The output must not exist. By default, use the "Pricing Ranges" worksheet, or a
-single worksheet whose row 6 matches the template. Use --sheet for another name.
+single worksheet matching the template. Headers may be on row 4 or row 6, as in
+the existing templates. Use --sheet for another name.
 """
 
 import argparse
@@ -37,12 +38,17 @@ HEADERS = (
     "Area Cost (A)", "Perimeter Cost (B)", "Fixed Cost (C)", "Sort Order", "Active",
 )
 HEADER_ROW = 6
+HEADER_ROWS = (4, HEADER_ROW)
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 MAX_XML_BYTES = 64 * 1024 * 1024
 
 
 class ExtractionError(ValueError):
     """The input does not meet the expected workbook contract."""
+
+
+class AmbiguousHeadersError(ExtractionError):
+    """A worksheet contains more than one complete template header."""
 
 
 def read_xml(archive, name):
@@ -131,17 +137,52 @@ def row_values(cells, strings, sheet_name):
     return {column: decode_cell(cell, strings, sheet_name) for column, cell in cells.items()}
 
 
-def validate_headers(values, sheet_name):
+def validate_headers(values, sheet_name, header_row=HEADER_ROW):
     for column, expected in zip(COLUMNS, HEADERS):
         actual = values.get(column)
         if actual is None or actual.strip() != expected:
             raise ExtractionError(
-                f"Wrong header at {sheet_name}!{column}{HEADER_ROW}: "
+                f"Wrong header at {sheet_name}!{column}{header_row}: "
                 f"expected {expected!r}, found {actual!r}"
             )
     extras = [column for column, value in values.items() if column not in COLUMNS and nonblank(value)]
     if extras:
         raise ExtractionError(f"Unexpected header columns in {sheet_name}: {', '.join(extras)}")
+
+
+def find_header_row(rows, strings, sheet_name):
+    """Match the complete contract only at the two supported template positions."""
+    matches = []
+    failures = []
+    for number in HEADER_ROWS:
+        cells = rows.get(number, {})
+        # Select the most relevant diagnostic if neither candidate is valid.
+        # Inspecting each cell separately keeps a formula/error in a header
+        # from hiding the other matching labels in that same row.
+        matching_labels = 0
+        for column, expected in zip(COLUMNS, HEADERS):
+            if column not in cells:
+                continue
+            try:
+                value = decode_cell(cells[column], strings, sheet_name)
+            except ExtractionError:
+                continue
+            matching_labels += value is not None and value.strip() == expected
+        try:
+            validate_headers(row_values(cells, strings, sheet_name), sheet_name, number)
+        except ExtractionError as error:
+            failures.append((matching_labels, number, error))
+        else:
+            matches.append(number)
+    if len(matches) > 1:
+        raise AmbiguousHeadersError(
+            f"Ambiguous template headers in {sheet_name}: rows "
+            f"{', '.join(map(str, matches))}. Keep one header row."
+        )
+    if matches:
+        return matches[0]
+    # Prefer the original row 6 when neither row resembles a header.
+    raise max(failures, key=lambda failure: failure[:2])[2]
 
 
 def sheet_parts(archive):
@@ -207,24 +248,25 @@ def extract_workbook(source, sheet_name=None):
         if sheet_name is None:
             matches = []
             for name in parts:
-                cells = load(name).get(HEADER_ROW, {})
                 try:
-                    validate_headers(row_values(cells, strings, name), name)
+                    find_header_row(load(name), strings, name)
+                except AmbiguousHeadersError:
+                    raise
                 except ExtractionError:
                     continue
                 matches.append(name)
             if len(matches) != 1:
                 raise ExtractionError(
-                    f"Expected one worksheet matching the template at row {HEADER_ROW}; "
+                    f"Expected one worksheet matching the template at row 4 or 6; "
                     f"found {len(matches)}. Specify --sheet and check the headers."
                 )
             sheet_name = matches[0]
 
         rows = load(sheet_name)
-        validate_headers(row_values(rows.get(HEADER_ROW, {}), strings, sheet_name), sheet_name)
+        header_row = find_header_row(rows, strings, sheet_name)
         extracted = []
         for number in sorted(rows):
-            if number <= HEADER_ROW:
+            if number <= header_row:
                 continue
             values = row_values(rows[number], strings, sheet_name)
             extras = [column for column, value in values.items() if column not in COLUMNS and nonblank(value)]
