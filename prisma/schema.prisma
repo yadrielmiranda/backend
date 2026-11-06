@@ -1605,6 +1605,7 @@ model Estimate {
   materialRevisions MaterialRevision[]
   customerCharges   EstimateCustomerCharge[]
   internalNote      EstimateInternalNote?
+  noteAttachments   EstimateNoteAttachment[]
 
   // --- CUSTOMER (dealer fills; not a relation) ---
   customerFirstName  String?  @db.VarChar(100)
@@ -1630,6 +1631,28 @@ model EstimateInternalNote {
   updatedBy   User?    @relation("EstimateInternalNoteEditor", fields: [updatedById], references: [id], onDelete: SetNull)
 
   @@index([updatedById])
+}
+
+model EstimateNoteAttachment {
+  id         String    @id @db.Char(36)
+  // A deleted estimate detaches its files so the cleanup worker can reclaim the disk space.
+  estimateId Int?
+  estimate   Estimate? @relation(fields: [estimateId], references: [id], onDelete: SetNull)
+  name       String    @db.VarChar(255)
+  mimeType   String    @db.VarChar(80)
+  sizeBytes  Int
+  ready      Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+
+  @@index([estimateId, ready])
+  @@index([ready, createdAt])
+}
+
+// A single locked row counts every file, including uploads and deletions still in progress.
+model EstimateNoteAttachmentQuota {
+  id        Int     @id
+  usedBytes BigInt  @default(0)
+  warned    Boolean @default(false)
 }
 
 model EstimateCustomerCharge {

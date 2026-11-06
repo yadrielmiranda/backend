@@ -88,6 +88,17 @@ describe('NotificationsService', () => {
     expect(email.enqueue).not.toHaveBeenCalled();
   });
 
+  it('publishes an in-app-only storage warning without queuing SMS or email', async () => {
+    const created = { id: 48, recipientId: 7, message: 'Attachment storage reached 9 GB.' };
+    const tx = { notification: { create: jest.fn().mockResolvedValue(created) } };
+    const prisma = { $transaction: jest.fn(async (work) => work(tx)) };
+    const service = new NotificationsService(prisma as never, gateway as never, sms as never, email as never);
+    await service.createAndSend({ message: created.message, recipientId: 7, inAppOnly: true });
+    expect(gateway.sendNotificationToUser).toHaveBeenCalledWith(7, created);
+    expect(sms.enqueue).not.toHaveBeenCalled();
+    expect(email.enqueue).not.toHaveBeenCalled();
+  });
+
   it('queues a newly inserted deduplicated notification once', async () => {
     const created = { id: 12, recipientId: 7, message: 'Payment confirmed.' };
     const tx = {

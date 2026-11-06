@@ -29,23 +29,23 @@ function presentNote(note: SavedNote | null, actor: AuthUser) {
   };
 }
 
+export async function assertInternalNoteAccess(db: Prisma.TransactionClient, estimateId: number, actor: AuthUser, write = false) {
+  const roles = write ? ['admin', 'dealer'] : ['admin', 'operator', 'dealer'];
+  if (!roles.includes(actor.role?.name ?? ''))
+    throw new ForbiddenException(write ? 'You cannot edit internal estimate notes.' : 'You cannot view internal estimate notes.');
+  const estimate = await db.estimate.findUnique({
+    where: { id: estimateId }, select: { id: true, idUser: true },
+  });
+  if (!estimate || !await canAccessOwner(db, estimate.idUser, actor))
+    throw new NotFoundException('Estimate not found.');
+}
+
 @Injectable()
 export class EstimateInternalNoteService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private async assertAccess(db: Prisma.TransactionClient, estimateId: number, actor: AuthUser, write = false) {
-    const roles = write ? ['admin', 'dealer'] : ['admin', 'operator', 'dealer'];
-    if (!roles.includes(actor.role?.name ?? ''))
-      throw new ForbiddenException(write ? 'You cannot edit internal estimate notes.' : 'You cannot view internal estimate notes.');
-    const estimate = await db.estimate.findUnique({
-      where: { id: estimateId }, select: { id: true, idUser: true },
-    });
-    if (!estimate || !await canAccessOwner(db, estimate.idUser, actor))
-      throw new NotFoundException('Estimate not found.');
-  }
-
   async getForEstimate(estimateId: number, actor: AuthUser) {
-    await this.assertAccess(this.prisma, estimateId, actor);
+    await assertInternalNoteAccess(this.prisma, estimateId, actor);
     const note = await this.prisma.estimateInternalNote.findUnique({
       where: { estimateId }, include: noteInclude,
     });
@@ -55,7 +55,7 @@ export class EstimateInternalNoteService {
   async saveForEstimate(estimateId: number, dto: UpdateEstimateInternalNoteDto, actor: AuthUser) {
     try {
       return await this.prisma.$transaction(async tx => {
-        await this.assertAccess(tx, estimateId, actor, true);
+        await assertInternalNoteAccess(tx, estimateId, actor, true);
         const text = dto.text.trim();
         if (dto.expectedVersion === 0) {
           const note = await tx.estimateInternalNote.create({

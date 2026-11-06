@@ -28,6 +28,16 @@
 
 ## Project setup
 
+### Private estimate note attachments
+
+Set `NOTE_ATTACHMENTS_DIR` to a persistent, private directory on the VPS, for example `/var/lib/impact/estimate-note-attachments`. Give the backend service account read/write access, use mode `0700`, and keep the directory outside all web roots and release directories. On local development the default is `private/estimate-note-attachments` under the backend working directory. Back up the directory and the database together.
+
+Install the locked backend dependencies including optional native packages (`npm ci --include=optional`), generate the Prisma client and build the backend. Apply migration `20261106170000_estimate_note_attachments` with `npx prisma migrate deploy` before restarting the updated backend and publishing the matching frontend. If a reverse proxy limits request sizes, allow an 11 MB multipart request on the attachment upload route so a 10 MB file and its form headers can reach the application.
+
+The application stores up to five attachments and 25 MB per estimate, checks the 10 MB upload limit before image conversion, and limits stored file content to 10 GB across all estimates. It sends administrators an in-app notification at 9 GB. The upload, deletion, visibility and quota checks can be exercised on a temporary local MySQL database with `node scripts/test-estimate-note-attachments-mysql.cjs`.
+
+### Install dependencies
+
 ```bash
 $ npm install
 ```

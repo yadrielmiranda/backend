@@ -8,6 +8,7 @@ import { EstimatePdfHtmlBuilder } from './pdf/estimate-pdf-html.builder';
 import { buildPublicEstimateData } from './public-share/public-estimate-data';
 
 const secret = 'PRIVATE-NOTE-DO-NOT-PUBLISH';
+const attachment = { id: 'private-file-id', name: 'private-opening-measurements.pdf', sizeBytes: 320 };
 const note = () => ({
   text: secret,
   version: 1,
@@ -30,6 +31,14 @@ function estimateFixture(): any {
 }
 
 describe('Internal estimate note privacy', () => {
+  it.each(['admin', 'operator', 'dealer', 'client', 'technician', undefined] as const)(
+    'excludes the attachment relation from general estimate responses for %s', role => {
+      const actor = role ? { id: 7, role: { name: role } } : undefined;
+      const response = { orders: [{ estimate: { id: 41, noteAttachments: [attachment] } }] };
+      expect(presentApiResponse(response, actor)).toEqual({ orders: [{ estimate: { id: 41 } }] });
+    },
+  );
+
   it.each(['client', 'technician', 'unknown', undefined])(
     'removes notes from every nested response for %s', (role) => {
       const original = {
@@ -64,7 +73,7 @@ describe('Internal estimate note privacy', () => {
       const materialHash = materialRevisionBaseHash(estimate);
 
       for (const internalNote of [note(), { ...note(), text: 'Edited ' + secret, version: 2 }, null]) {
-        const withNote = { ...estimate, internalNote };
+        const withNote = { ...estimate, internalNote, noteAttachments: [attachment] };
         const after = buildPublicEstimateData(withNote, null, estimate.pieces, mode);
         expect(after).toEqual(before);
         expect(JSON.stringify(after)).not.toContain(secret);
@@ -84,7 +93,7 @@ describe('Internal estimate note privacy', () => {
       const estimate = estimateFixture();
       const before = EstimatePdfHtmlBuilder.build(estimate, view, {}, 99, 'admin');
       const beforeFooter = EstimatePdfHtmlBuilder.buildFooterTemplate(estimate, view);
-      const withNote = { ...estimate, internalNote: note() };
+      const withNote = { ...estimate, internalNote: note(), noteAttachments: [attachment] };
       const after = EstimatePdfHtmlBuilder.build(withNote, view, {}, 99, 'admin');
       const afterFooter = EstimatePdfHtmlBuilder.buildFooterTemplate(withNote, view);
       expect(after).toBe(before);

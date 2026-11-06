@@ -69,6 +69,7 @@ pids
 *.pid.lock
 
 # uploads
+/private/estimate-note-attachments/
 /storage/material-images/
 /uploads/*
 !/uploads/.gitkeep

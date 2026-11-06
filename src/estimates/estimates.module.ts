@@ -22,6 +22,8 @@ import { EstimateShareEmailController } from './public-share/estimate-share-emai
 import { EstimateShareEmailService } from './public-share/estimate-share-email.service';
 import { EstimateInternalNoteController } from './estimate-internal-note.controller';
 import { EstimateInternalNoteService } from './estimate-internal-note.service';
+import { EstimateNoteAttachmentsController, EstimateNoteUploadCapacityInterceptor, EstimateNoteUploadGuard } from './estimate-note-attachments.controller';
+import { EstimateNoteAttachmentsService } from './estimate-note-attachments.service';
 
 @Module({
   imports: [PromotionsModule,
@@ -35,7 +37,7 @@ import { EstimateInternalNoteService } from './estimate-internal-note.service';
     PaymentsModule,
     ContractsModule,
   ],
-  controllers: [EstimatesController, PublicEstimatesController, EstimateShareEmailController, EstimateInternalNoteController],
+  controllers: [EstimatesController, PublicEstimatesController, EstimateShareEmailController, EstimateInternalNoteController, EstimateNoteAttachmentsController],
   providers: [
     EstimatesService,
     EstimatePdfService,
@@ -46,6 +48,9 @@ import { EstimateInternalNoteService } from './estimate-internal-note.service';
     EstimateCustomerChargesService,
     EstimateShareEmailService,
     EstimateInternalNoteService,
+    EstimateNoteAttachmentsService,
+    EstimateNoteUploadGuard,
+    EstimateNoteUploadCapacityInterceptor,
   ],
 })
 export class EstimatesModule {}

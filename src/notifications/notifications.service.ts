@@ -11,6 +11,7 @@ type NotificationDb = PrismaService | Prisma.TransactionClient;
 type NotificationInput = CreateNotificationDto & {
   actorId?: number;
   notifyActor?: boolean;
+  inAppOnly?: boolean;
 };
 type NotificationPayload = Omit<NotificationInput, 'recipientId'>;
 
@@ -55,7 +56,7 @@ export class NotificationsService {
           },
         });
 
-        if (result.count > 0) {
+        if (result.count > 0 && !data.inAppOnly) {
           await this.sms.enqueue(notification, tx);
           await this.email.enqueue(notification, tx);
         }
@@ -66,8 +67,10 @@ export class NotificationsService {
       const notification = await tx.notification.create({
         data: notificationData,
       });
-      await this.sms.enqueue(notification, tx);
-      await this.email.enqueue(notification, tx);
+      if (!data.inAppOnly) {
+        await this.sms.enqueue(notification, tx);
+        await this.email.enqueue(notification, tx);
+      }
       return { notification, created: true };
     };
 
