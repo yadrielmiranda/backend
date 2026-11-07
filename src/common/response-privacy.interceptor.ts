@@ -112,8 +112,8 @@ export function presentApiResponse(value: unknown, user?: AuthUser): any {
   };
   const prepared = prepareNetwork(value);
   const source = staff ? prepared : presentInstallationPricing(prepared, user);
-  const visit = (input: unknown): any => {
-    if (Array.isArray(input)) return input.map(visit);
+  const visit = (input: unknown, field?: string): any => {
+    if (Array.isArray(input)) return input.map(item => visit(item, field));
     // Conserva Decimal, Date, Buffer y respuestas de archivos sin transformarlos.
     if (!record(input)) return input;
     const isUser = 'username' in input && ('idRole' in input || 'password' in input);
@@ -121,13 +121,14 @@ export function presentApiResponse(value: unknown, user?: AuthUser): any {
       .filter(([key]) => !credentials.has(key) && (!isUser || userFields.has(key)) &&
         (user?.role?.name === 'admin' || !referralAdministration.has(key)) &&
         (user?.role?.name === 'admin' || !paymentPlanAdministration.has(key)) &&
+        (staff || field !== 'doorDesignSnapshot' || key !== 'unitPrice') &&
         (staff || dealer || key !== 'internalNote') &&
         key !== 'noteAttachments' && // Private file metadata is served only by the estimate-scoped attachment routes.
         (user?.role?.name === 'admin' || !installationAdministration.has(key)) &&
         (user?.role?.name === 'admin' || (key !== 'coverageSnapshot' && key !== 'estimatedMinutes' && key !== 'timeSnapshot')) &&
         (staff || (technician && key === 'poNumber') || !companyFinancials.has(key)) &&
         (staff || dealer || !dealerFinancials.has(key)))
-      .map(([key, child]) => [key, visit(child)]));
+      .map(([key, child]) => [key, visit(child, key)]));
   };
   return visit(source);
 }

@@ -291,6 +291,17 @@ describe('Agreed prices, payments and factory safeguards', () => {
       assert.equal(materialRevisionBaseHash(e), hash);
     }
   });
+  it('keeps legacy revision hashes and protects the selected French door design', () => {
+    const e = estimate();
+    const previous = materialRevisionBaseHash(e);
+    Object.assign(e.pieces[0], { idDoorDesign: null, doorDesignSnapshot: null });
+    assert.equal(materialRevisionBaseHash(e), previous);
+    Object.assign(e.pieces[0], { idDoorDesign: 7, doorDesignSnapshot: {
+      version: 1, id: 7, kind: 'DOUBLE', code: 'Custom 01', artworkKey: 'DD01',
+      systemId: 3, configId: 5, unitPrice: '419.73',
+    } });
+    assert.notEqual(materialRevisionBaseHash(e), previous);
+  });
   it('detects changed agreed data in the base hash', () => { const e = estimate(); const hash = materialRevisionBaseHash(e); e.pieces[0].idActiveOption = 2; assert.notEqual(materialRevisionBaseHash(e), hash); });
   it('ignores incidental catalog timestamps while preserving stored agreement data', () => { const e = estimate(); e.pieces[0].syst = { id: 1, updatedAt: '2026-01-01' }; const hash = materialRevisionBaseHash(e); e.pieces[0].syst.updatedAt = '2026-10-01'; assert.equal(materialRevisionBaseHash(e), hash); });
   it('preserves the dealer earnings plan snapshot as part of the protected agreement', () => { const e = estimate(); const hash = materialRevisionBaseHash(e); e.dealerEarningsPlanSnapshot.percent = '25'; assert.notEqual(materialRevisionBaseHash(e), hash); });

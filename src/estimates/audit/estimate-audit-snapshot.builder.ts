@@ -1,4 +1,5 @@
 import { pieceDesignContent } from '@/pieces/piece-design';
+import { doorDesignContent } from '@/door-designs/piece-door-design';
 import { stripEnergySnapshotMetadata } from '@/energy-ratings/energy-rating-lookup';
 
 export class EstimateAuditSnapshotBuilder {
@@ -90,6 +91,7 @@ export class EstimateAuditSnapshotBuilder {
             idConf: p.idConf ?? null,
             idFC: p.idFC ?? null,
             ...pieceDesignContent(p),
+            ...doorDesignContent(p),
             idCryst: p.idCryst ?? null,
             idTint: p.idTint ?? null,
             idCoat: p.idCoat ?? null,

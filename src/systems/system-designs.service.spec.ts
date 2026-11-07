@@ -449,6 +449,18 @@ describe('Garage design availability by series', () => {
     expect(f.tx.systemDesignOption.deleteMany).not.toHaveBeenCalled();
   });
 
+  it('keeps a French Door series isolated from garage catalog reads and empty garage updates', async () => {
+    const f = fixture();
+    f.system.brandProduct.product.diagramFamily = 'FRENCH_DOOR';
+    f.system.allowDesign = true;
+    await expect(f.service.manage(10)).rejects.toThrow('Garage Door');
+    await expect(f.service.update(10, { allowDesign: false, designs: [] })).rejects.toThrow('Garage Door');
+    expect(f.tx.designPattern.findMany).not.toHaveBeenCalled();
+    expect(f.tx.designColor.findMany).not.toHaveBeenCalled();
+    expect(f.tx.system.update).not.toHaveBeenCalled();
+    expect(f.system.allowDesign).toBe(true);
+  });
+
   it('rejects nonexistent catalog IDs without replacing existing permissions', async () => {
     const f = fixture();
     f.data.designs[1].colorIds = [999];

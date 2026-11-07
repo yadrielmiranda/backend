@@ -59,6 +59,8 @@ export class SystemDesignsService {
       },
     });
     if (!system) throw new NotFoundException('System not found.');
+    if (system.brandProduct.product.diagramFamily === DiagramFamily.FRENCH_DOOR)
+      throw new BadRequestException('These design and color settings apply only to Garage Door series.');
     return system;
   }
 
@@ -233,16 +235,9 @@ export class SystemDesignsService {
     return designTransaction(this.prisma, async (tx) => {
       const system = await this.system(id, tx);
       if (
-        (data.allowDesign ||
-          pairs.length ||
-          colorModifiers.length ||
-          defaultDesignId !== null ||
-          sectionHeight !== undefined) &&
-        system.brandProduct.product.diagramFamily !== DiagramFamily.GARAGE_DOOR
-      )
-        throw new BadRequestException(
-          'Design is available only for Garage Door series.',
-        );
+        system.brandProduct.product.diagramFamily !== DiagramFamily.GARAGE_DOOR &&
+        (data.allowDesign || pairs.length || colorModifiers.length || defaultDesignId !== null || sectionHeight !== undefined)
+      ) throw new BadRequestException('Design is available only for Garage Door series.');
       const colorIds = [
         ...new Set([
           ...pairs.map((pair) => pair.idDesignColor),

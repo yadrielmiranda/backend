@@ -1,4 +1,6 @@
 import { readPieceDesignSnapshot, withStoredPieceDesign } from '@/pieces/piece-design';
+import { readDoorDesignSnapshot } from '@/door-designs/piece-door-design';
+import { publicDoorDesignContent } from '@/door-designs/door-design-presentation';
 import { networkSnapshot, canAccessOwner, billingEstimate } from '@/dealer-network/dealer-network';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -40,7 +42,7 @@ class MaterialPreviewCompleted<T> extends Error {
   constructor(readonly result: T) { super('Material preview completed'); }
 }
 const acceptance = 'I accept the listed material changes, quantities, prices and updated project total.';
-const inputKeys = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC', 'idDesign', 'idDesignColor', 'frameColorBeforeDesignId', 'width', 'height', 'heightLeft', 'heightRight',
+const inputKeys = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC', 'idDesign', 'idDesignColor', 'frameColorBeforeDesignId', 'idDoorDesign', 'width', 'height', 'heightLeft', 'heightRight',
   'legHeight', 'sashHeight', 'windowHeight', 'doorWidth', 'doorHeight', 'leftSideliteWidth', 'rightSideliteWidth',
   'leftPanels', 'rightPanels', 'panelCount', 'horizontalHeights', 'idCryst', 'idTint', 'idCoat', 'idPrivacy', 'screen',
   'highBottom', 'idActiveOption', 'idPreparationOption', 'idSillOption', 'idReinforcementOption', 'muntin', 'qty', 'dealerMarkup'];
@@ -144,7 +146,11 @@ export class MaterialRevisionsService {
       items: (revision.items as MaterialRevisionItemSnapshot[]).map(item => ({
         key: item.key, action: item.action, originalPieceId: item.originalPieceId,
         label: item.label, originalLabel: item.originalLabel, changeDescription: item.changeDescription,
-        input: { ...item.input, ...(!dealerPricing ? { dealerMarkup: 0 } : {}) },
+        input: {
+          ...item.input,
+          ...publicDoorDesignContent({ ...item.input, doorDesignSnapshot: item.pricing.doorDesignSnapshot }),
+          ...(!dealerPricing ? { dealerMarkup: 0 } : {}),
+        },
         price: item.pricing.price, subtotal: new Decimal(item.pricing.price).mul(item.input.qty).toFixed(2),
         ...(dealerPricing ? { customerPrice: item.pricing.customerPrice,
           customerSubtotal: new Decimal(item.pricing.customerPrice).mul(item.input.qty).toFixed(2) } : {}),
@@ -184,6 +190,7 @@ export class MaterialRevisionsService {
       pieces: estimate.pieces.map((piece: RevisionPieceRecord) => ({
         id: piece.id, label: label(piece), input: {
           ...this.installation.materialRevisionPieceInput(piece),
+          ...publicDoorDesignContent(piece),
           ...(estimate.user.role.name !== 'dealer' ? { dealerMarkup: 0 } : {}),
         },
       })),
@@ -248,7 +255,7 @@ export class MaterialRevisionsService {
       : await this.promotions.eligible(estimate.idUser, db);
     const markup = new Decimal(String(original?.markup ?? estimate.ownerMarkupSnapshot ?? 0));
     withStoredPieceDesign(input, existingItem
-      ? { ...existingItem.input, designSnapshot: existingItem.pricing?.designSnapshot }
+      ? { ...existingItem.input, designSnapshot: existingItem.pricing?.designSnapshot, doorDesignSnapshot: existingItem.pricing?.doorDesignSnapshot }
       : original);
     let calculated = await this.calculator.calculatePieceMetrics(input, markup, db, cache);
     if (original) {
@@ -264,6 +271,7 @@ export class MaterialRevisionsService {
     return {
       ...Object.fromEntries(inputKeys.map(key => [key, calculated[key]])),
       designSnapshot: calculated.designSnapshot ?? null,
+      doorDesignSnapshot: calculated.doorDesignSnapshot ?? null,
       rate: isPrivileged(actor) ? money(calculated.rate) : 0,
       markup: isPrivileged(actor) ? Number(calculated.markup) : 0,
       netProfit: isPrivileged(actor) ? money(calculated.netProfit) : 0,
@@ -300,6 +308,11 @@ export class MaterialRevisionsService {
   private describeChange(before: any, after: any): string[] {
     if (!before) return [`${after.qty} new unit(s)`, 'Dimensions and specifications shown in the revision item.'];
     const changes: string[] = [];
+    if ((before.idDoorDesign ?? null) !== (after.idDoorDesign ?? null)) {
+      const oldCode = readDoorDesignSnapshot(before.doorDesignSnapshot)?.code ?? 'None';
+      const newCode = readDoorDesignSnapshot(after.doorDesignSnapshot)?.code ?? 'None';
+      changes.push(`Door Design: ${oldCode} → ${newCode}`);
+    }
     const priorDesign = readPieceDesignSnapshot(before.designSnapshot);
     const nextDesign = readPieceDesignSnapshot(after.designSnapshot);
     if ((before.idDesign ?? null) !== (after.idDesign ?? null))

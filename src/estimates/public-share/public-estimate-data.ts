@@ -1,4 +1,5 @@
 import { pieceDesignContent, pieceHasSolidGarageDesign } from '@/pieces/piece-design';
+import { publicDoorDesignContent } from '@/door-designs/door-design-presentation';
 import { buildPaymentSchedule, scheduleAmounts } from '@/payment-plans/payment-schedule';
 import { effectivePlanDefinition, planSnapshot } from '@/payment-plans/payment-plan';
 import {
@@ -234,6 +235,7 @@ export function buildPublicEstimateData(
       idConf: p.idConf,
       idFC: p.idFC,
       ...pieceDesignContent(p),
+      ...publicDoorDesignContent(p),
       idCryst: hasSolidDesign ? null : p.idCryst,
       idTint: hasSolidDesign ? null : p.idTint,
       idCoat: hasSolidDesign ? null : p.idCoat,

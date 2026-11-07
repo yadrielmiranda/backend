@@ -30,6 +30,10 @@ export class CreateSystemDto {
 
   @IsOptional()
   @IsBoolean()
+  allowDesign?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   isDefault?: boolean;
 
   @IsOptional()

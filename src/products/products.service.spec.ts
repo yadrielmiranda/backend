@@ -44,3 +44,19 @@ describe('Product muntin permission', () => {
       expect(await validate(Object.assign(new dtoClass(), { name: 'Window', allowMuntin }))).not.toHaveLength(0);
   });
 });
+
+describe('Product changes between door catalogs', () => {
+  it.each([['GARAGE_DOOR', 'FRENCH_DOOR'], ['FRENCH_DOOR', 'GARAGE_DOOR']] as const)(
+    'requires series designs to be disabled before changing %s to %s', async (from, to) => {
+      const { product, service } = fixture();
+      const current = await product.findUnique();
+      current.diagramFamily = from;
+      product.update.mockRejectedValueOnce({ code: 'P2025' });
+      await expect(service.updateProduct({ where: { id: 3 }, data: { diagramFamily: to } })).rejects.toThrow('Disable designs');
+      expect(product.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 3, kind: 'GLAZED_UNIT', diagramFamily: from,
+          brandProducts: { none: { systems: { some: { allowDesign: true } } } } },
+      }));
+    },
+  );
+});

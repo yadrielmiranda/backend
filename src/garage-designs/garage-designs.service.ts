@@ -95,7 +95,7 @@ export class GarageDesignsService {
     try {
       return await designTransaction(this.prisma, async tx => {
         if (normalized.isActive === false && await tx.system.findFirst({
-          where: { allowDesign: true, defaultDesignId: id }, select: { id: true },
+          where: { allowDesign: true, defaultDesignId: id, brandProduct: { product: { diagramFamily: 'GARAGE_DOOR' } } }, select: { id: true },
         })) throw new ConflictException('This design is a default for an enabled series. Change its default or disable Design first.');
         return tx.designPattern.update({ where: { id }, data: normalized });
       });
@@ -130,7 +130,7 @@ export class GarageDesignsService {
       return await designTransaction(this.prisma, async tx => {
         if (normalized.idFrameColor !== undefined) await this.validateFrameColor(normalized.idFrameColor, tx);
         if (normalized.isActive === false && await tx.system.findFirst({
-          where: { allowDesign: true, defaultDesignColorId: id }, select: { id: true },
+          where: { allowDesign: true, defaultDesignColorId: id, brandProduct: { product: { diagramFamily: 'GARAGE_DOOR' } } }, select: { id: true },
         })) throw new ConflictException('This color is a default for an enabled series. Change its default or disable Design first.');
         return tx.designColor.update({ where: { id }, data: normalized });
       });

@@ -54,6 +54,28 @@ describe.each(['width', 'height'] as const)('Four-decimal pricing range %s bound
   });
 });
 
+it.each([
+  ['X', 'SINGLE', 'SD01', '300.00'],
+  ['OXXO', 'DOUBLE', 'DD01', '500.00'],
+])('includes one editable door design surcharge per %s unit before dealer markup and quantity', async (conf, kind, artworkKey, unitPrice) => {
+  const { calculate, tx } = fixture('width');
+  tx.frenchDoorDesign = { findUnique: jest.fn().mockResolvedValue({
+    id: 11, kind, artworkKey, unitPrice: new Prisma.Decimal(unitPrice), code: 'EDITABLE-01',
+  }) };
+  tx.sysConf = { findUnique: jest.fn().mockResolvedValue({
+    dimensionMode: 'STANDARD', isSelectableInEstimate: true, system: {
+      idProduct: 1, idBrand: 1, isActive: true, allowDesign: true, brandProduct: { product: { diagramFamily: 'FRENCH_DOOR', kind: 'GLAZED_UNIT' } },
+    }, config: { conf, idProduct: 1, isActive: true },
+  }) };
+  const qty = 3;
+  const plain = await calculate('60', { qty, dealerMarkup: 25 });
+  const withDesign = await calculate('60', { qty, dealerMarkup: 25, idDoorDesign: 11 });
+  expect(withDesign.rate.minus(plain.rate).toFixed(2)).toBe(unitPrice);
+  expect(withDesign.subtotal.minus(plain.subtotal).equals(new Decimal(unitPrice).mul(qty))).toBe(true);
+  expect(withDesign.customerSubtotal.minus(plain.customerSubtotal).equals(new Decimal(unitPrice).mul(qty).mul(1.25))).toBe(true);
+  expect(withDesign.idFC).toBe(plain.idFC);
+});
+
 it('uses the linked frame in calculation while preserving the existing area pricing and dimensions', async () => {
   const { calculate, tx } = fixture('width');
   tx.systemDesignOption = { findUnique: jest.fn().mockResolvedValue({

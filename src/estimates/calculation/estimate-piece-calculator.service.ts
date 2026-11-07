@@ -24,6 +24,7 @@ import { resolvePieceComponents } from "@/pricing/piece-component-resolver";
 import { isPivotTransomPricingCandidate, pivotTransomDoorPricingDimensions, usesPivot1500SgpDoorPricing } from "@/pricing/pivot-transom-pricing";
 import { resolvePiecePanelCount } from "@/pieces/panel-count-resolver";
 import { resolvePieceDesign, type PieceDesignSnapshot } from '@/pieces/piece-design';
+import { resolveDoorDesign, type DoorDesignSnapshot } from '@/door-designs/piece-door-design';
 import { garageDesignHasGlass } from '@/garage-designs/design-template';
 
 import { CreatePieceDto } from "@/pieces/dto/create-piece.dto";
@@ -69,6 +70,7 @@ export type CalculationCache = {
 };
 
 export type CalculatedMetricsInternal = {
+  doorDesignSnapshot?: DoorDesignSnapshot | null;
   designSnapshot?: PieceDesignSnapshot | null;
   networkPricing?: NetworkPiecePricing;
   regularPrice?: Decimal;
@@ -343,10 +345,11 @@ export class EstimatePieceCalculatorService {
   async calculatePieceMetrics(pieceDto: CreatePieceDto | UpsertPieceDto, effectiveMarkup: Decimal,
     tx: PrismaTransactionClient, cache: CalculationCache): Promise<CalculatedPieceCombined> {
     const design = await resolvePieceDesign(tx, pieceDto);
+    const doorDesign = await resolveDoorDesign(tx, pieceDto);
     const normalized = design.idFC === undefined ? pieceDto : { ...pieceDto, idFC: design.idFC };
     const hasGlass = garageDesignHasGlass(design.designSnapshot?.design.template) !== false;
-    const calculated = await this.calculateBasePieceMetrics(normalized, effectiveMarkup, tx, cache, design.idDesignColor, hasGlass);
-    return applyNetworkPricing({ ...calculated, ...design }, cache.networkSnapshot);
+    const calculated = await this.calculateBasePieceMetrics(normalized, effectiveMarkup, tx, cache, design.idDesignColor, hasGlass, doorDesign.doorDesignSnapshot);
+    return applyNetworkPricing({ ...calculated, ...design, ...doorDesign }, cache.networkSnapshot);
   }
 
   private async calculateBasePieceMetrics(
@@ -356,6 +359,7 @@ export class EstimatePieceCalculatorService {
     cache: CalculationCache,
     resolvedDesignColorId: number | null,
     hasGlass: boolean,
+    doorDesign: DoorDesignSnapshot | null,
   ): Promise<CalculatedPieceCombined> {
     // usamos cache para evitar queries repetidas
     let product = cache.product.get(pieceDto.idProd);
@@ -590,6 +594,9 @@ export class EstimatePieceCalculatorService {
       : applyFrameBaseModifier(base, systemFrameColor);
 
     if (isLinearMaterial) {
+      if (doorDesign) {
+        throw new BadRequestException("Door designs are not allowed for linear material.");
+      }
       if (!pieceDto.width) {
         throw new BadRequestException("Width is required for linear material.");
       }
@@ -1077,7 +1084,7 @@ export class EstimatePieceCalculatorService {
     const dimensionMode: DimensionMode =
       sysConf.dimensionMode ?? DimensionMode.STANDARD;
     const normalizeMuntin = (windowWall?: WindowWallMuntinGeometry) =>
-      allowMuntin ? this.muntinService.normalizePieceMuntinFromCatalog(
+      allowMuntin && !doorDesign ? this.muntinService.normalizePieceMuntinFromCatalog(
         pieceDto.muntin,
         config.muntinLayout,
         tx as any,
@@ -1715,7 +1722,7 @@ export class EstimatePieceCalculatorService {
       ? adjustedBaseRate.mul(new Decimal(1).add(highBottomPercent.div(100)))
       : adjustedBaseRate;
 
-    const rate = baseRateWithHighBottom.add(glassOptionSurchargeRate);
+    const rate = baseRateWithHighBottom.add(glassOptionSurchargeRate).add(doorDesign?.unitPrice ?? 0);
 
     const markupAmount = rate.mul(effectiveMarkup);
     const price = rate.add(markupAmount);

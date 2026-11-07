@@ -1,5 +1,6 @@
 import { matchingPieceDesignSnapshot, pieceFrameColorName } from '@/pieces/piece-frame-color';
 import { pieceHasSolidGarageDesign } from '@/pieces/piece-design';
+import { publicDoorDesignContent } from '@/door-designs/door-design-presentation';
 import { networkSnapshot, networkMaterialProfit, billingEstimate } from '@/dealer-network/dealer-network';
 import { calculateEstimateDiscount, estimateDiscountConfig } from '../discounts/estimate-discount';
 import type { Branding } from '@prisma/client';
@@ -318,6 +319,8 @@ const buildPieceReportDetails = (piece: any): PieceReportDetails => {
     `Frame Color: ${pieceFrameColorName(piece) ?? 'Not specified'}`,
   ];
   const design = matchingPieceDesignSnapshot(piece);
+  const frenchDesign = publicDoorDesignContent(piece).doorDesignSnapshot;
+  if (frenchDesign) detailLines.push(`Door Design: ${frenchDesign.code}`);
   if (design) {
     detailLines.push(`Design: ${design.design.name}`);
     detailLines.push(`Design Color: ${design.color.name}`);

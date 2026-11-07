@@ -41,6 +41,15 @@ function privateSnapshot() {
 }
 
 describe('Public estimate energy projection', () => {
+  it.each(['detailed', 'total'] as const)('keeps the French door artwork and quoted code but hides the unit charge in %s mode', mode => {
+    const visual = { version: 1, id: 7, kind: 'SINGLE', code: 'Custom 01', artworkKey: 'SD01', systemId: 3, configId: 5 };
+    const piece = { idSyst: 3, idConf: 5, idDoorDesign: 7, doorDesignSnapshot: { ...visual, unitPrice: '419.73' } };
+    const project = (value: typeof piece) => buildPublicEstimateData(estimateFixture(), null, [value], mode).pieces[0];
+    expect(project(piece).doorDesignSnapshot).toEqual(visual);
+    expect(project({ ...piece, idConf: 6 }).doorDesignSnapshot).toBeUndefined();
+    expect(piece.doorDesignSnapshot.unitPrice).toBe('419.73');
+  });
+
   it.each(['detailed', 'total'] as const)('omits internal glass data from a solid garage design in %s mode without mutating stored selections', mode => {
     const piece = {
       idSyst: 33, idDesign: 7, idDesignColor: 8,

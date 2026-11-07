@@ -98,6 +98,13 @@ export class CreatePieceDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  idDoorDesign?: number | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
   idDesign?: number | null;
 
   @ApiPropertyOptional()

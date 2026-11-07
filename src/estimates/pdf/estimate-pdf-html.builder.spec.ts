@@ -625,6 +625,19 @@ describe('EstimatePdfHtmlBuilder', () => {
     expect(html).not.toContain('Frame Color: Bronze');
   });
 
+  it.each(['admin', 'dealer_public'] as const)('prints the saved French door code and selected frame finish in the %s PDF', role => {
+    const estimate = estimateFixture();
+    Object.assign(estimate.pieces[0], {
+      idSyst: 3, idConf: 5, idDoorDesign: 7,
+      doorDesignSnapshot: { version: 1, id: 7, kind: 'DOUBLE', code: 'Custom & <01>', artworkKey: 'DD01',
+        systemId: 3, configId: 5, unitPrice: '419.73' },
+    });
+    const html = EstimatePdfHtmlBuilder.build(estimate, role);
+    expect(html).toContain('Door Design: Custom &amp; &lt;01&gt;');
+    expect(html).toContain('Frame Color: Bronze');
+    expect(html).not.toContain('419.73');
+  });
+
   it('does not use a stale garage design color after the design is removed', () => {
     const estimate = estimateFixture();
     Object.assign(estimate.pieces[0], { idDesign: null, idDesignColor: null, designSnapshot: {

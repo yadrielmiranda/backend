@@ -10,6 +10,7 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { PricingMode, Prisma, Product, ProductKind } from '@prisma/client';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { isFrenchDoorProduct } from '@/door-designs/door-design-policy';
 
 function clampInt(v: any, def: number, min: number, max: number) {
   const n = Number(v);
@@ -136,6 +137,7 @@ export class ProductsService {
       select: {
         id: true,
         kind: true,
+        diagramFamily: true,
         pricingMode: true,
       },
     });
@@ -150,10 +152,16 @@ export class ProductsService {
       kind: nextKind,
       pricingMode: nextPricingMode,
     });
+    const changesDoorCatalog = isFrenchDoorProduct(current) !== isFrenchDoorProduct({
+      kind: nextKind, diagramFamily: data.diagramFamily ?? current.diagramFamily,
+    });
 
     try {
       return await this.prisma.product.update({
-        where,
+        where: changesDoorCatalog ? {
+          ...where, kind: current.kind, diagramFamily: current.diagramFamily,
+          brandProducts: { none: { systems: { some: { allowDesign: true } } } },
+        } : where,
         data: {
           name: data.name,
           sortOrder: data.sortOrder,
@@ -165,6 +173,7 @@ export class ProductsService {
       });
     } catch (e: any) {
       if (e?.code === 'P2025') {
+        if (changesDoorCatalog) throw new ConflictException('Disable designs on the affected series before changing the product classification.');
         throw new NotFoundException(`Product with ID #${where.id} not found`);
       }
 

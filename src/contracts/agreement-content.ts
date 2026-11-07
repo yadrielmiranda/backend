@@ -1,4 +1,5 @@
 import { pieceDesignContent } from '@/pieces/piece-design';
+import { publicDoorDesignContent } from '@/door-designs/door-design-presentation';
 import { synchronizeScheduleChanges, refreshScheduledInstallation, withCurrentPaymentPlan } from '@/payment-plans/payment-schedule';
 import { assertEstimateNotCanceled } from '@/estimates/estimate-lifecycle-policy';
 import { createHash } from 'crypto';
@@ -182,6 +183,7 @@ export function agreementContent(publicEstimate: any) {
       qty: piece.qty,
       ...pick(piece, selectionKeys),
       ...pieceDesignContent(piece),
+      ...publicDoorDesignContent(piece),
       ...Object.fromEntries(
         dimensionKeys.map((key) => [
           key,

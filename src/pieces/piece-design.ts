@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { doorDesignPersistence, rememberDoorDesign } from '@/door-designs/piece-door-design';
 import { garageDesignHasGlass, readGarageDesignTemplate, type GarageDesignTemplate } from '@/garage-designs/design-template';
 
 export type PieceDesignSnapshot = {
@@ -33,7 +34,7 @@ async function linkedFrameColor(db: Prisma.TransactionClient, idSystem: number, 
   return idFrameColor!;
 }
 
-type StoredDesign = DesignInput & { designSnapshot?: unknown };
+type StoredDesign = DesignInput & { designSnapshot?: unknown; idConf?: number; idDoorDesign?: number | null; doorDesignSnapshot?: unknown };
 const storedDesigns = new WeakMap<object, StoredDesign>();
 
 async function previousFrameColor(db: Prisma.TransactionClient, input: DesignInput, stored?: StoredDesign) {
@@ -56,7 +57,10 @@ async function previousFrameColor(db: Prisma.TransactionClient, input: DesignInp
 
 /** Only authenticated server workflows may attach a previously saved selection. */
 export function withStoredPieceDesign<T extends DesignInput>(input: T, stored?: StoredDesign | null): T {
-  if (stored) storedDesigns.set(input, stored);
+  if (stored) {
+    storedDesigns.set(input, stored);
+    rememberDoorDesign(input, stored);
+  }
   return input;
 }
 
@@ -136,8 +140,9 @@ export async function resolvePieceDesign(db: Prisma.TransactionClient, input: De
   return { idDesign, idDesignColor, idFC, designSnapshot, frameColorBeforeDesignId };
 }
 
-export function pieceDesignPersistence(piece: { idDesign?: number | null; idDesignColor?: number | null; designSnapshot?: unknown; frameColorBeforeDesignId?: number | null }) {
+export function pieceDesignPersistence(piece: { idDesign?: number | null; idDesignColor?: number | null; designSnapshot?: unknown; frameColorBeforeDesignId?: number | null; idDoorDesign?: number | null; doorDesignSnapshot?: unknown }) {
   return {
+    ...doorDesignPersistence(piece),
     idDesign: piece.idDesign ?? null,
     idDesignColor: piece.idDesignColor ?? null,
     frameColorBeforeDesignId: piece.idDesign && piece.idDesignColor ? piece.frameColorBeforeDesignId ?? null : null,

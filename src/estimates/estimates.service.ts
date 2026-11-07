@@ -625,6 +625,7 @@ export class EstimatesService {
       idSyst: piece.idSyst,
       idConf: piece.idConf,
       idFC: piece.idFC,
+      idDoorDesign: piece.idDoorDesign ?? null,
       idDesign: piece.idDesign ?? null,
       idDesignColor: piece.idDesignColor ?? null,
       frameColorBeforeDesignId: piece.frameColorBeforeDesignId ?? null,
@@ -826,6 +827,7 @@ export class EstimatesService {
             idCryst: true, idTint: true, idCoat: true, idPrivacy: true,
             energyRatingId: true, energySnapshot: true,
             idDesign: true, idDesignColor: true, designSnapshot: true,
+            idDoorDesign: true, doorDesignSnapshot: true,
             idFC: true, frameColorBeforeDesignId: true,
           },
         });
@@ -2587,6 +2589,7 @@ export class EstimatesService {
         idSyst: p.idSyst,
         idConf: p.idConf,
         idFC: p.idFC,
+        idDoorDesign: p.idDoorDesign ?? null,
         idDesign: p.idDesign ?? null,
         idDesignColor: p.idDesignColor ?? null,
         frameColorBeforeDesignId: p.frameColorBeforeDesignId ?? null,

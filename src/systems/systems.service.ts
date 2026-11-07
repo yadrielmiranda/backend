@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -30,6 +31,11 @@ import {
 } from '@/installation/panel-count-capability';
 import { MUNTIN_ASSIGNMENTS_INCLUDE, catalogMuntinRules, withMuntinRules } from './muntin-rules';
 import { SYSTEM_DESIGN_OPTIONS_INCLUDE } from './system-designs.service';
+import { DOOR_DESIGN_PICKER, DoorDesignSeries, isFrenchDoorProduct, seriesDoorDesignKind } from '@/door-designs/door-design-policy';
+
+type EstimateConfig = Prisma.SysConfGetPayload<{
+  include: { config: true; muntinAssignments: typeof MUNTIN_ASSIGNMENTS_INCLUDE };
+}>;
 
 function framePriceCoefficient(value: unknown, field: 'multiplier' | 'deduction'): Prisma.Decimal {
   const text = typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
@@ -48,6 +54,23 @@ function framePriceCoefficient(value: unknown, field: 'multiplier' | 'deduction'
 @Injectable()
 export class SystemsService {
   constructor(private prisma: PrismaService) {}
+
+  private async withEstimateOptions<T extends DoorDesignSeries & { sysconfs: EstimateConfig[] }>(systems: T[]) {
+    const frenchDesignsEnabled = (system: DoorDesignSeries) =>
+      system.allowDesign && isFrenchDoorProduct(system.brandProduct?.product);
+    const catalog = systems.some(frenchDesignsEnabled)
+      ? await this.prisma.frenchDoorDesign.findMany(DOOR_DESIGN_PICKER)
+      : [];
+    return systems.map(system => ({
+      ...system,
+      ...(system.brandProduct?.product?.diagramFamily === 'FRENCH_DOOR'
+        ? { designOptions: [], defaultDesignId: null, defaultDesignColorId: null } : {}),
+      doorDesigns: frenchDesignsEnabled(system) ? catalog : [],
+      sysconfs: system.sysconfs.map(config => ({
+        ...withMuntinRules(config), doorDesignKind: seriesDoorDesignKind(system, config),
+      })),
+    }));
+  }
 
   async system(where: Prisma.SystemWhereUniqueInput): Promise<System> {
     const system = await this.prisma.system.findUnique({
@@ -105,7 +128,7 @@ export class SystemsService {
     if (!system) {
       throw new NotFoundException(`System with ID #${where.id} not found.`);
     }
-    const result = { ...system, sysconfs: system.sysconfs.map(withMuntinRules) };
+    const [result] = await this.withEstimateOptions([system]);
     return result;
   }
 
@@ -173,7 +196,7 @@ export class SystemsService {
         },
       },
     });
-    return systems.map(system => ({ ...system, sysconfs: system.sysconfs.map(withMuntinRules) }));
+    return this.withEstimateOptions(systems);
   }
 
   /** Devuelve todos los sistemas con sus configuraciones asociadas */
@@ -272,11 +295,11 @@ export class SystemsService {
       },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }, { id: 'asc' }],
     });
-    return systems.map(system => ({ ...system, sysconfs: system.sysconfs.map(withMuntinRules) }));
+    return this.withEstimateOptions(systems);
   }
 
   async createSystem(systemData: CreateSystemDto): Promise<System> {
-    const { name, idBrand, idProduct, allowHighBottom } = systemData;
+    const { name, idBrand, idProduct, allowHighBottom, allowDesign } = systemData;
 
     const brandProductExists = await this.prisma.brandProduct.findUnique({
       where: {
@@ -290,6 +313,7 @@ export class SystemsService {
             isActive: true,
             kind: true,
             pricingMode: true,
+            diagramFamily: true,
           },
         },
         brand: {
@@ -309,6 +333,10 @@ export class SystemsService {
 
     const isLinearMaterial =
       brandProductExists.product.kind === ProductKind.LINEAR_MATERIAL;
+
+    if (allowDesign !== undefined && (!isFrenchDoorProduct(brandProductExists.product) || typeof allowDesign !== 'boolean')) {
+      throw new BadRequestException('This Design switch is available only for French Door series.');
+    }
 
     if (isLinearMaterial && allowHighBottom) {
       throw new BadRequestException(
@@ -355,6 +383,13 @@ export class SystemsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      if (allowDesign) {
+        const eligible = await tx.product.findUnique({
+          where: { id: idProduct, kind: 'GLAZED_UNIT', diagramFamily: 'FRENCH_DOOR' },
+          select: { id: true },
+        });
+        if (!eligible) throw new ConflictException('The product classification changed. Reload the series before enabling designs.');
+      }
       if (shouldBeDefault) {
         await tx.system.updateMany({
           where: {
@@ -374,12 +409,13 @@ export class SystemsService {
           sortOrder,
           isActive: true,
           isDefault: shouldBeDefault,
+          allowDesign: allowDesign ?? false,
           allowHighBottom: isLinearMaterial
             ? false
             : (allowHighBottom ?? false),
         },
       });
-    });
+    }, allowDesign ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined);
   }
 
   async updateSystem(params: {
@@ -397,6 +433,7 @@ export class SystemsService {
         isActive: true,
         isDefault: true,
         allowDesign: true,
+        brandProduct: { select: { product: { select: { diagramFamily: true, kind: true } } } },
       },
     });
 
@@ -443,7 +480,13 @@ export class SystemsService {
     const isLinearMaterial =
       brandProduct.product.kind === ProductKind.LINEAR_MATERIAL;
 
-    if (current.allowDesign && brandProduct.product.diagramFamily !== DiagramFamily.GARAGE_DOOR) {
+    const wasFrench = isFrenchDoorProduct(current.brandProduct?.product);
+    const nextFrench = isFrenchDoorProduct(brandProduct.product);
+    const changesDoorPolicy = data.allowDesign !== undefined || (wasFrench || nextFrench || current.allowDesign) && nextIdProduct !== current.idProduct;
+    if (data.allowDesign !== undefined && (!nextFrench || typeof data.allowDesign !== 'boolean')) {
+      throw new BadRequestException('This Design switch is available only for French Door series.');
+    }
+    if (current.allowDesign && !wasFrench && brandProduct.product.diagramFamily !== DiagramFamily.GARAGE_DOOR) {
       throw new BadRequestException('Disable Design before moving this series to a non-Garage Door product.');
     }
 
@@ -501,15 +544,21 @@ export class SystemsService {
         }
 
         return tx.system.update({
-          where,
+          where: changesDoorPolicy ? {
+            ...where, idBrand: current.idBrand, idProduct: current.idProduct, allowDesign: current.allowDesign,
+            brandProduct: { product: { diagramFamily: current.brandProduct.product.diagramFamily, kind: current.brandProduct.product.kind } },
+          } : where,
           data: {
             ...data,
+            // A French selection must never enable Garage Door defaults when reclassifying a series.
+            allowDesign: data.allowDesign ?? (wasFrench && !nextFrench ? false : undefined),
             allowHighBottom: isLinearMaterial ? false : data.allowHighBottom,
           },
         });
       });
     } catch (e: any) {
       if (e?.code === 'P2025') {
+        if (changesDoorPolicy) throw new ConflictException('The series changed while it was being edited. Reload the series and try again.');
         throw new NotFoundException(`System with ID #${where.id} not found.`);
       }
       throw e;
@@ -597,7 +646,7 @@ export class SystemsService {
       throw new NotFoundException(`System with ID #${systemId} not found.`);
     }
 
-    const result = { ...system, sysconfs: system.sysconfs.map(withMuntinRules) };
+    const [result] = await this.withEstimateOptions([system]);
     return result;
   }
 
@@ -611,6 +660,8 @@ export class SystemsService {
       },
       include: {
         muntinAssignments: MUNTIN_ASSIGNMENTS_INCLUDE,
+        config: { select: { conf: true, idProduct: true } },
+        system: { select: { allowDesign: true, brandProduct: { select: { product: { select: { id: true, diagramFamily: true, kind: true } } } } } },
         activeOptions: {
           include: { option: true },
           orderBy: { sortOrder: 'asc' },
@@ -636,10 +687,15 @@ export class SystemsService {
       );
     }
 
+    const doorDesignKind = seriesDoorDesignKind(sysConf.system, sysConf);
+    const doorDesigns = doorDesignKind ? await this.prisma.frenchDoorDesign.findMany({
+      ...DOOR_DESIGN_PICKER, where: { ...DOOR_DESIGN_PICKER.where, kind: doorDesignKind },
+    }) : [];
     return {
       idSystem: systemId,
       idConfig: configId,
       allowScreen: sysConf.allowScreen,
+      doorDesignKind, doorDesigns,
       muntinRules: catalogMuntinRules(sysConf.muntinAssignments),
       isSelectableInEstimate: sysConf.isSelectableInEstimate,
 

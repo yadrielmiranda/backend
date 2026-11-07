@@ -703,6 +703,22 @@ model System {
   @@index([idBrand, idProduct, isDefault])
 }
 
+enum FrenchDoorDesignKind {
+  SINGLE
+  DOUBLE
+}
+
+model FrenchDoorDesign {
+  id          Int                 @id @default(autoincrement())
+  artworkKey  String              @unique @db.VarChar(64)
+  code        String              @unique @db.VarChar(80)
+  kind        FrenchDoorDesignKind
+  unitPrice   Decimal?            @db.Decimal(12, 2)
+  pieces      Piece[]
+
+  @@map("french_door_designs")
+}
+
 model DesignPattern {
   id        Int      @id @default(autoincrement())
   name      String   @db.VarChar(100)
@@ -1753,6 +1769,9 @@ model Piece {
   designColor    DesignColor? @relation(fields: [idDesignColor], references: [id], onDelete: Restrict)
   idDesignColor  Int?
   designSnapshot Json?
+  idDoorDesign       Int?
+  doorDesign         FrenchDoorDesign? @relation(fields: [idDoorDesign], references: [id], onDelete: Restrict)
+  doorDesignSnapshot Json?
   frameColorBeforeDesignId Int?
   frameColorBeforeDesign FrameColor? @relation("PieceFrameColorBeforeDesign", fields: [frameColorBeforeDesignId], references: [id], onDelete: SetNull)
 
@@ -1834,6 +1853,7 @@ model Piece {
   @@index([idDesign])
   @@index([idDesignColor])
   @@index([frameColorBeforeDesignId])
+  @@index([idDoorDesign])
   @@index([idPreparationOption])
   @@index([idSillOption])
   @@index([idReinforcementOption])
