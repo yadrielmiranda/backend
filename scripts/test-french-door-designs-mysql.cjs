@@ -25,6 +25,8 @@ function sql(statement, inTestDatabase = true) {
 
 // Simulate an installation that already used the configuration-level pilot.
 const pilotMigration = '20261106200000_french_door_designs';
+const catalogMigration = '20261108120000_complete_french_door_design_catalog';
+const applyCatalogMigration = () => sql(fs.readFileSync(path.join('prisma/migrations', catalogMigration, 'migration.sql'), 'utf8'));
 function migrateFixture() {
   const migrations = fs.readdirSync('prisma/migrations', { withFileTypes: true })
     .filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
@@ -170,6 +172,20 @@ async function main() {
   assert.equal(double.kind, 'DOUBLE');
   assert.equal(single.unitPrice, null);
   assert.equal(double.unitPrice, null);
+  const imported = seeded.filter(row => /^(SD|DD)\d+$/.test(row.artworkKey));
+  // SD97..99 repeat SD55, SD54 and SD40 after removing their source sidelites.
+  const expectedKeys = [['SD', 96], ['DD', 96]].flatMap(([family, count]) =>
+    Array.from({ length: count }, (_, i) => family + String(i + 1).padStart(2, '0')));
+  assert.deepEqual(imported.map(row => row.artworkKey).sort(), expectedKeys.sort(),
+    'The complete catalog must be loaded by a normal migration deployment');
+  for (const row of imported) {
+    const [, family, number] = /^(SD|DD)(\d+)$/.exec(row.artworkKey);
+    assert.equal(row.code, `AE-${family}-${number}`);
+    assert.equal(row.kind, family === 'SD' ? 'SINGLE' : 'DOUBLE');
+    assert.equal(row.unitPrice, null, 'Catalog import must leave every new price pending');
+  }
+  assert.equal(new Set(imported.map(row => row.artworkKey)).size, imported.length);
+  assert.equal(new Set(imported.map(row => row.code)).size, imported.length);
   const catalog = module.get(DoorDesignsService);
   const systems = module.get(SystemsService);
   const setEnabled = allowDesign => http.patch(systemPath).set('test-role', 'admin').send({ allowDesign }).expect(200);
@@ -271,7 +287,44 @@ async function main() {
   assert.equal(current.doorDesignSnapshot.code, 'S-NEW');
   assert.equal(current.rate.minus(plain.rate).toFixed(2), '350.50');
   assert.deepEqual(await resolvePieceDesign(db, garagePiece), originalGarageDesign);
-  console.log('PASS: pilot migration, series switch, compatible priced options, independent Garage catalog, saved estimates, historical prices, removal and reselection.');
+
+  // Newly imported artwork follows the same quote path as the pilot, including sidelites.
+  const lastOf = kind => imported.filter(row => row.kind === kind)
+    .sort((a, b) => Number(a.artworkKey.slice(2)) - Number(b.artworkKey.slice(2))).at(-1);
+  const lastSingle = lastOf('SINGLE');
+  const lastDouble = lastOf('DOUBLE');
+  assert.notEqual(lastSingle.id, single.id);
+  assert.notEqual(lastDouble.id, double.id);
+  for (const [conf, design, price] of [['X', lastSingle, '275.25'], ['XX', lastDouble, '450.50']]) {
+    await assert.rejects(calculate(piece(conf, { idDoorDesign: design.id })), /design|price/i);
+    await catalog.edit(design.id, { unitPrice: price });
+  }
+  const importedPieces = [];
+  for (const [conf, design, price] of [
+    ['X', lastSingle, '275.25'], ['OX', lastSingle, '275.25'],
+    ['XX', lastDouble, '450.50'], ['OXXO', lastDouble, '450.50'],
+  ]) {
+    assert((await selectable(conf)).some(row => row.id === design.id));
+    const mark = 'CATALOG-' + conf;
+    const saved = await estimates.addPieceToEstimate(estimate.id, piece(conf, { mark, idDoorDesign: design.id }), actor.id);
+    const row = saved.pieces.find(item => item.mark === mark);
+    assert.equal(row.doorDesignSnapshot.artworkKey, design.artworkKey);
+    assert.equal(row.doorDesignSnapshot.code, design.code);
+    assert.equal(row.rate.minus(base[conf].rate).toFixed(2), price);
+    assert.equal(row.customerSubtotal.minus(base[conf].customerSubtotal).toFixed(2), new Decimal(price).times(3).toFixed(2));
+    importedPieces.push({ id: row.id, snapshot: row.doorDesignSnapshot });
+  }
+  await catalog.edit(lastSingle.id, { code: 'CUSTOM-CATALOG-END', unitPrice: '0' });
+  const beforeReplay = await db.frenchDoorDesign.findMany({ orderBy: { id: 'asc' } });
+  applyCatalogMigration();
+  assert.deepEqual(await db.frenchDoorDesign.findMany({ orderBy: { id: 'asc' } }), beforeReplay,
+    'Import must preserve all existing IDs, custom codes, explicit zero prices and later price edits');
+  const reopenedCatalog = await estimates.findOneForUser(estimate.id, actor);
+  for (const stored of importedPieces) {
+    assert.deepEqual(reopenedCatalog.pieces.find(row => row.id === stored.id).doorDesignSnapshot, stored.snapshot,
+      'Import must not change a previously quoted design snapshot');
+  }
+  console.log('PASS: complete unpriced AE catalog, non-destructive import, new single/double designs, series switch, compatible priced options, independent Garage catalog, saved estimates, historical prices, removal and reselection.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {
   try { if (app) await app.close(); if (db) await db.$disconnect(); }
