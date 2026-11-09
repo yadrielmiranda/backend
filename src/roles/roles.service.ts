@@ -6,6 +6,7 @@ import { UpdateRoleDto } from './dto/update-role.dto';
 import { LogsService } from '@/logs/logs.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { getRoleName } from '@/auth/utils/get-role-name'; 
+import { parseRoleMarkup } from './role-markup';
 
 @Injectable()
 export class RolesService {
@@ -46,7 +47,7 @@ export class RolesService {
     const updated = await this.prisma.role.update({
       where: { id },
       data: {
-        markup: dto.markup,
+        ...(dto.markup !== undefined ? { markup: parseRoleMarkup(dto.markup) } : {}),
         ...(dto.paymentPlanId !== undefined ? { paymentPlan: dto.paymentPlanId === null ? { disconnect: true } : { connect: { id: dto.paymentPlanId } } } : {}),
         ...(dto.installationPriceProfileId !== undefined
           ? {
@@ -86,14 +87,14 @@ export class RolesService {
         paymentPlanId: before.paymentPlanId,
         id: before.id,
         name: before.name,
-        markup: before.markup,
+        markup: before.markup.toString(),
         installationPriceProfileId: before.installationPriceProfileId,
       },
       after: {
         paymentPlanId: updated.paymentPlanId,
         id: updated.id,
         name: updated.name,
-        markup: updated.markup,
+        markup: updated.markup.toString(),
         installationPriceProfileId: updated.installationPriceProfileId,
       },
       meta: {

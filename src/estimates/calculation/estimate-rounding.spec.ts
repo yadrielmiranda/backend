@@ -4,7 +4,7 @@ import { EstimatePieceCalculatorService } from './estimate-piece-calculator.serv
 import { calculateEstimateDiscount } from '../discounts/estimate-discount';
 
 // Calculador real con catálogo aislado, sin consultar una base de datos.
-function fixture(linear = false, cost = '99.4444') {
+function fixture(linear = false, cost = '99.4444', baseMarkup = '.2') {
   const service = new EstimatePieceCalculatorService({
     computeGoverningDimsFromConfig: jest.fn(async () => ({ widthIn: 36, heightIn: 48 })),
     validateAgainstDimensionPolicy: jest.fn(async () => ({ ok: true, dpPos: 70, dpNeg: -70 })),
@@ -27,12 +27,22 @@ function fixture(linear = false, cost = '99.4444') {
     idProd: 1, idBrand: 1, idSyst: 1, idConf: 1, idFC: 1,
     ...(linear ? {} : { idCryst: 1, idTint: 1, idCoat: 1, idPrivacy: 1, height: '48' }),
     width: linear ? '1' : '36', qty, dealerMarkup: markup, mark: 'A',
-  } as any, new Decimal('.2'), tx, cache);
+  } as any, new Decimal(baseMarkup), tx, cache);
   const totals = (pieces: any[]) => service.calculateEstimateTotals(pieces, new Decimal('.07'), new Decimal('.07'));
   return { service, cache, calculate, totals };
 }
 
 describe('H08 — Unit prices, subtotals and dealer profit', () => {
+  it.each([false, true])('retains a 75.5125 percent role markup until monetary rounding (linear: %s)', async linear => {
+    const exact = await fixture(linear, '10000', '.755125').calculate(1, 0);
+    const previouslyRounded = await fixture(linear, '10000', '.7551').calculate(1, 0);
+    expect(exact.markup.toString()).toBe('0.755125');
+    expect(exact.price.toFixed(2)).toBe('17551.25');
+    expect(exact.customerPrice.toFixed(2)).toBe('17551.25');
+    expect(exact.subtotal.toFixed(2)).toBe('17551.25');
+    expect(previouslyRounded.price.toFixed(2)).toBe('17551.00');
+  });
+
   it.each([false, true])('uses the displayed unit price for qty 3 (linear: %s)', async linear => {
     const f = fixture(linear);
     const piece = await f.calculate();

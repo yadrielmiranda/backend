@@ -1,11 +1,13 @@
-import { IsInt, IsNotEmpty, IsNumber, IsOptional, Min } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsInt, IsString, IsOptional, Matches, Min, ValidateIf } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { normalizeRoleMarkup, ROLE_MARKUP_MESSAGE, ROLE_MARKUP_PATTERN } from '../role-markup';
 
 export class UpdateRoleDto {
-  @IsNumber()
-  @Type(() => Number) // Transforma el valor a número
-  @IsNotEmpty()
-  markup: number;
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ value }) => normalizeRoleMarkup(value))
+  @IsString()
+  @Matches(ROLE_MARKUP_PATTERN, { message: ROLE_MARKUP_MESSAGE })
+  markup?: string | number;
 
   @IsOptional()
   @IsInt()

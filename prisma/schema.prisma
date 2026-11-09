@@ -189,7 +189,7 @@ model PaymentPlan {
 model Role {
   id     Int     @id @default(autoincrement())
   name   String  @unique
-  markup Decimal @default(0) @db.Decimal(10, 4)
+  markup Decimal @default(0) @db.Decimal(24, 18)
   users  User[]
 
   paymentPlanId Int?
