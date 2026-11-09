@@ -45,8 +45,12 @@ function fixture() {
     customerTotalPayable: '120',
     customerTaxRate: '.07',
     dealerModeSnapshot: 'INTERNAL',
+    dealerEarningsPlanSnapshot: {
+      version: 2, planId: 15, revision: 1, name: 'Saved plan', basis: 'DEALER_MARKUP', percent: '100',
+    },
     user: {
       id: 7,
+      dealerMode: 'INTERNAL',
       isTaxExempt: false,
       markupOverride: '.15',
       role: { name: 'dealer', markup: '.5' },

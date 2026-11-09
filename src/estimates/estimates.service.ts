@@ -6,9 +6,9 @@ import { resolveNewPlan, getPaymentSchedule } from '@/payment-plans/payment-sche
 import { PaymentsService } from '@/payments/payments.service';
 import { CANCELED_ESTIMATE, assertEstimateLifecycleAccess, assertEstimateNotCanceled, assertNoEstimatePaymentHistory, hasEstimatePaymentHistory } from './estimate-lifecycle-policy';
 import { canDeleteEstimateInstallation } from './estimate-deletion-policy';
-import { type DealerEarningsSummary } from '@/common/dealer-earnings';
+import { type DealerEarningsSummary, validateSavedEarningsPlan } from '@/common/dealer-earnings';
 import { buildNetworkProfitBreakdown, type NetworkProfitBreakdown } from '@/common/network-profit-breakdown';
-import { buildMaterialEarningsReport, referralReportOrderInclude, referralReportMaterialRelations, type ReferralCostsSummary, type ReferralMaterialProfitsSummary } from '@/referrals/referral-report';
+import { buildMaterialEarningsReport, buildMaterialEarningsReportForRead, referralReportOrderInclude, referralReportMaterialRelations, type ReferralCostsSummary, type ReferralMaterialProfitsSummary } from '@/referrals/referral-report';
 import { loadActiveEarningsPlan } from '@/earnings-plans/earnings-plan';
 import { canRefreshDraftEarningsPlan, refreshDraftEarningsPlan } from '@/earnings-plans/estimate-earnings-plan';
 import { ContractStorageService } from '@/contracts/contract-storage.service';
@@ -1041,45 +1041,6 @@ export class EstimatesService {
   }
 
   // --- estimates (Get List) ---
-  private async syncActiveDealerMode(user: AuthUser) {
-    if (user.role?.name !== 'dealer') return;
-
-    const dealer = await this.prisma.user.findUnique({
-      where: { id: user.id },
-      select: {
-        dealerMode: true,
-        role: { select: { name: true } },
-      },
-    });
-    if (!dealer || dealer.role.name !== 'dealer') return;
-
-    const dealerMode = dealer.dealerMode ?? DealerMode.EXTERNAL;
-
-    await this.prisma.estimate.updateMany({
-      where: {
-        idUser: user.id,
-        dealerNetworkSnapshot: { equals: Prisma.DbNull },
-        status: { name: 'Active' },
-        order: null,
-        payments: {
-          none: {
-            OR: [
-              { status: PaymentStatus.PAID },
-              { stripeSessionId: { not: null } },
-            ],
-          },
-        },
-        OR: [
-          { dealerModeSnapshot: null },
-          { dealerModeSnapshot: { not: dealerMode } },
-        ],
-      },
-      data: {
-        dealerModeSnapshot: dealerMode,
-      },
-    });
-  }
-
   async estimates(params: { where?: Prisma.EstimateWhereInput }) {
     const estimates = await this.prisma.estimate.findMany({
       where: params.where,
@@ -1101,7 +1062,7 @@ export class EstimatesService {
 
     return estimates.map((estimate) => ({
       ...estimate,
-      ...buildMaterialEarningsReport(estimate),
+      ...buildMaterialEarningsReportForRead(estimate),
       dealerNetwork: networkPresentation(estimate),
       manualDiscountSummary: calculateEstimateDiscount(estimate),
       installationSummary: buildEstimateInstallationSummary(estimate.installationJob),
@@ -1116,18 +1077,12 @@ export class EstimatesService {
       return this.estimates({ where: {} });
     }
 
-    await this.syncActiveDealerMode(user);
-
     return this.estimates({
       where: { idUser: { in: await descendantIds(this.prisma, user) } },
     });
   }
 
   async findOneForUser(id: number, user: AuthUser) {
-    if (!isPrivileged(user)) {
-      await this.syncActiveDealerMode(user);
-    }
-
     const estimate = await this.estimate({ id });
     if (!estimate)
       throw new NotFoundException(`Estimate with ID #${id} not found.`);
@@ -2570,6 +2525,29 @@ export class EstimatesService {
       const network = await createNetworkSnapshot(tx, beforeEstimate.user, taxParameter.value.toString());
       if (network) effectiveMarkupDecimal = new Decimal(network.rootMarkup);
 
+      // Reading or sharing never reclassifies an estimate. A standalone role/mode
+      // transition is captured only by an explicit, permitted recalculate.
+      const standaloneTerms: Prisma.EstimateUpdateInput = {};
+      if (!network && beforeEstimate.dealerNetworkSnapshot == null) {
+        const nextMode = beforeEstimate.user.role.name === 'dealer'
+          ? beforeEstimate.user.dealerMode ?? DealerMode.EXTERNAL : null;
+        const modeChanged = (beforeEstimate.dealerModeSnapshot ?? null) !== nextMode;
+        standaloneTerms.dealerModeSnapshot = nextMode;
+        if (modeChanged) {
+          standaloneTerms.paymentPlanSnapshot = await resolveNewPlan(tx, beforeEstimate.idUser) as unknown as Prisma.InputJsonValue;
+        }
+        if (nextMode === DealerMode.INTERNAL) {
+          if (modeChanged || beforeEstimate.dealerEarningsPlanSnapshot == null) {
+            standaloneTerms.dealerEarningsPlanSnapshot = await loadActiveEarningsPlan(tx, beforeEstimate.user.dealerEarningsPlanId);
+          } else {
+            // Keep a valid saved arrangement even when the catalog or assignment changed.
+            validateSavedEarningsPlan(beforeEstimate.dealerEarningsPlanSnapshot);
+          }
+        } else if (modeChanged) {
+          standaloneTerms.dealerEarningsPlanSnapshot = Prisma.DbNull;
+        }
+      }
+
       const expiresAt = await this.getEstimateExpirationDate(
         tx as PrismaTransactionClient,
       );
@@ -2812,6 +2790,7 @@ export class EstimatesService {
           ...(network ? { dealerNetworkSnapshot: network as unknown as Prisma.InputJsonValue, networkBillingPriceT: 0, networkRootPriceT: 0, networkSubdealerPriceT: 0,
             dealerModeSnapshot: beforeEstimate.user.dealerMode,
             paymentPlanSnapshot: await resolveNewPlan(tx, network.billingAccountId) as unknown as Prisma.InputJsonValue } : {}),
+          ...standaloneTerms,
           ...estimateTotals,
           ownerMarkupSnapshot: new Prisma.Decimal(
             effectiveMarkupDecimal.toFixed(18),
@@ -2821,7 +2800,8 @@ export class EstimatesService {
           promotionExpiresAt: promotionDeadline(calculatedPieces),
           expiresAt: effectiveExpiry(expiresAt, promotionDeadline(calculatedPieces)),
           promotionContext: calculatedPieces.flatMap((p) => p.promotionSnapshot ? [p.promotionSnapshot] : []) as unknown as Prisma.InputJsonValue,
-          ...(!network && reactivatedPlan ? { paymentPlanSnapshot: reactivatedPlan as Prisma.InputJsonValue } : {}),
+          ...(!network && reactivatedPlan && standaloneTerms.paymentPlanSnapshot === undefined
+            ? { paymentPlanSnapshot: reactivatedPlan as Prisma.InputJsonValue } : {}),
           status: {
             connect: { id: activeStatus.id },
           },

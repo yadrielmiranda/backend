@@ -1,7 +1,7 @@
 import { canAccessOwner, descendantIds, networkPresentation } from '@/dealer-network/dealer-network';
 import { assertMaterialReadyForFactory } from '@/estimates/material-revisions/material-revision-policy';
 import { decimalAmount, hasRefundHistory, paidPrincipal, remainingRefundBalance } from '@/payments/payment-accounting';
-import { buildMaterialEarningsReport, referralReportMaterialRelations, referralReportOrderInclude } from '@/referrals/referral-report';
+import { buildMaterialEarningsReport, buildMaterialEarningsReportForRead, referralReportMaterialRelations, referralReportOrderInclude } from '@/referrals/referral-report';
 import { buildNetworkProfitBreakdown } from '@/common/network-profit-breakdown';
 import { assertScheduleMilestone, buildPaymentSchedule, getPaymentSchedule, withCurrentPaymentPlan } from '@/payment-plans/payment-schedule';
 // @/orders/orders.service.ts
@@ -134,10 +134,11 @@ async function withOrderListSummary(db: Prisma.TransactionClient, order: Prisma.
       paymentAnchor = 'order-additional-payments';
     }
   }
+  const earningsReport = buildMaterialEarningsReportForRead(estimate, order);
   return {
     ...order,
-    ...buildMaterialEarningsReport(estimate, order),
-    networkProfitBreakdown: buildNetworkProfitBreakdown(order.estimate, order),
+    ...earningsReport,
+    networkProfitBreakdown: earningsReport.earningsReview ? null : buildNetworkProfitBreakdown(order.estimate, order),
     paymentAnchor,
     estimate: {
       ...estimateResult,

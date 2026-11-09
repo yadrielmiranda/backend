@@ -401,6 +401,29 @@ describe('internal dealer customer charges', () => {
     })).toBe(DealerMode.INTERNAL);
   });
 
+  it('keeps a client quote outside dealer charges after its owner becomes an internal dealer', () => {
+    const previousClient = { ...estimate, dealerModeSnapshot: null };
+    expect(customerChargeDealerMode(previousClient)).toBeNull();
+    expect(buildEstimateCustomerChargeSummary({ estimate: previousClient, installation, charges: [] })).toBeNull();
+    expect(internalCustomerChargeAdditions({
+      estimate: previousClient, installation,
+      charges: [systemCharge(EstimateCustomerChargeSource.INSTALLATION, 100)],
+    })).toEqual({ installation: '0.00', permit: '0.00', city: '0.00', custom: '0.00' });
+  });
+
+  it('keeps saved customer-charge prices in active drafts after the account changes mode or role', () => {
+    const original = { estimate, installation,
+      charges: [systemCharge(EstimateCustomerChargeSource.INSTALLATION, 100)],
+    };
+    const expected = buildEstimateCustomerChargeSummary(original);
+    for (const user of [
+      { dealerMode: DealerMode.EXTERNAL, role: { name: 'dealer' } },
+      { dealerMode: null, role: { name: 'client' } },
+    ]) {
+      expect(buildEstimateCustomerChargeSummary({ ...original, estimate: { ...estimate, user } })).toEqual(expected);
+    }
+  });
+
   it('tolerates legacy payment selections when no charges exist and absent quote lines otherwise', () => {
     expect(internalCustomerChargeAdditionsForEstimate({})).toEqual({ installation: '0.00', permit: '0.00', city: '0.00', custom: '0.00' });
     expect(internalCustomerChargeAdditionsForEstimate({ ...estimate,

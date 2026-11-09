@@ -108,7 +108,7 @@ export class EstimateCustomerChargesService {
     }
 
     const dealerMode = customerChargeDealerMode(estimate);
-    if (dealerMode === null) {
+    if (dealerMode === null || estimate.user.role.name !== 'dealer') {
       throw new BadRequestException(
         'Customer service prices are only available on dealer estimates.',
       );

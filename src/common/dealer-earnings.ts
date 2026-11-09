@@ -6,20 +6,28 @@ import { calculateMaterialProfitBases, MaterialProfitBases } from './material-pr
 import { calculateEstimateDiscount } from '@/estimates/discounts/estimate-discount';
 import { EarningsPlanSnapshot, validateEarningsRule } from '@/earnings-plans/earnings-plan';
 
-function savedPlan(value: unknown): EarningsPlanSnapshot {
+export class SavedDealerEarningsPlanError extends BadRequestException {}
+
+export function validateSavedEarningsPlan(value: unknown): EarningsPlanSnapshot {
   // Cada operación usa sus condiciones guardadas, nunca el plan actual del dealer.
-  if (value == null) throw new BadRequestException('This internal dealer estimate has no saved earnings plan.');
+  if (value == null) throw new SavedDealerEarningsPlanError('This internal dealer estimate has no saved earnings plan.');
   if (typeof value !== 'object' || Array.isArray(value))
-    throw new BadRequestException('Invalid saved earnings plan.');
+    throw new SavedDealerEarningsPlanError('Invalid saved earnings plan.');
   const plan = value as Partial<EarningsPlanSnapshot>;
-  if (plan.version !== 2) throw new BadRequestException('Unsupported saved earnings plan.');
-  const rule = validateEarningsRule(plan.basis, plan.percent);
+  if (plan.version !== 2) throw new SavedDealerEarningsPlanError('Unsupported saved earnings plan.');
+  let rule: ReturnType<typeof validateEarningsRule>;
+  try {
+    rule = validateEarningsRule(plan.basis, plan.percent);
+  } catch (error) {
+    if (error instanceof BadRequestException) throw new SavedDealerEarningsPlanError(error.message);
+    throw error;
+  }
   const sourceKnown = Number.isSafeInteger(plan.planId) && plan.planId! > 0 &&
     Number.isSafeInteger(plan.revision) && plan.revision! > 0;
   const noPreviousPlan = plan.planId === null && plan.revision === null && rule.percent === '0';
   if (!(sourceKnown || noPreviousPlan) ||
     typeof plan.name !== 'string' || !plan.name.trim())
-    throw new BadRequestException('Invalid saved earnings plan.');
+    throw new SavedDealerEarningsPlanError('Invalid saved earnings plan.');
   return { ...plan, ...rule } as EarningsPlanSnapshot;
 }
 
@@ -93,7 +101,7 @@ export function buildDealerEarningsReport(estimate: any, order = estimate?.order
       customerPrice: network.subdealerPlan?.mode === 'MARKUP' ? subdealerPrice : netSale,
       appBasePrice, dealerPrice: rootPrice, realFactoryCost,
     });
-    const earnings = calculateDealerEarnings(savedPlan(network.earningsPlan), rootProfits, processingCost);
+    const earnings = calculateDealerEarnings(validateSavedEarningsPlan(network.earningsPlan), rootProfits, processingCost);
     let subdealerEarnings: DealerEarningsSummary | null = null;
     let totalEarnings = earnings.amount == null ? null : new Decimal(earnings.amount);
     if (network.subdealerPlan) {
@@ -160,7 +168,7 @@ export function buildDealerEarningsReport(estimate: any, order = estimate?.order
     realFactoryCost: order?.rateReal == null ? null : String(order.rateReal),
     netProfitD: persistedMargin,
   });
-  const earnings = calculateDealerEarnings(savedPlan(estimate.dealerEarningsPlanSnapshot), profits, processingCost);
+  const earnings = calculateDealerEarnings(validateSavedEarningsPlan(estimate.dealerEarningsPlanSnapshot), profits, processingCost);
   const costs = processingSummary(profits.realProfit);
   return {
     dealerEarnings: earnings,

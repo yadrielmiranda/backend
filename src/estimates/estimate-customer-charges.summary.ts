@@ -128,22 +128,11 @@ export function systemCustomerChargeKey(
 }
 
 export function customerChargeDealerMode(estimate: EstimateClassification): DealerMode | null {
-  if (estimate.user?.role?.name !== 'dealer') return null;
-
   const network = networkSnapshot(estimate);
   if (network) return network.nodes.at(-1)!.mode;
-
-  const isActive =
-    estimate.status?.name === 'Active' && !Boolean(estimate.order) &&
-    !estimate.payments?.some(payment => ['PENDING', 'PAID', 'REFUNDED'].includes(payment.status ?? '') || payment.paidAt != null);
-  return isActive
-    ? (estimate.user.dealerMode ??
-      estimate.dealerModeSnapshot ??
-      DealerMode.EXTERNAL)
-    : (estimate.dealerModeSnapshot ??
-      estimate.user.dealerMode ??
-      DealerMode.EXTERNAL);
-
+  // Null is the saved non-dealer classification, not a missing fallback.
+  // An account change takes effect on this estimate only through Recalculate.
+  return estimate.dealerModeSnapshot ?? null;
 }
 
 export function isExternalDealerEstimate(estimate: EstimateClassification) {

@@ -6,7 +6,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { BrandingType, DealerMode, PaymentStatus } from '@prisma/client';
+import { BrandingType } from '@prisma/client';
 import { randomUUID } from 'crypto';
 
 import { PrismaService } from '@/prisma/prisma.service';
@@ -68,17 +68,6 @@ export class EstimatePublicShareService {
         publicTotalToken: true,
         publicTokenEnabled: true,
         dealerModeSnapshot: true,
-        order: { select: { id: true } },
-        payments: {
-          where: {
-            OR: [
-              { status: PaymentStatus.PAID },
-              { stripeSessionId: { not: null } },
-            ],
-          },
-          select: { id: true },
-          take: 1,
-        },
         status: {
           select: {
             name: true,
@@ -105,29 +94,6 @@ export class EstimatePublicShareService {
       throw new BadRequestException(
         'Only active, pending order review, or ordered estimates can be shared with customers.',
       );
-    }
-
-    const currentDealerMode = estimate.user.dealerMode ?? DealerMode.EXTERNAL;
-    const classificationChanged =
-      estimate.dealerModeSnapshot !== currentDealerMode;
-
-    if (
-      estimate.status?.name === 'Active' &&
-      !estimate.order &&
-      classificationChanged
-    ) {
-      if (estimate.payments.length > 0) {
-        throw new BadRequestException(
-          'Cancel or reconcile the checkout created under the previous dealer mode before generating the customer payment link.',
-        );
-      }
-
-      await this.prisma.estimate.update({
-        where: { id },
-        data: {
-          dealerModeSnapshot: currentDealerMode,
-        },
-      });
     }
 
     const existingToken =

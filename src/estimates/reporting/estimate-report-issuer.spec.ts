@@ -69,7 +69,7 @@ describe('external dealer report issuer', () => {
 
   it('keeps internal and non-dealer accounts unchanged', () => {
     expect(buildExternalDealerPresentation(fixture('INTERNAL'), companyBranding)).toBeNull();
-    const client = fixture();
+    const client = { ...fixture(), dealerModeSnapshot: null };
     client.user.role.name = 'client';
     expect(buildExternalDealerPresentation(client, companyBranding)).toBeNull();
   });
@@ -85,12 +85,14 @@ describe('external dealer report issuer', () => {
     expect(buildExternalDealerPresentation(estimate, companyBranding)).toBeNull();
   });
 
-  it('uses current mode for drafts and the saved mode for committed quotes', () => {
+  it('keeps the saved issuer for drafts as well as committed quotes after an account change', () => {
     const estimate = fixture('INTERNAL');
     estimate.user.dealerMode = 'EXTERNAL';
-    expect(buildExternalDealerPresentation(estimate, companyBranding)).toEqual(owner);
+    expect(buildExternalDealerPresentation(estimate, companyBranding)).toBeNull();
     expect(buildExternalDealerPresentation({ ...estimate, payments: [{ status: 'PAID' }] }, companyBranding)).toBeNull();
     expect(buildExternalDealerPresentation({ ...estimate, order: { id: 1 } }, companyBranding)).toBeNull();
+    const previousClient = { ...fixture(), dealerModeSnapshot: null };
+    expect(buildExternalDealerPresentation(previousClient, companyBranding)).toBeNull();
   });
 
   it('does not borrow Company contact information when owner contacts are missing', () => {

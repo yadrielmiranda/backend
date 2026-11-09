@@ -546,9 +546,10 @@ describe('EstimatePublicShareService customer pricing modes', () => {
     expect(result.pricingMode).toBe('total');
     expect(result.token).toMatch(/^total_[0-9a-f-]{36}$/);
     expect(result.token).not.toBe('detailed-token');
+    expect(prisma.estimate.update.mock.calls[0][0].data).not.toHaveProperty('dealerModeSnapshot');
   });
 
-  it('updates an active estimate to the dealer current mode before returning its token', async () => {
+  it.each([null, 'EXTERNAL'])('preserves saved %s conditions when the owner is now internal and requests its token', async mode => {
     const { prisma, service } = buildService();
     prisma.estimate.findUnique.mockResolvedValue({
       id: 9,
@@ -556,7 +557,7 @@ describe('EstimatePublicShareService customer pricing modes', () => {
       publicToken: 'detailed-token',
       publicTotalToken: null,
       publicTokenEnabled: true,
-      dealerModeSnapshot: 'EXTERNAL',
+      dealerModeSnapshot: mode,
       order: null,
       payments: [],
       status: { name: 'Active' },
@@ -573,12 +574,7 @@ describe('EstimatePublicShareService customer pricing modes', () => {
       'detailed',
     );
 
-    expect(prisma.estimate.update).toHaveBeenCalledWith({
-      where: { id: 9 },
-      data: {
-        dealerModeSnapshot: 'INTERNAL',
-      },
-    });
+    expect(prisma.estimate.update).not.toHaveBeenCalled();
     expect(result).toEqual({
       token: 'detailed-token',
       enabled: true,
@@ -638,14 +634,12 @@ describe.each(['detailed', 'total'] as const)('Estimate sharing permissions (%s)
     expect(prisma.estimate.update).not.toHaveBeenCalled();
   });
 
-  it('uses the estimate owner mode when an ancestor has a different mode', async () => {
+  it('preserves saved conditions when the owner and the sharing ancestor have different modes', async () => {
     const { service, prisma, estimate } = sharingService();
     estimate.user.dealerMode = 'INTERNAL';
     const parent = Object.assign(actor(22), { dealerMode: 'EXTERNAL' });
     await service.getOrCreatePublicLinkToken(9, parent, pricingMode);
-    expect(prisma.estimate.update).toHaveBeenCalledWith({
-      where: { id: 9 }, data: { dealerModeSnapshot: 'INTERNAL' },
-    });
+    expect(prisma.estimate.update).not.toHaveBeenCalled();
   });
 
   it('does not let an admin share a client-owned estimate', async () => {

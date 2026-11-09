@@ -18,6 +18,7 @@ const paymentPlanAdministration = new Set([
   'materialOnlyUpfront', 'materialOnlyUpfrontApplied',
 ]);
 const installationAdministration = new Set([
+  'earningsReview',
   'networkProfitBreakdown',
   'installationProcessingSummary', 'installationProcessing',
   'installationShare', 'installationSharePending',

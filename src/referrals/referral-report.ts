@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import Decimal from 'decimal.js';
-import { buildDealerEarningsReport, type MaterialProfitsSummary } from '@/common/dealer-earnings';
+import { buildDealerEarningsReport, SavedDealerEarningsPlanError, type MaterialProfitsSummary } from '@/common/dealer-earnings';
 import { calculateReferralReward, referralMaterialSale, type ReferralRewardTerms } from './referral-rewards';
 
 export type ReferralCostsSummary = {
@@ -69,4 +69,33 @@ export function buildMaterialEarningsReport(estimate: any, order = estimate?.ord
       authenticRealProfit: afterReferral(profits.authenticRealProfit),
     },
   };
+}
+
+export type EarningsReview = {
+  status: 'PENDING_REVIEW';
+  code: 'INVALID_SAVED_EARNINGS_PLAN';
+  message: string;
+};
+
+/** List-only projection. Financial operations continue to use the strict report. */
+export function buildMaterialEarningsReportForRead(
+  estimate: any,
+  order = estimate?.order,
+): ReturnType<typeof buildMaterialEarningsReport> & { earningsReview?: EarningsReview } {
+  try {
+    return buildMaterialEarningsReport(estimate, order);
+  } catch (error) {
+    if (!(error instanceof SavedDealerEarningsPlanError)) throw error;
+    return {
+      dealerEarnings: null,
+      subdealerEarnings: null,
+      materialProfits: null,
+      ...(order?.referralReward ? { referralCosts: { amount: null, status: 'PENDING_REVIEW' as const } } : {}),
+      earningsReview: {
+        status: 'PENDING_REVIEW',
+        code: 'INVALID_SAVED_EARNINGS_PLAN',
+        message: 'Earnings pending review. The saved earnings plan is missing or invalid.',
+      },
+    };
+  }
 }

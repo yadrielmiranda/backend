@@ -108,6 +108,14 @@ describe('customer charge editing permissions and internal rules', () => {
     await expect(f.service.upsertSystemCharge(f.estimate.id, rule, admin)).rejects.toThrow('only available on dealer estimates');
   });
 
+  it('does not convert a client quote when its owner becomes a dealer and tries to add a charge', async () => {
+    const f = fixture();
+    f.estimate.dealerModeSnapshot = null;
+    await expect(f.service.upsertSystemCharge(f.estimate.id, rule, dealer)).rejects.toThrow('only available on dealer estimates');
+    expect(f.db.estimate.update).not.toHaveBeenCalled();
+    expect(f.db.estimateCustomerCharge.upsert).not.toHaveBeenCalled();
+  });
+
   it.each(['PENDING', 'PAID', 'REFUNDED'])('locks internal changes for %s payments', async status => {
     const f = fixture();
     f.estimate.payments = [{ status, paidAt: null, refundReviewPending: false }];
