@@ -2563,6 +2563,7 @@ model Order {
   deliveries        OrderDelivery[]
   factoryPickupRuns FactoryPickupRunOrder[]
   factoryPo         FactoryPo?
+  factoryPaymentAccount FactoryPaymentAccount?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2570,6 +2571,84 @@ model Order {
   @@index([userId])
   @@index([statusId])
   @@index([date])
+}
+
+// Independent register of payments already charged by manufacturers.
+// This ledger never updates operational orders or customer payments.
+model FactoryManufacturer {
+  id Int @id @default(autoincrement())
+  name String @unique @db.VarChar(150)
+  active Boolean @default(true)
+  isDefault Boolean @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  accounts FactoryPaymentAccount[]
+  @@map("factory_manufacturers")
+}
+
+// Singleton serializes manufacturer default changes.
+model FactoryPaymentsSettings {
+  id Int @id
+  @@map("factory_payments_settings")
+}
+
+model FactoryPaymentAccount {
+  id Int @id @default(autoincrement())
+  orderId Int @unique
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  manufacturerId Int
+  manufacturer FactoryManufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  poNumber String @db.VarChar(50)
+  sourceCost Decimal @db.Decimal(18, 8)
+  total Decimal @db.Decimal(12, 2)
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  payments FactoryPayment[]
+  events FactoryPaymentEvent[]
+  @@unique([manufacturerId, poNumber])
+  @@map("factory_payment_accounts")
+}
+
+enum FactoryPaymentKind {
+  DEPOSIT
+  PARTIAL
+  FINAL
+  OTHER
+}
+
+model FactoryPayment {
+  id Int @id @default(autoincrement())
+  accountId Int
+  account FactoryPaymentAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  requestId String @unique @db.VarChar(36)
+  amount Decimal @db.Decimal(12, 2)
+  paidOn DateTime @db.Date
+  invoiceNumber String @db.VarChar(100)
+  kind FactoryPaymentKind
+  reference String? @db.VarChar(150)
+  note String? @db.Text
+  createdById Int
+  createdAt DateTime @default(now())
+  voidedAt DateTime?
+  voidedById Int?
+  voidReason String? @db.VarChar(500)
+  @@index([accountId, paidOn])
+  @@map("factory_payments")
+}
+
+model FactoryPaymentEvent {
+  id Int @id @default(autoincrement())
+  accountId Int?
+  account FactoryPaymentAccount? @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  manufacturerId Int?
+  action String @db.VarChar(50)
+  detail String @db.Text
+  data Json?
+  actorId Int
+  createdAt DateTime @default(now())
+  @@index([accountId, createdAt])
+  @@map("factory_payment_events")
 }
 
 // =======================================

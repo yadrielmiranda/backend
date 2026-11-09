@@ -56,6 +56,7 @@ import { ReferralsModule } from './referrals/referrals.module';
 import { EnergyRatingsModule } from './energy-ratings/energy-ratings.module';
 import { GarageDesignsModule } from './garage-designs/garage-designs.module';
 import { DoorDesignsModule } from './door-designs/door-designs.module';
+import { FactoryPaymentsModule } from './factory-payments/factory-payments.module';
 
 @Module({
   imports: [
@@ -111,6 +112,7 @@ import { DoorDesignsModule } from './door-designs/door-designs.module';
     EnergyRatingsModule,
     GarageDesignsModule,
     DoorDesignsModule,
+    FactoryPaymentsModule,
   ],
   controllers: [AppController],
   providers: [

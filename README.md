@@ -28,6 +28,18 @@
 
 ## Project setup
 
+### Factory Payments
+
+Administrators open **Orders → Factory Payments** to record manufacturer charges already made. This is an independent register: it does not initiate charges or change order status, prices, profits, estimates or customer payments. Only system orders are included; external warehouse POs are excluded. A payment requires an order PO number, an imported factory cost and factory unit links belonging to that order's estimate. A manually entered PO number alone does not qualify.
+
+The editable manufacturer catalog starts with **Eco Window Systems** as the default. Manufacturers are independent of product brands. Record the receipt's **Amount**, date, complete invoice number, concept, optional reference and note. Surcharge and Total Amount are not included. Files are not uploaded. Multiple charges can share an invoice number. Incorrect entries are voided with a reason and remain in the history; register a replacement entry when needed.
+
+The control captures the imported factory cost when tracking starts and rounds that cost once to cents (half up). Later JSON imports do not silently replace this saved total: the admin reviews the difference and explicitly updates the tracking total. Existing payments stay unchanged. Overpayments appear as credit. Manufacturer assignment, total updates, payment creation and voids retain their audit history.
+
+Deployment after pulling: run `npx prisma migrate deploy`, `npx prisma generate`, and `npm run build` in the backend, then restart it; build and restart the matching frontend. The additive `20261110010000_factory_payments` migration creates only this module's tables and initial manufacturer catalog. There are no new dependencies, storage folders or required environment variables. The existing PO import still enforces its current supplier and globally unique PO-number rules.
+
+Run `node scripts/test-factory-payments-mysql.cjs` for real HTTP authorization, import eligibility, concurrent request idempotency, decimal balances, voids, catalog filters, reimport review and source-data preservation. This check requires local MySQL and creates and drops a dedicated database containing only synthetic fixtures.
+
 ### Private estimate note attachments
 
 Set `NOTE_ATTACHMENTS_DIR` to a persistent, private directory on the VPS, for example `/var/lib/impact/estimate-note-attachments`. Give the backend service account read/write access, use mode `0700`, and keep the directory outside all web roots and release directories. On local development the default is `private/estimate-note-attachments` under the backend working directory. Back up the directory and the database together.
