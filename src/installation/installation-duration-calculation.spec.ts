@@ -332,7 +332,7 @@ describe('Daily charge connected to quote totals', () => {
     expect(draft.status).toBe('DRAFT');
     expect(draft.version).toBe(2);
     expect(draft.coverageSnapshot.create.data).toEqual(f.quote.coverageSnapshot.data);
-    expect(draft.lines.create.map(item => item.timeSnapshot)).toEqual(f.quote.lines.map(item => item.timeSnapshot));
+    expect(draft.lines.createMany.data.map(item => item.timeSnapshot)).toEqual(f.quote.lines.map(item => item.timeSnapshot));
     expect(f.tx.installationQuote.update).not.toHaveBeenCalled();
     expect(JSON.stringify(f.quote)).toBe(before);
   });

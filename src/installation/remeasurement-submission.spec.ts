@@ -34,6 +34,7 @@ function fixture() {
   const latest = () => job.quotes[0];
   const revisionBy = (where: any) => job.revisions.find((r: any) => where.id ? r.id === where.id : r.quoteId === where.quoteId) ?? null;
   const tx: any = {
+    estimate: { findUnique: jest.fn(async () => estimate) },
     installationJob: { findUnique: jest.fn(async () => job), update: jest.fn(async ({ data }) => Object.assign(job, data)) },
     installationQuote: {
       findFirst: jest.fn(async () => latest()),
@@ -45,7 +46,7 @@ function fixture() {
       }),
       create: jest.fn(async ({ data }) => {
         const q = { ...data, id: 20, submittedAt: null, approvedAt: null, approvals: [], needsRecalculation: false,
-          lines: data.lines.create.map((l: any) => ({ ...l, id: ++lineId, quoteId: 20 })) };
+          lines: data.lines.createMany.data.map((l: any) => ({ ...l, id: ++lineId, quoteId: 20 })) };
         job.quotes.unshift(q); return q;
       }),
       delete: jest.fn(async ({ where }) => {

@@ -30,6 +30,7 @@ import {
   WarehouseStoreCreateDto,
   WarehouseStoreUpdateDto,
   FactoryPickupRunCreateDto,
+  FactoryPickupRunPosDto,
   FactoryPickupAssignmentsDto,
   FactoryPickupRunCycleDto,
   FactoryPickupRunFinishDto,
@@ -236,6 +237,21 @@ export class WarehouseController {
     @Req() req: Request,
   ) {
     return this.warehouse.factoryPickupScan(id, dto, req.user as AuthUser);
+  }
+  @Post('pickups/:id/pos')
+  @Roles('admin')
+  addPickupPos(@Param('id', ParseIntPipe) id: number, @Body() dto: FactoryPickupRunPosDto, @Req() req: Request) {
+    return this.warehouse.addFactoryPickupPos(id, dto, req.user as AuthUser);
+  }
+  @Delete('pickups/:id/pos/:poKey')
+  @Roles('admin')
+  removePickupPo(@Param('id', ParseIntPipe) id: number, @Param('poKey') poKey: string, @Req() req: Request) {
+    return this.warehouse.removeFactoryPickupPo(id, poKey, req.user as AuthUser);
+  }
+  @Delete('pickups/:id')
+  @Roles('admin')
+  deletePickup(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.warehouse.deleteFactoryPickup(id, req.user as AuthUser);
   }
   @Post('pickups/:id/finish')
   @Roles('admin')

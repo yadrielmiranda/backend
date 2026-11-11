@@ -71,7 +71,7 @@ function fixture(openingWidth: number | null, units = 1) {
     },
     installationQuoteLine: {
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
-      create: jest.fn().mockImplementation(async ({ data }) => data),
+      createMany: jest.fn().mockImplementation(async ({ data }) => ({ count: data.length })),
     },
   };
   const workflow = new InstallationWorkflowService(
@@ -81,7 +81,7 @@ function fixture(openingWidth: number | null, units = 1) {
   return {
     tx, measurements,
     rebuild: () => (workflow as any).rebuildAutomaticLines(7, 8, tx),
-    lines: () => tx.installationQuoteLine.create.mock.calls.map(([{ data }]) => data),
+    lines: () => tx.installationQuoteLine.createMany.mock.calls.flatMap(([{ data }]) => data),
   };
 }
 

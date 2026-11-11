@@ -100,8 +100,14 @@ function fixture() {
       const row = { id: nextId++, ...copy(fields), createdAt: new Date(), updatedAt: new Date() };
       state[key].push(row);
       if (items?.create) for (const item of items.create) state.items.push({ id: nextId++, revisionId: row.id, ...copy(item) });
-      if (lines?.create) for (const line of lines.create) state.lines.push({ id: nextId++, quoteId: row.id, ...copy(line) });
+      for (const line of lines?.createMany?.data ?? lines?.create ?? []) {
+        state.lines.push({ id: nextId++, quoteId: row.id, ...copy(line) });
+      }
       return present(row);
+    },
+    createMany: async ({ data }: any) => {
+      for (const fields of data) state[key].push({ id: nextId++, ...copy(fields), createdAt: new Date(), updatedAt: new Date() });
+      return { count: data.length };
     },
     update: async ({ where, data }: any) => {
       const row = state[key].find((row: any) => matches(row, where));

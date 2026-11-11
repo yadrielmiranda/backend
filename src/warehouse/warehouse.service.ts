@@ -38,6 +38,7 @@ import {
   WarehouseStoreCreateDto,
   WarehouseStoreUpdateDto,
   FactoryPickupRunCreateDto,
+  FactoryPickupRunPosDto,
   FactoryPickupAssignmentsDto,
   FactoryPickupRunCycleDto,
   FactoryPickupRunScanDto,
@@ -57,6 +58,20 @@ const actorSelect = {
   lastName: true,
 } satisfies Prisma.UserSelect;
 const storeSelect = { id: true, name: true, isActive: true } satisfies Prisma.WarehouseStoreSelect;
+const poEstimateSelect = {
+  name: true, customerFirstName: true, customerLastName: true, user: { select: actorSelect },
+} satisfies Prisma.EstimateSelect;
+const poOrderSelect = {
+  id: true, number: true, poNumber: true, estimate: { select: poEstimateSelect },
+} satisfies Prisma.OrderSelect;
+const poStockSelect = {
+  unit: { select: {
+    externalPo: { select: { id: true, orderName: true, poNumber: true } },
+    piece: { select: { estim: { select: {
+      ...poEstimateSelect, order: { select: { id: true, number: true, poNumber: true } },
+    } } } },
+  } },
+} satisfies Prisma.WarehouseStockSelect;
 const stockInclude = {
   storeBalances: { include: { store: { select: storeSelect } } },
   unit: {
@@ -98,6 +113,7 @@ const stockInclude = {
   },
 } satisfies Prisma.WarehouseStockInclude;
 const movementInclude = {
+  stock: { select: poStockSelect },
   fromStore: { select: storeSelect },
   toStore: { select: storeSelect },
   actor: { select: actorSelect },
@@ -113,6 +129,15 @@ const hash = (value: unknown) =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const name = (user: { firstName: string; lastName: string }) =>
   `${user.firstName} ${user.lastName}`.trim();
+function poDisplay(
+  estimate: { name: string | null; customerFirstName: string | null; customerLastName: string | null;
+    user: { firstName: string; lastName: string } } | null | undefined,
+  external: { orderName: string | null } | null | undefined,
+) {
+  const customer = estimate ? [estimate.customerFirstName, estimate.customerLastName].filter(Boolean).join(' ') || name(estimate.user) : '';
+  const project = external?.orderName ?? estimate?.name ?? '';
+  return { customer, project, poName: customer || project };
+}
 const partTypes = ['DOOR', 'FRAME', 'WINDOW', 'UNKNOWN'] as const;
 type PartType = typeof partTypes[number];
 type PartQuantities = Partial<Record<PartType, number>>;
@@ -230,8 +255,7 @@ function presentStock(stock: Stock) {
     orderId: e?.order?.id ?? null,
     orderNumber: e?.order?.number ?? '',
     poNumber: external?.poNumber ?? e?.order?.poNumber ?? '',
-    customer: e ? [e.customerFirstName, e.customerLastName].filter(Boolean).join(' ') || name(e.user) : '',
-    project: external?.orderName ?? e?.name ?? '',
+    ...poDisplay(e, external),
     installation: e && ['INSTALLATION_DELIVERY', 'COMPANY_DELIVERY'].includes(e.order?.fulfillmentMethod ?? '')
       ? installationDestination(e.installationJob) : null,
     expectedParts: expected,
@@ -265,10 +289,15 @@ function presentStock(stock: Stock) {
   };
 }
 function presentMovement(m: Movement) {
+  const estimate = m.stock.unit.piece?.estim, external = m.stock.unit.externalPo;
   return {
     id: m.id,
     customerDeliveryId: m.customerDeliveryId ?? null,
     lineNumber: m.lineNumber,
+    source: external ? 'EXTERNAL' as const : 'ORDER' as const,
+    orderNumber: estimate?.order?.number ?? '',
+    poNumber: external?.poNumber ?? estimate?.order?.poNumber ?? '',
+    poName: poDisplay(estimate, external).poName,
     type: m.type,
     quantity: m.quantity,
     partDetails: m.partDetails ?? null,
@@ -355,7 +384,7 @@ function deliveryRunKey(value: string) {
 function deliveryRunItem(stock: Stock, quantity: number, selectedParts: PartQuantities, unknownQuantity = false, origins?: DeliveryRunOrigin[]) {
   const unit = presentStock(stock);
   return {
-    lineNumber: unit.lineNumber, barcode: unit.barcode, poNumber: unit.poNumber,
+    lineNumber: unit.lineNumber, barcode: unit.barcode, poNumber: unit.poNumber, poName: unit.poName,
     source: unit.source, orderNumber: unit.orderNumber, mark: unit.mark,
     description: unit.description, product: unit.product, system: unit.system,
     configuration: unit.configuration, quantity, parts: selectedParts,
@@ -471,11 +500,13 @@ function pickupSource(stock: Stock) {
   if (external) return {
     key: `external:${external.id}`, source: 'EXTERNAL' as const,
     orderId: null, externalPoId: external.id, orderNumber: '', poNumber: external.poNumber,
+    poName: poDisplay(undefined, external).poName,
   };
   if (!order) throw new BadRequestException('This factory unit has no inventory source.');
   return {
     key: `order:${order.id}`, source: 'ORDER' as const,
     orderId: order.id, externalPoId: null, orderNumber: order.number, poNumber: order.poNumber ?? '',
+    poName: poDisplay(stock.unit.piece?.estim, undefined).poName,
   };
 }
 
@@ -524,7 +555,7 @@ export class WarehouseService {
     return actor.role.name === 'admin' ? {} : { technicians: { some: { technicianId: actor.id } } };
   }
 
-  // Proyección mínima: sin cliente, precios, enlaces a órdenes o inventario general.
+  // Nombre del PO para identificarlo, sin contactos, precios ni enlaces a órdenes.
   private technicianStock(stock: ReturnType<typeof presentStock>) {
     return {
       source: stock.source, externalPoId: stock.externalPoId,
@@ -532,7 +563,7 @@ export class WarehouseService {
       lineNumber: stock.lineNumber, barcode: stock.barcode, mark: stock.mark,
       product: stock.product, system: stock.system, configuration: stock.configuration,
       dimensions: stock.dimensions,
-      orderNumber: stock.orderNumber, poNumber: stock.poNumber,
+      orderNumber: stock.orderNumber, poNumber: stock.poNumber, poName: stock.poName,
       expectedParts: stock.expectedParts, inTransit: stock.inTransit,
       partTracking: stock.partTracking,
       onHand: stock.onHand, pending: stock.pending, version: stock.version,
@@ -673,7 +704,7 @@ export class WarehouseService {
         items: result.items.map(group => ({
           key: group.key, source: group.source, externalPoId: group.externalPoId,
           supplierName: group.supplierName, orderId: group.orderId,
-          orderNumber: group.orderNumber, poNumber: group.poNumber,
+          orderNumber: group.orderNumber, poNumber: group.poNumber, poName: group.poName,
           customerName: group.customer, projectName: group.project,
           expectedParts: group.units.some(unit => unit.expectedParts === null) ? null
             : group.units.reduce((sum, unit) => sum + (unit.expectedParts ?? 0), 0),
@@ -782,7 +813,7 @@ export class WarehouseService {
     const poNumber = pickupPoNumber(poNumberValue);
     const order = await tx.order.findUnique({
       where: { poNumber },
-      select: { id: true, number: true, poNumber: true, fulfillmentMethod: true },
+      select: { ...poOrderSelect, fulfillmentMethod: true },
     });
     const external = order ? null : await tx.factoryPo.findFirst({ where: { poNumber, orderId: null } });
     if (!order?.poNumber && !external)
@@ -793,9 +824,11 @@ export class WarehouseService {
     const source = external ? {
       key: `external:${external.id}`, source: 'EXTERNAL' as const,
       orderId: null, externalPoId: external.id, orderNumber: '', poNumber: external.poNumber,
+      poName: poDisplay(undefined, external).poName,
     } : {
       key: `order:${order!.id}`, source: 'ORDER' as const,
       orderId: order!.id, externalPoId: null, orderNumber: order!.number, poNumber: order!.poNumber!,
+      poName: poDisplay(order!.estimate, undefined).poName,
     };
 
     const active = await tx.factoryPickupRunOrder.findFirst({
@@ -883,6 +916,7 @@ export class WarehouseService {
         technicians: { select: { technician: { select: actorSelect } }, orderBy: { technicianId: 'asc' } },
         status: true,
         cycle: true,
+        activeSlot: true,
         events: { include: { actor: { select: actorSelect } }, orderBy: { id: 'asc' } },
         startedAt: true,
         finishedAt: true,
@@ -893,10 +927,10 @@ export class WarehouseService {
     if (!run)
       throw new NotFoundException('Factory pickup not found.');
 
-    const [orders, lines, movements] = await Promise.all([
+    const [orders, lines, movements, historicalMovement] = await Promise.all([
       tx.factoryPickupRunOrder.findMany({
         where: { pickupRunId },
-        include: { order: { select: { id: true, number: true, poNumber: true } }, externalPo: true },
+        include: { order: { select: poOrderSelect }, externalPo: true },
         orderBy: { addedAt: 'asc' },
       }),
       tx.factoryPickupRunLine.findMany({
@@ -910,6 +944,7 @@ export class WarehouseService {
         select: { lineNumber: true, quantity: true, actor: { select: actorSelect }, createdAt: true },
         orderBy: { id: 'asc' },
       }),
+      tx.warehouseMovement.findFirst({ where: { pickupRunId }, select: { id: true } }),
     ]);
 
     const collectedByLine = new Map<string, number>();
@@ -961,6 +996,7 @@ export class WarehouseService {
         orderId: entry.orderId,
         orderNumber: entry.order?.number ?? '',
         poNumber: entry.externalPo?.poNumber ?? entry.order?.poNumber ?? '',
+        poName: orderLines[0]?.poName ?? poDisplay(entry.order?.estimate, entry.externalPo).poName,
         addedDuringPickup: entry.addedDuringPickup,
         addedAt: entry.addedAt,
         pieces: orderLines.length,
@@ -1001,6 +1037,8 @@ export class WarehouseService {
       technicians: run.technicians.map(({ technician }) => ({ id: technician.id, name: name(technician) })),
       collectors: [...collectors.values()],
       status: run.status,
+      canEditOrders: actor.role.name === 'admin' && run.status === 'ACTIVE' && run.activeSlot === 1 && !historicalMovement,
+      canDelete: actor.role.name === 'admin' && !historicalMovement,
       startedAt: run.startedAt,
       finishedAt: run.finishedAt,
       partialReason: run.partialReason,
@@ -1128,6 +1166,83 @@ export class WarehouseService {
     if (requireActive && (run.status !== 'ACTIVE' || run.activeSlot !== 1))
       throw new ConflictException('This factory pickup is already closed.');
     return run;
+  }
+
+  private async assertPickupHasNoMovements(tx: Tx, pickupRunId: number) {
+    // An undone reading is still a historical movement and must keep its pickup.
+    if (await tx.warehouseMovement.findFirst({ where: { pickupRunId }, select: { id: true } }))
+      throw new ConflictException({
+        code: 'PICKUP_HAS_MOVEMENTS',
+        message: 'This pickup has recorded movements. Its POs cannot be edited and the pickup cannot be deleted, even if its scans were undone.',
+      });
+  }
+
+  async addFactoryPickupPos(id: number, dto: FactoryPickupRunPosDto, actor: AuthUser) {
+    this.staff(actor, true);
+    if (!Array.isArray(dto.poNumbers) || !dto.poNumbers.length || dto.poNumbers.length > 50)
+      throw new BadRequestException('Add between 1 and 50 POs to this pickup.');
+    const poNumbers = dto.poNumbers.map(pickupPoNumber);
+    if (new Set(poNumbers.map(po => po.toLocaleLowerCase())).size !== poNumbers.length)
+      throw new BadRequestException('Add each PO only once.');
+    return this.transaction(async tx => {
+      await this.lockPickupRun(tx, id, actor);
+      await this.noCount(tx);
+      await this.assertPickupHasNoMovements(tx, id);
+      const existing = await tx.factoryPickupRunOrder.findMany({
+        where: { pickupRunId: id },
+        include: { order: { select: { poNumber: true } }, externalPo: { select: { poNumber: true } } },
+      });
+      const includedNumbers = new Set(existing.map(entry => (entry.externalPo?.poNumber ?? entry.order?.poNumber ?? '').toLocaleLowerCase()));
+      const additions = poNumbers.filter(po => !includedNumbers.has(po.toLocaleLowerCase()));
+      if (existing.length + additions.length > 50)
+        throw new BadRequestException('A pickup can include at most 50 POs.');
+      for (const poNumber of additions) await this.addPickupOrder(tx, id, poNumber, true);
+      return this.pickupRunSummary(tx, id, actor);
+    }, 60000);
+  }
+
+  async removeFactoryPickupPo(id: number, poKey: string, actor: AuthUser) {
+    this.staff(actor, true);
+    if (!isCustomerDeliveryPoKey(poKey)) throw new BadRequestException('Choose a valid warehouse PO key.');
+    const source = poKey.startsWith('external:')
+      ? { externalPoId: Number(poKey.slice(9)), orderId: null }
+      : { externalPoId: null, orderId: Number(poKey.slice(6)) };
+    return this.transaction(async tx => {
+      await this.lockPickupRun(tx, id, actor);
+      await this.noCount(tx);
+      await this.assertPickupHasNoMovements(tx, id);
+      const entry = await tx.factoryPickupRunOrder.findFirst({ where: { pickupRunId: id, ...pickupSourceWhere(source) } });
+      // A repeated removal recovers the current pickup without removing another PO.
+      if (!entry) return this.pickupRunSummary(tx, id, actor);
+      if (await tx.factoryPickupRunOrder.count({ where: { pickupRunId: id } }) <= 1)
+        throw new ConflictException('Keep at least one PO in the pickup, or use Delete pickup to remove it entirely.');
+      await tx.factoryPickupRunLine.deleteMany({ where: {
+        pickupRunId: id,
+        stock: { unit: source.externalPoId !== null
+          ? { externalPoId: source.externalPoId }
+          : { piece: { estim: { order: { id: source.orderId! } } } } },
+      } });
+      await tx.factoryPickupRunOrder.deleteMany({ where: { id: entry.id, pickupRunId: id } });
+      return this.pickupRunSummary(tx, id, actor);
+    }, 60000);
+  }
+
+  async deleteFactoryPickup(id: number, actor: AuthUser) {
+    this.staff(actor, true);
+    if (!Number.isSafeInteger(id) || id < 1) throw new BadRequestException('Choose a valid factory pickup.');
+    return this.transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM factory_pickup_runs WHERE id = ${id} FOR UPDATE`;
+      const run = await tx.factoryPickupRun.findFirst({ where: { id } });
+      if (!run) return { id, deleted: true as const };
+      await this.noCount(tx);
+      await this.assertPickupHasNoMovements(tx, id);
+      await tx.factoryPickupRunLine.deleteMany({ where: { pickupRunId: id } });
+      await tx.factoryPickupRunOrder.deleteMany({ where: { pickupRunId: id } });
+      await tx.factoryPickupRunTechnician.deleteMany({ where: { pickupRunId: id } });
+      await tx.factoryPickupRunEvent.deleteMany({ where: { pickupRunId: id } });
+      await tx.factoryPickupRun.deleteMany({ where: { id } });
+      return { id, deleted: true as const };
+    }, 60000);
   }
 
   async factoryPickupScan(
@@ -1655,12 +1770,12 @@ export class WarehouseService {
 
   private async deliveryRunPo(tx: Tx, value: string): Promise<DeliveryRunOrder> {
     const poNumber = pickupPoNumber(value);
-    const order = await tx.order.findUnique({ where: { poNumber }, select: { id: true, number: true, poNumber: true } });
+    const order = await tx.order.findUnique({ where: { poNumber }, select: poOrderSelect });
     const external = order ? null : await tx.factoryPo.findFirst({ where: { poNumber, orderId: null } });
     if (!order && !external) throw new NotFoundException(`PO ${poNumber} not found.`);
     const source: DeliveryRunOrder = external
-      ? { key: `external:${external.id}`, source: 'EXTERNAL', orderId: null, externalPoId: external.id, orderNumber: '', poNumber: external.poNumber }
-      : { key: `order:${order!.id}`, source: 'ORDER', orderId: order!.id, externalPoId: null, orderNumber: order!.number, poNumber: order!.poNumber! };
+      ? { key: `external:${external.id}`, source: 'EXTERNAL', orderId: null, externalPoId: external.id, orderNumber: '', poNumber: external.poNumber, poName: poDisplay(undefined, external).poName }
+      : { key: `order:${order!.id}`, source: 'ORDER', orderId: order!.id, externalPoId: null, orderNumber: order!.number, poNumber: order!.poNumber!, poName: poDisplay(order!.estimate, undefined).poName };
     const count = await tx.warehouseStock.count({ where: { unit: this.deliveryRunPoWhere(source) } });
     if (!count) throw new BadRequestException(`PO ${poNumber} has no factory pieces. Import its factory JSON first.`);
     return source;
@@ -1675,25 +1790,76 @@ export class WarehouseService {
     // These source IDs are MySQL signed INTs. Larger safe integers cannot exist.
     if (id > 2147483647) throw new NotFoundException('Selected PO not found. Refresh the available POs.');
     if (kind === 'order') {
-      const order = await tx.order.findUnique({ where: { id }, select: { id: true, number: true, poNumber: true } });
+      const order = await tx.order.findUnique({ where: { id }, select: poOrderSelect });
       if (!order?.poNumber) throw new NotFoundException('Selected PO not found. Refresh the available POs.');
-      return { key, source: 'ORDER', orderId: id, externalPoId: null, orderNumber: order.number, poNumber: order.poNumber };
+      return { key, source: 'ORDER', orderId: id, externalPoId: null, orderNumber: order.number, poNumber: order.poNumber, poName: poDisplay(order.estimate, undefined).poName };
     }
     const external = await tx.factoryPo.findFirst({ where: { id, orderId: null } });
     if (!external) throw new NotFoundException('Selected External PO not found. Refresh the available POs.');
-    return { key, source: 'EXTERNAL', orderId: null, externalPoId: id, orderNumber: '', poNumber: external.poNumber };
+    return { key, source: 'EXTERNAL', orderId: null, externalPoId: id, orderNumber: '', poNumber: external.poNumber, poName: poDisplay(undefined, external).poName };
+  }
+
+  private async namedDelivery<T extends { items: unknown; orders?: unknown; pendingItems?: unknown; allocations?: unknown }>(tx: Tx, payload: T): Promise<T> {
+    const fields = ['items', 'orders', 'pendingItems', 'allocations'] as const;
+    const isRow = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
+    const rows = fields.flatMap(field => Array.isArray(payload[field]) ? (payload[field] as unknown[]).filter(isRow) : []);
+    const missing = rows.filter(row => typeof row.poName !== 'string');
+    if (!missing.length) return payload;
+    // Older signed receipts have no display name. Enrich the response only;
+    // never rewrite their stored items, signature, or recorded quantities.
+    const lines = [...new Set(missing.flatMap(row => typeof row.lineNumber === 'string' ? [row.lineNumber] : []))];
+    const stocks = lines.length ? await tx.warehouseStock.findMany({
+      where: { lineNumber: { in: lines } }, select: { lineNumber: true, ...poStockSelect },
+    }) : [];
+    const identities = stocks.map(stock => {
+      const estimate = stock.unit.piece?.estim, external = stock.unit.externalPo;
+      return {
+        lineNumber: stock.lineNumber, source: external ? 'EXTERNAL' : 'ORDER',
+        poNumber: external?.poNumber ?? estimate?.order?.poNumber ?? '',
+        orderNumber: estimate?.order?.number ?? '', poName: poDisplay(estimate, external).poName,
+      };
+    });
+    const sourceNames = new Map<string, string>();
+    const sourceKey = (row: Record<string, unknown>) => `${row.source}:${row.poNumber}:${row.source === 'ORDER' ? row.orderNumber ?? '' : ''}`;
+    const matchesSource = (row: Record<string, unknown>, identity: typeof identities[number]) =>
+      row.source === identity.source && row.poNumber === identity.poNumber && identity.poNumber !== '' &&
+      (row.source !== 'ORDER' || !row.orderNumber || row.orderNumber === identity.orderNumber);
+    for (const row of missing) {
+      const identity = identities.find(identity => identity.lineNumber === row.lineNumber && matchesSource(row, identity));
+      if (identity) sourceNames.set(sourceKey(row), identity.poName);
+    }
+    for (const row of missing) {
+      if (sourceNames.has(sourceKey(row)) || typeof row.key !== 'string' || typeof row.poNumber !== 'string') continue;
+      const match = /^(order|external):([1-9]\d*)$/.exec(row.key);
+      if (!match || Number(match[2]) > 2147483647 || row.source !== (match[1] === 'order' ? 'ORDER' : 'EXTERNAL')) continue;
+      if (match[1] === 'order') {
+        const order = await tx.order.findUnique({ where: { id: Number(match[2]) }, select: poOrderSelect });
+        if (order?.poNumber === row.poNumber && (!row.orderNumber || row.orderNumber === order.number))
+          sourceNames.set(sourceKey(row), poDisplay(order.estimate, undefined).poName);
+      } else {
+        const external = await tx.factoryPo.findFirst({ where: { id: Number(match[2]), orderId: null } });
+        if (external?.poNumber === row.poNumber)
+          sourceNames.set(sourceKey(row), poDisplay(undefined, external).poName);
+      }
+    }
+    const named = (row: unknown) => {
+      if (!isRow(row) || typeof row.poName === 'string') return row;
+      const savedName = [row.customer, row.customerName, row.project, row.projectName].find(value => typeof value === 'string' && value.trim());
+      return { ...row, poName: savedName ?? sourceNames.get(sourceKey(row)) ?? '' };
+    };
+    return { ...payload, ...Object.fromEntries(fields.filter(field => Array.isArray(payload[field])).map(field => [field, (payload[field] as unknown[]).map(named)])) };
   }
 
   private async deliveryRunView(tx: Tx, run: WarehouseCustomerDeliveryRun) {
     const receipt = run.deliveryId === null ? null : await tx.warehouseCustomerDelivery.findUnique({ where: { id: run.deliveryId } });
     if (run.status === 'CLOSED' && run.snapshot) {
-      const snapshot = run.snapshot as Record<string, any>;
+      const snapshot = await this.namedDelivery(tx, run.snapshot as Record<string, any> & { items: any[] });
       return {
         ...snapshot, status: run.status, multiStore: run.multiStore, updatedAt: run.updatedAt, canDelete: false,
         availableStorages: [],
         orders: (snapshot.orders ?? []).map((order: Record<string, unknown>) => ({ ...order, canRemove: false })),
         allocations: snapshot.allocations ?? (snapshot.items ?? []).map((item: Record<string, unknown>) => ({ ...item, storeId: run.storeId, storeName: run.storeName })),
-        closedAt: run.closedAt, deliveryId: run.deliveryId, delivery: receipt ? presentCustomerDelivery(receipt) : null,
+        closedAt: run.closedAt, deliveryId: run.deliveryId, delivery: receipt ? await this.namedDelivery(tx, presentCustomerDelivery(receipt)) : null,
       };
     }
     const sources = run.orders as DeliveryRunOrder[];
@@ -1720,6 +1886,7 @@ export class WarehouseService {
           availableStorages.set(null, { storeId: null, storeName: 'Unassigned' });
       }
       const source = pickupSource(stock), order = orders.find(order => order.key === source.key)!;
+      order.poName = source.poName;
       const line = scanned.find(line => line.lineNumber === stock.lineNumber);
       if (line) {
         items.push(deliveryRunItem(stock, line.quantity, line.parts, false, line.origins));
@@ -1758,7 +1925,7 @@ export class WarehouseService {
       totalPieces: items.length, totalParts: scanned.reduce((sum, line) => sum + line.quantity, 0),
       pendingPieces: pendingItems.length, pendingParts: pendingItems.reduce((sum, item) => sum + item.quantity, 0),
       hasPending: pendingItems.length > 0, deliveryId: run.deliveryId,
-      delivery: receipt ? presentCustomerDelivery(receipt) : null,
+      delivery: receipt ? await this.namedDelivery(tx, presentCustomerDelivery(receipt)) : null,
     };
   }
 
@@ -2097,7 +2264,7 @@ export class WarehouseService {
       }
       if (!sources.some(order => order.key === source.key)) {
         if (remove) throw new BadRequestException('This piece has not been scanned into this delivery.');
-        if (dto.addPo !== true) throw new ConflictException({ code: 'DELIVERY_PO_NOT_INCLUDED', message: `PO ${source.poNumber} is not included in this delivery. Include this PO and record the scanned part?`, poNumber: source.poNumber });
+        if (dto.addPo !== true) throw new ConflictException({ code: 'DELIVERY_PO_NOT_INCLUDED', message: `PO ${source.poNumber} is not included in this delivery. Include this PO and record the scanned part?`, poNumber: source.poNumber, poName: source.poName });
         if (sources.length >= 50) throw new BadRequestException('A delivery can include at most 50 POs.');
         sources.push(source);
       }
@@ -2182,7 +2349,7 @@ export class WarehouseService {
       throw new BadRequestException('Choose a valid customer delivery.');
     const delivery = await this.prisma.warehouseCustomerDelivery.findUnique({ where: { id } });
     if (!delivery) throw new NotFoundException('Customer delivery not found.');
-    return presentCustomerDelivery(delivery);
+    return this.namedDelivery(this.prisma, presentCustomerDelivery(delivery));
   }
 
   async technicianCustomerDelivery(id: number, actor: AuthUser) {
@@ -2193,7 +2360,7 @@ export class WarehouseService {
       where: { id, actorId: actor.id },
     });
     if (!delivery) throw new NotFoundException('Customer delivery not found.');
-    return presentCustomerDelivery(delivery);
+    return this.namedDelivery(this.prisma, presentCustomerDelivery(delivery));
   }
 
   async technicianDeliverToCustomer(dto: WarehouseCustomerDeliveryDto, actor: AuthUser) {
@@ -2247,7 +2414,7 @@ export class WarehouseService {
       if (prior) {
         if (prior.requestHash !== requestHash)
           throw new ConflictException('This request identifier was already used for another operation.');
-        return { ...presentCustomerDelivery(prior), replayed: true };
+        return { ...await this.namedDelivery(tx, presentCustomerDelivery(prior)), replayed: true };
       }
       if (await tx.warehouseMovement.findUnique({ where: { requestKey: dto.requestKey } }))
         throw new ConflictException('This request identifier was already used for another operation.');
@@ -2308,7 +2475,7 @@ export class WarehouseService {
       const receiptItems = selected.map(({ stock, quantity, parts: selectedParts }) => {
         const unit = presentStock(stock);
         return {
-          lineNumber: unit.lineNumber, barcode: unit.barcode, poNumber: unit.poNumber,
+          lineNumber: unit.lineNumber, barcode: unit.barcode, poNumber: unit.poNumber, poName: unit.poName,
           source: unit.source, orderNumber: unit.orderNumber, mark: unit.mark,
           description: unit.description, product: unit.product, system: unit.system,
           configuration: unit.configuration, quantity, parts: selectedParts,
@@ -2833,6 +3000,7 @@ export class WarehouseService {
           orderId: group.orderId,
           orderNumber: group.orderNumber,
           poNumber: group.poNumber,
+          poName: group.customer || group.project,
           customer: group.customer,
           project: group.project,
           units: completePo ? completeGroups.get(group.key) ?? [] : group.lineNumbers

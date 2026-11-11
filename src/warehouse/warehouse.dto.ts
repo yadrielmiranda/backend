@@ -187,6 +187,12 @@ export class FactoryPickupRunCreateDto extends FactoryPickupAssignmentsDto {
   poNumbers: string[];
 }
 
+export class FactoryPickupRunPosDto {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50)
+  @IsString({ each: true }) @Length(1, 50, { each: true })
+  poNumbers: string[];
+}
+
 export class FactoryPickupRunScanDto extends WarehouseRequestDto {
   @IsString() @Length(1, 60) barcode: string;
   @IsOptional() @IsIn(['DOOR', 'FRAME', 'WINDOW']) partType?: 'DOOR' | 'FRAME' | 'WINDOW';

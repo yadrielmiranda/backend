@@ -206,8 +206,8 @@ describe('Provider minimums and independent installation profile increases', () 
     const revision = await f.workflow.ensureDraftQuote(1, 7, f.tx);
     expect(revision.profileRateAdjustmentsSnapshot).toEqual(adjustments);
     expect(revision.providerCostSnapshot).toEqual(saved.providerCostSnapshot);
-    expect(revision.lines.create[0].rateAdjustmentSnapshot).toEqual(saved.lines[0].rateAdjustmentSnapshot);
-    expect(revision.lines.create[0].saleRate.toString()).toBe('120');
+    expect(revision.lines.createMany.data[0].rateAdjustmentSnapshot).toEqual(saved.lines[0].rateAdjustmentSnapshot);
+    expect(revision.lines.createMany.data[0].saleRate.toString()).toBe('120');
   });
 
   it.each(['dealer', 'client', 'operator', 'technician'])('keeps supplier cost and margin private from %s installation responses', async role => {

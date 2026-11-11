@@ -52,7 +52,7 @@ function fixture() {
     estimate: { findUnique: jest.fn(async () => estimate) },
     globalParameter: { findUnique: jest.fn(async ({ where }) => ({ value: decimal(where.key === 'INSTALLATION_DEPOSIT' ? 100 : 250) })) },
     installationJob: { create: jest.fn(async ({ data }) => {
-      job = { ...data, id: 300, estimate, measurements: data.measurements.create };
+      job = { ...data, id: 300, estimate, measurements: data.measurements.createMany.data };
       quote = { ...data.quotes.create, id: 400, jobId: 300, job, lines, coverageSnapshot: { data: data.quotes.create.coverageSnapshot.create.data } };
       job.quotes = [quote]; return job;
     }) },

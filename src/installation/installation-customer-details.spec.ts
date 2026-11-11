@@ -85,7 +85,7 @@ function fixture(role: 'dealer' | 'client' = 'dealer') {
     },
     installationJob: {
       create: jest.fn(async ({ data }) => {
-        job.measurements = data.measurements.create.map((m, i) => ({
+        job.measurements = data.measurements.createMany.data.map((m, i) => ({
           ...m,
           id: 20 + i,
           jobId: job.id,

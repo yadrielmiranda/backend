@@ -16,7 +16,8 @@ export function warehouseFixture() {
     status: { name: 'Ready to pick up' },
     fulfillmentMethod: 'CUSTOMER_PICKUP',
     payment: { status: 'PAID' },
-    estimate: { installationJob: null as any, paymentPlanSnapshot: null },
+    estimate: { installationJob: null as any, paymentPlanSnapshot: null,
+      name: 'Warehouse project', customerFirstName: 'Pepe', customerLastName: 'Test', user: users[0] },
     deliveries: [],
   };
   const orders: any[] = [order];

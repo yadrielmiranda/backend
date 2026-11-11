@@ -35,9 +35,9 @@ function fixture(releasePaid = true) {
   };
   const job: any = {
     id: 20, estimateId: 32, estimate, status: 'INSTALLATION_PAYMENT_PENDING',
-    quotes: [{ id: 1, version: 1, status: 'APPROVED', total: amounts.installation }],
+    quotes: [{ id: 1, version: 1, status: 'APPROVED', total: amounts.installation, lines: [] }],
     permit: { status: 'APPROVED', permitFeeSnapshot: amounts.permit, cityFee: '200.00' },
-    payments, appointments: [], revisions: [],
+    payments, appointments: [], revisions: [], measurements: [],
   };
   estimate.installationJob = job;
   const tx: any = {

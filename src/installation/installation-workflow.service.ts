@@ -113,6 +113,11 @@ export const SCHEDULE_DEPOSIT_TERMS =
 export const INSTALLATION_DEPOSIT_TERMS =
   'Once paid, this installation deposit is non-refundable. If the installation proceeds, the full deposit is credited toward the installation balance. If the installation is canceled, the deposit is not refunded.';
 
+// Large estimates still keep one measurement and calculation per physical unit.
+// Bound their writes without changing the transaction defaults of other features.
+const INSTALLATION_TRANSACTION_OPTIONS = { maxWait: 15000, timeout: 60000 };
+const INSTALLATION_LINE_BATCH_SIZE = 200;
+
 const REMEASUREMENT_IN_PROGRESS_STATUSES = new Set<InstallationJobStatus>([
   InstallationJobStatus.MEASUREMENT_SCHEDULING,
   InstallationJobStatus.MEASUREMENT_SCHEDULED,
@@ -171,6 +176,28 @@ const quoteLineSnapshotSelect = {
   description: true,
   sortOrder: true,
 } satisfies Prisma.InstallationQuoteLineSelect;
+
+const installationSysConfInclude = {
+  config: true,
+  installationServices: {
+    include: { service: { include: { rules: true } } },
+    orderBy: [{ sortOrder: 'asc' }, { serviceId: 'asc' }],
+  },
+  pricingComponents: {
+    orderBy: { componentType: 'asc' },
+    include: {
+      sourceSysConf: {
+        include: {
+          config: true,
+          installationServices: {
+            include: { service: { include: { rules: true } } },
+            orderBy: [{ sortOrder: 'asc' }, { serviceId: 'asc' }],
+          },
+        },
+      },
+    },
+  },
+} satisfies Prisma.SysConfInclude;
 
 export const revisionPieceInclude = {
   prod: true,
@@ -389,7 +416,10 @@ export class InstallationWorkflowService {
   private async withAgreementJobTransaction<T>(jobId: number, work: (db: Prisma.TransactionClient) => Promise<T>, options?: { maxWait?: number; timeout?: number }) {
     const job = await this.prisma.installationJob.findUnique({ where: { id: jobId }, select: { estimateId: true } });
     if (!job) throw new NotFoundException('Installation job not found.');
-    return withAgreementTransaction(this.prisma, job.estimateId, work, options);
+    return withAgreementTransaction(this.prisma, job.estimateId, work, {
+      ...INSTALLATION_TRANSACTION_OPTIONS,
+      ...options,
+    });
   }
 
   private async getJobRecord(
@@ -1445,19 +1475,21 @@ export class InstallationWorkflowService {
         notes: latest.notes,
         createdById: actorId,
         lines: {
-          create: latest.lines.map((line) => ({
-            ...line,
-            ruleSnapshot:
-              line.ruleSnapshot === null
-                ? Prisma.JsonNull
-                : (line.ruleSnapshot as Prisma.InputJsonValue),
-            timeSnapshot:
-              line.timeSnapshot == null
-                ? Prisma.DbNull
-                : (line.timeSnapshot as Prisma.InputJsonValue),
-            rateAdjustmentSnapshot: line.rateAdjustmentSnapshot == null
-              ? Prisma.DbNull : line.rateAdjustmentSnapshot as Prisma.InputJsonValue,
-          })),
+          createMany: {
+            data: latest.lines.map((line) => ({
+              ...line,
+              ruleSnapshot:
+                line.ruleSnapshot === null
+                  ? Prisma.JsonNull
+                  : (line.ruleSnapshot as Prisma.InputJsonValue),
+              timeSnapshot:
+                line.timeSnapshot == null
+                  ? Prisma.DbNull
+                  : (line.timeSnapshot as Prisma.InputJsonValue),
+              rateAdjustmentSnapshot: line.rateAdjustmentSnapshot == null
+                ? Prisma.DbNull : line.rateAdjustmentSnapshot as Prisma.InputJsonValue,
+            })),
+          },
         },
       },
       include: {
@@ -1649,6 +1681,17 @@ export class InstallationWorkflowService {
 
     const profile = this.profileFromQuote(quote);
     let sortOrder = 0;
+    // Cache catalog data only for this rebuild. Every measurement still resolves
+    // its own components and prices from its current dimensions/revision.
+    const configurations = new Map<
+      string,
+      Prisma.SysConfGetPayload<{ include: typeof installationSysConfInclude }>
+    >();
+    const pendingLines: Prisma.InstallationQuoteLineCreateManyInput[] = [];
+    const flushLines = async () => {
+      if (!pendingLines.length) return;
+      await tx.installationQuoteLine.createMany({ data: pendingLines.splice(0) });
+    };
 
     for (const measurement of measurements) {
       const piece = measurement.piece;
@@ -1667,44 +1710,22 @@ export class InstallationWorkflowService {
       const sourceConfigId = Number(proposedPiece?.idConf ?? piece?.idConf);
       const sourceMark = String(proposedPiece?.mark ?? piece?.mark ?? measurement.label);
 
-      const sysConf = await tx.sysConf.findUnique({
-        where: {
-          idSystem_idConfig: {
-            idSystem: sourceSystemId,
-            idConfig: sourceConfigId,
-          },
-        },
-        include: {
-          config: true,
-          installationServices: {
-            include: {
-              service: { include: { rules: true } },
-            },
-            orderBy: [{ sortOrder: 'asc' }, { serviceId: 'asc' }],
-          },
-          pricingComponents: {
-            orderBy: { componentType: 'asc' },
-            include: {
-              sourceSysConf: {
-                include: {
-                  config: true,
-                  installationServices: {
-                    include: {
-                      service: { include: { rules: true } },
-                    },
-                    orderBy: [{ sortOrder: 'asc' }, { serviceId: 'asc' }],
-                  },
-                },
-              },
-            },
-          },
-        },
-      });
-
+      const configurationKey = `${sourceSystemId}:${sourceConfigId}`;
+      let sysConf = configurations.get(configurationKey);
       if (!sysConf) {
-        throw new BadRequestException(
-          `System configuration is missing for piece "${sourceMark}".`,
-        );
+        const found = await tx.sysConf.findUnique({
+          where: {
+            idSystem_idConfig: { idSystem: sourceSystemId, idConfig: sourceConfigId },
+          },
+          include: installationSysConfInclude,
+        });
+        if (!found) {
+          throw new BadRequestException(
+            `System configuration is missing for piece "${sourceMark}".`,
+          );
+        }
+        sysConf = found;
+        configurations.set(configurationKey, found);
       }
 
       const resolvedPanelCount = proposedPiece
@@ -1785,12 +1806,12 @@ export class InstallationWorkflowService {
             sortOrder: sortOrder++,
           });
 
-          await tx.installationQuoteLine.create({
-            data: { quoteId, ...line },
-          });
+          pendingLines.push({ quoteId, ...line });
+          if (pendingLines.length >= INSTALLATION_LINE_BATCH_SIZE) await flushLines();
         }
       }
     }
+    await flushLines();
   }
 
   private async rebuildManualLines(
@@ -2023,11 +2044,13 @@ export class InstallationWorkflowService {
         depositAmountSnapshot: new Prisma.Decimal(depositAmount.toFixed(2)),
         depositTermsSnapshot: estimate.paymentPlanSnapshot ? SCHEDULE_DEPOSIT_TERMS : INSTALLATION_DEPOSIT_TERMS,
         measurements: {
-          create: estimate.pieces.flatMap((piece) =>
-            Array.from({ length: piece.qty }, (_, index) =>
-              this.measurementCreateFromPiece(piece, index + 1),
+          createMany: {
+            data: estimate.pieces.flatMap((piece) =>
+              Array.from({ length: piece.qty }, (_, index) =>
+                this.measurementCreateFromPiece(piece, index + 1),
+              ),
             ),
-          ),
+          },
         },
         ...(permitFee
           ? {
@@ -2118,8 +2141,11 @@ export class InstallationWorkflowService {
   ) {
     // La consulta externa ocurre antes de abrir la transacción de la cotización.
     const coverage = await this.prepareInstallationCoverage(estimateId, dto, user);
-    const createdJob = await withAgreementTransaction(this.prisma, estimateId, (tx) =>
-      this.createRequestedInstallation(estimateId, dto, user, coverage, tx),
+    const createdJob = await withAgreementTransaction(
+      this.prisma,
+      estimateId,
+      (tx) => this.createRequestedInstallation(estimateId, dto, user, coverage, tx),
+      INSTALLATION_TRANSACTION_OPTIONS,
     );
 
     await this.logs.log({
@@ -5424,7 +5450,7 @@ export class InstallationWorkflowService {
       });
     };
     if (transaction) await refresh(transaction);
-    else await withAgreementTransaction(this.prisma, estimateId, refresh);
+    else await withAgreementTransaction(this.prisma, estimateId, refresh, INSTALLATION_TRANSACTION_OPTIONS);
   }
 
   async getPaymentContext(

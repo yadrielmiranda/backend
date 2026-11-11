@@ -298,7 +298,8 @@ describe('Installation replacement preview', () => {
     expect(saved[3].promotions).toEqual(preview[3].promotions);
     const change = f.tx.estimateRevisionItem.upsert.mock.calls[0][0];
     expect(change.create.action).toBe('REPLACE');
-    expect(change.create.proposedPieceInput).toEqual({ ...input, mark: 'W1', qty: 1, muntin: null, idDesign: null, idDesignColor: null });
+    expect(change.create.proposedPieceInput).toEqual({ ...input, mark: 'W1', qty: 1, muntin: null, idDesign: null, idDesignColor: null,
+      idDoorDesign: null, frameColorBeforeDesignId: null });
     expect(f.piece.idFC).toBe(1);
   });
 
