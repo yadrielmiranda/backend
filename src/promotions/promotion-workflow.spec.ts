@@ -189,10 +189,19 @@ describe('Promotion workflow integration', () => {
     },
   );
 
-  it.each(['admin', 'operator'] as const)(
-    'uses the owner markup when a different %s recalculates',
-    async (role) => {
+  it.each(
+    (['admin', 'operator'] as const).flatMap(role =>
+      ['Active', 'Expired'].flatMap(status =>
+        ['client', 'dealer'].map(ownerRole => ({ role, status, ownerRole })),
+      ),
+    ),
+  )(
+    'uses the $ownerRole owner markup when a different $role recalculates an $status estimate',
+    async ({ role, status, ownerRole }) => {
       const f = recalcFixture();
+      f.quote.status.name = status;
+      f.quote.user.role.name = ownerRole;
+      f.quote.dealerModeSnapshot = ownerRole === 'dealer' ? 'EXTERNAL' : null;
       f.quote.user.markupOverride = D('.15');
       f.tx.user.findUnique.mockResolvedValue({
         id: 99,
@@ -203,6 +212,7 @@ describe('Promotion workflow integration', () => {
       expect(f.calculate.mock.calls[0][1].eq('.15')).toBe(true);
       expect(f.quote.ownerMarkupSnapshot.eq('.15')).toBe(true);
       expect(f.eligible).toHaveBeenCalledWith(7, f.tx);
+      expect(f.quote.status.name).toBe('Active');
     },
   );
 
@@ -388,6 +398,7 @@ describe('Promotion workflow integration', () => {
         findUnique: jest.fn().mockResolvedValue({
           id: 1,
           idUser: 7,
+          user: { id: 7, isActive: true, parentDealerId: null },
           promotionExpiresAt: new Date('2026-09-06'),
         }),
       },
