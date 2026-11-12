@@ -1,9 +1,9 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { BrandingType } from '@prisma/client';
-import { isEmail } from 'class-validator';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { ContractsService } from '@/contracts/contracts.service';
-import { NotificationEmailService } from '@/notifications/notification-email.service';
+import { NotificationEmailService, type EstimateShareEmailResult } from '@/notifications/notification-email.service';
+import { ESTIMATE_EMAIL_RECIPIENTS_ERROR, parseEstimateEmailRecipients } from '@/notifications/estimate-email-recipients';
 import { PrismaService } from '@/prisma/prisma.service';
 import type { ShareEstimateEmailDto } from '../dto/share-estimate-email.dto';
 import { EstimatePublicShareService } from './estimate-public-share.service';
@@ -28,10 +28,10 @@ export class EstimateShareEmailService {
     private readonly email: NotificationEmailService,
   ) {}
 
-  async send(estimateId: number, dto: ShareEstimateEmailDto, user: AuthUser) {
-    const to = typeof dto.to === 'string' ? dto.to.trim() : '';
-    if (!isEmail(to) || to.length > 254 ||
-      !['detailed', 'total'].includes(dto.pricingMode) || typeof dto.includeContract !== 'boolean') {
+  async send(estimateId: number, dto: ShareEstimateEmailDto, user: AuthUser): Promise<EstimateShareEmailResult> {
+    const recipients = parseEstimateEmailRecipients(dto.to, dto.cc);
+    if (!recipients) throw new BadRequestException(ESTIMATE_EMAIL_RECIPIENTS_ERROR);
+    if (!['detailed', 'total'].includes(dto.pricingMode) || typeof dto.includeContract !== 'boolean') {
       throw new BadRequestException('Enter a valid email address and customer report.');
     }
     if (!['admin', 'dealer'].includes(user.role?.name ?? '')) {
@@ -100,14 +100,15 @@ export class EstimateShareEmailService {
         });
         context = { ...estimate, branding };
       }
-      await this.email.sendEstimateShare({
-        to, path, estimateNumber: context.number,
+      return await this.email.sendEstimateShare({
+        to: recipients.to,
+        ...(recipients.cc.length ? { cc: recipients.cc.join(', ') } : {}),
+        path, estimateNumber: context.number,
         ownerBrandingName: context.branding?.name,
         ownerEmail: context.branding?.email,
         customerName: [context.customerFirstName, context.customerLastName].filter(Boolean).join(' '),
         projectName: context.name,
       });
-      return { sent: true as const };
     } finally {
       this.sending.delete(key);
     }

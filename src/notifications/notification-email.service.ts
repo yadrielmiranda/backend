@@ -17,6 +17,7 @@ import { isIP } from 'node:net';
 import * as nodemailer from 'nodemailer';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { PrismaService } from '@/prisma/prisma.service';
+import { ESTIMATE_EMAIL_RECIPIENTS_ERROR, parseEstimateEmailRecipients } from './estimate-email-recipients';
 
 const recipientSelect = {
   email: true,
@@ -40,6 +41,7 @@ type EmailSettings = {
 
 export type EstimateShareEmail = {
   to: string;
+  cc?: string;
   path: string;
   estimateNumber: string | number;
   ownerBrandingName?: string | null;
@@ -47,6 +49,10 @@ export type EstimateShareEmail = {
   customerName?: string | null;
   projectName?: string | null;
 };
+
+export type EstimateShareEmailResult =
+  | { sent: true }
+  | { sent: false; accepted: string[]; rejected: string[]; unconfirmed: string[] };
 
 export type MaterialPurchaseEmail = {
   to: string;
@@ -183,11 +189,10 @@ export class NotificationEmailService {
     return settings;
   }
 
-  async sendEstimateShare(input: EstimateShareEmail): Promise<void> {
+  async sendEstimateShare(input: EstimateShareEmail): Promise<EstimateShareEmailResult> {
+    const recipients = parseEstimateEmailRecipients(input.to, input.cc);
+    if (!recipients) throw new BadRequestException(ESTIMATE_EMAIL_RECIPIENTS_ERROR);
     const settings = this.estimateShareSettings();
-    const to = input.to.trim().toLowerCase();
-    if (to.length > 254 || !isEmail(to))
-      throw new BadRequestException('Enter a valid recipient email address.');
     // El servidor entrega solo la ruta; el dominio nunca procede del cliente.
     if (
       !/^\/public\/estimates\/[a-zA-Z0-9_-]+(?:\/agreements\/[a-zA-Z0-9_-]+)?$/.test(
@@ -228,22 +233,35 @@ export class NotificationEmailService {
           includesContract ? 'Review estimate and contract' : 'Review estimate',
           link,
         ),
-        to,
+        to: recipients.to,
+        ...(recipients.cc.length ? { cc: recipients.cc } : {}),
       });
     } catch {
       // No exponer destinatarios, credenciales ni respuestas privadas del proveedor.
       throw new ServiceUnavailableException(
-        'The estimate email could not be sent. Please try again later.',
+        'The estimate email could not be sent. Check whether the recipients received it before resending.',
       );
     }
-    const matchesRecipient = (address: string | { address: string }) =>
-      (typeof address === 'string' ? address : address.address)?.toLowerCase() === to;
-    if (info?.rejected?.some(matchesRecipient))
+    const providerRecipients = (addresses: unknown): Set<string> => {
+      if (!Array.isArray(addresses)) return new Set();
+      return new Set(addresses.flatMap(address => {
+        const value = typeof address === 'string' ? address : address?.address;
+        return typeof value === 'string' ? [value.trim().toLowerCase()] : [];
+      }));
+    };
+    const providerAccepted = providerRecipients(info?.accepted);
+    const providerRejected = providerRecipients(info?.rejected);
+    // Return only requested addresses; never expose SMTP responses or other recipients.
+    const accepted = recipients.all.filter(address => providerAccepted.has(address) && !providerRejected.has(address));
+    const rejected = recipients.all.filter(address => providerRejected.has(address));
+    const unconfirmed = recipients.all.filter(address => !providerAccepted.has(address) && !providerRejected.has(address));
+    if (accepted.length === recipients.all.length) return { sent: true };
+    if (accepted.length > 0) return { sent: false, accepted, rejected, unconfirmed };
+    if (rejected.length === recipients.all.length)
       throw new ServiceUnavailableException('The email service rejected the recipient.');
-    if (!info?.accepted?.some(matchesRecipient))
-      throw new ServiceUnavailableException(
-        'The email service did not confirm acceptance of this estimate email.',
-      );
+    throw new ServiceUnavailableException(
+      'The email service did not confirm acceptance of this estimate email. Check whether the recipients received it before resending.',
+    );
   }
 
   canSendMaterialPurchaseEmail(): boolean {

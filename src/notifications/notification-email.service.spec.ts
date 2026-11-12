@@ -525,7 +525,7 @@ describe('NotificationEmailService', () => {
 
     it('sends an owner-branded customer estimate link using notification SMTP only', async () => {
       const f = fixture();
-      await expect(f.service.sendEstimateShare(share())).resolves.toBeUndefined();
+      await expect(f.service.sendEstimateShare(share())).resolves.toEqual({ sent: true });
       expect(createTransport).toHaveBeenCalledWith(expect.objectContaining({
         auth: { user: 'notifications@example.com', pass: 'fake-notifications-secret' },
         disableFileAccess: true,
@@ -545,6 +545,7 @@ describe('NotificationEmailService', () => {
       expect(message.html).toContain('href="https://portal.example.test/public/estimates/total_customer-token"');
       expect(message.text).not.toContain('contract');
       expect(message).not.toHaveProperty('attachments');
+      expect(message).not.toHaveProperty('cc');
       expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
       expect(f.db.notificationEmail.updateMany).not.toHaveBeenCalled();
       expect(f.db.user.findUnique).not.toHaveBeenCalled();
@@ -597,13 +598,128 @@ describe('NotificationEmailService', () => {
       expect(createTransport).not.toHaveBeenCalled();
     });
 
-    it.each(['', 'invalid', 'a@example.com,b@example.com', 'a@example.com\r\nBcc: b@example.com'])(
+    it.each([
+      '', 'invalid', 'a@example.com,b@example.com', 'a@example.com,invalid', 'a@example.com,', ',a@example.com',
+      'a@example.com,,b@example.com', 'a@example.com;b@example.com',
+      'a@example.com\r\nBcc: b@example.com', 'a@example.com,\nb@example.com',
+      Array.from({ length: 11 }, (_, index) => `customer${index}@example.com`).join(','),
+      `a@example.com${' '.repeat(4096)}`, `${'a'.repeat(65)}@example.com`,
+    ])(
       'rejects an invalid recipient without sending: %s', async (to) => {
         const f = fixture();
         await expect(f.service.sendEstimateShare({ ...share(), to })).rejects.toThrow('valid recipient email');
         expect(sendMail).not.toHaveBeenCalled();
       },
     );
+
+    it.each([
+      { to: undefined }, { to: null }, { to: 123 }, { to: [email] },
+    ])('never promotes CC when the primary recipient is missing or has an invalid type: %j', async ({ to }) => {
+      const f = fixture();
+      await expect(f.service.sendEstimateShare({ ...share(), to: to as unknown as string, cc: 'other@example.com' })).rejects.toThrow('valid recipient email');
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(createTransport).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { cc: 'invalid' }, { cc: 'other@example.com,invalid' }, { cc: ',other@example.com' },
+      { cc: 'other@example.com,' }, { cc: 'other@example.com,,another@example.com' },
+      { cc: 'other@example.com;another@example.com' }, { cc: 'other@example.com\r\nBcc: another@example.com' },
+      { cc: 'other@example.com,\nanother@example.com' },
+      { cc: Array.from({ length: 10 }, (_, index) => `customer${index}@example.com`).join(',') },
+      { cc: `other@example.com${' '.repeat(4096)}` }, { cc: ' '.repeat(4097) },
+      { cc: `${'a'.repeat(65)}@example.com` }, { cc: null }, { cc: 123 }, { cc: ['other@example.com'] },
+    ])('rejects invalid CC before connecting or sending: %j', async ({ cc }) => {
+      const f = fixture();
+      await expect(f.service.sendEstimateShare({ ...share(), cc: cc as string })).rejects.toThrow('valid recipient email');
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(createTransport).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, '', ' ', 'CLIENT@EXAMPLE.COM, client@example.com'])(
+      'omits CC when blank or containing only the primary recipient: %j', async cc => {
+        const f = fixture();
+        await expect(f.service.sendEstimateShare({ ...share(), cc })).resolves.toEqual({ sent: true });
+        expect(sendMail).toHaveBeenCalledTimes(1);
+        expect(sendMail.mock.calls[0][0].to).toBe(email);
+        expect(sendMail.mock.calls[0][0]).not.toHaveProperty('cc');
+      },
+    );
+
+    it('sends one message with the explicit To and nine deduplicated CC recipients', async () => {
+      const f = fixture();
+      const recipients = Array.from({ length: 10 }, (_, index) => `customer${index}@example.com`);
+      sendMail.mockResolvedValue({ accepted: recipients.map(address => ({ address: address.toUpperCase() })) });
+      await expect(f.service.sendEstimateShare({
+        ...share(), to: ` ${recipients[0].toUpperCase()} `,
+        cc: [...recipients.map(address => ` ${address.toUpperCase()} `), recipients[1]].join(','),
+      })).resolves.toEqual({ sent: true });
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      expect(sendMail.mock.calls[0][0].to).toBe(recipients[0]);
+      expect(sendMail.mock.calls[0][0].cc).toEqual(recipients.slice(1));
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+    });
+
+    it('returns only requested normalized addresses for a partial acceptance without provider details', async () => {
+      const f = fixture();
+      sendMail.mockResolvedValue({
+        accepted: [email.toUpperCase(), { name: 'Private name', address: email }, 'outsider@example.com'],
+        rejected: [{ address: 'REJECTED@EXAMPLE.COM' }, 'private@example.com'],
+        response: 'private SMTP details fake-notifications-secret',
+        rejectedErrors: [new Error('provider failure with private details')],
+      });
+      await expect(f.service.sendEstimateShare({
+        ...share(), to: ` ${email.toUpperCase()} `, cc: `rejected@example.com, unknown@example.com, ${email}`,
+      })).resolves.toEqual({
+        sent: false, accepted: [email], rejected: ['rejected@example.com'], unconfirmed: ['unknown@example.com'],
+      });
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+    });
+
+    it('reports confirmed rejection separately without retrying or changing To and CC', async () => {
+      const f = fixture();
+      sendMail.mockResolvedValue({ accepted: [email], rejected: ['other@example.com'] });
+      await expect(f.service.sendEstimateShare({ ...share(), cc: 'other@example.com' })).resolves.toEqual({
+        sent: false, accepted: [email], rejected: ['other@example.com'], unconfirmed: [],
+      });
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      expect(sendMail.mock.calls[0][0]).toMatchObject({ to: email, cc: ['other@example.com'] });
+    });
+
+    it('gives explicit rejections precedence over conflicting SMTP acceptances in a partial result', async () => {
+      const f = fixture();
+      sendMail.mockResolvedValue({ accepted: [email, 'other@example.com'], rejected: [{ address: 'OTHER@EXAMPLE.COM' }] });
+      await expect(f.service.sendEstimateShare({ ...share(), cc: 'other@example.com' })).resolves.toEqual({
+        sent: false, accepted: [email], rejected: ['other@example.com'], unconfirmed: [],
+      });
+    });
+
+    it('keeps the primary recipient in To when only CC was accepted', async () => {
+      const f = fixture();
+      sendMail.mockResolvedValue({ accepted: ['other@example.com'], rejected: [email] });
+      await expect(f.service.sendEstimateShare({ ...share(), cc: 'other@example.com' })).resolves.toEqual({
+        sent: false, accepted: ['other@example.com'], rejected: [email], unconfirmed: [],
+      });
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      expect(sendMail.mock.calls[0][0]).toMatchObject({ to: email, cc: ['other@example.com'] });
+    });
+
+    it('requires checking ambiguous recipients before resending when no recipient is confirmed accepted', async () => {
+      const f = fixture();
+      sendMail.mockResolvedValue({ accepted: ['outside-request@example.com'], rejected: ['other@example.com'] });
+      await expect(f.service.sendEstimateShare({ ...share(), cc: 'other@example.com' })).rejects.toThrow(
+        'Check whether the recipients received it before resending.',
+      );
+      expect(sendMail).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports total rejection when all requested recipients are rejected', async () => {
+      const f = fixture();
+      sendMail.mockResolvedValue({ rejected: [email, { address: 'OTHER@EXAMPLE.COM' }] });
+      await expect(f.service.sendEstimateShare({ ...share(), cc: 'other@example.com' })).rejects.toThrow('rejected the recipient');
+      expect(sendMail).toHaveBeenCalledTimes(1);
+    });
 
     it('normalizes the recipient and accepts the SMTP address-object response', async () => {
       const f = fixture();
@@ -646,7 +762,7 @@ describe('NotificationEmailService', () => {
         else f.values.NODE_ENV = mode;
         f.values.PUBLIC_FRONTEND_URL = origin!;
 
-        await expect(f.service.sendEstimateShare(share())).resolves.toBeUndefined();
+        await expect(f.service.sendEstimateShare(share())).resolves.toEqual({ sent: true });
         await f.service.enqueue(f.notification as never, f.db as never);
         await f.service.processPending();
 
@@ -735,7 +851,7 @@ describe('NotificationEmailService', () => {
       const f = fixture();
       sendMail.mockRejectedValue(new Error('private SMTP details fake-notifications-secret client@example.com'));
       await expect(f.service.sendEstimateShare(share())).rejects.toThrow(
-        'The estimate email could not be sent. Please try again later.',
+        'The estimate email could not be sent. Check whether the recipients received it before resending.',
       );
       expect(sendMail).toHaveBeenCalledTimes(1);
       expect(f.db.notificationEmail.create).not.toHaveBeenCalled();

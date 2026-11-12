@@ -5,6 +5,28 @@ import { EstimateShareEmailService } from './estimate-share-email.service';
 
 const request: ShareEstimateEmailDto = { to: ' customer@example.com ', pricingMode: 'detailed', includeContract: false };
 const user = (id: number, role = 'dealer') => ({ id, role: { name: role } }) as AuthUser;
+type ShareResult = { sent: true } | { sent: false; accepted: string[]; rejected: string[]; unconfirmed: string[] };
+const tenRecipients = Array.from({ length: 10 }, (_, index) => `customer${index}@example.com`);
+const invalidTo = [
+  '', 'invalid', 'customer@example.com,other@example.com', 'customer@example.com,invalid', 'customer@example.com,',
+  ',customer@example.com', 'customer@example.com,,other@example.com',
+  'customer@example.com;other@example.com', 'customer@example.com\r\nBcc: other@example.com',
+  'customer@example.com,\nother@example.com',
+  `${'a'.repeat(65)}@example.com`,
+  `customer@example.com${' '.repeat(4096)}`,
+  undefined, null, 123, ['customer@example.com'],
+];
+const invalidCc = [
+  'invalid', 'other@example.com,invalid', 'other@example.com,', ',other@example.com',
+  'other@example.com,,another@example.com', 'other@example.com;another@example.com',
+  'other@example.com\r\nBcc: another@example.com', 'other@example.com,\nanother@example.com',
+  tenRecipients.join(','), `${'a'.repeat(65)}@example.com`,
+  `other@example.com${' '.repeat(4096)}`, ' '.repeat(4097), null, 123, ['other@example.com'],
+];
+const invalidRecipientChanges = [
+  ...invalidTo.map(to => ({ to })), ...invalidCc.map(cc => ({ cc })),
+  { to: undefined, cc: 'other@example.com' }, { to: ' ', cc: 'other@example.com' },
+];
 
 function fixture() {
   const people = [
@@ -40,12 +62,58 @@ function fixture() {
     })),
   };
   const contracts = { prepare: jest.fn(async () => ({ current: { id: 'agreement-id', ready: true } })) };
-  const email = { assertEstimateShareReady: jest.fn(), sendEstimateShare: jest.fn(async () => {}) };
+  const email = { assertEstimateShareReady: jest.fn(), sendEstimateShare: jest.fn(async (_input: unknown): Promise<ShareResult> => ({ sent: true })) };
   const service = new EstimateShareEmailService(prisma as any, publicShare as any, contracts as any, email as any);
   return { service, people, estimate, branding, agreement, prisma, publicShare, contracts, email };
 }
 
 describe('Direct estimate email', () => {
+  it('normalizes explicit To and deduplicates CC before sharing one prepared contract', async () => {
+    const f = fixture();
+    const to = ' CUSTOMER0@EXAMPLE.COM ';
+    const cc = [...tenRecipients.slice(1), ' CUSTOMER0@EXAMPLE.COM ', ' CUSTOMER1@EXAMPLE.COM '].join(', ');
+    await expect(f.service.send(17, { ...request, to, cc, includeContract: true }, user(1))).resolves.toEqual({ sent: true });
+    expect(f.contracts.prepare).toHaveBeenCalledTimes(1);
+    expect(f.publicShare.getOrCreatePublicLinkToken).toHaveBeenCalledTimes(1);
+    expect(f.email.sendEstimateShare).toHaveBeenCalledTimes(1);
+    expect(f.email.sendEstimateShare).toHaveBeenCalledWith(expect.objectContaining({
+      to: tenRecipients[0], cc: tenRecipients.slice(1).join(', '), path: '/public/estimates/detailed-token/agreements/agreement-id',
+    }));
+  });
+
+  it.each(invalidRecipientChanges)(
+    'rejects invalid To or CC before accessing the estimate or preparing links: %j', async change => {
+      const f = fixture();
+      await expect(f.service.send(17, { ...request, ...change, includeContract: true } as ShareEstimateEmailDto, user(1))).rejects.toThrow(BadRequestException);
+      expect(f.prisma.user.findUnique).not.toHaveBeenCalled();
+      expect(f.prisma.estimate.findUnique).not.toHaveBeenCalled();
+      expect(f.publicShare.getOrCreatePublicLinkToken).not.toHaveBeenCalled();
+      expect(f.contracts.prepare).not.toHaveBeenCalled();
+      expect(f.email.sendEstimateShare).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, '', ' ', 'CUSTOMER@EXAMPLE.COM, customer@example.com'])(
+    'omits CC when empty or containing only the To recipient: %j', async cc => {
+      const f = fixture();
+      await expect(f.service.send(17, { ...request, cc }, user(1))).resolves.toEqual({ sent: true });
+      expect(f.email.sendEstimateShare.mock.calls[0][0]).not.toHaveProperty('cc');
+    },
+  );
+
+  it('returns a partial result without retrying or promoting CC and allows a later explicit send', async () => {
+    const f = fixture();
+    const partial: ShareResult = {
+      sent: false, accepted: ['customer@example.com'], rejected: ['other@example.com'], unconfirmed: [],
+    };
+    f.email.sendEstimateShare.mockResolvedValueOnce(partial);
+    const withCc = { ...request, cc: 'other@example.com' };
+    await expect(f.service.send(17, withCc, user(1))).resolves.toEqual(partial);
+    expect(f.email.sendEstimateShare).toHaveBeenCalledTimes(1);
+    await expect(f.service.send(17, withCc, user(1))).resolves.toEqual({ sent: true });
+    expect(f.email.sendEstimateShare).toHaveBeenLastCalledWith(expect.objectContaining({ to: 'customer@example.com', cc: 'other@example.com' }));
+  });
+
   it.each([1, 2, 3, 8])('allows eligible owner/ancestor/admin %s and uses owner details', async (id) => {
     const f = fixture();
     const actor = user(id, id === 8 ? 'admin' : 'dealer');
@@ -158,7 +226,10 @@ describe('Direct estimate email', () => {
     const f = fixture();
     let release: () => void;
     const started = new Promise<void>(resolve => {
-      f.email.sendEstimateShare.mockImplementationOnce(() => { resolve(); return new Promise<void>(done => { release = done; }); });
+      f.email.sendEstimateShare.mockImplementationOnce(() => {
+        resolve();
+        return new Promise<ShareResult>(done => { release = () => done({ sent: true }); });
+      });
     });
     const first = f.service.send(17, request, user(1));
     await started;
@@ -189,8 +260,18 @@ describe('Estimate email request validation', () => {
   it('accepts a single recipient and preserves false without implicit string conversion', async () => {
     await expect(validate(request)).resolves.toMatchObject({ to: 'customer@example.com', pricingMode: 'detailed', includeContract: false });
   });
+  it('accepts up to ten unique recipients even with a duplicate using different case', async () => {
+    const to = ' CUSTOMER0@EXAMPLE.COM ';
+    const cc = `${tenRecipients.join(', ')}, CUSTOMER1@EXAMPLE.COM`;
+    await expect(validate({ ...request, to, cc })).resolves.toMatchObject({
+      to: tenRecipients[0], cc: tenRecipients.slice(1).join(', '), pricingMode: 'detailed', includeContract: false,
+    });
+  });
+  it.each([undefined, '', ' '])('accepts omitted or blank optional CC: %j', async cc => {
+    await expect(validate({ ...request, cc })).resolves.toMatchObject({ to: 'customer@example.com' });
+  });
   it.each([
-    { to: 'a@example.com,b@example.com' }, { to: 'invalid' }, { to: 'customer@example.com\r\nBcc: other@example.com' },
+    ...invalidRecipientChanges,
     { pricingMode: 'admin' }, { includeContract: 'false' }, { includeContract: 'true' }, { includeContract: 1 },
   ])('rejects invalid recipient, pricing mode or contract flag: %j', async change => {
     await expect(validate({ ...request, ...change })).rejects.toThrow(BadRequestException);
