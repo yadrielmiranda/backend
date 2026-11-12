@@ -55,6 +55,7 @@ import {
 import { NotificationsService } from '@/notifications/notifications.service';
 import { snapshotReferralReward } from '@/referrals/referral-terms';
 import { MaterialsSalesService } from '@/materials/materials-sales.service';
+import { orderStatusNotification } from '@/orders/order-status-notification';
 
 const MATERIAL_ACCEPTANCE_TEXT =
   'I have reviewed and accept the products, dimensions, configurations and prices in this estimate.';
@@ -399,9 +400,15 @@ export class PaymentsService {
     await this.notifications.createAndSend(
       {
         recipientId: order.estimate.idUser,
-        message: `The status of your order #${order.number} has changed to "Preparing for pickup".`,
-        actionUrl: `/orders/${order.id}`,
-        actionLabel: 'Open order',
+        ...orderStatusNotification({
+          orderId: order.id,
+          orderNumber: order.number,
+          statusName: preparing.name,
+          fulfillmentMethod: installationActive
+            ? OrderFulfillmentMethod.INSTALLATION_DELIVERY
+            : OrderFulfillmentMethod.UNDECIDED,
+          installationActive,
+        }),
         dedupeKey: `order:${order.id}:status:${preparing.id}:${changedAt.toISOString()}`,
       },
       tx,

@@ -127,22 +127,23 @@ describe('Delivery warehouse origin and coverage', () => {
     });
   });
 
-  it('allows company staff to select factory pickup from Preparing for pickup', async () => {
+  it('allows an administrator to select factory pickup from Preparing for pickup', async () => {
     const f = fixture(50000);
     f.order.status.name = 'Preparing for pickup';
     const result = await f.service.selectFactoryPickup(40, actor);
     expect(result.order.fulfillmentMethod).toBe('FACTORY_PICKUP');
   });
 
-  it('does not let the customer select factory pickup', async () => {
+  it.each(['client', 'dealer', 'operator'])('does not let %s select factory pickup', async (role) => {
     const f = fixture(50000);
     f.order.status.name = 'Preparing for pickup';
     await expect(
       f.service.selectFactoryPickup(40, {
         id: 2,
-        role: { name: 'client' },
+        role: { name: role },
       } as any),
-    ).rejects.toThrow('Only company staff');
+    ).rejects.toThrow('Only administrators');
+    expect(f.db.order.update).not.toHaveBeenCalled();
   });
 
   it('charges only the base price inside the included miles', async () => {

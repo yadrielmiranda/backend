@@ -42,6 +42,7 @@ import {
 import { calculateEstimateDiscount, discountedInstallationTotal } from '@/estimates/discounts/estimate-discount';
 import { buildEstimateInstallationSummary, estimateInstallationSummarySelect } from '@/estimates/reporting/estimate-installation-summary';
 import { buildEstimateCustomerChargeSummary } from '@/estimates/estimate-customer-charges.summary';
+import { orderStatusNotification } from './order-status-notification';
 
 const orderDetailsInclude = {
   ...referralReportOrderInclude,
@@ -282,7 +283,7 @@ export class OrdersService {
         }
         if (current.status.name === 'Preparing for pickup') {
           throw new BadRequestException(
-            'Choose warehouse pickup or factory pickup before marking this order Ready to pick up. Delivery and installation continue from their own workflow.',
+            'Choose pickup or factory pickup before marking this order Ready to pick up. Delivery and installation continue from their own workflow.',
           );
         }
         if (current.status.name === 'Ready to pick up') {
@@ -301,7 +302,7 @@ export class OrdersService {
           current.fulfillmentMethod !== OrderFulfillmentMethod.FACTORY_PICKUP
         ) {
           throw new BadRequestException(
-            'Ready to pick up is available only for warehouse pickup or factory pickup.',
+            'Ready to pick up is available only for pickup or factory pickup.',
           );
         }
         await assertScheduleMilestone(this.prisma, current.idEst, 'RELEASE');
@@ -457,9 +458,14 @@ export class OrdersService {
       await this.notificationsService.createAndSend({
         recipientId: updated.estimate.idUser,
         actorId: actor.id,
-        message: `The status of your order #${updated.number} has changed to "${updated.status.name}".`,
-        actionUrl: `/orders/${updated.id}`,
-        actionLabel: 'Open order',
+        ...orderStatusNotification({
+          orderId: updated.id,
+          orderNumber: updated.number,
+          statusName: updated.status.name,
+          fulfillmentMethod: updated.fulfillmentMethod,
+          installationActive: Boolean(current.estimate.installationJob
+            && current.estimate.installationJob.status !== InstallationJobStatus.CANCELED),
+        }),
         dedupeKey: `order:${updated.id}:status:${updated.statusId}:${updated.updateStatus.toISOString()}`,
       });
     }

@@ -233,9 +233,9 @@ export class DeliveriesService {
         'Pickup can be selected only after the order reaches Preparing for pickup.',
       );
     }
-    if (method === OrderFulfillmentMethod.FACTORY_PICKUP && !isStaff(role)) {
+    if (method === OrderFulfillmentMethod.FACTORY_PICKUP && role !== 'admin') {
       throw new ForbiddenException(
-        'Only company staff can select factory pickup.',
+        'Only administrators can select factory pickup.',
       );
     }
     if (
