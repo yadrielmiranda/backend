@@ -232,6 +232,27 @@ describe('solid garage design output in PDFs', () => {
 });
 
 describe('EstimatePdfHtmlBuilder', () => {
+  it('shows customer, branding and installation details in their respective addresses', () => {
+    const estimate = estimateFixture();
+    estimate.customerAddressLine2 = 'Suite 401';
+    estimate.branding = { ...estimate.branding, type: 'DEALER', street: '200 Brand St', addressLine2: 'Office 9' } as any;
+    estimate.installationSummary!.installationAddress = { street: '987 Work Site', addressLine2: 'Rear entrance', city: 'Miami', state: 'FL', postalCode: '33101' };
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'client');
+    expect(html).toContain('100 Main Street, Suite 401, Miami');
+    expect(html).toContain('200 Brand St, Office 9');
+    expect(html).toContain('987 Work Site, Rear entrance, Miami');
+  });
+
+  it('does not borrow the account unit when the customer street has no optional detail', () => {
+    const estimate = estimateFixture();
+    estimate.user = { ...estimate.user, role: { name: 'client' }, street: '400 Owner St', addressLine2: 'Owner apartment 7' } as any;
+    estimate.customerAddressLine2 = null;
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'client');
+    expect(html).toContain('100 Main Street, Miami');
+    expect(html).not.toContain('Owner apartment 7');
+    estimate.customerStreet = null;
+    expect(EstimatePdfHtmlBuilder.build(estimate, 'client')).toContain('400 Owner St, Owner apartment 7');
+  });
   it('shows frozen energy values with a bold NFRC label below design pressures, without units or their internal source', () => {
     const estimate = estimateFixture(false);
     Object.assign(estimate.pieces[0], { dpPosPsf: '65', dpNegPsf: '-75' });

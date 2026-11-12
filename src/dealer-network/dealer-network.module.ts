@@ -12,6 +12,7 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 import { dealerChain, descendantIds, NETWORK_LABELS, validateSubdealerPlan, networkAccountTaxRate } from './dealer-network';
 import { CreateNetworkMemberDto, SetNetworkSuspensionDto, ReviewNetworkSuspensionDto, UpdateNetworkMarkupDto } from './dealer-network.dto';
 import { networkAccessBlocked, networkSalesBlocked, networkParentSelect } from './network-access';
+import { normalizeAddressLine2 } from '@/common/address-line2';
 
 const memberSelect = {
   id: true, username: true, firstName: true, lastName: true, email: true, phone: true,
@@ -109,6 +110,7 @@ export class DealerNetworkService {
           username: dto.username, firstName: dto.firstName, lastName: dto.lastName,
           email: dto.email, phone: dto.phone, password,
           street: dto.street, city: dto.city, state: dto.state, postalCode: dto.postalCode,
+          addressLine2: normalizeAddressLine2(dto.addressLine2),
           idRole: parent.idRole, ...terms, parentDealerId: parent.id,
           networkMarkup: new Prisma.Decimal(dto.markupPercent).div(100),
           ...(dto.taxPercent != null ? { networkTaxRate: new Prisma.Decimal(dto.taxPercent).div(100) } : {}),

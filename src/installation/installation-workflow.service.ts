@@ -2368,9 +2368,13 @@ export class InstallationWorkflowService {
       throw new BadRequestException('Installation details can only be changed before payment starts.');
     }
     if (dto.installationAddressConfirmed !== true) throw new BadRequestException('Confirm the installation address.');
-    const address = installationAddress(dto.installationAddress);
     const previousAddress = installationAddress(currentJob.installationAddress);
-    const sameAddress = address && previousAddress && Object.keys(address).every(
+    const address = installationAddress({
+      ...dto.installationAddress,
+      ...(dto.installationAddress?.addressLine2 === undefined && previousAddress?.addressLine2 !== undefined
+        ? { addressLine2: previousAddress.addressLine2 } : {}),
+    });
+    const sameAddress = address && previousAddress && ['street', 'city', 'state', 'postalCode'].every(
       key => address[key].toUpperCase() === previousAddress[key].toUpperCase(),
     );
     const savedCoverage = sameAddress && currentJob.quotes[0]
@@ -2378,8 +2382,11 @@ export class InstallationWorkflowService {
       : null;
     // Los servicios pueden cambiar sin sustituir la tarifa ya acordada para la misma obra.
     const coverage = savedCoverage
-      ? { address: previousAddress!, snapshot: savedCoverage.data as unknown as CoverageSnapshot }
-      : await this.prepareInstallationCoverage(currentJob.estimateId, dto, user);
+      ? { address: address!, snapshot: {
+          ...savedCoverage.data as unknown as CoverageSnapshot,
+          ...(address!.addressLine2 !== undefined ? { destination: { ...(savedCoverage.data as unknown as CoverageSnapshot).destination, addressLine2: address!.addressLine2 } } : {}),
+        } }
+      : await this.prepareInstallationCoverage(currentJob.estimateId, { ...dto, installationAddress: address ?? dto.installationAddress }, user);
     const beforeSelectedServiceIds =
       currentJob.quotes[0]?.lines
         .filter((line) => line.origin === InstallationLineOrigin.USER_SELECTED)
@@ -2629,6 +2636,10 @@ export class InstallationWorkflowService {
         }
         if (current.dealerMeasurementsAcceptedAt && !canEditUnpaidWaivedInstallation(current)) {
           throw new BadRequestException('Installation can only be removed before payment starts and before later revisions.');
+        }
+        if (current.status === InstallationJobStatus.DEPOSIT_PAYMENT_PENDING &&
+          hasStartedInstallationPayment(current.estimate.payments)) {
+          throw new BadRequestException('Installation can only be removed before payment starts.');
         }
         const estimate = await tx.estimate.findUnique({
           where: { id: job.estimateId },
@@ -5481,6 +5492,7 @@ export class InstallationWorkflowService {
             email: true,
             phone: true,
             street: true,
+            addressLine2: true,
             city: true,
             state: true,
             postalCode: true,

@@ -5,6 +5,7 @@ import { firstValueFrom } from 'rxjs';
 
 export type DeliveryRouteAddress = {
   street: string;
+  addressLine2?: string | null;
   city: string;
   state: string;
   postalCode: string;

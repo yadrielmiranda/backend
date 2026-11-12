@@ -17,6 +17,7 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 import { getRoleName } from '@/auth/utils/get-role-name';
 import { revokeSmsConsent } from '@/sms/sms-consent.helpers';
 import { networkParentSelect } from '@/dealer-network/network-access';
+import { normalizeAddressLine2 } from '@/common/address-line2';
 import {
   isValidUsername,
   USERNAME_VALIDATION_MESSAGE,
@@ -78,6 +79,7 @@ export class UsersService {
     email: true,
     phone: true,
     street: true,
+    addressLine2: true,
     city: true,
     state: true,
     postalCode: true,
@@ -109,6 +111,7 @@ export class UsersService {
       lastName: u.lastName,
       phone: u.phone,
       street: u.street,
+      addressLine2: u.addressLine2,
       city: u.city,
       state: u.state,
       postalCode: u.postalCode,
@@ -147,6 +150,8 @@ export class UsersService {
     if ('phone' in dto && cmp(before.phone, after.phone)) changed.push('phone');
     if ('street' in dto && cmp(before.street, after.street))
       changed.push('street');
+    if ('addressLine2' in dto && cmp(before.addressLine2, after.addressLine2))
+      changed.push('addressLine2');
     if ('city' in dto && cmp(before.city, after.city)) changed.push('city');
     if ('state' in dto && cmp(before.state, after.state)) changed.push('state');
     if ('postalCode' in dto && cmp(before.postalCode, after.postalCode))
@@ -281,6 +286,7 @@ export class UsersService {
       return tx.user.create({
         data: {
           ...rest,
+          addressLine2: normalizeAddressLine2(userData.addressLine2),
           password: hashedPassword,
           ...(paymentPlanId ? { paymentPlan: { connect: { id: paymentPlanId } } } : {}),
           dealerMode: resolvedDealerMode,
@@ -347,6 +353,7 @@ export class UsersService {
 
     const dataForPrisma: Prisma.UserUpdateInput = {
       ...rest,
+      ...(userData.addressLine2 !== undefined ? { addressLine2: normalizeAddressLine2(userData.addressLine2) } : {}),
     };
 
     await assertPaymentPlanAvailable(this.prisma, paymentPlanId);
@@ -551,7 +558,7 @@ export class UsersService {
         data: {
           username: data.username, firstName: data.firstName, lastName: data.lastName,
           password: await bcrypt.hash(data.password, 10),
-          email: null, phone: null, street: null, city: null, state: null, postalCode: null,
+          email: null, phone: null, street: null, addressLine2: null, city: null, state: null, postalCode: null,
           role: { connect: { id: role.id } },
           dealerMode: null, isTaxExempt: false, noInstallationDeposit: false,
         }, select: this.safeSelect,

@@ -16,6 +16,7 @@ import {
 } from '@nestjs/swagger';
 
 import { US_STATE_CODES } from '@/common/us-states';
+import { transformAddressLine2 } from '@/common/address-line2';
 import {
   normalizeEmailOrNull,
   normalizeStateCodeOrNull,
@@ -70,6 +71,13 @@ export class CreateEstimateHeaderDto {
   @MaxLength(150)
   @Transform(trimOrNull)
   customerStreet?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  @Transform(transformAddressLine2)
+  customerAddressLine2?: string | null;
 
   @ApiPropertyOptional()
   @IsOptional()

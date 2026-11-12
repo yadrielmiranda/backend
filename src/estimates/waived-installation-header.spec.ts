@@ -66,6 +66,15 @@ function fixture() {
 }
 
 describe('Completing customer details after skipping the installation deposit', () => {
+  it('roundtrips optional address details with omitted updates preserving and blank updates clearing', async () => {
+    const f = fixture();
+    await f.service.updateEstimateHeader(2, { customerAddressLine2: '  Apt 12, rear entrance  ' }, 7);
+    expect(f.estimate.customerAddressLine2).toBe('Apt 12, rear entrance');
+    await f.service.updateEstimateHeader(2, { customerFirstName: 'Jane' }, 7);
+    expect(f.estimate.customerAddressLine2).toBe('Apt 12, rear entrance');
+    await f.service.updateEstimateHeader(2, { customerAddressLine2: '' }, 7);
+    expect(f.estimate.customerAddressLine2).toBeNull();
+  });
   it('allows filling customer details without reopening the installation quote', async () => {
     const f = fixture();
     const saved = await f.service.updateEstimateHeader(

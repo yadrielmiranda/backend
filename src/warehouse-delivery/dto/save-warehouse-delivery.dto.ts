@@ -1,8 +1,10 @@
 import { Transform } from 'class-transformer';
+import { transformAddressLine2 } from '@/common/address-line2';
 import {
   IsIn,
   IsInt,
   IsNumber,
+  IsOptional,
   IsString,
   Matches,
   Max,
@@ -46,6 +48,12 @@ export class SaveWarehouseDeliveryDto {
   @MinLength(1)
   @MaxLength(150)
   street: string;
+
+  @Transform(transformAddressLine2)
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  addressLine2?: string | null;
 
   @Transform(trimmedText)
   @IsString()

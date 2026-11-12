@@ -162,6 +162,7 @@ export function buildPublicEstimateData(
     customerEmail: estimate.customerEmail,
     customerPhone: estimate.customerPhone,
     customerStreet: estimate.customerStreet,
+    customerAddressLine2: estimate.customerAddressLine2,
     customerCity: estimate.customerCity,
     customerState: estimate.customerState,
     customerPostalCode: estimate.customerPostalCode,

@@ -49,7 +49,7 @@ export function materialRevisionBaseHash(estimate: any): string {
     idUser: estimate.idUser,
     pieces,
     totals: Object.fromEntries(['units', 'rateT', 'priceT', 'customerPriceT', 'taxRate', 'customerTaxRate', 'totalPayable', 'customerTotalPayable', 'manualDiscount', 'ownerMarkupSnapshot', 'dealerModeSnapshot', 'dealerEarningsPlanSnapshot', 'paymentPlanSnapshot', 'dealerNetworkSnapshot', 'networkBillingPriceT', 'networkRootPriceT', 'networkSubdealerPriceT'].map(key => [key, estimate[key]])),
-    customer: Object.fromEntries(['name', 'customerFirstName', 'customerLastName', 'customerEmail', 'customerPhone', 'customerStreet', 'customerCity', 'customerState', 'customerPostalCode'].map(key => [key, estimate[key]])),
+    customer: { ...Object.fromEntries(['name', 'customerFirstName', 'customerLastName', 'customerEmail', 'customerPhone', 'customerStreet', 'customerCity', 'customerState', 'customerPostalCode'].map(key => [key, estimate[key]])), ...(estimate.customerAddressLine2 ? { customerAddressLine2: estimate.customerAddressLine2 } : {}) },
     installation: estimate.installationJob ? {
       id: estimate.installationJob.id, canceled: estimate.installationJob.status === 'CANCELED',
       address: estimate.installationJob.installationAddress,

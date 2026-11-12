@@ -52,8 +52,9 @@ describe('GoogleAddressValidationService', () => {
       }),
     );
 
-    await expect(service.validateDeliveryAddress(input)).resolves.toEqual({
+    await expect(service.validateDeliveryAddress({ ...input, addressLine2: '  Apt 108, rear entrance  ' })).resolves.toEqual({
       ...input,
+      addressLine2: 'Apt 108, rear entrance',
       placeId: 'verified-place-id',
     });
     expect(post).toHaveBeenCalledWith(
@@ -67,6 +68,7 @@ describe('GoogleAddressValidationService', () => {
       }),
       expect.any(Object),
     );
+    expect(JSON.stringify(post.mock.calls[0][1])).not.toMatch(/Apt 108|rear entrance|addressLine2/);
   });
 
   it('rejects text that resolves only to a broad area', async () => {
@@ -344,6 +346,22 @@ describe('GoogleAddressValidationService', () => {
       const error = await service.validateDeliveryAddress(unitAddress, { suggestCorrections: true }).catch(error => error);
       expect(error).toBeInstanceOf(AddressCorrectionRequiredException);
       expect(error.suggestedAddress.street).toBe(unitAddress.street);
+    });
+
+    it('preserves a separate freeform line through correction and revalidation without sending it to Google', async () => {
+      respond();
+      const error = await service.validateDeliveryAddress({ ...entered, addressLine2: '  Apt 108, rear entrance  ' }, { suggestCorrections: true }).catch(error => error);
+      expect(error).toBeInstanceOf(AddressCorrectionRequiredException);
+      expect(error.suggestedAddress).toEqual({ ...corrected, addressLine2: 'Apt 108, rear entrance' });
+      const accepted = correctedResult();
+      accepted.verdict.hasReplacedComponents = false;
+      accepted.verdict.possibleNextAction = 'ACCEPT';
+      accepted.address.addressComponents.forEach(component => delete component.replaced);
+      respond(accepted);
+      await expect(service.validateDeliveryAddress(error.suggestedAddress)).resolves.toMatchObject({
+        addressLine2: 'Apt 108, rear entrance', placeId: 'verified-property',
+      });
+      for (const call of post.mock.calls) expect(JSON.stringify(call[1])).not.toMatch(/Apt 108|rear entrance|addressLine2/);
     });
 
     it('offers a corrected street only for a confirmed premise without an entered unit', async () => {

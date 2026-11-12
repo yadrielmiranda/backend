@@ -120,6 +120,14 @@ function fixture() {
 }
 
 describe('Independent estimate duplication', () => {
+  it('copies the optional customer address detail without changing the source', async () => {
+    const f = fixture();
+    f.source.customerAddressLine2 = 'Suite 401, north entrance';
+    const original = json(f.source);
+    await f.duplicate();
+    expect(f.created()[0].customerAddressLine2).toBe('Suite 401, north entrance');
+    expect(json(f.source)).toEqual(original);
+  });
   it('persists a normalized null muntin in a new copy without changing the original saved grid', async () => {
     const f = fixture(), original = json(f.source);
     const calculate = f.calculate.getMockImplementation()!;

@@ -313,6 +313,7 @@ model User {
   passwordUpdatedAt              DateTime                @default(now())
 
   street     String? @db.VarChar(150)
+  addressLine2 String? @db.VarChar(150)
   city       String? @db.VarChar(100)
   state      String? @db.VarChar(50)
   postalCode String? @db.VarChar(20)
@@ -550,6 +551,7 @@ model Branding {
   website String? @db.VarChar(150)
 
   street     String? @db.VarChar(150)
+  addressLine2 String? @db.VarChar(150)
   city       String? @db.VarChar(100)
   state      String? @db.VarChar(50)
   postalCode String? @db.VarChar(20)
@@ -1629,6 +1631,7 @@ model Estimate {
   customerEmail      String?  @db.VarChar(150)
   customerPhone      String?  @db.VarChar(30)
   customerStreet     String?  @db.VarChar(150)
+  customerAddressLine2 String? @db.VarChar(150)
   customerCity       String?  @db.VarChar(100)
   customerState      String?  @db.VarChar(50)
   customerPostalCode String?  @db.VarChar(20)
@@ -2946,6 +2949,7 @@ model InstallationCoverage {
   id               Int      @id @default(1)
   revision         Int      @default(1)
   originStreet     String   @db.VarChar(150)
+  originAddressLine2 String? @db.VarChar(150)
   originCity       String   @db.VarChar(100)
   originState      String   @db.VarChar(2)
   originPostalCode String   @db.VarChar(10)
@@ -3437,6 +3441,7 @@ model WarehouseDeliverySettings {
   id               Int      @id @default(1)
   revision         Int      @default(1)
   street           String   @db.VarChar(150)
+  addressLine2      String?  @db.VarChar(150)
   city             String   @db.VarChar(100)
   state            String   @db.VarChar(2)
   postalCode       String   @db.VarChar(10)
@@ -3459,11 +3464,13 @@ model OrderDelivery {
   routeProvider  String @default("GOOGLE_ROUTES") @db.VarChar(50)
 
   originStreet     String @db.VarChar(150)
+  originAddressLine2 String? @db.VarChar(150)
   originCity       String @db.VarChar(100)
   originState      String @db.VarChar(50)
   originPostalCode String @db.VarChar(20)
 
   destinationStreet     String @db.VarChar(150)
+  destinationAddressLine2 String? @db.VarChar(150)
   destinationCity       String @db.VarChar(100)
   destinationState      String @db.VarChar(50)
   destinationPostalCode String @db.VarChar(20)

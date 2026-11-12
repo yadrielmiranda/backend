@@ -114,7 +114,7 @@ export function agreementContent(publicEstimate: any) {
   return {
     schema: 1,
     ...(publicEstimate.paymentPlanTerms ? { paymentPlan: publicEstimate.paymentPlanTerms } : {}),
-    header: pick(publicEstimate, [
+    header: { ...pick(publicEstimate, [
       'id',
       'number',
       'name',
@@ -128,7 +128,7 @@ export function agreementContent(publicEstimate: any) {
       'customerCity',
       'customerState',
       'customerPostalCode',
-    ]),
+    ]), ...(publicEstimate.customerAddressLine2 ? { customerAddressLine2: publicEstimate.customerAddressLine2 } : {}) },
     totals: {
       ...Object.fromEntries(
         amountKeys.map((key) => [key, money(publicEstimate[key])]),

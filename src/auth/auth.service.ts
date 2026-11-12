@@ -27,6 +27,7 @@ import { lockCurrentPlatformTerms, requireCurrentAcceptance, savePlatformTermsAc
 import { DeliveryCoverageService } from '@/deliveries/delivery-coverage.service';
 import { accountNetworkBlocked } from '@/dealer-network/network-access';
 import { resolveRegistrationReferral } from '@/referrals/referral-terms';
+import { normalizeAddressLine2 } from '@/common/address-line2';
 
 type JwtRolePayload = string | undefined;
 
@@ -205,6 +206,7 @@ export class AuthService {
         const user = await tx.user.create({
           data: {
             ...userData,
+            addressLine2: normalizeAddressLine2(userData.addressLine2),
             password: hashedPassword,
             isTaxExempt: false,
             role: { connect: { id: clientRole.id } },
@@ -217,6 +219,7 @@ export class AuthService {
             email: true,
             phone: true,
             street: true,
+            addressLine2: true,
             city: true,
             state: true,
             postalCode: true,

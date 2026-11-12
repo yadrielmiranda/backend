@@ -1,4 +1,5 @@
 import { createNetworkSnapshot, networkSnapshot, networkPresentation, canAccessOwner, descendantIds } from '@/dealer-network/dealer-network';
+import { normalizeAddressLine2 } from '@/common/address-line2';
 import { networkParentSelect } from '@/dealer-network/network-access';
 import { DuplicateEstimateDto } from './dto/duplicate-estimate.dto';
 import { assertEstimateDuplicationAccess, estimateDuplicationInclude } from './estimate-duplication';
@@ -1202,6 +1203,7 @@ export class EstimatesService {
           customerEmail: dto.customerEmail ?? null,
           customerPhone: dto.customerPhone ?? null,
           customerStreet: dto.customerStreet ?? null,
+          customerAddressLine2: normalizeAddressLine2(dto.customerAddressLine2) ?? null,
           customerCity: dto.customerCity ?? null,
           customerState: dto.customerState ?? null,
           customerPostalCode: dto.customerPostalCode ?? null,
@@ -1351,6 +1353,7 @@ export class EstimatesService {
           customerEmail: source.customerEmail,
           customerPhone: source.customerPhone,
           customerStreet: source.customerStreet,
+          customerAddressLine2: source.customerAddressLine2,
           customerCity: source.customerCity,
           customerState: source.customerState,
           customerPostalCode: source.customerPostalCode,
@@ -1544,6 +1547,10 @@ export class EstimatesService {
           ? {
               customerStreet: dto.customerStreet,
             }
+          : {}),
+
+        ...(dto.customerAddressLine2 !== undefined
+          ? { customerAddressLine2: normalizeAddressLine2(dto.customerAddressLine2) }
           : {}),
 
         ...(dto.customerCity !== undefined

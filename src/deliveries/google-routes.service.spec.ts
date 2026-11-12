@@ -23,12 +23,14 @@ describe('GoogleRoutesService', () => {
       service.calculateDrivingRoute(
         {
           street: '100 Company St',
+          addressLine2: 'Private warehouse loading dock',
           city: 'Miami',
           state: 'FL',
           postalCode: '33101',
         },
         {
           street: '7415 SW 153rd Ct',
+          addressLine2: 'Private apartment 108',
           city: 'Miami',
           state: 'FL',
           postalCode: '33193',
@@ -43,9 +45,11 @@ describe('GoogleRoutesService', () => {
 
     expect(post.mock.calls[0][1]).toEqual(
       expect.objectContaining({
+        origin: { address: '100 Company St, Miami, FL 33101' },
         destination: { placeId: 'verified-place-id' },
       }),
     );
     expect(post.mock.calls[0][1].destination).not.toHaveProperty('address');
+    expect(JSON.stringify(post.mock.calls[0][1])).not.toMatch(/Private|apartment|loading dock|addressLine2/);
   });
 });

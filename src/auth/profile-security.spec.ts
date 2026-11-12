@@ -35,6 +35,17 @@ describe('Self-service field authorization (H01)', () => {
     expect(await service.updateProfile(7, { firstName: 'Updated' })).toEqual({ firstName: 'Updated' });
   });
 
+  it('allows supplemental address details through registration and profile validation', async () => {
+    for (const metatype of [RegisterUserDto, UpdateProfileDto]) {
+      const result = await pipe.transform({ ...personal, password: 'Example-password-123', addressLine2: '  Suite 8  ' }, { type: 'body', metatype });
+      expect(result.addressLine2).toBe('Suite 8');
+      for (const addressLine2 of [false, 123, 'x'.repeat(151)]) {
+        await expect(pipe.transform({ ...personal, password: 'Example-password-123', addressLine2 }, { type: 'body', metatype })).rejects.toThrow();
+      }
+    }
+    expect((await pipe.transform({ addressLine2: '   ' }, { type: 'body', metatype: UpdateProfileDto })).addressLine2).toBeNull();
+  });
+
   it('registration keeps only personal data, the initial password and SMS consent fields', async () => {
     const result = await pipe.transform({ ...personal, ...restricted, password: 'Example-password-123',
       serviceConsent: false, promotionsConsent: false }, { type: 'body', metatype: RegisterUserDto });

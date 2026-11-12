@@ -39,7 +39,7 @@ const companyFinancials = new Set([
 ]);
 const dealerFinancials = new Set(['netProfitD', 'dealerMarkup', 'dealerMarkupDecimal', 'dealerEarnings', 'dealerEarningsPlanSnapshot', 'dealerEarningsPlanId', 'dealerEarningsPlan', 'dealerEarningsType', 'dealerEarningsPercent']);
 const userFields = new Set([
-  'id', 'username', 'firstName', 'lastName', 'email', 'phone', 'street',
+  'id', 'username', 'firstName', 'lastName', 'email', 'phone', 'street', 'addressLine2',
   'parentDealerId', 'parentDealer', 'dealerLevel',
   'networkSuspended', 'networkAccessBlocked', 'networkSalesBlocked',
   'city', 'state', 'postalCode', 'role', 'idRole', 'dealerMode',

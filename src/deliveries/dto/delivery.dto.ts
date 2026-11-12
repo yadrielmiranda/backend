@@ -8,6 +8,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import { DeliveryType } from '@prisma/client';
+import { transformAddressLine2 } from '@/common/address-line2';
 
 const trimmed = ({ value }: { value: unknown }) =>
   value == null ? value : String(value).trim();
@@ -22,6 +23,12 @@ export class CreateDeliveryDto {
   @MaxLength(150)
   @Transform(trimmed)
   street?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  @Transform(transformAddressLine2)
+  addressLine2?: string | null;
 
   @IsOptional()
   @IsString()

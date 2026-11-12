@@ -54,6 +54,16 @@ function fixture(rootMode = 'EXTERNAL', subMode = 'EXTERNAL') {
 }
 
 describe('Taxes for each direct network sale', () => {
+  it('stores supplemental address details separately when creating a network account', async () => {
+    const f = fixture();
+    await f.service.create({ username: 'newchild', firstName: 'New', lastName: 'Dealer', password: 'Example-password-123',
+      email: 'newchild@example.test', phone: '+13055551234', street: '123 Example St',
+      addressLine2: '  Office 7  ', city: 'Miami', state: 'FL', postalCode: '33101', markupPercent: 20 }, actor(1));
+    expect(f.db.user.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      street: '123 Example St', addressLine2: 'Office 7',
+    }) }));
+  });
+
   it.each([
     [null, null, false, '.07'], [null, '.09', true, '0'],
     [1, null, false, '.07'], [1, null, true, '0'],

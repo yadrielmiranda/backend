@@ -8,6 +8,7 @@ import Decimal from 'decimal.js';
 import { PrismaService } from '@/prisma/prisma.service';
 import { SaveWarehouseDeliveryDto } from './dto/save-warehouse-delivery.dto';
 import { DELIVERY_PARAMETER_KEYS } from './warehouse-delivery.constants';
+import { normalizeAddressLine2 } from '@/common/address-line2';
 
 const conflictMessage =
   'Warehouse & Delivery settings changed. Reload the page before saving again.';
@@ -50,7 +51,7 @@ export class WarehouseDeliveryService {
     // Los clientes solo necesitan el punto de recogida.
     return this.prisma.warehouseDeliverySettings.findUnique({
       where: { id: 1 },
-      select: { street: true, city: true, state: true, postalCode: true },
+      select: { street: true, addressLine2: true, city: true, state: true, postalCode: true },
     });
   }
 
@@ -62,6 +63,7 @@ export class WarehouseDeliveryService {
     }
     const data = {
       street: dto.street,
+      ...(dto.addressLine2 !== undefined ? { addressLine2: normalizeAddressLine2(dto.addressLine2) } : {}),
       city: dto.city,
       state: dto.state,
       postalCode: dto.postalCode,

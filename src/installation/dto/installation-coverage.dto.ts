@@ -1,10 +1,12 @@
 import { Transform, Type } from 'class-transformer';
+import { transformAddressLine2 } from '@/common/address-line2';
 import {
   ArrayMaxSize,
   IsArray,
   IsIn,
   IsInt,
   IsNumber,
+  IsOptional,
   IsString,
   Matches,
   Max,
@@ -72,6 +74,12 @@ export class SaveInstallationCoverageDto {
   @MinLength(1)
   @MaxLength(150)
   originStreet: string;
+
+  @Transform(transformAddressLine2)
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  originAddressLine2?: string | null;
 
   @Transform(trimmedText)
   @IsString()

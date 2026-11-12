@@ -7,6 +7,7 @@ import { Prisma } from '@prisma/client';
 import Decimal from 'decimal.js';
 import { PrismaService } from '@/prisma/prisma.service';
 import { SaveInstallationCoverageDto } from './dto/installation-coverage.dto';
+import { normalizeAddressLine2 } from '@/common/address-line2';
 
 const conflictMessage =
   'Installation coverage changed. Reload the page before saving again.';
@@ -55,6 +56,7 @@ export class InstallationCoverageService {
 
     const data = {
       originStreet: dto.originStreet,
+      ...(dto.originAddressLine2 !== undefined ? { originAddressLine2: normalizeAddressLine2(dto.originAddressLine2) } : {}),
       originCity: dto.originCity,
       originState: dto.originState,
       originPostalCode: dto.originPostalCode,

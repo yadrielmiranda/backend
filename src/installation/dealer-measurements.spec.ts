@@ -793,6 +793,21 @@ describe('Editing and removing an unpaid installation after waiving its deposit'
 
 
 describe('Coverage policy preserved for an unchanged work address', () => {
+  it('preserves omitted detail and updates or clears it without repricing the same property', async () => {
+    const f = fixture();
+    f.job.installationAddress = { ...confirmedAddress.installationAddress, addressLine2: 'Apt 4B' };
+    const saved = { schema: 1, revision: 4, destination: { ...f.job.installationAddress, placeId: 'saved-place' }, range: { type: 'FIXED', value: '150' } };
+    f.tx.installationQuoteCoverageSnapshot.findUnique.mockResolvedValue({ data: saved });
+    await f.workflow.updateInstallationRequest(f.job.id, { ...confirmedAddress, permitRequested: false }, dealer);
+    expect(f.job.installationAddress.addressLine2).toBe('Apt 4B');
+    await f.workflow.updateInstallationRequest(f.job.id, { ...confirmedAddress, installationAddress: { ...confirmedAddress.installationAddress, addressLine2: '  Rear entrance  ' }, permitRequested: false }, dealer);
+    expect(f.job.installationAddress.addressLine2).toBe('Rear entrance');
+    await f.workflow.updateInstallationRequest(f.job.id, { ...confirmedAddress, installationAddress: { ...confirmedAddress.installationAddress, addressLine2: '' }, permitRequested: false }, dealer);
+    expect(f.job.installationAddress.addressLine2).toBeNull();
+    expect(f.tx.installationQuoteCoverageSnapshot.upsert.mock.calls.at(-1)[0].update.data.destination.addressLine2).toBeNull();
+    expect((f.workflow as any).coverage.prepare).not.toHaveBeenCalled();
+    expect(saved.destination.addressLine2).toBe('Apt 4B');
+  });
   it('keeps the saved policy when services change at the same address', async () => {
     const f = fixture();
     f.job.installationAddress = confirmedAddress.installationAddress;

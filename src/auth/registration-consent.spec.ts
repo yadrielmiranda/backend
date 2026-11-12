@@ -74,6 +74,16 @@ function fixture() {
 }
 
 describe('Registration messaging consent', () => {
+  it('saves and returns optional address details without sending them to coverage validation', async () => {
+    const f = fixture();
+    const result = await f.register({ addressLine2: '  Apartment 4B  ' });
+    expect(result).toMatchObject({ street: '123 Example St', addressLine2: 'Apartment 4B' });
+    expect(f.state.users[0].addressLine2).toBe('Apartment 4B');
+    expect(f.coverage.checkAddress).toHaveBeenCalledWith({
+      street: '123 Example St', city: 'Miami', state: 'FL', postalCode: '33172',
+    });
+  });
+
   it('keeps consent booleans strict through the real registration validation pipe', async () => {
     const f = fixture();
     const pipe = new ValidationPipe({ transform: true, whitelist: true, transformOptions: { enableImplicitConversion: true } });

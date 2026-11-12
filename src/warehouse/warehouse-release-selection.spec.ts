@@ -137,6 +137,30 @@ describe('manual warehouse release selection', () => {
     expect(f.order.estimate.installationJob.status).toBe('SCHEDULED');
   });
 
+  it.each([
+    [undefined, '123 Test Street, Miami, FL 33101'],
+    [null, '123 Test Street, Miami, FL 33101'],
+    ['', '123 Test Street, Miami, FL 33101'],
+    ['  Apartment 4B, rear entrance  ', '123 Test Street, Apartment 4B, rear entrance, Miami, FL 33101'],
+  ])('preserves optional installation details in the release record: %j', async (addressLine2, expected) => {
+    const f = fixture(), dto = f.dto();
+    f.order.fulfillmentMethod = 'INSTALLATION_DELIVERY';
+    f.order.status.name = 'Preparing for pickup';
+    f.order.estimate.installationJob = {
+      id: 71, status: 'SCHEDULED', installationAddress: {
+        street: '123 Test Street', city: 'Miami', state: 'FL', postalCode: '33101',
+        ...(addressLine2 === undefined ? {} : { addressLine2 }),
+      },
+      quotes: [{ status: 'APPROVED', total: 0, lines: [] }], payments: [],
+    };
+    await f.service.release(dto, admin);
+    expect(f.movements[0].installationAddress).toBe(expected);
+    f.order.estimate.installationJob.installationAddress.addressLine2 = 'New entrance';
+    await f.service.release(dto, admin);
+    expect(f.movements[0].installationAddress).toBe(expected);
+    expect(f.movements).toHaveLength(1);
+  });
+
   it('remains compatible with per-line undo for unsigned releases', async () => {
     const f = fixture(); await f.service.release(f.dto(), operator);
     await f.service.undo(f.movements[0].id, { requestKey: randomUUID() }, operator);

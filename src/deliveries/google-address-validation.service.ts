@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { isAxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import type { DeliveryRouteAddress } from './google-routes.service';
+import { normalizeAddressLine2 } from '@/common/address-line2';
 
 type GoogleApiErrorResponse = {
   error?: {
@@ -117,6 +118,7 @@ function correctedPostalAddress(
 
   const suggestion = {
     street: streetWasReplaced ? lines.map(text).join(', ') : input.street.trim(),
+    ...(input.addressLine2 !== undefined ? { addressLine2: normalizeAddressLine2(input.addressLine2) } : {}),
     city: text(postal?.locality),
     state: text(postal?.administrativeArea).toUpperCase(),
     postalCode: text(postal?.postalCode),
@@ -128,7 +130,7 @@ function correctedPostalAddress(
     !/^\d{5}(?:-\d{4})?$/.test(suggestion.postalCode)
   ) return null;
   const comparable = (value: string) => value.trim().replace(/\s+/g, ' ').toUpperCase();
-  if ((Object.keys(suggestion) as Array<keyof DeliveryRouteAddress>).every(key =>
+  if ((['street', 'city', 'state', 'postalCode'] as const).every(key =>
     comparable(suggestion[key]) === comparable(input[key]),
   )) return null;
   return suggestion;
@@ -147,6 +149,7 @@ export class GoogleAddressValidationService {
     input: DeliveryRouteAddress,
     options: { suggestCorrections?: boolean } = {},
   ): Promise<ValidatedDeliveryAddress> {
+    input = { ...input, ...(input.addressLine2 !== undefined ? { addressLine2: normalizeAddressLine2(input.addressLine2) } : {}) };
     const apiKey = this.config.get<string>('GOOGLE_ROUTES_API_KEY')?.trim();
     if (!apiKey) {
       this.logger.error('GOOGLE_ROUTES_API_KEY is not configured.');

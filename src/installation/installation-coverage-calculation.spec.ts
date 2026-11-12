@@ -76,6 +76,15 @@ const fixed: CoverageSnapshot = {
 };
 
 describe('Installation coverage calculation', () => {
+  it('keeps optional detail in the public address and saved destination even when provider normalization omits it', async () => {
+    const f = fixture();
+    const result = await f.service.prepare({ ...address, addressLine2: '  Apt 4B, rear building  ' });
+    expect(result.address).toEqual({ ...address, addressLine2: 'Apt 4B, rear building' });
+    expect(result.snapshot.destination.addressLine2).toBe('Apt 4B, rear building');
+    f.addresses.validateDeliveryAddress.mockRejectedValueOnce(new AddressCorrectionRequiredException({ ...address, city: 'Coral Gables' }));
+    const error = await f.service.prepare({ ...address, addressLine2: '  Apt 4B  ' }).catch(error => error);
+    expect(error.getResponse().suggestedAddress.addressLine2).toBe('Apt 4B');
+  });
   it.each([
     [0, '0'],
     [50000, '150'],

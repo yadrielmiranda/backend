@@ -7,6 +7,7 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { BrandingType } from '@prisma/client';
 import { CreateBrandingDto } from './dto/create-branding.dto';
 import { UpdateBrandingDto } from './dto/update-branding.dto';
+import { normalizeAddressLine2 } from '@/common/address-line2';
 
 function stripQuery(url?: string | null) {
   // ✅ Guardamos limpio en DB: sin ?v=...
@@ -40,6 +41,7 @@ export class BrandingsService {
         email: true,
         website: true,
         street: true,
+        addressLine2: true,
         city: true,
         state: true,
         postalCode: true,
@@ -72,6 +74,7 @@ export class BrandingsService {
         email: dto.email,
         website: dto.website,
         street: dto.street,
+        addressLine2: normalizeAddressLine2(dto.addressLine2),
         city: dto.city,
         state: dto.state,
         postalCode: dto.postalCode,
@@ -102,6 +105,7 @@ export class BrandingsService {
         email: dto.email,
         website: dto.website,
         street: dto.street,
+        ...(dto.addressLine2 !== undefined ? { addressLine2: normalizeAddressLine2(dto.addressLine2) } : {}),
         city: dto.city,
         state: dto.state,
         postalCode: dto.postalCode,
@@ -143,6 +147,7 @@ export class BrandingsService {
         email: dto.email,
         website: dto.website,
         street: dto.street,
+        addressLine2: normalizeAddressLine2(dto.addressLine2),
         city: dto.city,
         state: dto.state,
         postalCode: dto.postalCode,
@@ -173,6 +178,7 @@ export class BrandingsService {
         email: dto.email,
         website: dto.website,
         street: dto.street,
+        ...(dto.addressLine2 !== undefined ? { addressLine2: normalizeAddressLine2(dto.addressLine2) } : {}),
         city: dto.city,
         state: dto.state,
         postalCode: dto.postalCode,

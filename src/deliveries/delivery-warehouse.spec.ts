@@ -96,6 +96,17 @@ function fixture(distanceMeters = 160934) {
 }
 
 describe('Delivery warehouse origin and coverage', () => {
+  it('snapshots the warehouse and saved customer detail and allows explicit clearing', async () => {
+    const f = fixture();
+    (f.configuration as any).addressLine2 = 'Warehouse Suite 5';
+    f.order.user.addressLine2 = 'Apartment 2B';
+    const saved = await f.service.createDelivery(40, {}, actor);
+    expect(saved).toMatchObject({ originAddressLine2: 'Warehouse Suite 5', destinationAddressLine2: 'Apartment 2B' });
+    const cleared = await f.service.createDelivery(40, { addressLine2: '   ' }, actor);
+    expect(cleared.destinationAddressLine2).toBeNull();
+    const manual = await f.service.createDelivery(40, { ...address, addressLine2: '  Rear building, floor 2  ' }, actor);
+    expect(manual.destinationAddressLine2).toBe('Rear building, floor 2');
+  });
   it('uses the warehouse origin and preserves the existing fractional-mile and tax calculation', async () => {
     const f = fixture(178912);
     const delivery = await f.service.createDelivery(

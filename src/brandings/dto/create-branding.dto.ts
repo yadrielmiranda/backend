@@ -1,4 +1,5 @@
 import { Transform } from 'class-transformer';
+import { transformAddressLine2 } from '@/common/address-line2';
 import {
   IsOptional,
   IsString,
@@ -6,6 +7,7 @@ import {
   IsEmail,
   IsUrl,
   Matches,
+  MaxLength,
 } from 'class-validator';
 
 export class CreateBrandingDto {
@@ -29,6 +31,12 @@ export class CreateBrandingDto {
   @IsOptional()
   @IsString()
   street?: string;
+
+  @Transform(transformAddressLine2)
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  addressLine2?: string | null;
 
   @IsOptional()
   @IsString()

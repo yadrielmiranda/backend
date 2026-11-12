@@ -1,5 +1,6 @@
 export type InstallationAddress = {
   street: string;
+  addressLine2?: string | null;
   city: string;
   state: string;
   postalCode: string;
@@ -18,7 +19,15 @@ export function installationAddress(
     )
   )
     return null;
-  return Object.fromEntries(
-    keys.map((key) => [key, String(source[key]).trim()]),
-  ) as InstallationAddress;
+  // Older snapshots have no second line. Keep their shape unchanged.
+  const detail = source.addressLine2;
+  if (detail !== undefined && detail !== null &&
+      (typeof detail !== 'string' || detail.trim().length > 150)) return null;
+  return {
+    street: String(source.street).trim(),
+    ...(detail !== undefined ? { addressLine2: typeof detail === 'string' ? detail.trim() || null : null } : {}),
+    city: String(source.city).trim(),
+    state: String(source.state).trim(),
+    postalCode: String(source.postalCode).trim(),
+  };
 }

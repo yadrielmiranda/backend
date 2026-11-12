@@ -200,7 +200,8 @@ describe('Google Places address lookup', () => {
     await expect(
       service.details({ placeId, sessionToken }),
     ).resolves.toMatchObject({
-      street: '123 Example St #4B',
+      street: '123 Example St',
+      addressLine2: '#4B',
       postalCode: '33138',
     });
   });

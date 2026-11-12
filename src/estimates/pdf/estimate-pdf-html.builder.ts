@@ -510,7 +510,7 @@ export class EstimatePdfHtmlBuilder {
     const brandingCityLine = [brandingLocality, branding?.postalCode]
       .filter(Boolean)
       .join(' ');
-    const brandingAddress = issuer ? '' : [branding?.street, brandingCityLine]
+    const brandingAddress = issuer ? '' : [branding?.street, branding?.addressLine2, brandingCityLine]
       .filter(Boolean)
       .join(', ');
     const logo = branding?.logoUrl
@@ -540,6 +540,7 @@ export class EstimatePdfHtmlBuilder {
       : estimate.customerPhone || estimate.user?.phone;
     const contactAddress = [
       estimate.customerStreet || (ownerIsDealer ? null : estimate.user?.street),
+      estimate.customerStreet ? estimate.customerAddressLine2 : (ownerIsDealer ? null : estimate.user?.addressLine2),
       estimate.customerCity || (ownerIsDealer ? null : estimate.user?.city),
       estimate.customerState || (ownerIsDealer ? null : estimate.user?.state),
       estimate.customerPostalCode ||
@@ -1263,7 +1264,7 @@ export class EstimatePdfHtmlBuilder {
   </header>
   <section class="prepared-section">
     <div class="prepared-details"><div class="eyebrow">Prepared for</div><div class="prepared-name">${escapeHtml(preparedFor)}</div>${projectName ? `<div class="project-name">Project: ${escapeHtml(projectName)}</div>` : ''}</div>
-    <div class="contact">${contactPhone ? `<div>${escapeHtml(contactPhone)}</div>` : ''}${contactEmail ? `<div>${escapeHtml(contactEmail)}</div>` : ''}${contactAddress ? `<div>${escapeHtml(contactAddress)}</div>` : ''}${installationSummary?.installationAddress ? `<div><strong>Installation address:</strong> ${escapeHtml(Object.values(installationSummary.installationAddress).join(', '))}</div>` : ''}</div>
+    <div class="contact">${contactPhone ? `<div>${escapeHtml(contactPhone)}</div>` : ''}${contactEmail ? `<div>${escapeHtml(contactEmail)}</div>` : ''}${contactAddress ? `<div>${escapeHtml(contactAddress)}</div>` : ''}${installationSummary?.installationAddress ? `<div><strong>Installation address:</strong> ${escapeHtml(Object.values(installationSummary.installationAddress).filter(Boolean).join(', '))}</div>` : ''}</div>
     <div class="dates"><div class="date-group"><div class="date-label">Date</div><div class="date-value">${escapeHtml(formatDate(estimate.date))}</div></div>${estimate.expiresAt && !estimate.promotionLockedAt && !estimateDiscountConfig(estimate.manualDiscount)?.lockedAt ? `<div class="date-group"><div class="date-label">Valid through</div><div class="date-value">${escapeHtml(estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString('en-US') : formatDate(estimate.expiresAt))}</div></div>` : ''}</div>
   </section>
   <section class="products-section"><div class="products-heading"><h2 class="section-heading">Product Details</h2><div class="illustration-note">Illustrations are visual references; written specifications govern.</div></div><div class="product-list">${productCards}</div></section>

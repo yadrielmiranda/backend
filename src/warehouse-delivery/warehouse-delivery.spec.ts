@@ -152,7 +152,7 @@ describe('Warehouse & Delivery settings', () => {
     ]);
     jest.clearAllMocks();
   });
-  const save = (body = valid(), role = 'admin') =>
+  const save = (body: object = valid(), role = 'admin') =>
     request(app.getHttpServer())
       .put('/warehouse-delivery')
       .set('x-test-role', role)
@@ -204,6 +204,18 @@ describe('Warehouse & Delivery settings', () => {
     expect(stored.revision).toBe(2);
     expect(parameters.get('DELIVERY_BASE_PRICE').value.toString()).toBe('700');
     await save().expect(409);
+  });
+
+  it('keeps supplemental address details separate, preserves omitted updates and clears explicit blanks', async () => {
+    const saved = await save({ ...valid(), addressLine2: '  Loading dock B  ' }).expect(200);
+    expect(saved.body.configuration).toMatchObject({ street: '100 Warehouse Road', addressLine2: 'Loading dock B' });
+    const pickup = await request(app.getHttpServer()).get('/warehouse-delivery/pickup-address')
+      .set('x-test-role', 'client').expect(200);
+    expect(pickup.body.address.addressLine2).toBe('Loading dock B');
+    const preserved = await save({ ...valid(), revision: 1 }).expect(200);
+    expect(preserved.body.configuration.addressLine2).toBe('Loading dock B');
+    const cleared = await save({ ...valid(), revision: 2, addressLine2: '   ' }).expect(200);
+    expect(cleared.body.configuration).toMatchObject({ street: '100 Warehouse Road', addressLine2: null });
   });
 
   it('does not leave a changed address when saving the pricing fails', async () => {
@@ -261,6 +273,8 @@ describe('Warehouse & Delivery settings', () => {
     ['basePrice', 1000000],
     ['additionalMilePrice', -1],
     ['street', '   '],
+    ['addressLine2', 'x'.repeat(151)],
+    ['addressLine2', 42],
     ['state', 'XX'],
     ['postalCode', '123'],
   ])('rejects invalid %s = %s before writing', async (key, value) => {

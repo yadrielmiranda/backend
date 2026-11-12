@@ -181,9 +181,13 @@ export class InstallationCoverageCalculationService {
       destination = await this.addresses.validateDeliveryAddress(address, {
         suggestCorrections: true,
       });
+      if (address.addressLine2 !== undefined) destination.addressLine2 = address.addressLine2;
     } catch (error) {
       if (error instanceof AddressCorrectionRequiredException) {
-        const suggestedAddress = installationAddress(error.suggestedAddress);
+        const suggestedAddress = installationAddress({
+          ...error.suggestedAddress,
+          ...(address.addressLine2 !== undefined ? { addressLine2: address.addressLine2 } : {}),
+        });
         if (suggestedAddress?.state === 'FL') {
           throw new BadRequestException({
             code: 'INSTALLATION_ADDRESS_CONFIRMATION_REQUIRED',
@@ -202,6 +206,7 @@ export class InstallationCoverageCalculationService {
     }
     const origin = {
       street: policy.originStreet,
+      ...(policy.originAddressLine2 !== undefined ? { addressLine2: policy.originAddressLine2 } : {}),
       city: policy.originCity,
       state: policy.originState,
       postalCode: policy.originPostalCode,

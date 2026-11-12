@@ -17,6 +17,6 @@ export function installationDestination(job: {
   };
   return {
     id: job.id,
-    address: [text('street'), text('city'), [text('state'), text('postalCode')].filter(Boolean).join(' ')].filter(Boolean).join(', '),
+    address: [text('street'), text('addressLine2'), text('city'), [text('state'), text('postalCode')].filter(Boolean).join(' ')].filter(Boolean).join(', '),
   };
 }

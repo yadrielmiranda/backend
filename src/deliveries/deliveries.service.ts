@@ -1,4 +1,5 @@
 import { decimalAmount, paidPrincipal, paymentIsCovered } from '@/payments/payment-accounting';
+import { normalizeAddressLine2 } from '@/common/address-line2';
 import { assertScheduleMilestone } from '@/payment-plans/payment-schedule';
 import { assertDirectFactoryPickup, recordDirectFactoryPickup } from '@/warehouse/factory-fulfillment';
 import {
@@ -139,6 +140,7 @@ export class DeliveriesService {
     if (hasAnySupplied) {
       const destination = {
         street: dto.street!.trim(),
+        addressLine2: normalizeAddressLine2(dto.addressLine2) ?? null,
         city: dto.city!.trim(),
         state: dto.state!.trim().toUpperCase(),
         postalCode: dto.postalCode!.trim(),
@@ -151,12 +153,14 @@ export class DeliveriesService {
     const destination = dealerCustomer
       ? {
           street: order.estimate.customerStreet,
+          addressLine2: order.estimate.customerAddressLine2,
           city: order.estimate.customerCity,
           state: order.estimate.customerState,
           postalCode: order.estimate.customerPostalCode,
         }
       : {
           street: order.user.street,
+          addressLine2: order.user.addressLine2,
           city: order.user.city,
           state: order.user.state,
           postalCode: order.user.postalCode,
@@ -174,6 +178,7 @@ export class DeliveriesService {
     }
     const resolved = {
       street: destination.street,
+      addressLine2: normalizeAddressLine2(dto.addressLine2 === undefined ? destination.addressLine2 : dto.addressLine2) ?? null,
       city: destination.city,
       state: destination.state.toUpperCase(),
       postalCode: destination.postalCode,
@@ -551,6 +556,7 @@ export class DeliveriesService {
     }
     const origin: DeliveryRouteAddress = {
       street: configuration.street,
+      addressLine2: configuration.addressLine2,
       city: configuration.city,
       state: configuration.state,
       postalCode: configuration.postalCode,
@@ -613,10 +619,12 @@ export class DeliveriesService {
           vehicleProfile: 'PICKUP',
           routeProvider: route.provider,
           originStreet: origin.street,
+          originAddressLine2: origin.addressLine2 ?? null,
           originCity: origin.city,
           originState: origin.state,
           originPostalCode: origin.postalCode,
           destinationStreet: destination.street,
+          destinationAddressLine2: destination.addressLine2 ?? null,
           destinationCity: destination.city,
           destinationState: destination.state,
           destinationPostalCode: destination.postalCode,

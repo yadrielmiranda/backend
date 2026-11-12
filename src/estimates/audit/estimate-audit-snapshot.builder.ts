@@ -54,6 +54,7 @@ export class EstimateAuditSnapshotBuilder {
       customerEmail: est.customerEmail ?? null,
       customerPhone: est.customerPhone ?? null,
       customerStreet: est.customerStreet ?? null,
+      customerAddressLine2: est.customerAddressLine2 ?? null,
       customerCity: est.customerCity ?? null,
       customerState: est.customerState ?? null,
       customerPostalCode: est.customerPostalCode ?? null,

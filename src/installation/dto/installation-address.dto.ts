@@ -1,5 +1,6 @@
 import { Transform } from 'class-transformer';
-import { IsIn, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { transformAddressLine2 } from '@/common/address-line2';
 
 const trim = ({ obj, key }: { obj: Record<string, unknown>; key: string }) =>
   typeof obj[key] === 'string' ? (obj[key] as string).trim() : undefined;
@@ -10,6 +11,12 @@ export class InstallationAddressDto {
   @MinLength(1)
   @MaxLength(150)
   street: string;
+
+  @Transform(transformAddressLine2)
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  addressLine2?: string | null;
 
   @Transform(trim)
   @IsString()

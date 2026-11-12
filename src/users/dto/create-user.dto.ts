@@ -16,6 +16,7 @@ import {
 import { Transform, Type } from 'class-transformer';
 import { DealerMode } from '@prisma/client';
 import { US_STATE_CODES } from '@/common/us-states';
+import { transformAddressLine2 } from '@/common/address-line2';
 import {
   USERNAME_PATTERN,
   USERNAME_VALIDATION_MESSAGE,
@@ -74,6 +75,12 @@ export class CreateUserDto {
   @MaxLength(150)
   @Transform(trimOnly)
   street: string;
+
+  @Transform(transformAddressLine2)
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  addressLine2?: string | null;
 
   @IsNotEmpty()
   @IsString()

@@ -200,6 +200,20 @@ describe('Installation coverage settings', () => {
     expect(events.at(-1).action).toBe('UPDATE');
   });
 
+  it('preserves omitted origin details and clears explicit blanks without changing the street', async () => {
+    const first = await save({ ...valid(), originAddressLine2: '  Suite 21  ' }).expect(200);
+    expect(first.body).toMatchObject({ originStreet: '100 Example Street', originAddressLine2: 'Suite 21' });
+    const second = await save({ ...valid(), revision: 1 }).expect(200);
+    expect(second.body.originAddressLine2).toBe('Suite 21');
+    const third = await save({ ...valid(), revision: 2, originAddressLine2: '' }).expect(200);
+    expect(third.body).toMatchObject({ originStreet: '100 Example Street', originAddressLine2: null });
+  });
+
+  it.each([123, false, 'x'.repeat(151)])('rejects invalid origin details %j before writing', async (originAddressLine2) => {
+    await save({ ...valid(), originAddressLine2 }).expect(400);
+    expect(db.installationCoverage.create).not.toHaveBeenCalled();
+  });
+
   it('updates the workday and daily rates together while retaining existing one-time charges', async () => {
     const initial = (await save(valid()).expect(200)).body;
     const edited = {

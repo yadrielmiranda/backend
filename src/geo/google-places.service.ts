@@ -176,7 +176,8 @@ export class GooglePlacesService {
       throw incompleteAddress();
     }
     return {
-      street: `${number} ${route}${unit ? ` #${unit}` : ''}`,
+      street: `${number} ${route}`,
+      ...(unit ? { addressLine2: `#${unit}` } : {}),
       city,
       state,
       postalCode,
