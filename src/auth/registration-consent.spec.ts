@@ -74,6 +74,28 @@ function fixture() {
 }
 
 describe('Registration messaging consent', () => {
+  it('creates an international account without opting into unsupported SMS', async () => {
+    const f = fixture();
+    const pipe = new ValidationPipe({ transform: true, whitelist: true, transformOptions: { enableImplicitConversion: true } });
+    const dto = await pipe.transform(await f.payload({ phone: '+34 612 345 678', serviceConsent: false, promotionsConsent: false, consentVersion: undefined }), { type: 'body', metatype: RegisterUserDto });
+    const result = await f.auth.registerUser(dto);
+    expect(result.phone).toBe('+34612345678');
+    expect(f.state.registration[0].phone).toBe('+34612345678');
+    expect(f.state.sms[0]).toMatchObject({ phone: '+34612345678', enabled: false, promotionsEnabled: false });
+    expect(f.state.events).toHaveLength(0);
+  });
+
+  it.each([
+    { serviceConsent: true, promotionsConsent: false },
+    { serviceConsent: false, promotionsConsent: true },
+  ])('rejects unsupported SMS opt-in without creating an account: %j', async choices => {
+    const f = fixture();
+    await expect(f.register({ phone: '+34612345678', ...choices })).rejects.toThrow('SMS is not currently available for this phone number');
+    expect(f.state.users).toHaveLength(0);
+    expect(f.state.sms).toHaveLength(0);
+    expect(f.state.events).toHaveLength(0);
+  });
+
   it('saves and returns optional address details without sending them to coverage validation', async () => {
     const f = fixture();
     const result = await f.register({ addressLine2: '  Apartment 4B  ' });

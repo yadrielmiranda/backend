@@ -28,6 +28,7 @@ import { DeliveryCoverageService } from '@/deliveries/delivery-coverage.service'
 import { accountNetworkBlocked } from '@/dealer-network/network-access';
 import { resolveRegistrationReferral } from '@/referrals/referral-terms';
 import { normalizeAddressLine2 } from '@/common/address-line2';
+import { SMS_UNSUPPORTED_PHONE_MESSAGE, supportsSmsPhone } from '@/sms/sms-phone-support';
 
 type JwtRolePayload = string | undefined;
 
@@ -163,6 +164,9 @@ export class AuthService {
     const serviceSmsConsent = serviceConsent === true;
     const promotionalConsent = promotionsConsent === true;
     const wantsSms = serviceSmsConsent || promotionalConsent;
+    if (wantsSms && !supportsSmsPhone(userData.phone)) {
+      throw new BadRequestException(SMS_UNSUPPORTED_PHONE_MESSAGE);
+    }
     const program = await this.smsConsent.getProgram();
     if (wantsSms && consentVersion !== program.version) {
       throw new ConflictException({

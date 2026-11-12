@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '@/prisma/prisma.service';
 import { buildSmsProgram } from './sms-program';
 import { UpdateSmsConsentDto } from './dto/update-sms-consent.dto';
+import { SMS_UNSUPPORTED_PHONE_MESSAGE, supportsSmsPhone } from './sms-phone-support';
 
 @Injectable()
 export class SmsConsentService {
@@ -43,6 +44,7 @@ export class SmsConsentService {
       promotionsConsentedAt: samePhone ? consent.promotionsConsentedAt : null,
       promotionsRevokedAt: consent?.promotionsRevokedAt ?? null,
       blockedBySms: Boolean(block),
+      supported: supportsSmsPhone(user.phone),
       program: await this.getProgram(),
     };
   }
@@ -81,8 +83,11 @@ export class SmsConsentService {
 
       const hasNewOptIn = (serviceChanged && enabled) || (promotionsChanged && promotionsEnabled);
       if (hasNewOptIn) {
-        if (dto.phone !== user.phone || !/^\+1[2-9]\d{2}[2-9]\d{6}$/.test(user.phone)) {
+        if (dto.phone !== user.phone) {
           throw new ConflictException('Your phone number changed or is invalid. Reload your SMS preferences and confirm the correct number.');
+        }
+        if (!supportsSmsPhone(user.phone)) {
+          throw new BadRequestException(SMS_UNSUPPORTED_PHONE_MESSAGE);
         }
         if (dto.version !== program.version) {
           throw new ConflictException('The SMS terms changed. Reload and review them before subscribing.');

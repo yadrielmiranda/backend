@@ -158,6 +158,7 @@ describe('NotificationSmsService', () => {
     'unrecorded',
     'changed-phone',
     'invalid-phone',
+    'unsupported-international-phone',
     'inactive',
     'deleted',
     'blocked',
@@ -170,6 +171,8 @@ describe('NotificationSmsService', () => {
     if (reason === 'changed-phone') f.user.phone = '+13055559876';
     if (reason === 'invalid-phone')
       f.user.phone = f.user.smsConsent.phone = '3055551234';
+    if (reason === 'unsupported-international-phone')
+      f.user.phone = f.user.smsConsent.phone = '+34612345678';
     if (reason === 'inactive') f.user.isActive = false;
     if (reason === 'deleted') f.user.deletedAt = new Date();
     if (reason === 'blocked')

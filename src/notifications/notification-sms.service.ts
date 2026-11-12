@@ -10,6 +10,7 @@ import {
 import axios, { AxiosResponse } from 'axios';
 import { PrismaService } from '@/prisma/prisma.service';
 import { SmsConsentService } from '@/sms/sms-consent.service';
+import { supportsSmsPhone } from '@/sms/sms-phone-support';
 
 const recipientSelect = {
   phone: true,
@@ -76,7 +77,7 @@ export class NotificationSmsService {
       return false;
     const consent = user.smsConsent;
     return Boolean(
-      /^\+1[2-9]\d{2}[2-9]\d{6}$/.test(user.phone) &&
+      supportsSmsPhone(user.phone) &&
         consent?.enabled &&
         consent.phone === user.phone &&
         consent.consentedAt &&

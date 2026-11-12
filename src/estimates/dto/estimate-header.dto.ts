@@ -4,6 +4,7 @@ import {
   IsNotEmpty,
   IsNumber,
   IsOptional,
+  IsPhoneNumber,
   IsString,
   Matches,
   MaxLength,
@@ -17,10 +18,10 @@ import {
 
 import { US_STATE_CODES } from '@/common/us-states';
 import { transformAddressLine2 } from '@/common/address-line2';
+import { PHONE_VALIDATION_MESSAGE, transformPhone } from '@/common/phone';
 import {
   normalizeEmailOrNull,
   normalizeStateCodeOrNull,
-  normalizeUSPhoneE164OrNull,
   normalizeZip5OrNull,
   trimOnly,
   trimOrNull,
@@ -57,12 +58,11 @@ export class CreateEstimateHeaderDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @Transform(normalizeUSPhoneE164OrNull)
+  @Transform(transformPhone)
+  @IsString()
   @MaxLength(30)
-  @Matches(/^\+1\d{10}$/, {
-    message:
-      'customerPhone must be E.164 US format like +13055551234',
-  })
+  @Matches(/^\+[1-9]\d{1,14}$/, { message: PHONE_VALIDATION_MESSAGE })
+  @IsPhoneNumber(undefined, { message: PHONE_VALIDATION_MESSAGE })
   customerPhone?: string | null;
 
   @ApiPropertyOptional()

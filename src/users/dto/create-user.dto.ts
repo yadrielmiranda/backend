@@ -8,6 +8,7 @@ import {
   IsInt,
   IsOptional,
   IsPositive,
+  IsPhoneNumber,
   Min,
   IsString,
   Matches,
@@ -17,6 +18,7 @@ import { Transform, Type } from 'class-transformer';
 import { DealerMode } from '@prisma/client';
 import { US_STATE_CODES } from '@/common/us-states';
 import { transformAddressLine2 } from '@/common/address-line2';
+import { PHONE_VALIDATION_MESSAGE, transformPhone } from '@/common/phone';
 import {
   USERNAME_PATTERN,
   USERNAME_VALIDATION_MESSAGE,
@@ -24,7 +26,6 @@ import {
 import {
   trimOnly,
   normalizeEmailOrNull,
-  normalizeUSPhoneE164OrNull,
   normalizeZip5OrNull,
   normalizeStateCodeOrNull,
 } from '@/common/transforms';
@@ -54,14 +55,13 @@ export class CreateUserDto {
   @Transform(normalizeEmailOrNull)
   email: string;
 
-  // E164 US estricto: +1 seguido de 10 dígitos
+  // Store one canonical international number, including for legacy US inputs.
   @IsNotEmpty()
   @IsString()
   @MaxLength(20)
-  @Transform(normalizeUSPhoneE164OrNull)
-  @Matches(/^\+1\d{10}$/, {
-    message: 'phone must be a valid US E.164 number (e.g. +13055551234).',
-  })
+  @Transform(transformPhone)
+  @Matches(/^\+[1-9]\d{1,14}$/, { message: PHONE_VALIDATION_MESSAGE })
+  @IsPhoneNumber(undefined, { message: PHONE_VALIDATION_MESSAGE })
   phone: string;
 
   @IsNotEmpty()

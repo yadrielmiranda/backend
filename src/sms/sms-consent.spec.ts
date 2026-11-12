@@ -81,6 +81,27 @@ function fixture() {
 }
 
 describe('SMS consent', () => {
+  it('reports international SMS support without changing the saved contact number', async () => {
+    const f = fixture();
+    expect((await f.service.getPreferences(1)).supported).toBe(true);
+    f.state.users[0].phone = '+34612345678';
+    expect(await f.service.getPreferences(1)).toMatchObject({ supported: false, phone: '+34612345678', enabled: false });
+    await expect(f.subscribe()).rejects.toThrow('SMS is not currently available for this phone number');
+    expect(f.state.consents).toHaveLength(0);
+    expect(f.state.events).toHaveLength(0);
+  });
+
+  it('allows both SMS categories to be disabled on a previously subscribed unsupported number', async () => {
+    const f = fixture();
+    await f.subscribe();
+    f.state.users[0].phone = f.state.consents[0].phone = '+34612345678';
+    f.state.consents[0].promotionsEnabled = true;
+    const result = await f.service.updatePreferences(1, { enabled: false, promotionsEnabled: false });
+    expect(result).toMatchObject({ supported: false, enabled: false, promotionsEnabled: false });
+    expect(f.state.consents[0]).toMatchObject({ enabled: false, promotionsEnabled: false });
+    expect(f.state.events.slice(-2).map((event: any) => event.action)).toEqual(['OPT_OUT', 'OPT_OUT']);
+  });
+
   it('starts off and reads without creating consent', async () => {
     const f = fixture();
     assert.equal((await f.service.getPreferences(1)).enabled, false);
