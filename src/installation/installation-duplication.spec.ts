@@ -130,6 +130,14 @@ describe('Duplicated installation starts a new quote', () => {
     expect(f.tx.installationJob.create).not.toHaveBeenCalled();
   });
 
+  it('keeps the confirmed point when revalidating a duplicated installation', async () => {
+    const f = fixture();
+    const selected = { ...address, confirmedLocation: { lat: 25.75, lng: -80.23 } };
+    f.source.installationAddress = selected;
+    await f.workflow.prepareDuplicateInstallation(f.source);
+    expect(f.verify.prepare).toHaveBeenCalledWith(selected);
+  });
+
   it('rejects unavailable selected services instead of silently omitting them', async () => {
     const f = fixture(); f.services[1].isActive = false;
     await expect(f.duplicate()).rejects.toThrow('service is unavailable');

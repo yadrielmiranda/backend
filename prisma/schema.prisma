@@ -3474,6 +3474,7 @@ model OrderDelivery {
   destinationCity       String @db.VarChar(100)
   destinationState      String @db.VarChar(50)
   destinationPostalCode String @db.VarChar(20)
+  destinationLocation   Json?
 
   distanceMeters Int
   roadMiles      Decimal @db.Decimal(10, 2)

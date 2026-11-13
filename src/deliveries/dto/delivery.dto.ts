@@ -3,12 +3,16 @@ import {
   IsBoolean,
   IsDateString,
   IsEnum,
+  IsObject,
   IsOptional,
   IsString,
   MaxLength,
+  ValidateIf,
+  ValidateNested,
 } from 'class-validator';
 import { DeliveryType } from '@prisma/client';
 import { transformAddressLine2 } from '@/common/address-line2';
+import { ConfirmedAddressLocationDto } from './confirmed-address-location.dto';
 
 const trimmed = ({ value }: { value: unknown }) =>
   value == null ? value : String(value).trim();
@@ -47,6 +51,12 @@ export class CreateDeliveryDto {
   @MaxLength(20)
   @Transform(trimmed)
   postalCode?: string;
+
+  @ValidateIf((_, value) => value !== undefined)
+  @IsObject()
+  @ValidateNested()
+  @Type(() => ConfirmedAddressLocationDto)
+  confirmedLocation?: ConfirmedAddressLocationDto;
 
   @IsOptional()
   @IsBoolean()

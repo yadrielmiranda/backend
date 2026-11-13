@@ -1,11 +1,14 @@
 import { HttpService } from '@nestjs/axios';
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ServiceUnavailableException, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { of } from 'rxjs';
 import {
   AddressCorrectionRequiredException,
+  AddressLocationRequiredException,
   GoogleAddressValidationService,
 } from './google-address-validation.service';
+import { AddressConfirmationsController } from './address-confirmations.controller';
+import { AddressConfirmationReviewDto } from './dto/address-confirmation.dto';
 
 describe('GoogleAddressValidationService', () => {
   const post = jest.fn();
@@ -409,5 +412,272 @@ describe('GoogleAddressValidationService', () => {
       expect(error).toBeInstanceOf(BadRequestException);
       expect(error).not.toBeInstanceOf(AddressCorrectionRequiredException);
     });
+  });
+});
+
+describe('Explicit property location confirmation', () => {
+  const input = { street: '1603 SW 20th Terrace', city: 'Miami', state: 'FL', postalCode: '33145' };
+  const center = { lat: 25.753, lng: -80.222 };
+  const options = { suggestCorrections: true, allowLocationConfirmation: true };
+  const post = jest.fn();
+  const service = new GoogleAddressValidationService(
+    { post } as unknown as HttpService,
+    { get: jest.fn().mockReturnValue('backend-api-key') } as unknown as ConfigService,
+  );
+  function plausible(): any {
+    return {
+      verdict: {
+        inputGranularity: 'PREMISE', validationGranularity: 'PREMISE_PROXIMITY',
+        geocodeGranularity: 'PREMISE_PROXIMITY', addressComplete: true,
+        hasUnconfirmedComponents: true,
+      },
+      address: {
+        postalAddress: {
+          regionCode: 'US', addressLines: [input.street], locality: input.city,
+          administrativeArea: input.state, postalCode: input.postalCode,
+        },
+        unconfirmedComponentTypes: ['street_number'],
+        addressComponents: ['street_number', 'route', 'locality', 'administrative_area_level_1', 'postal_code']
+          .map(componentType => ({ componentType,
+            confirmationLevel: componentType === 'street_number' ? 'UNCONFIRMED_BUT_PLAUSIBLE' : 'CONFIRMED' })),
+      },
+      geocode: { placeId: 'provider-anchor', location: { latitude: center.lat, longitude: center.lng } },
+      uspsData: { dpvConfirmation: 'N' },
+    };
+  }
+  function precise(): any {
+    const result = plausible();
+    result.verdict.validationGranularity = 'PREMISE';
+    result.verdict.geocodeGranularity = 'PREMISE';
+    result.verdict.hasUnconfirmedComponents = false;
+    result.address.unconfirmedComponentTypes = [];
+    result.address.addressComponents[0].confirmationLevel = 'CONFIRMED';
+    result.uspsData.dpvConfirmation = 'Y';
+    return result;
+  }
+  function respond(result = plausible()) { post.mockReturnValue(of({ data: { result } })); }
+  beforeEach(() => post.mockReset());
+
+  function replacedPostalCode(postalCode = input.postalCode): any {
+    const result = plausible();
+    result.verdict.hasReplacedComponents = true;
+    result.verdict.possibleNextAction = 'CONFIRM';
+    result.address.postalAddress.postalCode = postalCode;
+    result.address.addressComponents.find(component => component.componentType === 'postal_code').replaced = true;
+    return result;
+  }
+
+  it.each([
+    ['33165', '33145'], ['33175', '33145'], ['33142', '33144'],
+  ])('offers provider ZIP %s -> %s before asking for the property location', async (enteredZip, correctedZip) => {
+    respond(replacedPostalCode(correctedZip));
+    const entered = { ...input, postalCode: enteredZip, addressLine2: '  Apt 4B, rear entrance  ', confirmedLocation: center };
+    const error = await service.validateDeliveryAddress(entered, options).catch(error => error);
+    expect(error).toBeInstanceOf(AddressCorrectionRequiredException);
+    expect(error.suggestedAddress).toEqual({ ...input, postalCode: correctedZip, addressLine2: 'Apt 4B, rear entrance' });
+    expect(error.suggestedAddress).not.toHaveProperty('confirmedLocation');
+    expect(error.suggestedAddress).not.toHaveProperty('placeId');
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['INSTALLATION', 'DELIVERY'] as const)('revalidates ZIP acceptance and pin separately for %s', async purpose => {
+    const controller = new AddressConfirmationsController(service);
+    respond(replacedPostalCode());
+    const first = await controller.review({ purpose, address: { ...input, postalCode: '33175' } });
+    expect(first).toEqual({ status: 'CONFIRM_SUGGESTION', suggestedAddress: input });
+
+    respond(plausible());
+    const second = await controller.review({ purpose, address: first.suggestedAddress! });
+    expect(second).toEqual({ status: 'CONFIRM_LOCATION', center, maxAdjustmentMeters: 500 });
+    const third = await controller.review({ purpose, address: { ...first.suggestedAddress!, confirmedLocation: center } });
+    expect(third).toEqual({ status: 'VALIDATED', address: { ...input, confirmedLocation: center } });
+    expect(post).toHaveBeenCalledTimes(3);
+    expect(post.mock.calls.map(call => call[1].address.postalCode)).toEqual(['33175', '33145', '33145']);
+  });
+
+  it.each([
+    ['replaced street', (r: any) => { r.address.addressComponents[1].replaced = true; }],
+    ['replaced city', (r: any) => { r.address.addressComponents[2].replaced = true; }],
+    ['replaced country', (r: any) => { r.address.addressComponents.push({ componentType: 'country', confirmationLevel: 'CONFIRMED', replaced: true }); }],
+    ['replaced unit', (r: any) => { r.address.addressComponents.push({ componentType: 'subpremise', confirmationLevel: 'CONFIRMED', replaced: true }); }],
+    ['unconfirmed ZIP', (r: any) => { r.address.addressComponents[4].confirmationLevel = 'UNCONFIRMED_BUT_PLAUSIBLE'; }],
+    ['invalid ZIP', (r: any) => { r.address.postalAddress.postalCode = '3314'; }],
+    ['unchanged ZIP', (r: any) => { r.address.postalAddress.postalCode = '33175'; }],
+    ['suspicious house number', (r: any) => { r.address.addressComponents[0].confirmationLevel = 'UNCONFIRMED_AND_SUSPICIOUS'; }],
+    ['unconfirmed road', (r: any) => { r.address.addressComponents[1].confirmationLevel = 'UNCONFIRMED_BUT_PLAUSIBLE'; }],
+    ['missing unit', (r: any) => { r.address.missingComponentTypes = ['subpremise']; }],
+    ['unresolved text', (r: any) => { r.address.unresolvedTokens = ['unknown']; }],
+    ['unexpected component', (r: any) => { r.address.addressComponents[0].unexpected = true; }],
+    ['broad geocode', (r: any) => { r.verdict.geocodeGranularity = 'ROUTE'; }],
+    ['FIX response', (r: any) => { r.verdict.possibleNextAction = 'FIX'; }],
+    ['different city', (r: any) => { r.address.postalAddress.locality = 'Coral Gables'; }],
+    ['different state', (r: any) => { r.address.postalAddress.administrativeArea = 'GA'; }],
+    ['foreign location', (r: any) => { r.address.postalAddress.regionCode = 'CA'; }],
+    ['no location', (r: any) => { delete r.geocode.location; }],
+    ['no explicit ZIP replacement', (r: any) => { delete r.address.addressComponents[4].replaced; }],
+  ])('does not propose a ZIP-and-map correction with %s', async (_label, change) => {
+    const result = replacedPostalCode(); change(result); respond(result);
+    const error = await service.validateDeliveryAddress({ ...input, postalCode: '33175', confirmedLocation: center }, options).catch(error => error);
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect(error).not.toBeInstanceOf(AddressCorrectionRequiredException);
+    expect(error).not.toBeInstanceOf(AddressLocationRequiredException);
+  });
+
+  it.each([{}, { suggestCorrections: true }, { allowLocationConfirmation: true }])('retains strict rejection without both confirmation capabilities: %j', async capabilities => {
+    respond(replacedPostalCode());
+    const error = await service.validateDeliveryAddress({ ...input, postalCode: '33175' }, capabilities).catch(error => error);
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect(error).not.toBeInstanceOf(AddressCorrectionRequiredException);
+  });
+
+  it('requires an explicit map choice for the plausible house number with DPV N', async () => {
+    respond();
+    const error = await service.validateDeliveryAddress(input, options).catch(error => error);
+    expect(error).toBeInstanceOf(AddressLocationRequiredException);
+    expect(error.getResponse()).toEqual({
+      code: 'ADDRESS_LOCATION_CONFIRMATION_REQUIRED', center, maxAdjustmentMeters: 500,
+      message: 'Confirm the property location on the map before continuing.',
+    });
+    await expect(service.validateDeliveryAddress(input)).rejects.not.toBeInstanceOf(AddressLocationRequiredException);
+    await expect(service.validateDeliveryAddress(input, { suggestCorrections: true })).rejects.not.toBeInstanceOf(AddressLocationRequiredException);
+  });
+
+  it('revalidates the address on every confirmation and preserves the separate detail without sending it to Google', async () => {
+    respond();
+    const address = { ...input, addressLine2: '  Rear building  ', confirmedLocation: { ...center, lat: center.lat + 0.001 } };
+    await expect(service.validateDeliveryAddress(address, options)).resolves.toEqual({
+      ...address, addressLine2: 'Rear building', placeId: 'provider-anchor',
+    });
+    await expect(service.validateDeliveryAddress(address, options)).resolves.toHaveProperty('confirmedLocation', address.confirmedLocation);
+    expect(post).toHaveBeenCalledTimes(2);
+    for (const call of post.mock.calls) expect(JSON.stringify(call[1])).not.toMatch(/Rear building|confirmedLocation|latitude|longitude/);
+  });
+
+  it('uses the current provider anchor and asks again when the selected point is farther than 500 meters', async () => {
+    respond();
+    const north = (meters: number) => ({ ...center, lat: center.lat + meters / 6_371_000 * 180 / Math.PI });
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: north(499) }, options)).resolves.toHaveProperty('placeId');
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: north(500) }, options)).resolves.toHaveProperty('placeId');
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: north(500.01) }, options)).rejects.toBeInstanceOf(AddressLocationRequiredException);
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: north(501) }, options)).rejects.toBeInstanceOf(AddressLocationRequiredException);
+    const moved = plausible();
+    moved.geocode.location.latitude += 0.02;
+    respond(moved);
+    const error = await service.validateDeliveryAddress({ ...input, confirmedLocation: center }, options).catch(error => error);
+    expect(error).toBeInstanceOf(AddressLocationRequiredException);
+    expect(error.center.lat).toBe(moved.geocode.location.latitude);
+  });
+
+  it.each([null, {}, { lat: '25.753', lng: -80.222 }, { lat: true, lng: 0 },
+    { lat: NaN, lng: 0 }, { lat: Infinity, lng: 0 }, { lat: 91, lng: 0 },
+    { lat: 0, lng: -181 }, [25, -80]])('rejects malformed points before contacting Google: %j', async point => {
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: point as any }, options)).rejects.toBeInstanceOf(BadRequestException);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('rejects coordinates from callers that did not opt into map confirmation', async () => {
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: center })).rejects.toThrow('Map confirmation is not available');
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['incomplete address', (r: any) => { r.verdict.addressComplete = false; }],
+    ['broad validation', (r: any) => { r.verdict.validationGranularity = 'ROUTE'; }],
+    ['broad geocode', (r: any) => { r.verdict.geocodeGranularity = 'ROUTE'; }],
+    ['FIX verdict', (r: any) => { r.verdict.possibleNextAction = 'FIX'; }],
+    ['missing street number', (r: any) => { r.address.missingComponentTypes = ['street_number']; }],
+    ['unresolved text', (r: any) => { r.address.unresolvedTokens = ['unknown']; }],
+    ['missing place ID', (r: any) => { delete r.geocode.placeId; }],
+    ['missing anchor', (r: any) => { delete r.geocode.location; }],
+    ['invalid anchor', (r: any) => { r.geocode.location.latitude = 91; }],
+    ['suspicious number', (r: any) => { r.address.addressComponents[0].confirmationLevel = 'UNCONFIRMED_AND_SUSPICIOUS'; }],
+    ['unconfirmed road', (r: any) => { r.address.addressComponents[1].confirmationLevel = 'UNCONFIRMED_BUT_PLAUSIBLE'; }],
+    ['unconfirmed locality list', (r: any) => { r.address.unconfirmedComponentTypes.push('locality'); }],
+    ['missing route confirmation', (r: any) => { r.address.addressComponents.splice(1, 1); }],
+    ['replaced street', (r: any) => { r.address.addressComponents[1].replaced = true; }],
+    ['unexpected number', (r: any) => { r.address.addressComponents[0].unexpected = true; }],
+    ['different country', (r: any) => { r.address.postalAddress.regionCode = 'CA'; }],
+    ['different state', (r: any) => { r.address.postalAddress.administrativeArea = 'GA'; }],
+    ['different ZIP', (r: any) => { r.address.postalAddress.postalCode = '33101'; }],
+  ])('does not allow the map to bypass %s', async (_label, change) => {
+    const result = plausible(); change(result); respond(result);
+    for (const confirmedLocation of [undefined, center]) {
+      const error = await service.validateDeliveryAddress({ ...input, confirmedLocation }, options).catch(error => error);
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(error).not.toBeInstanceOf(AddressLocationRequiredException);
+    }
+  });
+
+  it('does not turn DPV N alone into an eligible map confirmation', async () => {
+    const result = precise(); result.uspsData.dpvConfirmation = 'N'; respond(result);
+    const error = await service.validateDeliveryAddress({ ...input, confirmedLocation: center }, options).catch(error => error);
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect(error).not.toBeInstanceOf(AddressLocationRequiredException);
+  });
+
+  it('asks for a map point when all address components are confirmed but the premise precision is approximate', async () => {
+    const result = precise();
+    result.verdict.validationGranularity = 'PREMISE_PROXIMITY';
+    result.verdict.geocodeGranularity = 'PREMISE_PROXIMITY';
+    respond(result);
+    await expect(service.validateDeliveryAddress(input, options)).rejects.toBeInstanceOf(AddressLocationRequiredException);
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: center }, options))
+      .resolves.toHaveProperty('confirmedLocation', center);
+    const strict = await service.validateDeliveryAddress(input).catch(error => error);
+    expect(strict).toBeInstanceOf(BadRequestException);
+    expect(strict).not.toBeInstanceOf(AddressLocationRequiredException);
+
+    result.uspsData.dpvConfirmation = 'N'; respond(result);
+    const nonDeliverable = await service.validateDeliveryAddress({ ...input, confirmedLocation: center }, options).catch(error => error);
+    expect(nonDeliverable).toBeInstanceOf(BadRequestException);
+    expect(nonDeliverable).not.toBeInstanceOf(AddressLocationRequiredException);
+  });
+
+  it('retains precise legacy acceptance but validates any supplied point against its anchor', async () => {
+    const result = precise(); respond(result);
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: center }, options)).resolves.toHaveProperty('confirmedLocation', center);
+    const north = (meters: number) => ({ ...center, lat: center.lat + meters / 6_371_000 * 180 / Math.PI });
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: north(500) }, options)).resolves.toHaveProperty('placeId');
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: north(500.01) }, options)).rejects.toBeInstanceOf(AddressLocationRequiredException);
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: { ...center, lat: center.lat + 1 } }, options)).rejects.toBeInstanceOf(AddressLocationRequiredException);
+    delete result.geocode.location; respond(result);
+    await expect(service.validateDeliveryAddress(input)).resolves.toHaveProperty('placeId');
+    await expect(service.validateDeliveryAddress({ ...input, confirmedLocation: center }, options)).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+
+  it('offers a reliable correction first and discards a pin attached to the old address', async () => {
+    const result = precise();
+    result.verdict.hasReplacedComponents = true;
+    result.address.addressComponents[2].replaced = true;
+    result.address.postalAddress.locality = 'Coral Gables';
+    respond(result);
+    const error = await service.validateDeliveryAddress({ ...input, confirmedLocation: center }, options).catch(error => error);
+    expect(error).toBeInstanceOf(AddressCorrectionRequiredException);
+    expect(error.suggestedAddress.city).toBe('Coral Gables');
+    expect(error.suggestedAddress).not.toHaveProperty('confirmedLocation');
+  });
+
+  it('returns review states without leaking private place IDs or writing data', async () => {
+    const controller = new AddressConfirmationsController(service);
+    respond();
+    await expect(controller.review({ address: input, purpose: 'INSTALLATION' })).resolves.toEqual({
+      status: 'CONFIRM_LOCATION', center, maxAdjustmentMeters: 500,
+    });
+    const accepted = await controller.review({ address: { ...input, confirmedLocation: center }, purpose: 'DELIVERY' });
+    expect(accepted).toEqual({ status: 'VALIDATED', address: { ...input, confirmedLocation: center } });
+    expect(JSON.stringify(accepted)).not.toContain('placeId');
+    post.mockClear();
+    await expect(controller.review({ address: { ...input, state: 'GA' }, purpose: 'INSTALLATION' })).rejects.toThrow('only in Florida');
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('keeps the review DTO strict with the production implicit conversion enabled', async () => {
+    const pipe = new ValidationPipe({ transform: true, whitelist: true, transformOptions: { enableImplicitConversion: true } });
+    const transform = (address: unknown) => pipe.transform({ purpose: 'DELIVERY', address }, { type: 'body', metatype: AddressConfirmationReviewDto });
+    await expect(transform({ ...input, confirmedLocation: center })).resolves.toHaveProperty('address.confirmedLocation.lat', center.lat);
+    for (const confirmedLocation of [null, { lat: '25.753', lng: -80.222 }, { lat: true, lng: -80.222 }, { lat: null, lng: -80.222 }, { lat: 91, lng: -80.222 }]) {
+      await expect(transform({ ...input, confirmedLocation })).rejects.toBeInstanceOf(BadRequestException);
+    }
+    for (const key of ['street', 'city', 'state', 'postalCode']) await expect(transform({ ...input, [key]: '' })).rejects.toBeInstanceOf(BadRequestException);
   });
 });

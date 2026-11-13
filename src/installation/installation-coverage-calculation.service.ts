@@ -9,6 +9,7 @@ import Decimal from 'decimal.js';
 import { PrismaService } from '@/prisma/prisma.service';
 import {
   AddressCorrectionRequiredException,
+  AddressLocationRequiredException,
   GoogleAddressValidationService,
 } from '@/deliveries/google-address-validation.service';
 import { GoogleRoutesService } from '@/deliveries/google-routes.service';
@@ -180,9 +181,14 @@ export class InstallationCoverageCalculationService {
     try {
       destination = await this.addresses.validateDeliveryAddress(address, {
         suggestCorrections: true,
+        allowLocationConfirmation: true,
       });
       if (address.addressLine2 !== undefined) destination.addressLine2 = address.addressLine2;
+      if (address.confirmedLocation && !destination.confirmedLocation) {
+        throw new ServiceUnavailableException('The selected property location could not be verified.');
+      }
     } catch (error) {
+      if (error instanceof AddressLocationRequiredException) throw error;
       if (error instanceof AddressCorrectionRequiredException) {
         const suggestedAddress = installationAddress({
           ...error.suggestedAddress,
@@ -268,7 +274,13 @@ export class InstallationCoverageCalculationService {
       hoursPerDay: policy.hoursPerDay.toString(),
       range,
     };
-    return { address, snapshot };
+    return {
+      address: {
+        ...address,
+        ...(destination.confirmedLocation ? { confirmedLocation: { ...destination.confirmedLocation } } : {}),
+      },
+      snapshot,
+    };
   }
 
   async assertCurrent(

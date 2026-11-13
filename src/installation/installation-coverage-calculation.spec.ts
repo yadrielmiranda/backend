@@ -19,7 +19,8 @@ import { InstallationPricingService } from './installation-pricing.service';
 import { presentApiResponse } from '@/common/response-privacy.interceptor';
 import { buildEstimateInstallationSummary } from '@/estimates/reporting/estimate-installation-summary';
 import { agreementScopes } from '@/contracts/agreement-content';
-import { AddressCorrectionRequiredException } from '@/deliveries/google-address-validation.service';
+import { AddressCorrectionRequiredException, AddressLocationRequiredException } from '@/deliveries/google-address-validation.service';
+import { installationAddress } from './installation-address';
 
 const address = {
   street: '123 Customer St',
@@ -76,6 +77,38 @@ const fixed: CoverageSnapshot = {
 };
 
 describe('Installation coverage calculation', () => {
+  it('preserves a server-checked location in the address and coverage snapshot', async () => {
+    const f = fixture();
+    const confirmedLocation = { lat: 25.75, lng: -80.23 };
+    const requested = { ...address, addressLine2: 'Rear entrance', confirmedLocation: { ...confirmedLocation, lat: 25.751 } };
+    const selected = { ...requested, confirmedLocation };
+    f.addresses.validateDeliveryAddress.mockResolvedValueOnce({ ...selected, placeId: 'verified-address' });
+    const result = await f.service.prepare(requested);
+    expect(f.addresses.validateDeliveryAddress).toHaveBeenCalledWith(requested, {
+      suggestCorrections: true, allowLocationConfirmation: true,
+    });
+    expect(f.routes.calculateDrivingRoute.mock.calls[0][1].confirmedLocation).toEqual(confirmedLocation);
+    expect(result.address).toEqual(selected);
+    expect(result.snapshot.destination.confirmedLocation).toEqual(confirmedLocation);
+    expect(result.snapshot.distanceMeters).toBe(80468);
+  });
+
+  it('returns the map confirmation request without calculating a route', async () => {
+    const f = fixture();
+    const required = new AddressLocationRequiredException({ lat: 25.75, lng: -80.23 });
+    f.addresses.validateDeliveryAddress.mockRejectedValueOnce(required);
+    await expect(f.service.prepare(address)).rejects.toBe(required);
+    expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
+  });
+
+  it('normalizes only public location fields and rejects malformed points', () => {
+    expect(installationAddress({ ...address, confirmedLocation: { lat: 25.75, lng: -80.23, privateField: 'hidden' } }))
+      .toEqual({ ...address, confirmedLocation: { lat: 25.75, lng: -80.23 } });
+    for (const confirmedLocation of [null, [], { lat: '25.75', lng: -80.23 }, { lat: 91, lng: -80.23 }, { lat: 25.75, lng: Infinity }]) {
+      expect(installationAddress({ ...address, confirmedLocation })).toBeNull();
+    }
+  });
+
   it('keeps optional detail in the public address and saved destination even when provider normalization omits it', async () => {
     const f = fixture();
     const result = await f.service.prepare({ ...address, addressLine2: '  Apt 4B, rear building  ' });
@@ -116,7 +149,7 @@ describe('Installation coverage calculation', () => {
     const f = fixture();
     const result = await f.service.prepare({ ...address, state: ' fl ' });
     expect(result.address.state).toBe('FL');
-    expect(f.addresses.validateDeliveryAddress).toHaveBeenCalledWith(address, { suggestCorrections: true });
+    expect(f.addresses.validateDeliveryAddress).toHaveBeenCalledWith(address, { suggestCorrections: true, allowLocationConfirmation: true });
   });
 
   it('returns a public correction for confirmation before calculating a route', async () => {
@@ -138,7 +171,7 @@ describe('Installation coverage calculation', () => {
     f.addresses.validateDeliveryAddress.mockResolvedValueOnce({ ...corrected, placeId: 'verified-corrected-property' });
     const result = await f.service.prepare(corrected);
     expect(result.address).toEqual(corrected);
-    expect(f.addresses.validateDeliveryAddress).toHaveBeenLastCalledWith(corrected, { suggestCorrections: true });
+    expect(f.addresses.validateDeliveryAddress).toHaveBeenLastCalledWith(corrected, { suggestCorrections: true, allowLocationConfirmation: true });
     expect(f.routes.calculateDrivingRoute).toHaveBeenCalledTimes(1);
     expect(f.routes.calculateDrivingRoute.mock.calls[0][1]).toEqual({ ...corrected, placeId: 'verified-corrected-property' });
   });
@@ -457,5 +490,32 @@ describe('Installation coverage calculation', () => {
         (await validate(plainToInstance(RequestInstallationDto, bad))).length,
       ).toBeGreaterThan(0);
     }
+  });
+
+  it('validates location numbers without coercing text or null to coordinates', async () => {
+    const input = { permitRequested: false, installationAddressConfirmed: true };
+    const make = (confirmedLocation: unknown) => plainToInstance(RequestInstallationDto, {
+      ...input, installationAddress: { ...address, confirmedLocation },
+    }, { enableImplicitConversion: true });
+    expect(await validate(make({ lat: 25.75, lng: -80.23 }))).toHaveLength(0);
+    for (const point of [null, [], { lat: '25.75', lng: -80.23 }, { lat: true, lng: -80.23 }, { lat: null, lng: 0 }, { lat: 25.75, lng: -181 }, { lat: NaN, lng: 0 }]) {
+      expect((await validate(make(point))).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('binds the agreement to the selected point even when the text and price stay the same', () => {
+    const snapshot = {
+      installationSummary: {
+        installationAddress: { ...address, confirmedLocation: { lat: 25.75, lng: -80.23 } },
+        installationAmount: '1150.00', installationSurcharge: '150.00', additionalServices: [],
+      },
+    };
+    const first = agreementScopes(snapshot);
+    const second = agreementScopes({ ...snapshot, installationSummary: {
+      ...snapshot.installationSummary,
+      installationAddress: { ...address, confirmedLocation: { lat: 25.751, lng: -80.23 } },
+    } });
+    expect(first.materialHash).not.toBe(second.materialHash);
+    expect(first.charges.total).toBe(second.charges.total);
   });
 });

@@ -2,6 +2,8 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { isConfirmedAddressLocation, type ConfirmedAddressLocation } from '../common/address-location';
+export { isConfirmedAddressLocation, type ConfirmedAddressLocation } from '../common/address-location';
 
 export type DeliveryRouteAddress = {
   street: string;
@@ -9,6 +11,7 @@ export type DeliveryRouteAddress = {
   city: string;
   state: string;
   postalCode: string;
+  confirmedLocation?: ConfirmedAddressLocation;
 };
 
 export type DeliveryRouteDestination = DeliveryRouteAddress & {
@@ -35,6 +38,10 @@ export class GoogleRoutesService {
     origin: DeliveryRouteAddress,
     destination: DeliveryRouteDestination,
   ) {
+    if (destination.confirmedLocation !== undefined &&
+      !isConfirmedAddressLocation(destination.confirmedLocation)) {
+      throw new BadRequestException('Select a valid location on the map.');
+    }
     const apiKey = this.config.get<string>('GOOGLE_ROUTES_API_KEY')?.trim();
     if (!apiKey) {
       this.logger.error('GOOGLE_ROUTES_API_KEY is not configured.');
@@ -49,7 +56,12 @@ export class GoogleRoutesService {
           'https://routes.googleapis.com/directions/v2:computeRoutes',
           {
             origin: { address: formatAddress(origin) },
-            destination: { placeId: destination.placeId },
+            destination: destination.confirmedLocation
+              ? { location: { latLng: {
+                  latitude: destination.confirmedLocation.lat,
+                  longitude: destination.confirmedLocation.lng,
+                } } }
+              : { placeId: destination.placeId },
             travelMode: 'DRIVE',
             routingPreference: 'TRAFFIC_UNAWARE',
             computeAlternativeRoutes: false,

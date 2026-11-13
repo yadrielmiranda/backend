@@ -144,6 +144,7 @@ export class DeliveriesService {
         city: dto.city!.trim(),
         state: dto.state!.trim().toUpperCase(),
         postalCode: dto.postalCode!.trim(),
+        ...(dto.confirmedLocation !== undefined ? { confirmedLocation: dto.confirmedLocation } : {}),
       };
       this.assertUsAddressFormat(destination);
       return destination;
@@ -182,6 +183,7 @@ export class DeliveriesService {
       city: destination.city,
       state: destination.state.toUpperCase(),
       postalCode: destination.postalCode,
+      ...(dto.confirmedLocation !== undefined ? { confirmedLocation: dto.confirmedLocation } : {}),
     };
     this.assertUsAddressFormat(resolved);
     return resolved;
@@ -578,6 +580,7 @@ export class DeliveriesService {
     const destination =
       await this.addressValidation.validateDeliveryAddress(
         requestedDestination,
+        { suggestCorrections: true, allowLocationConfirmation: true },
       );
     const route = await this.routes.calculateDrivingRoute(origin, destination);
     // El límite usa la distancia sin redondear; la tarifa mantiene el cálculo existente.
@@ -628,6 +631,12 @@ export class DeliveriesService {
           destinationCity: destination.city,
           destinationState: destination.state,
           destinationPostalCode: destination.postalCode,
+          ...(destination.confirmedLocation ? {
+            destinationLocation: {
+              lat: destination.confirmedLocation.lat,
+              lng: destination.confirmedLocation.lng,
+            },
+          } : {}),
           distanceMeters: route.distanceMeters,
           roadMiles: new Prisma.Decimal(pricing.roadMiles.toFixed(2)),
           maxDistanceMilesSnapshot: configuration.maxDeliveryMiles,

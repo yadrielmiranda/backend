@@ -793,6 +793,39 @@ describe('Editing and removing an unpaid installation after waiving its deposit'
 
 
 describe('Coverage policy preserved for an unchanged work address', () => {
+  it.each([
+    ['moves the pin', { lat: 25.75, lng: -80.23 }, { lat: 25.751, lng: -80.23 }],
+    ['adds a pin', undefined, { lat: 25.75, lng: -80.23 }],
+    ['removes the pin', { lat: 25.75, lng: -80.23 }, undefined],
+  ])('rechecks coverage when the same written address %s', async (_label, before, after) => {
+    const f = fixture();
+    const nextAddress = { ...confirmedAddress.installationAddress, ...(after ? { confirmedLocation: after } : {}) };
+    f.job.installationAddress = { ...confirmedAddress.installationAddress, ...(before ? { confirmedLocation: before } : {}) };
+    f.tx.installationQuoteCoverageSnapshot.findUnique.mockResolvedValue({ data: { schema: 1, revision: 4 } });
+    const coverage = (f.workflow as any).coverage;
+    coverage.prepare.mockResolvedValueOnce({ address: nextAddress, snapshot: { schema: 2, revision: 5 } });
+    await f.workflow.updateInstallationRequest(f.job.id, {
+      ...confirmedAddress, installationAddress: nextAddress, permitRequested: false,
+    }, dealer);
+    expect(f.tx.installationQuoteCoverageSnapshot.findUnique).not.toHaveBeenCalled();
+    expect(coverage.prepare).toHaveBeenCalledWith(nextAddress);
+    expect(coverage.assertCurrent).toHaveBeenCalled();
+    expect(f.job.installationAddress).toEqual(nextAddress);
+  });
+
+  it('preserves the saved coverage when both the address and confirmed point are unchanged', async () => {
+    const f = fixture();
+    const selected = { ...confirmedAddress.installationAddress, confirmedLocation: { lat: 25.75, lng: -80.23 } };
+    f.job.installationAddress = selected;
+    const saved = { schema: 2, revision: 4, destination: { ...selected, placeId: 'saved-place' } };
+    f.tx.installationQuoteCoverageSnapshot.findUnique.mockResolvedValue({ data: saved });
+    await f.workflow.updateInstallationRequest(f.job.id, {
+      ...confirmedAddress, installationAddress: selected, permitRequested: false,
+    }, dealer);
+    expect((f.workflow as any).coverage.prepare).not.toHaveBeenCalled();
+    expect(f.tx.installationQuoteCoverageSnapshot.upsert.mock.calls[0][0].update.data).toEqual(saved);
+  });
+
   it('preserves omitted detail and updates or clears it without repricing the same property', async () => {
     const f = fixture();
     f.job.installationAddress = { ...confirmedAddress.installationAddress, addressLine2: 'Apt 4B' };

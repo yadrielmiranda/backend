@@ -2376,7 +2376,8 @@ export class InstallationWorkflowService {
     });
     const sameAddress = address && previousAddress && ['street', 'city', 'state', 'postalCode'].every(
       key => address[key].toUpperCase() === previousAddress[key].toUpperCase(),
-    );
+    ) && address.confirmedLocation?.lat === previousAddress.confirmedLocation?.lat
+      && address.confirmedLocation?.lng === previousAddress.confirmedLocation?.lng;
     const savedCoverage = sameAddress && currentJob.quotes[0]
       ? await this.prisma.installationQuoteCoverageSnapshot.findUnique({ where: { quoteId: currentJob.quotes[0].id } })
       : null;

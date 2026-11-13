@@ -1,6 +1,10 @@
 import { DeliveryType, Prisma } from '@prisma/client';
+import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import { DeliveriesService } from './deliveries.service';
 import { calculateDeliveryPricing } from './delivery-pricing';
+import { CreateDeliveryDto } from './dto/delivery.dto';
+import { AddressLocationRequiredException } from './google-address-validation.service';
+import { presentApiResponse } from '@/common/response-privacy.interceptor';
 
 const actor: any = { id: 1, role: { name: 'admin' } };
 const address = {
@@ -96,6 +100,61 @@ function fixture(distanceMeters = 160934) {
 }
 
 describe('Delivery warehouse origin and coverage', () => {
+  it.each([
+    ['manual address', address],
+    ['saved address', {}],
+  ])('revalidates the confirmed point for a %s and snapshots only the returned location', async (_label, fields) => {
+    const f = fixture(178912);
+    const requested = { lat: 25.7542, lng: -80.2271 };
+    const verified = { lat: 25.75421, lng: -80.22711 };
+    f.order.user.addressLine2 = 'Apartment 2B';
+    f.validation.validateDeliveryAddress.mockImplementation(async destination => ({
+      ...destination, confirmedLocation: verified, placeId: 'server-verified-place',
+    }));
+    const result = await f.service.createDelivery(40, {
+      ...fields, confirmedLocation: requested, taxable: true,
+    }, actor);
+    expect(f.validation.validateDeliveryAddress).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmedLocation: requested }),
+      { suggestCorrections: true, allowLocationConfirmation: true },
+    );
+    expect(f.routes.calculateDrivingRoute).toHaveBeenCalledWith(address,
+      expect.objectContaining({ confirmedLocation: verified, placeId: 'server-verified-place' }));
+    expect(result.destinationLocation).toEqual(verified);
+    expect(result.destinationLocation).not.toEqual(requested);
+    const publicResult = presentApiResponse(result, { id: 2, role: { name: 'client' } } as any);
+    expect(publicResult.destinationLocation).toEqual(verified);
+    expect(Object.keys(publicResult.destinationLocation).sort()).toEqual(['lat', 'lng']);
+    expect(publicResult).not.toHaveProperty('placeId');
+    expect(result.total.toString()).toBe(calculateDeliveryPricing({
+      distanceMeters: 178912, ...f.pricing, taxRate: '0.07',
+    }).total.toString());
+    if (_label === 'saved address') expect(result.destinationAddressLine2).toBe('Apartment 2B');
+
+    await f.service.createDelivery(40, { ...fields, confirmedLocation: requested }, actor);
+    expect(f.validation.validateDeliveryAddress).toHaveBeenCalledTimes(2);
+  });
+
+  it('never inherits a stored account location when the delivery request has no confirmed point', async () => {
+    const f = fixture();
+    f.order.user.confirmedLocation = { lat: 25.75, lng: -80.22 };
+    await f.service.createDelivery(40, {}, actor);
+    const destination = f.validation.validateDeliveryAddress.mock.calls[0][0];
+    expect(destination).not.toHaveProperty('confirmedLocation');
+    expect(f.db.orderDelivery.create.mock.calls[0][0].data).not.toHaveProperty('destinationLocation');
+  });
+
+  it('does not route or create a charge when revalidation rejects the selected point', async () => {
+    const f = fixture();
+    const error = new AddressLocationRequiredException({ lat: 25.75, lng: -80.22 });
+    f.validation.validateDeliveryAddress.mockRejectedValue(error);
+    await expect(f.service.createDelivery(40, { confirmedLocation: { lat: 25.75, lng: -80.22 } }, actor))
+      .rejects.toBe(error);
+    expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
+    expect(f.db.$transaction).not.toHaveBeenCalled();
+    expect(f.db.orderDelivery.create).not.toHaveBeenCalled();
+  });
+
   it('snapshots the warehouse and saved customer detail and allows explicit clearing', async () => {
     const f = fixture();
     (f.configuration as any).addressLine2 = 'Warehouse Suite 5';
@@ -164,18 +223,18 @@ describe('Delivery warehouse origin and coverage', () => {
     expect(result.additionalMiles.toString()).toBe('0');
   });
 
-  it('accepts the exact maximum distance', async () => {
+  it.each([undefined, { lat: 25.75, lng: -80.22 }])('accepts the exact maximum distance with location %j', async confirmedLocation => {
     const f = fixture(201168);
     f.configuration.maxDeliveryMiles = new Prisma.Decimal(125);
     await expect(
-      f.service.createDelivery(40, {}, actor),
+      f.service.createDelivery(40, { confirmedLocation }, actor),
     ).resolves.toMatchObject({ id: 9 });
   });
 
-  it('rejects one meter beyond the maximum even when the displayed miles would round to the limit', async () => {
+  it.each([undefined, { lat: 25.75, lng: -80.22 }])('rejects one meter beyond the maximum with location %j even when displayed miles round to the limit', async confirmedLocation => {
     const f = fixture(201169);
     f.configuration.maxDeliveryMiles = new Prisma.Decimal(125);
-    await expect(f.service.createDelivery(40, {}, actor)).rejects.toThrow(
+    await expect(f.service.createDelivery(40, { confirmedLocation }, actor)).rejects.toThrow(
       'outside our delivery coverage',
     );
     expect(f.db.$transaction).not.toHaveBeenCalled();
@@ -235,5 +294,36 @@ describe('Delivery warehouse origin and coverage', () => {
     );
     expect(f.warehouse.find).not.toHaveBeenCalled();
     expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
+  });
+});
+
+describe('Confirmed delivery location input', () => {
+  const pipe = new ValidationPipe({
+    transform: true, whitelist: true,
+    transformOptions: { enableImplicitConversion: true },
+  });
+  const validate = (confirmedLocation: unknown) => pipe.transform(
+    { confirmedLocation }, { type: 'body', metatype: CreateDeliveryDto },
+  );
+
+  it.each([{ lat: -90, lng: -180 }, { lat: 90, lng: 180 }, { lat: 0, lng: 0 }])(
+    'preserves finite numeric geographic coordinates %j', async confirmedLocation => {
+      await expect(validate(confirmedLocation)).resolves.toMatchObject({ confirmedLocation });
+    },
+  );
+
+  it.each([
+    null, [], {}, { latitude: 25, longitude: -80 },
+    { lat: '25.75', lng: -80 }, { lat: 25, lng: '-80' },
+    { lat: true, lng: -80 }, { lat: null, lng: -80 },
+    { lat: NaN, lng: -80 }, { lat: 25, lng: Infinity },
+    { lat: 90.001, lng: -80 }, { lat: -90.001, lng: -80 },
+    { lat: 25, lng: 180.001 }, { lat: 25, lng: -180.001 },
+  ])('rejects invalid or coerced location %j', async confirmedLocation => {
+    await expect(validate(confirmedLocation)).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('keeps legacy delivery requests without a location valid', async () => {
+    await expect(pipe.transform({}, { type: 'body', metatype: CreateDeliveryDto })).resolves.toEqual({});
   });
 });
