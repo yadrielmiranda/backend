@@ -3,7 +3,7 @@ import type { Request } from 'express';
 import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { MaterialRevisionsService } from './material-revisions.service';
-import { BeginMaterialRevisionDto, MaterialRevisionDecisionDto, MaterialRevisionPieceDto, SubmitMaterialRevisionDto } from './material-revision.dto';
+import { BeginMaterialRevisionDto, MaterialRevisionCustomerDto, MaterialRevisionDecisionDto, MaterialRevisionPieceDto, RemoveMaterialRevisionPieceDto, SubmitMaterialRevisionDto } from './material-revision.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('estimates/:estimateId/material-revisions')
@@ -32,6 +32,16 @@ export class MaterialRevisionsController {
   remove(@Param('estimateId', ParseIntPipe) id: number, @Param('revisionId', ParseIntPipe) revisionId: number,
     @Param('key') key: string, @Req() req: Request) {
     return this.service.removeItem(id, revisionId, key, req.user as AuthUser);
+  }
+  @Post(':revisionId/customer')
+  customer(@Param('estimateId', ParseIntPipe) id: number, @Param('revisionId', ParseIntPipe) revisionId: number,
+    @Body() dto: MaterialRevisionCustomerDto, @Req() req: Request) {
+    return this.service.saveCustomer(id, revisionId, dto, req.user as AuthUser);
+  }
+  @Post(':revisionId/remove-piece')
+  removePiece(@Param('estimateId', ParseIntPipe) id: number, @Param('revisionId', ParseIntPipe) revisionId: number,
+    @Body() dto: RemoveMaterialRevisionPieceDto, @Req() req: Request) {
+    return this.service.removePiece(id, revisionId, dto.originalPieceId, req.user as AuthUser);
   }
   @Post(':revisionId/submit')
   submit(@Param('estimateId', ParseIntPipe) id: number, @Param('revisionId', ParseIntPipe) revisionId: number,

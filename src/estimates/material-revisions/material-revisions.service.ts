@@ -23,9 +23,9 @@ import { calculateEstimateDiscount } from '@/estimates/discounts/estimate-discou
 import { calculateMaterialFinancials } from '@/orders/order-material-financials';
 import type { CreatePieceDto } from '@/pieces/dto/create-piece.dto';
 import { assertBeforeFactory, assertNoOpenMaterialCheckout, isBeforeFactory, ownerCanAddBeforeRemeasurement, requiresMaterialRevision, MATERIAL_REVISION_EDITABLE_MESSAGE } from './material-revision-policy';
-import { materialRevisionBaseHash, preserveAgreedPiecePrices, projectMaterialRevision, revisionJson, revisionProjectSummary,
-  type MaterialRevisionItemSnapshot, type MaterialRevisionProposal } from './material-revision-snapshot';
-import { BeginMaterialRevisionDto, MaterialRevisionDecisionDto, MaterialRevisionPieceDto } from './material-revision.dto';
+import { materialRevisionBaseHash, preserveAgreedPiecePrices, projectMaterialRevision, revisionCustomer, revisionCustomerData, revisionCustomerFields, revisionJson, revisionProjectSummary,
+  type MaterialRevisionCustomer, type MaterialRevisionItemSnapshot, type MaterialRevisionProposal } from './material-revision-snapshot';
+import { BeginMaterialRevisionDto, MaterialRevisionCustomerDto, MaterialRevisionDecisionDto, MaterialRevisionPieceDto } from './material-revision.dto';
 
 const include = {
   ...agreementEstimateInclude,
@@ -41,7 +41,7 @@ const include = {
 class MaterialPreviewCompleted<T> extends Error {
   constructor(readonly result: T) { super('Material preview completed'); }
 }
-const acceptance = 'I accept the listed material changes, quantities, prices and updated project total.';
+const acceptance = 'I accept the listed project and customer changes, quantities, removals, prices and updated project total.';
 const inputKeys = ['mark', 'idProd', 'idBrand', 'idSyst', 'idConf', 'idFC', 'idDesign', 'idDesignColor', 'frameColorBeforeDesignId', 'idDoorDesign', 'width', 'height', 'heightLeft', 'heightRight',
   'legHeight', 'sashHeight', 'windowHeight', 'doorWidth', 'doorHeight', 'leftSideliteWidth', 'rightSideliteWidth',
   'leftPanels', 'rightPanels', 'panelCount', 'horizontalHeights', 'idCryst', 'idTint', 'idCoat', 'idPrivacy', 'screen',
@@ -94,7 +94,7 @@ export class MaterialRevisionsService {
   }
 
   private revisionEditToken(revision: any): string {
-    return `${new Date(revision.updatedAt).toISOString()}:${JSON.stringify(revision.items)}`;
+    return `${new Date(revision.updatedAt).toISOString()}:${JSON.stringify(revision.items)}:${JSON.stringify(revision.proposal ?? null)}`;
   }
 
   private async findRevision(db: Prisma.TransactionClient, estimateId: number, revisionId: number) {
@@ -143,6 +143,8 @@ export class MaterialRevisionsService {
       canCancel: revision.activeSlot === 1 && (isPrivileged(actor) || estimate.idUser === actor.id),
       original: summaryFields(revision.originalSummary, dealerPricing, canSeeBilling),
       revised: summaryFields(revision.revisedSummary, dealerPricing, canSeeBilling),
+      customer: revision.proposal?.customer ?? null,
+      originalCustomer: revision.proposal?.originalCustomer ?? null,
       items: (revision.items as MaterialRevisionItemSnapshot[]).map(item => ({
         key: item.key, action: item.action, originalPieceId: item.originalPieceId,
         label: item.label, originalLabel: item.originalLabel, changeDescription: item.changeDescription,
@@ -151,9 +153,9 @@ export class MaterialRevisionsService {
           ...publicDoorDesignContent({ ...item.input, doorDesignSnapshot: item.pricing.doorDesignSnapshot }),
           ...(!dealerPricing ? { dealerMarkup: 0 } : {}),
         },
-        price: item.pricing.price, subtotal: new Decimal(item.pricing.price).mul(item.input.qty).toFixed(2),
+        price: item.pricing.price, subtotal: item.action === 'REMOVE' ? '0.00' : new Decimal(item.pricing.price).mul(item.input.qty).toFixed(2),
         ...(dealerPricing ? { customerPrice: item.pricing.customerPrice,
-          customerSubtotal: new Decimal(item.pricing.customerPrice).mul(item.input.qty).toFixed(2) } : {}),
+          customerSubtotal: item.action === 'REMOVE' ? '0.00' : new Decimal(item.pricing.customerPrice).mul(item.input.qty).toFixed(2) } : {}),
       })),
     };
   }
@@ -181,6 +183,11 @@ export class MaterialRevisionsService {
       isOwner: estimate.idUser === actor.id,
       canBegin: stageAllowed && revisionRequired && !active && !remeasurementPending && (isPrivileged(actor) || ownerAdd),
       canReviseExisting: stageAllowed && isPrivileged(actor) && (revisionRequired || Boolean(active)),
+      canEditCustomer: stageAllowed && isPrivileged(actor) && (revisionRequired || Boolean(active)),
+      canRemovePieces: stageAllowed && isPrivileged(actor) && (revisionRequired || Boolean(active)),
+      canChangeQuantity: stageAllowed && isPrivileged(actor) && (revisionRequired || Boolean(active)),
+      currentCustomer: revisionCustomer(estimate),
+      customer: active?.proposal && (active.proposal as MaterialRevisionProposal).customer || revisionCustomer(estimate),
       dealerPricing: estimate.user.role.name === 'dealer',
       defaultDealerMarkup: estimate.user.role.name === 'dealer' ? Number(estimate.pieces[0]?.dealerMarkup ?? 0) * 100 : 0,
       canRequestSignature: estimate.idUser === actor.id && actor.role?.name === 'dealer',
@@ -237,8 +244,6 @@ export class MaterialRevisionsService {
       throw new ForbiddenException('The owner can add a new piece but cannot edit already agreed material.');
     const original: RevisionPieceRecord | undefined = originalPieceId ? estimate.pieces.find((piece: any) => piece.id === originalPieceId) : undefined;
     if (originalPieceId && !original) throw new NotFoundException('Original piece not found in this estimate.');
-    if (original && dto.piece.qty !== original.qty)
-      throw new BadRequestException('Keep the original quantity. Add extra units with Add Piece.');
     if (!Number.isSafeInteger(dto.piece.qty) || dto.piece.qty < 1 || dto.piece.qty > 200)
       throw new BadRequestException('Quantity must be between 1 and 200 units per revision item.');
     if (original && items.some(item => item.originalPieceId === original.id && item.key !== existingItem?.key))
@@ -248,6 +253,17 @@ export class MaterialRevisionsService {
       mark: dto.piece.mark?.trim() ?? '',
       dealerMarkup: estimate.user.role.name !== 'dealer' ? 0 : original ? Number(original.dealerMarkup) * 100 : Number(dto.piece.dealerMarkup ?? 0),
     };
+    if (original && createEstimateRevisionPieceFingerprint(input) ===
+      createEstimateRevisionPieceFingerprint(this.installation.materialRevisionPieceInput(original))) {
+      // Quantity/mark changes keep the agreed unit values even if its catalog is now inactive.
+      const preservedPricing = this.originalPricing(original, input.qty);
+      const calculated: any = { ...input, ...preservedPricing };
+      for (const key of ['rate', 'price', 'regularPrice', 'regularCustomerPrice', 'customerPrice', 'markup',
+        'dealerMarkupDecimal', 'netProfit', 'netProfitD', 'subtotal', 'customerSubtotal', 'dpPosPsf', 'dpNegPsf'])
+        calculated[key] = new Decimal(preservedPricing[key]);
+      calculated.highBottomPercent = preservedPricing.highBottomPercent == null ? null : new Decimal(preservedPricing.highBottomPercent);
+      return { original, calculated: calculated as CalculatedPieceCombined, input, existingItem, preservedPricing };
+    }
     const cache = this.calculator.createCalculationCache();
     cache.networkSnapshot = networkSnapshot(estimate);
     cache.promotions = original ? savedPromotions({ promotionLockedAt: estimate.promotionLockedAt || new Date(),
@@ -264,6 +280,26 @@ export class MaterialRevisionsService {
     }
     const normalized = Object.fromEntries(inputKeys.map(key => [key, key in calculated ? calculated[key] : input[key]])) as unknown as CreatePieceDto;
     return { original, calculated, input: normalized, existingItem };
+  }
+
+  private originalPricing(original: any, qty: number): any {
+    const money = (key: string, fallback?: string) => new Decimal(String(original[key] ?? (fallback ? original[fallback] : 0) ?? 0));
+    const price = money('price'), customerPrice = money('customerPrice'), rate = money('rate');
+    return {
+      rate: rate.toFixed(2), price: price.toFixed(2), customerPrice: customerPrice.toFixed(2),
+      regularPrice: (money('regularPrice').isZero() ? price : money('regularPrice')).toFixed(2),
+      regularCustomerPrice: (money('regularCustomerPrice').isZero() ? customerPrice : money('regularCustomerPrice')).toFixed(2),
+      markup: money('markup').toFixed(18), dealerMarkupDecimal: money('dealerMarkup').toFixed(4),
+      netProfit: price.sub(rate).toFixed(2), netProfitD: customerPrice.sub(price).mul(qty).toFixed(2),
+      subtotal: price.mul(qty).toFixed(2), customerSubtotal: customerPrice.mul(qty).toFixed(2),
+      dpPosPsf: money('dpPosPsf').toFixed(2), dpNegPsf: money('dpNegPsf').toFixed(2),
+      highBottomPercent: original.highBottomPercent == null ? null : money('highBottomPercent').toFixed(4),
+      promotionSnapshot: original.promotionSnapshot ?? null, networkPricing: original.networkPricing ?? null,
+      designSnapshot: original.designSnapshot ?? null, doorDesignSnapshot: original.doorDesignSnapshot ?? null,
+      energy: { energyRatingId: original.energyRatingId ?? null, energySnapshot: stripEnergySnapshotMetadata(original.energySnapshot) ?? null },
+      display: { productName: original.prod?.name ?? null, brandName: original.bran?.name ?? null,
+        systemName: original.syst?.name ?? null, configName: original.conf?.conf ?? null, crystalName: original.cryst?.glass ?? null },
+    };
   }
 
   private calculatedResponse(calculated: CalculatedPieceCombined, actor: AuthUser) {
@@ -290,7 +326,8 @@ export class MaterialRevisionsService {
     return this.prisma.$transaction(async db => {
       const estimate = await this.load(db, estimateId, actor);
       const revision = await this.findRevision(db, estimateId, revisionId);
-      const { original, calculated } = await this.calculate(db, estimate, revision, dto, actor);
+      const { original, calculated, preservedPricing } = await this.calculate(db, estimate, revision, dto, actor);
+      if (preservedPricing) return { ...this.calculatedResponse(calculated, actor), ...preservedPricing.energy };
       const product = await db.product.findUnique({
         where: { id: calculated.idProd }, select: { kind: true },
       });
@@ -335,16 +372,36 @@ export class MaterialRevisionsService {
     const grid = (piece: any) => piece.pieceMuntin ? { patternId: piece.pieceMuntin.patternId, typeId: piece.pieceMuntin.typeId, panels: piece.pieceMuntin.panels.map((panel: any) => ({ panelIndex: panel.panelIndex, horizontalLites: panel.horizontalLites, verticalLites: panel.verticalLites })) } : null;
     if (JSON.stringify(grid(before)) !== JSON.stringify(grid(after))) changes.push('Grid specifications changed. Review the pattern, type and panel divisions.');
     if (before.mark !== after.mark) changes.push(`Mark: ${before.mark || '—'} → ${after.mark || '—'}`);
+    if (before.qty !== after.qty) changes.push(`Quantity: ${before.qty} → ${after.qty}`);
     return changes.length ? changes : ['Updated piece specifications.'];
   }
 
-  private async buildProposal(db: Prisma.TransactionClient, estimate: any, items: MaterialRevisionItemSnapshot[], actorId: number, revisionId: number) {
+  private async persistQuantityOrMark(db: Prisma.TransactionClient, original: RevisionPieceRecord, input: CreatePieceDto) {
+    // No catalog lookup or whole-piece rewrite: nullable DP and all agreed snapshots stay exact.
+    return db.piece.update({ where: { id: original.id }, data: {
+      qty: input.qty, mark: input.mark,
+      subtotal: new Prisma.Decimal(new Decimal(String(original.price)).mul(input.qty).toFixed(2)),
+      customerSubtotal: new Prisma.Decimal(new Decimal(String(original.customerPrice)).mul(input.qty).toFixed(2)),
+      netProfitD: new Prisma.Decimal(new Decimal(String(original.customerPrice)).sub(String(original.price)).mul(input.qty).toFixed(2)),
+    }, include: revisionPieceInclude });
+  }
+
+  private async buildProposal(db: Prisma.TransactionClient, estimate: any, items: MaterialRevisionItemSnapshot[], actorId: number, revisionId: number,
+    customer?: MaterialRevisionCustomer) {
     // Se invoca exclusivamente en simulation(), cuya transacción SIEMPRE se revierte.
     // La propuesta se guarda después en otra transacción, con verificación de concurrencia.
-      const changes: Array<{ key: string; piece: RevisionPieceRecord; original?: RevisionPieceRecord }> = [];
+      const changes: Array<{ key: string; piece: RevisionPieceRecord; original?: RevisionPieceRecord; removed?: boolean }> = [];
       for (const item of items) {
         const original = item.originalPieceId ? estimate.pieces.find((piece: any) => piece.id === item.originalPieceId) : undefined;
-        const piece = await this.installation.persistMaterialRevisionPiece(estimate.id, item.input, item.pricing, db, original);
+        if (item.originalPieceId && !original) throw new ConflictException('An original piece is no longer available.');
+        if (item.action === 'REMOVE') {
+          if (!original) throw new ConflictException('The removed piece is no longer available.');
+          changes.push({ key: item.key, piece: original, original, removed: true });
+          continue;
+        }
+        const piece = item.preserveOriginalPricing && original
+          ? await this.persistQuantityOrMark(db, original, item.input)
+          : await this.installation.persistMaterialRevisionPiece(estimate.id, item.input, item.pricing, db, original);
         // The reviewed item carries its own energy values, including additions whose preview ID is rolled back.
         item.pricing = { ...item.pricing, energy: {
           energyRatingId: piece.energyRatingId ?? null,
@@ -354,22 +411,30 @@ export class MaterialRevisionsService {
         item.label = label(piece); item.originalLabel = original ? label(original) : null;
         item.changeDescription = this.describeChange(original, piece);
       }
-      const installation = await this.installation.stageMaterialRevisionInstallation(estimate.id, changes, actorId, db);
+      const installation = changes.length ? await this.installation.stageMaterialRevisionInstallation(estimate.id, changes, actorId, db) : null;
+      await this.deleteRemovedPieces(db, estimate.id, items);
       const staged = await this.load(db, estimate.id);
-      const totals = this.calculator.calculateEstimateTotalsFromPersistedPieces(staged.pieces,
-        new Decimal(String(estimate.taxRate)), new Decimal(String(estimate.customerTaxRate)));
+      const pricingPieces = staged.pieces.map((piece: any) => ({ ...piece,
+        regularPrice: piece.regularPrice == null || new Decimal(String(piece.regularPrice)).isZero() ? piece.price : piece.regularPrice,
+        regularCustomerPrice: piece.regularCustomerPrice == null || new Decimal(String(piece.regularCustomerPrice)).isZero() ? piece.customerPrice : piece.regularCustomerPrice,
+      }));
+      const totals = items.length ? this.calculator.calculateEstimateTotalsFromPersistedPieces(pricingPieces,
+        new Decimal(String(estimate.taxRate)), new Decimal(String(estimate.customerTaxRate))) : {};
       const proposal: MaterialRevisionProposal = {
         pieces: staged.pieces.map((piece: any) => {
           const { factoryUnits, ...record } = piece;
           if (record.energySnapshot != null) record.energySnapshot = stripEnergySnapshotMetadata(record.energySnapshot);
           return record;
         }),
-        totals: { ...totals, units: staged.pieces.reduce((sum: number, piece: any) => sum + piece.qty, 0),
-          promotionContext: staged.pieces.flatMap((piece: any) => piece.promotionSnapshot ? [piece.promotionSnapshot] : []) },
+        totals: items.length ? { ...totals, units: staged.pieces.reduce((sum: number, piece: any) => sum + piece.qty, 0),
+          promotionContext: staged.pieces.flatMap((piece: any) => piece.promotionSnapshot ? [piece.promotionSnapshot] : []) } : {},
         installation,
+        ...(customer ? { customer, originalCustomer: revisionCustomer(estimate) } : {}),
       };
       const projected = projectMaterialRevision(estimate, { proposal });
       const summary = revisionProjectSummary(projected);
+      // A contact-only correction must not reprice material or modify payment terms.
+      if (!items.length) return { proposal: revisionJson<MaterialRevisionProposal>(proposal), summary };
       const legacyPlan = estimate.order && !estimate.paymentPlanSnapshot &&
         summary.projectTotal !== revisionProjectSummary(estimate).projectTotal
         ? legacyMaterialRevisionPlan(estimate) : null;
@@ -385,21 +450,31 @@ export class MaterialRevisionsService {
       return { proposal: revisionJson<MaterialRevisionProposal>(proposal), summary };
   }
 
+  private async deleteRemovedPieces(db: Prisma.TransactionClient, estimateId: number, items: MaterialRevisionItemSnapshot[]) {
+    const ids = items.filter(item => item.action === 'REMOVE').map(item => item.originalPieceId!);
+    if (ids.length) {
+      const result = await db.piece.deleteMany({ where: { idEst: estimateId, id: { in: ids } } });
+      if (result.count !== ids.length) throw new ConflictException('A removed piece changed. Refresh this revision.');
+    }
+  }
+
   async savePiece(estimateId: number, revisionId: number, dto: MaterialRevisionPieceDto, actor: AuthUser) {
     const preview = await this.simulation(estimateId, async db => {
       const estimate = await this.load(db, estimateId, actor);
       const revision = await this.findRevision(db, estimateId, revisionId);
-      const { original, calculated, input, existingItem } = await this.calculate(db, estimate, revision, dto, actor);
-      if (original && createEstimateRevisionPieceFingerprint(this.installation.materialRevisionPieceInput(original)) === createEstimateRevisionPieceFingerprint(input))
+      const { original, calculated, input, existingItem, preservedPricing } = await this.calculate(db, estimate, revision, dto, actor);
+      if (original && original.qty === input.qty && (original.mark ?? '') === (input.mark ?? '') &&
+        createEstimateRevisionPieceFingerprint(this.installation.materialRevisionPieceInput(original)) === createEstimateRevisionPieceFingerprint(input))
         throw new BadRequestException('No material specifications changed. Remove this pending change if it is no longer needed.');
       const items = revisionJson<MaterialRevisionItemSnapshot[]>(revision.items);
       if (!existingItem && items.length >= 100) throw new BadRequestException('A revision supports up to 100 material items.');
       const item: MaterialRevisionItemSnapshot = { key: existingItem?.key ?? randomUUID(), action: original ? 'UPDATE' : 'ADD',
-        originalPieceId: original?.id ?? null, input, pricing: await this.installation.materialRevisionPricing(calculated, db),
+        originalPieceId: original?.id ?? null, input, pricing: preservedPricing ?? await this.installation.materialRevisionPricing(calculated, db),
+        ...(preservedPricing ? { preserveOriginalPricing: true } : {}),
         label: '', originalLabel: null, changeDescription: [] };
       const index = items.findIndex(candidate => candidate.key === item.key);
       if (index < 0) items.push(item); else items[index] = item;
-      const result = await this.buildProposal(db, estimate, items, actor.id, revisionId);
+      const result = await this.buildProposal(db, estimate, items, actor.id, revisionId, (revision.proposal as MaterialRevisionProposal | null)?.customer);
       return { items, result, editToken: this.revisionEditToken(revision), message: `${item.action === 'ADD' ? 'Added' : 'Updated'} pending revision item: ${item.label}.` };
     });
     await this.transaction(estimateId, async db => {
@@ -424,7 +499,7 @@ export class MaterialRevisionsService {
       this.assertEditable(estimate, revision, actor);
       const items = revisionJson<MaterialRevisionItemSnapshot[]>(revision.items).filter(item => item.key !== key);
       if (items.length === (revision.items as any[]).length) throw new NotFoundException('Revision item not found.');
-      return { items, editToken: this.revisionEditToken(revision), result: await this.buildProposal(db, estimate, items, actor.id, revisionId) };
+      return { items, editToken: this.revisionEditToken(revision), result: await this.buildProposal(db, estimate, items, actor.id, revisionId, (revision.proposal as MaterialRevisionProposal | null)?.customer) };
     });
     await this.transaction(estimateId, async db => {
       const estimate = await this.load(db, estimateId, actor);
@@ -439,12 +514,78 @@ export class MaterialRevisionsService {
     return this.get(estimateId, actor);
   }
 
+  private async savePreparedChange(estimateId: number, revisionId: number, actor: AuthUser,
+    preview: { items: MaterialRevisionItemSnapshot[]; editToken: string; result: { proposal: MaterialRevisionProposal; summary: any }; message: string }) {
+    await this.transaction(estimateId, async db => {
+      const estimate = await this.load(db, estimateId, actor);
+      const revision = await this.findRevision(db, estimateId, revisionId);
+      this.assertEditable(estimate, revision, actor);
+      await this.assertNoRemeasurementProposal(db, estimateId);
+      if (this.revisionEditToken(revision) !== preview.editToken)
+        throw new ConflictException('Another user changed this revision. Refresh it before saving again.');
+      await db.materialRevision.update({ where: { id: revisionId }, data: {
+        items: revisionJson(preview.items), proposal: revisionJson(preview.result.proposal), revisedSummary: revisionJson(preview.result.summary),
+      } });
+      await this.audit(db, revision, actor.id, preview.message);
+    });
+    return this.get(estimateId, actor);
+  }
+
+  async saveCustomer(estimateId: number, revisionId: number, dto: MaterialRevisionCustomerDto, actor: AuthUser) {
+    const preview = await this.simulation(estimateId, async db => {
+      const estimate = await this.load(db, estimateId, actor);
+      const revision = await this.findRevision(db, estimateId, revisionId);
+      this.assertEditable(estimate, revision, actor);
+      if (!isPrivileged(actor)) throw new ForbiddenException('Only authorized staff can revise customer details.');
+      const previous = (revision.proposal as MaterialRevisionProposal | null)?.customer;
+      const original = revisionCustomer(estimate);
+      const customer = { ...(previous ?? original) };
+      for (const key of Object.keys(revisionCustomerFields) as Array<keyof MaterialRevisionCustomer>)
+        if (dto[key] !== undefined) customer[key] = dto[key] ?? '';
+      if (JSON.stringify(customer) === JSON.stringify(previous ?? original))
+        throw new BadRequestException('No customer or project details changed.');
+      const items = revisionJson<MaterialRevisionItemSnapshot[]>(revision.items);
+      const result = await this.buildProposal(db, estimate, items, actor.id, revisionId,
+        JSON.stringify(customer) === JSON.stringify(original) ? undefined : customer);
+      return { items, result, editToken: this.revisionEditToken(revision), message: 'Updated proposed project and customer details. Current details remain unchanged until approval.' };
+    });
+    return this.savePreparedChange(estimateId, revisionId, actor, preview);
+  }
+
+  async removePiece(estimateId: number, revisionId: number, originalPieceId: number, actor: AuthUser) {
+    const preview = await this.simulation(estimateId, async db => {
+      const estimate = await this.load(db, estimateId, actor);
+      const revision = await this.findRevision(db, estimateId, revisionId);
+      this.assertEditable(estimate, revision, actor);
+      if (!isPrivileged(actor)) throw new ForbiddenException('Only authorized staff can remove agreed pieces.');
+      const original = estimate.pieces.find((piece: any) => piece.id === originalPieceId);
+      if (!original) throw new NotFoundException('Original piece not found in this estimate.');
+      const items = revisionJson<MaterialRevisionItemSnapshot[]>(revision.items);
+      const index = items.findIndex(item => item.originalPieceId === originalPieceId);
+      if (index < 0 && items.length >= 100) throw new BadRequestException('A revision supports up to 100 material items.');
+      if (items[index]?.action === 'REMOVE') throw new ConflictException('This piece is already marked for removal.');
+      const item: MaterialRevisionItemSnapshot = {
+        key: items[index]?.key ?? randomUUID(), action: 'REMOVE', originalPieceId,
+        input: this.installation.materialRevisionPieceInput(original), pricing: this.originalPricing(original, original.qty),
+        original: revisionJson(original), label: label(original), originalLabel: label(original),
+        changeDescription: [`Remove all ${original.qty} unit(s) of this piece.`],
+      };
+      if (index < 0) items.push(item); else items[index] = item;
+      return { items, editToken: this.revisionEditToken(revision),
+        result: await this.buildProposal(db, estimate, items, actor.id, revisionId, (revision.proposal as MaterialRevisionProposal | null)?.customer),
+        message: `Proposed removal of ${item.label} (${original.qty} units). Original piece remains unchanged until approval.` };
+    });
+    return this.savePreparedChange(estimateId, revisionId, actor, preview);
+  }
+
   async submit(estimateId: number, revisionId: number, accepted: boolean, actor: AuthUser) {
     await this.transaction(estimateId, async db => {
       const estimate = await this.load(db, estimateId, actor);
       const revision = await this.findRevision(db, estimateId, revisionId);
       this.assertEditable(estimate, revision, actor);
-      if (!(revision.items as any[]).length || !revision.proposal) throw new BadRequestException('Add at least one change before submitting the revision.');
+      const proposal = revision.proposal as MaterialRevisionProposal | null;
+      if (!proposal || (!(revision.items as any[]).length && !proposal.customer)) throw new BadRequestException('Add at least one change before submitting the revision.');
+      if ((proposal.totals?.units ?? estimate.units) < 1) throw new BadRequestException('Keep at least one unit before submitting the revision.');
       if (accepted !== true) throw new BadRequestException('Review and confirm the proposed changes and total.');
       await db.materialRevision.update({ where: { id: revisionId }, data: { status: 'PENDING_APPROVAL', submittedAt: new Date() } });
       await this.audit(db, revision, actor.id, 'Submitted for owner approval.');
@@ -513,11 +654,17 @@ export class MaterialRevisionsService {
     this.assertCurrent(estimate, revision);
     const items = revision.items as MaterialRevisionItemSnapshot[];
     const proposal = revision.proposal as MaterialRevisionProposal;
-    if (!proposal || !items.length || !revision.approvedAt) throw new ConflictException('The material revision is incomplete or unapproved.');
-    const changes: Array<{ key: string; piece: RevisionPieceRecord; original?: RevisionPieceRecord }> = [];
+    if (!proposal || (!items.length && !proposal.customer) || !revision.approvedAt) throw new ConflictException('The material revision is incomplete or unapproved.');
+    if ((proposal.totals?.units ?? estimate.units) < 1) throw new ConflictException('A revision must retain at least one unit.');
+    const changes: Array<{ key: string; piece: RevisionPieceRecord; original?: RevisionPieceRecord; removed?: boolean }> = [];
     for (const item of items) {
       const original = item.originalPieceId ? estimate.pieces.find((piece: any) => piece.id === item.originalPieceId) : undefined;
       if (item.originalPieceId && !original) throw new ConflictException('An original piece is no longer available.');
+      if (item.action === 'REMOVE') {
+        if (!original) throw new ConflictException('The removed piece is no longer available.');
+        changes.push({ key: item.key, piece: original, original, removed: true });
+        continue;
+      }
       // This snapshot comes from our stored proposal, never from the client piece DTO.
       // A legacy approved proposal retains its original absence of energy data.
       const frozenEnergy = {
@@ -525,15 +672,17 @@ export class MaterialRevisionsService {
         energySnapshot: stripEnergySnapshotMetadata(item.pricing.energy?.energySnapshot) ?? Prisma.DbNull,
       };
       changes.push({ key: item.key, original,
-        piece: await this.installation.persistMaterialRevisionPiece(estimate.id, item.input, item.pricing, db, original, frozenEnergy) });
+        piece: item.preserveOriginalPricing && original ? await this.persistQuantityOrMark(db, original, item.input)
+          : await this.installation.persistMaterialRevisionPiece(estimate.id, item.input, item.pricing, db, original, frozenEnergy) });
     }
-    await this.installation.stageMaterialRevisionInstallation(estimate.id, changes, actorId, db, proposal.installation);
+    if (changes.length) await this.installation.stageMaterialRevisionInstallation(estimate.id, changes, actorId, db, proposal.installation);
+    await this.deleteRemovedPieces(db, estimate.id, items);
     await db.estimate.update({ where: { id: estimate.id }, data: {
-      ...proposal.totals,
+      ...proposal.totals, ...revisionCustomerData(proposal.customer),
       ...(proposal.paymentPlanSnapshot ? { paymentPlanSnapshot: revisionJson(proposal.paymentPlanSnapshot) } : {}),
     } as Prisma.EstimateUpdateInput });
     const updated = await this.load(db, estimate.id);
-    if (estimate.order) {
+    if (estimate.order && items.length) {
       const discount = calculateEstimateDiscount(updated);
       const billing = billingEstimate(updated);
       const customerPays = billing.dealerModeSnapshot === 'INTERNAL';
@@ -547,8 +696,10 @@ export class MaterialRevisionsService {
       } });
     }
     await db.materialRevision.update({ where: { id: revision.id }, data: { status: 'APPLIED', activeSlot: null, appliedAt: new Date(), closedAt: new Date() } });
-    await synchronizeScheduleChanges(db, estimate.id);
-    await refreshScheduledInstallation(db, estimate.id);
+    if (items.length) {
+      await synchronizeScheduleChanges(db, estimate.id);
+      await refreshScheduledInstallation(db, estimate.id);
+    }
     await this.audit(db, revision, actorId, `Approved material revision applied to Estimate #${estimate.number}${estimate.order ? ` / Order #${estimate.order.number}` : ''}. Payments were not modified.`);
     await this.notifications.createAndSendToRoles(['admin'], {
       message: `Material revision v${revision.version} applied to Estimate #${estimate.number}.`,

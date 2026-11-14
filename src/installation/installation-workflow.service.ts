@@ -5252,7 +5252,7 @@ export class InstallationWorkflowService {
 
   async stageMaterialRevisionInstallation(
     estimateId: number,
-    changes: Array<{ key: string; piece: RevisionPieceRecord; original?: RevisionPieceRecord }>,
+    changes: Array<{ key: string; piece: RevisionPieceRecord; original?: RevisionPieceRecord; removed?: boolean }>,
     actorId: number,
     tx: PrismaTransactionClient,
     prepared?: any,
@@ -5263,19 +5263,38 @@ export class InstallationWorkflowService {
     });
     if (!job || job.status === InstallationJobStatus.CANCELED) return null;
     const changedMeasurementIds: number[] = [];
+    const removedMeasurementIds: number[] = [];
     const measurementKeys = new Map<number, string>();
     const measurementIds = new Map<string, number>();
     for (const change of changes) {
+      const removed = job.measurements.filter(measurement =>
+        measurement.pieceId === change.piece.id &&
+        (change.removed || measurement.unitIndex > change.piece.qty));
+      for (const measurement of removed) {
+        // Las mediciones pueden estar citadas por revisiones/cotizaciones anteriores.
+        // Se retiran de las unidades actuales conservando ese historial.
+        await tx.installationMeasurement.update({ where: { id: measurement.id }, data: { pieceId: null } });
+        removedMeasurementIds.push(measurement.id);
+      }
+      if (change.removed) continue;
       for (let unitIndex = 1; unitIndex <= change.piece.qty; unitIndex++) {
         const original = job.measurements.find(m => m.pieceId === change.piece.id && m.unitIndex === unitIndex);
         const data = this.measurementCreateFromPiece(change.piece, unitIndex);
+        const previousMark = change.original?.mark?.trim() ?? '';
+        const automaticLabel = !original || ['', previousMark,
+          `${previousMark} (${unitIndex}/${change.original?.qty ?? change.piece.qty})`.trim(),
+        ].includes(original.label?.trim() ?? '');
+        // Cantidad/etiqueta no deben sobrescribir medidas de campo conservadas de una revisión rechazada.
         const changed = !original || !change.original ||
+          change.original.idProd !== change.piece.idProd ||
           change.original.idSyst !== change.piece.idSyst || change.original.idConf !== change.piece.idConf ||
-          didInstallationMeasurementPricingInputChange(original, data);
+          didInstallationMeasurementPricingInputChange(this.measurementCreateFromPiece(change.original, unitIndex), data);
         const saved = original
           ? await tx.installationMeasurement.update({
               where: { id: original.id },
-              data: changed ? { ...data, measuredAt: null, measuredById: null } : { sourceSnapshot: data.sourceSnapshot },
+              data: changed
+                ? { ...data, ...(automaticLabel ? {} : { label: original.label }), measuredAt: null, measuredById: null }
+                : { ...(automaticLabel ? { label: data.label } : {}), sourceSnapshot: data.sourceSnapshot },
             })
           : await tx.installationMeasurement.create({ data: { jobId: job.id, ...data } });
         const key = `${change.key}:${unitIndex}`;
@@ -5284,12 +5303,12 @@ export class InstallationWorkflowService {
         if (changed) changedMeasurementIds.push(saved.id);
       }
     }
-    if (!changedMeasurementIds.length) return null;
+    if (!changedMeasurementIds.length && !removedMeasurementIds.length) return null;
     if (prepared === null) throw new ConflictException('The installation units changed after this revision was prepared. No changes were applied.');
     const quote = await this.ensureDraftQuote(job.id, actorId, tx, true);
     let nextStatus = [InstallationJobStatus.MEASUREMENT_SCHEDULING, InstallationJobStatus.MEASUREMENT_SCHEDULED,
       InstallationJobStatus.MEASUREMENT_PENDING, InstallationJobStatus.DEPOSIT_PAYMENT_PENDING].includes(job.status as any)
-      ? job.status : InstallationJobStatus.MEASUREMENT_PENDING;
+      ? job.status : changedMeasurementIds.length ? InstallationJobStatus.MEASUREMENT_PENDING : InstallationJobStatus.QUOTE_DRAFT;
     if (prepared) {
       // Aprobación/firma: aplica exclusivamente los importes guardados, nunca las tarifas del día.
       const snapshot = prepared.quote;
@@ -5304,6 +5323,8 @@ export class InstallationWorkflowService {
       await tx.installationQuoteLine.deleteMany({ where: { quoteId: quote.id } });
       for (const stored of snapshot.lines ?? []) {
         const { id, quoteId, createdAt, updatedAt, revisionMeasurementKey, ...line } = stored;
+        if (removedMeasurementIds.includes(line.measurementId))
+          throw new ConflictException('The approved installation still contains a removed unit. Prepare the revision again.');
         if (revisionMeasurementKey && !measurementIds.has(revisionMeasurementKey))
           throw new ConflictException('A revised installation unit could not be linked. No changes were applied.');
         await tx.installationQuoteLine.create({ data: {
@@ -5321,8 +5342,11 @@ export class InstallationWorkflowService {
       });
       nextStatus = prepared.status;
     } else {
+      if (removedMeasurementIds.length) await tx.installationQuoteLine.deleteMany({
+        where: { quoteId: quote.id, measurementId: { in: removedMeasurementIds } },
+      });
       // Solo se cotizan las unidades nuevas/cambiadas; las demás líneas mantienen sus precios.
-      await this.rebuildAutomaticLines(job.id, quote.id, tx, changedMeasurementIds);
+      if (changedMeasurementIds.length) await this.rebuildAutomaticLines(job.id, quote.id, tx, changedMeasurementIds);
       await this.recalculateQuoteTotals(quote.id, tx, job.quotes[0]?.serviceMinimumsSnapshot);
     }
     await tx.installationJob.update({ where: { id: job.id }, data: { status: nextStatus } });

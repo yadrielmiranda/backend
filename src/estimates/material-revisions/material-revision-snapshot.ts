@@ -13,19 +13,36 @@ import { stripEnergySnapshotMetadata } from '@/energy-ratings/energy-rating-look
 
 export type MaterialRevisionItemSnapshot = {
   key: string;
-  action: 'ADD' | 'UPDATE';
+  action: 'ADD' | 'UPDATE' | 'REMOVE';
   originalPieceId: number | null;
   input: CreatePieceDto;
   pricing: any;
   label: string;
   originalLabel: string | null;
   changeDescription: string[];
+  original?: any;
+  preserveOriginalPricing?: boolean;
 };
+export const revisionCustomerFields = {
+  name: 'name', firstName: 'customerFirstName', lastName: 'customerLastName',
+  email: 'customerEmail', phone: 'customerPhone', street: 'customerStreet',
+  addressLine2: 'customerAddressLine2', city: 'customerCity', state: 'customerState', postalCode: 'customerPostalCode',
+} as const;
+export type MaterialRevisionCustomer = Record<keyof typeof revisionCustomerFields, string>;
+export function revisionCustomer(estimate: any): MaterialRevisionCustomer {
+  return Object.fromEntries(Object.entries(revisionCustomerFields).map(([key, field]) => [key, estimate[field] ?? ''])) as MaterialRevisionCustomer;
+}
+export function revisionCustomerData(customer?: MaterialRevisionCustomer): Record<string, string | null> {
+  return customer ? Object.fromEntries(Object.entries(revisionCustomerFields).map(([key, field]) =>
+    [field, customer[key as keyof MaterialRevisionCustomer] || (key === 'name' ? '' : null)])) : {};
+}
 export type MaterialRevisionProposal = {
   pieces: any[];
   totals: Record<string, any>;
   installation: any | null;
   paymentPlanSnapshot?: any;
+  customer?: MaterialRevisionCustomer;
+  originalCustomer?: MaterialRevisionCustomer;
 };
 
 export function revisionJson<T = any>(value: unknown): T {
@@ -125,7 +142,7 @@ export function projectMaterialRevision(estimate: any, revision: any) {
   if (!revision?.proposal) return estimate;
   const proposal = revision.proposal as MaterialRevisionProposal;
   return {
-    ...estimate, ...proposal.totals, pieces: proposal.pieces,
+    ...estimate, ...proposal.totals, ...revisionCustomerData(proposal.customer), pieces: proposal.pieces,
     ...(proposal.paymentPlanSnapshot ? { paymentPlanSnapshot: proposal.paymentPlanSnapshot } : {}),
     installationJob: proposal.installation && estimate.installationJob ? {
       ...estimate.installationJob,
