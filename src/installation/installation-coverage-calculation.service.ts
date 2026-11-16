@@ -202,10 +202,15 @@ export class InstallationCoverageCalculationService {
           });
         }
       }
-      if (error instanceof BadRequestException)
-        throw new BadRequestException(
-          'We could not verify this installation address. Check the street, city, state and ZIP code.',
-        );
+      if (error instanceof BadRequestException) {
+        const response = error.getResponse();
+        const message = 'We could not verify this installation address. Check the street, city, state and ZIP code.';
+        if (typeof response === 'object' && response !== null &&
+          'code' in response && response.code === 'ADDRESS_VERIFICATION_FAILED') {
+          throw new BadRequestException({ code: 'ADDRESS_VERIFICATION_FAILED', message });
+        }
+        throw new BadRequestException(message);
+      }
       throw new ServiceUnavailableException(
         'Installation address verification is temporarily unavailable. Please try again.',
       );

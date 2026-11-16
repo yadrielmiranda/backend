@@ -20,6 +20,7 @@ import { presentApiResponse } from '@/common/response-privacy.interceptor';
 import { buildEstimateInstallationSummary } from '@/estimates/reporting/estimate-installation-summary';
 import { agreementScopes } from '@/contracts/agreement-content';
 import { AddressCorrectionRequiredException, AddressLocationRequiredException } from '@/deliveries/google-address-validation.service';
+import { AddressConfirmationsController } from '@/deliveries/address-confirmations.controller';
 import { installationAddress } from './installation-address';
 
 const address = {
@@ -221,6 +222,64 @@ describe('Installation coverage calculation', () => {
       expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
     },
   );
+
+  it.each(['requestInstallation', 'updateInstallationRequest'] as const)(
+    '%s preserves final address rejection after a successful review so the form can invalidate confirmation',
+    async method => {
+      const f = fixture();
+      const requested = { ...address, addressLine2: 'LOT 132', confirmedLocation: { lat: 25.75, lng: -80.23 } };
+      const review = new AddressConfirmationsController(f.addresses);
+      f.addresses.validateDeliveryAddress.mockResolvedValueOnce({ ...requested, placeId: 'review-only-place' });
+      await expect(review.review({ purpose: 'INSTALLATION', address: requested }))
+        .resolves.toEqual({ status: 'VALIDATED', address: requested });
+      f.prisma.estimate = { findUnique: jest.fn().mockResolvedValue({ idUser: 1 }) };
+      f.prisma.$transaction = jest.fn();
+      f.addresses.validateDeliveryAddress.mockRejectedValueOnce(new BadRequestException({
+        code: 'ADDRESS_VERIFICATION_FAILED', message: 'Private provider diagnostic',
+        placeId: 'private-provider-place', origin: 'private-company-origin',
+      }));
+      const logs: any = { log: jest.fn() };
+      const workflow: any = new InstallationWorkflowService(
+        f.prisma, {} as never, logs, {} as never, {} as never, {} as never,
+      );
+      workflow.coverage = f.service;
+      workflow.findJob = jest.fn().mockResolvedValue({
+        id: 3, estimateId: 103, estimate: { payments: [], order: null },
+        installationAddress: { ...address, street: '456 Previous St' }, quotes: [],
+      });
+      workflow.withAgreementJobTransaction = jest.fn();
+      const error = await workflow[method](method === 'requestInstallation' ? 103 : 3, {
+        installationAddress: requested, installationAddressConfirmed: true, permitRequested: false,
+      }, { id: 1, role: { name: 'dealer' } }).catch(value => value);
+      expect(error.getStatus()).toBe(400);
+      expect(error.getResponse()).toEqual({
+        code: 'ADDRESS_VERIFICATION_FAILED',
+        message: 'We could not verify this installation address. Check the street, city, state and ZIP code.',
+      });
+      expect(f.addresses.validateDeliveryAddress).toHaveBeenCalledTimes(2);
+      expect(f.addresses.validateDeliveryAddress).toHaveBeenLastCalledWith(requested, {
+        suggestCorrections: true, allowLocationConfirmation: true,
+      });
+      expect(f.prisma.$transaction).not.toHaveBeenCalled();
+      expect(workflow.withAgreementJobTransaction).not.toHaveBeenCalled();
+      expect(logs.log).not.toHaveBeenCalled();
+      expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not expose unrelated provider error codes as address confirmation states', async () => {
+    const f = fixture();
+    f.addresses.validateDeliveryAddress.mockRejectedValueOnce(new BadRequestException({
+      code: 'PRIVATE_PROVIDER_CODE', message: 'Private provider diagnostic',
+    }));
+    const error = await f.service.prepare(address).catch(value => value);
+    expect(error.getStatus()).toBe(400);
+    expect(error.getResponse()).toEqual({
+      statusCode: 400, error: 'Bad Request',
+      message: 'We could not verify this installation address. Check the street, city, state and ZIP code.',
+    });
+    expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
+  });
 
   it.each([
     [0, 'NONE'],

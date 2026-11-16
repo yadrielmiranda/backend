@@ -415,6 +415,254 @@ describe('GoogleAddressValidationService', () => {
   });
 });
 
+describe('Repeated confirmed locality replacement', () => {
+  const post = jest.fn();
+  const service = new GoogleAddressValidationService(
+    { post } as unknown as HttpService,
+    { get: jest.fn().mockReturnValue('backend-api-key') } as unknown as ConfigService,
+  );
+  const confirmed = {
+    street: '65821 Overseas Hwy', addressLine2: 'LOT 132', city: 'Long Key', state: 'FL', postalCode: '33001',
+  };
+  // Same relevant shape in both observed responses: Google retains locality.replaced
+  // after the user accepts Long Key. Its named locality and postal locality agree.
+  function repeatedLocalityResult(): any {
+    return {
+      verdict: {
+        inputGranularity: 'PREMISE', validationGranularity: 'PREMISE', geocodeGranularity: 'PREMISE',
+        addressComplete: true, hasReplacedComponents: true, possibleNextAction: 'CONFIRM',
+      },
+      address: {
+        formattedAddress: '65821 Overseas Highway, Long Key, FL 33001, USA',
+        postalAddress: {
+          regionCode: 'US', languageCode: 'en', postalCode: '33001', administrativeArea: 'FL',
+          locality: 'Long Key', addressLines: ['65821 Overseas Hwy'],
+        },
+        addressComponents: [
+          ['street_number', '65821'], ['route', 'Overseas Highway'], ['locality', 'Long Key'],
+          ['administrative_area_level_1', 'FL'], ['postal_code', '33001'], ['country', 'USA'],
+        ].map(([componentType, text]) => ({
+          componentName: { text }, componentType, confirmationLevel: 'CONFIRMED',
+          ...(componentType === 'locality' ? { replaced: true } : {}),
+        })),
+      },
+      geocode: {
+        placeId: 'verified-long-key-property', location: { latitude: 24.8061986, longitude: -80.8432738 },
+        placeTypes: ['premise'], featureSizeMeters: 9.906907,
+      },
+      uspsData: {
+        standardizedAddress: { firstAddressLine: '65821 OVERSEAS HWY', city: 'LONG KEY', state: 'FL', zipCode: '33001' },
+        dpvConfirmation: 'Y', dpvFootnote: 'AABBR7', dpvNoStat: 'Y', poBoxOnlyPostalCode: true,
+      },
+    };
+  }
+  const respond = (result = repeatedLocalityResult()) => post.mockReturnValue(of({ data: { result } }));
+  beforeEach(() => post.mockReset());
+
+  it('revalidates the accepted city despite the recurring replaced flag, preserving the separate lot', async () => {
+    respond();
+    const error = await service.validateDeliveryAddress({ ...confirmed, city: 'Layton', addressLine2: '  LOT 132  ' },
+      { suggestCorrections: true }).catch(error => error);
+    expect(error).toBeInstanceOf(AddressCorrectionRequiredException);
+    expect(error.suggestedAddress).toEqual(confirmed);
+    await expect(service.validateDeliveryAddress(error.suggestedAddress, { suggestCorrections: true })).resolves.toEqual({
+      ...confirmed, placeId: 'verified-long-key-property',
+    });
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1][1].address).toEqual({
+      regionCode: 'US', administrativeArea: 'FL', locality: 'Long Key', postalCode: '33001', addressLines: ['65821 Overseas Hwy'],
+    });
+    for (const call of post.mock.calls) expect(JSON.stringify(call[1])).not.toMatch(/LOT 132|addressLine2/);
+  });
+
+  it('accepts a directly entered matching city using normalized component and postal names', async () => {
+    const result = repeatedLocalityResult();
+    result.address.addressComponents[2].componentName.text = ' LONG   KEY ';
+    result.address.postalAddress.locality = 'long key';
+    respond(result);
+    await expect(service.validateDeliveryAddress(confirmed)).resolves.toEqual({
+      ...confirmed, placeId: 'verified-long-key-property',
+    });
+  });
+
+  it('completes city confirmation when the postal street abbreviates the same confirmed route', async () => {
+    const entered = { ...confirmed, street: '65821 Overseas Highway', city: 'Layton' };
+    respond(); // Confirmed route is Overseas Highway; postal line uses Overseas Hwy.
+    const correction = await service.validateDeliveryAddress(entered, { suggestCorrections: true }).catch(error => error);
+    expect(correction).toBeInstanceOf(AddressCorrectionRequiredException);
+    expect(correction.suggestedAddress).toEqual({ ...entered, city: 'Long Key' });
+    await expect(service.validateDeliveryAddress(correction.suggestedAddress, { suggestCorrections: true })).resolves.toEqual({
+      ...entered, city: 'Long Key', placeId: 'verified-long-key-property',
+    });
+  });
+
+  it('completes city confirmation when the provider puts the confirmed inline unit on its own postal line', async () => {
+    const result = repeatedLocalityResult();
+    result.verdict.inputGranularity = 'SUB_PREMISE';
+    result.verdict.validationGranularity = 'SUB_PREMISE';
+    result.address.postalAddress.addressLines.push('Apt 3');
+    result.address.addressComponents.push({ componentType: 'subpremise', componentName: { text: '3' }, confirmationLevel: 'CONFIRMED' });
+    respond(result);
+    const entered = { ...confirmed, street: '65821 Overseas Hwy Apt 3', city: 'Layton' };
+    const correction = await service.validateDeliveryAddress(entered, { suggestCorrections: true }).catch(error => error);
+    expect(correction).toBeInstanceOf(AddressCorrectionRequiredException);
+    expect(correction.suggestedAddress.street).toBe(entered.street);
+    await expect(service.validateDeliveryAddress(correction.suggestedAddress, { suggestCorrections: true })).resolves.toEqual({
+      ...entered, city: 'Long Key', placeId: 'verified-long-key-property',
+    });
+  });
+
+  it('does not ignore an inline unit mismatch while accepting a matching postal city', async () => {
+    const result = repeatedLocalityResult();
+    result.verdict.inputGranularity = 'SUB_PREMISE';
+    result.verdict.validationGranularity = 'SUB_PREMISE';
+    result.address.postalAddress.addressLines.push('Apt 4');
+    result.address.addressComponents.push({ componentType: 'subpremise', componentName: { text: '4' }, confirmationLevel: 'CONFIRMED' });
+    respond(result);
+    await expect(service.validateDeliveryAddress({ ...confirmed, street: '65821 Overseas Hwy Apt 3' },
+      { suggestCorrections: true, allowLocationConfirmation: true })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('completes ZIP confirmation when the accepted named postal code remains flagged as replaced', async () => {
+    const result = repeatedLocalityResult();
+    delete result.address.addressComponents[2].replaced;
+    result.address.addressComponents[4].replaced = true;
+    respond(result);
+    const correction = await service.validateDeliveryAddress({ ...confirmed, postalCode: '33036' },
+      { suggestCorrections: true }).catch(error => error);
+    expect(correction).toBeInstanceOf(AddressCorrectionRequiredException);
+    expect(correction.suggestedAddress).toEqual(confirmed);
+    await expect(service.validateDeliveryAddress(correction.suggestedAddress, { suggestCorrections: true })).resolves.toEqual({
+      ...confirmed, placeId: 'verified-long-key-property',
+    });
+  });
+
+  it('completes street confirmation when the accepted postal route remains flagged as replaced', async () => {
+    const result = repeatedLocalityResult();
+    delete result.address.addressComponents[2].replaced;
+    result.address.addressComponents[1].replaced = true;
+    respond(result);
+    const correction = await service.validateDeliveryAddress({ ...confirmed, street: '65821 Overseas Road' },
+      { suggestCorrections: true }).catch(error => error);
+    expect(correction).toBeInstanceOf(AddressCorrectionRequiredException);
+    expect(correction.suggestedAddress).toEqual({ ...confirmed, street: '65821 Overseas Highway' });
+    await expect(service.validateDeliveryAddress(correction.suggestedAddress, { suggestCorrections: true })).resolves.toEqual({
+      ...confirmed, street: '65821 Overseas Highway', placeId: 'verified-long-key-property',
+    });
+  });
+
+  it.each([
+    ['a replaced house number contradicting the entered and postal street', confirmed.street, (r: any) => {
+      r.address.addressComponents[0].componentName.text = '65823';
+      r.address.addressComponents[0].replaced = true;
+    }],
+    ['a replaced route contradicting the entered and postal street', confirmed.street, (r: any) => {
+      r.address.addressComponents[1].componentName.text = 'Completely Different Road';
+      r.address.addressComponents[1].replaced = true;
+    }],
+    ['named components matching the full route but contradicting the postal house number', '65823 Overseas Highway', (r: any) => {
+      r.address.addressComponents[0].componentName.text = '65823';
+      r.address.addressComponents[0].replaced = true;
+    }],
+  ])('does not validate %s', async (_label, street, mutate) => {
+    const result = repeatedLocalityResult(); mutate(result); respond(result);
+    await expect(service.validateDeliveryAddress({ ...confirmed, street }, {
+      suggestCorrections: true, allowLocationConfirmation: true,
+    })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('serializes a new verification failure after successful review so clients can clear the confirmed state', async () => {
+    const controller = new AddressConfirmationsController(service);
+    respond();
+    const reviewed = await controller.review({ purpose: 'DELIVERY', address: confirmed });
+    expect(reviewed).toEqual({ status: 'VALIDATED', address: confirmed });
+    const changedEvidence = repeatedLocalityResult(); changedEvidence.verdict.possibleNextAction = 'FIX';
+    respond(changedEvidence);
+    const finalError = await service.validateDeliveryAddress(reviewed.address!, {
+      suggestCorrections: true, allowLocationConfirmation: true,
+    }).catch(error => error);
+    const reviewError = await controller.review({ purpose: 'DELIVERY', address: reviewed.address! }).catch(error => error);
+    for (const error of [finalError, reviewError]) {
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(error.getStatus()).toBe(400);
+      expect(error.getResponse()).toEqual({
+        code: 'ADDRESS_VERIFICATION_FAILED',
+        message: 'We could not verify the address exactly as entered. Check the street, city, state, and ZIP code and try again.',
+      });
+      expect(JSON.stringify(error.getResponse())).not.toMatch(/placeId|confirmedLocation|suggestedAddress|backend-api-key/);
+    }
+  });
+
+  it('continues from an accepted city to the map when current provider precision becomes approximate', async () => {
+    const controller = new AddressConfirmationsController(service);
+    respond();
+    const first = await controller.review({ purpose: 'INSTALLATION', address: { ...confirmed, city: 'Layton' } });
+    expect(first.status).toBe('CONFIRM_SUGGESTION');
+    const approximate = repeatedLocalityResult();
+    approximate.verdict.validationGranularity = 'PREMISE_PROXIMITY';
+    approximate.verdict.geocodeGranularity = 'PREMISE_PROXIMITY';
+    respond(approximate);
+    const center = { lat: 24.8061986, lng: -80.8432738 };
+    await expect(controller.review({ purpose: 'INSTALLATION', address: first.suggestedAddress! })).resolves.toEqual({
+      status: 'CONFIRM_LOCATION', center, maxAdjustmentMeters: 500,
+    });
+    await expect(controller.review({ purpose: 'INSTALLATION', address: { ...first.suggestedAddress!, confirmedLocation: center } })).resolves.toEqual({
+      status: 'VALIDATED', address: { ...confirmed, confirmedLocation: center },
+    });
+  });
+
+  it.each(['INSTALLATION', 'DELIVERY'] as const)('completes the suggestion/revalidation flow for %s without exposing provider IDs', async purpose => {
+    const controller = new AddressConfirmationsController(service);
+    respond();
+    const first = await controller.review({ purpose, address: { ...confirmed, city: 'Layton' } });
+    expect(first).toEqual({ status: 'CONFIRM_SUGGESTION', suggestedAddress: confirmed });
+    const second = await controller.review({ purpose, address: first.suggestedAddress! });
+    expect(second).toEqual({ status: 'VALIDATED', address: confirmed });
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(second)).not.toMatch(/placeId|confirmedLocation/);
+  });
+
+  it('still requires a valid nearby pin when one was submitted with the matching postal locality', async () => {
+    respond();
+    const error = await service.validateDeliveryAddress({
+      ...confirmed, confirmedLocation: { lat: 24.8161986, lng: -80.8432738 },
+    }, { suggestCorrections: true, allowLocationConfirmation: true }).catch(error => error);
+    expect(error).toBeInstanceOf(AddressLocationRequiredException);
+    expect(error.center).toEqual({ lat: 24.8061986, lng: -80.8432738 });
+    expect(error.maxAdjustmentMeters).toBe(500);
+  });
+
+  it.each([
+    ['a different named locality', (r: any) => { r.address.addressComponents[2].componentName.text = 'Layton'; }],
+    ['a missing locality name', (r: any) => { delete r.address.addressComponents[2].componentName; }],
+    ['an empty locality name', (r: any) => { r.address.addressComponents[2].componentName.text = ' '; }],
+    ['a malformed locality name', (r: any) => { r.address.addressComponents[2].componentName.text = { city: 'Long Key' }; }],
+    ['a different postal locality', (r: any) => { r.address.postalAddress.locality = 'Layton'; }],
+    ['a changed ZIP', (r: any) => { r.address.postalAddress.postalCode = '33036'; r.address.addressComponents[4].componentName.text = '33036'; r.address.addressComponents[4].replaced = true; }],
+    ['a changed street', (r: any) => { r.address.postalAddress.addressLines = ['65823 Overseas Hwy']; r.address.addressComponents[0].componentName.text = '65823'; r.address.addressComponents[0].replaced = true; }],
+    ['a street mismatch without a replacement flag', (r: any) => { r.address.postalAddress.addressLines = ['65823 Overseas Hwy']; }],
+    ['an unconfirmed locality', (r: any) => { r.address.addressComponents[2].confirmationLevel = 'UNCONFIRMED_BUT_PLAUSIBLE'; }],
+    ['an unconfirmed street number', (r: any) => { r.address.addressComponents[0].confirmationLevel = 'UNCONFIRMED_BUT_PLAUSIBLE'; }],
+    ['unconfirmed component evidence', (r: any) => { r.address.unconfirmedComponentTypes = ['locality']; r.verdict.hasUnconfirmedComponents = true; }],
+    ['a missing critical component', (r: any) => { r.address.addressComponents = r.address.addressComponents.filter((c: any) => c.componentType !== 'route'); }],
+    ['an unresolved token', (r: any) => { r.address.unresolvedTokens = ['unknown']; }],
+    ['an unexpected component', (r: any) => { r.address.addressComponents[2].unexpected = true; }],
+    ['an incomplete address', (r: any) => { r.verdict.addressComplete = false; }],
+    ['a FIX verdict', (r: any) => { r.verdict.possibleNextAction = 'FIX'; }],
+    ['negative deliverability evidence', (r: any) => { r.uspsData.dpvConfirmation = 'N'; }],
+    ['low validation precision', (r: any) => { r.verdict.validationGranularity = 'ROUTE'; }],
+    ['low geocode precision', (r: any) => { r.verdict.geocodeGranularity = 'ROUTE'; }],
+    ['a missing geocode precision', (r: any) => { delete r.verdict.geocodeGranularity; }],
+    ['a different state', (r: any) => { r.address.postalAddress.administrativeArea = 'GA'; }],
+    ['a foreign country', (r: any) => { r.address.postalAddress.regionCode = 'CA'; }],
+  ])('does not bypass confirmation or rejection with %s', async (_label, mutate) => {
+    const result = repeatedLocalityResult(); mutate(result); respond(result);
+    await expect(service.validateDeliveryAddress(confirmed, {
+      suggestCorrections: true, allowLocationConfirmation: true,
+    })).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
 describe('Explicit property location confirmation', () => {
   const input = { street: '1603 SW 20th Terrace', city: 'Miami', state: 'FL', postalCode: '33145' };
   const center = { lat: 25.753, lng: -80.222 };
@@ -493,6 +741,22 @@ describe('Explicit property location confirmation', () => {
     expect(third).toEqual({ status: 'VALIDATED', address: { ...input, confirmedLocation: center } });
     expect(post).toHaveBeenCalledTimes(3);
     expect(post.mock.calls.map(call => call[1].address.postalCode)).toEqual(['33175', '33145', '33145']);
+  });
+
+  it('continues ZIP acceptance to map confirmation even when its exact confirmed ZIP replacement flag persists', async () => {
+    const controller = new AddressConfirmationsController(service);
+    const result = replacedPostalCode();
+    const names = ['1603', 'Southwest 20th Terrace', 'Miami', 'FL', '33145'];
+    result.address.addressComponents.forEach((component: any, index: number) => { component.componentName = { text: names[index] }; });
+    respond(result);
+    const first = await controller.review({ purpose: 'DELIVERY', address: { ...input, postalCode: '33175', addressLine2: 'Apt 4B' } });
+    expect(first).toEqual({ status: 'CONFIRM_SUGGESTION', suggestedAddress: { ...input, addressLine2: 'Apt 4B' } });
+    await expect(controller.review({ purpose: 'DELIVERY', address: first.suggestedAddress! })).resolves.toEqual({
+      status: 'CONFIRM_LOCATION', center, maxAdjustmentMeters: 500,
+    });
+    await expect(controller.review({ purpose: 'DELIVERY', address: { ...first.suggestedAddress!, confirmedLocation: center } })).resolves.toEqual({
+      status: 'VALIDATED', address: { ...input, addressLine2: 'Apt 4B', confirmedLocation: center },
+    });
   });
 
   it.each([

@@ -1,9 +1,11 @@
 import { DeliveryType, Prisma } from '@prisma/client';
 import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import { DeliveriesService } from './deliveries.service';
+import { DeliveriesController } from './deliveries.controller';
+import { AddressConfirmationsController } from './address-confirmations.controller';
 import { calculateDeliveryPricing } from './delivery-pricing';
 import { CreateDeliveryDto } from './dto/delivery.dto';
-import { AddressLocationRequiredException } from './google-address-validation.service';
+import { AddressCorrectionRequiredException, AddressLocationRequiredException } from './google-address-validation.service';
 import { presentApiResponse } from '@/common/response-privacy.interceptor';
 
 const actor: any = { id: 1, role: { name: 'admin' } };
@@ -148,11 +150,88 @@ describe('Delivery warehouse origin and coverage', () => {
     const f = fixture();
     const error = new AddressLocationRequiredException({ lat: 25.75, lng: -80.22 });
     f.validation.validateDeliveryAddress.mockRejectedValue(error);
-    await expect(f.service.createDelivery(40, { confirmedLocation: { lat: 25.75, lng: -80.22 } }, actor))
+    const controller = new DeliveriesController(f.service);
+    await expect(controller.createDelivery(40, { confirmedLocation: { lat: 25.75, lng: -80.22 } }, { user: actor } as any))
       .rejects.toBe(error);
+    expect(error.getStatus()).toBe(400);
+    expect(error.getResponse()).toEqual({
+      code: 'ADDRESS_LOCATION_CONFIRMATION_REQUIRED',
+      message: 'Confirm the property location on the map before continuing.',
+      center: { lat: 25.75, lng: -80.22 },
+      maxAdjustmentMeters: 500,
+    });
     expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
     expect(f.db.$transaction).not.toHaveBeenCalled();
     expect(f.db.orderDelivery.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    DeliveryType.STANDARD, DeliveryType.PRE_DELIVERY,
+    DeliveryType.INSTALLATION_OVERRIDE, DeliveryType.REDELIVERY,
+  ])('preserves an actionable correction at final %s calculation and waits for fresh confirmation', async type => {
+    const f = fixture();
+    if (type === DeliveryType.PRE_DELIVERY || type === DeliveryType.INSTALLATION_OVERRIDE) {
+      f.order.estimate.installationJob = { id: 8, status: 'DEPOSIT_PAYMENT_PENDING' };
+    }
+    if (type === DeliveryType.REDELIVERY) f.order.status.name = 'Delivered';
+    const controller = new DeliveriesController(f.service);
+    const review = new AddressConfirmationsController(f.validation as any);
+    const requested = { ...address, addressLine2: 'LOT 132', confirmedLocation: { lat: 25.75, lng: -80.22 } };
+    const suggested = { ...address, addressLine2: 'LOT 132', city: 'Miami Gardens' };
+    f.validation.validateDeliveryAddress.mockResolvedValueOnce({ ...requested, placeId: 'review-only-place' });
+    await expect(review.review({ purpose: 'DELIVERY', address: requested }))
+      .resolves.toEqual({ status: 'VALIDATED', address: requested });
+
+    const correction = new AddressCorrectionRequiredException({
+      ...suggested, confirmedLocation: requested.confirmedLocation,
+      placeId: 'private-provider-place', providerMetadata: 'private-provider-data',
+    } as any);
+    f.validation.validateDeliveryAddress.mockRejectedValueOnce(correction);
+    const failed = await controller.createDelivery(40, {
+      ...requested, type, internalReason: 'Requested delivery',
+    }, { user: actor } as any).catch(error => error);
+    expect(failed).toBe(correction);
+    expect(failed.getStatus()).toBe(400);
+    const body = failed.getResponse();
+    expect(body).toEqual({
+      code: 'ADDRESS_CONFIRMATION_REQUIRED',
+      message: 'Confirm the suggested address before continuing.',
+      suggestedAddress: suggested,
+    });
+    expect(JSON.stringify(body)).not.toMatch(/placeId|confirmedLocation|providerMetadata|private-provider/);
+    expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
+    expect(f.db.$transaction).not.toHaveBeenCalled();
+    expect(f.db.orderDelivery.create).not.toHaveBeenCalled();
+
+    f.validation.validateDeliveryAddress.mockImplementation(async destination => ({ ...destination, placeId: 'freshly-confirmed-place' }));
+    const reconfirmed = await review.review({ purpose: 'DELIVERY', address: body.suggestedAddress });
+    expect(reconfirmed).toEqual({ status: 'VALIDATED', address: suggested });
+    const created = await controller.createDelivery(40, {
+      ...suggested, type, internalReason: 'Requested delivery',
+    }, { user: actor } as any);
+    expect(f.validation.validateDeliveryAddress).toHaveBeenCalledTimes(4);
+    expect(f.validation.validateDeliveryAddress).toHaveBeenLastCalledWith(suggested, {
+      suggestCorrections: true, allowLocationConfirmation: true,
+    });
+    expect(f.routes.calculateDrivingRoute).toHaveBeenCalledTimes(1);
+    expect(f.routes.calculateDrivingRoute).toHaveBeenCalledWith(address, { ...suggested, placeId: 'freshly-confirmed-place' });
+    expect(f.db.orderDelivery.create).toHaveBeenCalledTimes(1);
+    expect(created.destinationCity).toBe(suggested.city);
+    expect(created).not.toHaveProperty('destinationLocation');
+  });
+
+  it('keeps final invalid-address rejection separate from confirmation and creates no charge', async () => {
+    const f = fixture();
+    const controller = new DeliveriesController(f.service);
+    const invalid = new BadRequestException('We could not verify the address exactly as entered.');
+    f.validation.validateDeliveryAddress.mockRejectedValueOnce(invalid);
+    const error = await controller.createDelivery(40, address, { user: actor } as any).catch(value => value);
+    expect(error).toBe(invalid);
+    expect(error.getResponse()).not.toHaveProperty('suggestedAddress');
+    expect(error.getResponse()).not.toMatchObject({ code: 'ADDRESS_CONFIRMATION_REQUIRED' });
+    expect(error.getResponse()).not.toMatchObject({ code: 'ADDRESS_LOCATION_CONFIRMATION_REQUIRED' });
+    expect(f.routes.calculateDrivingRoute).not.toHaveBeenCalled();
+    expect(f.db.$transaction).not.toHaveBeenCalled();
   });
 
   it('snapshots the warehouse and saved customer detail and allows explicit clearing', async () => {

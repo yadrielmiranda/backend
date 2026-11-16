@@ -45,6 +45,7 @@ type GoogleAddressValidationResponse = {
       unconfirmedComponentTypes?: string[];
       unresolvedTokens?: string[];
       addressComponents?: Array<{
+        componentName?: { text?: string };
         componentType?: string;
         confirmationLevel?: string;
         inferred?: boolean;
@@ -70,8 +71,28 @@ export type ValidatedDeliveryAddress = DeliveryRouteAddress & {
 // Only callers with a confirmation UI opt into receiving a proposed address.
 // Accepting it means submitting it for validation again, never bypassing validation.
 export class AddressCorrectionRequiredException extends BadRequestException {
-  constructor(readonly suggestedAddress: DeliveryRouteAddress) {
-    super('Confirm the suggested address before continuing.');
+  readonly suggestedAddress: DeliveryRouteAddress;
+
+  constructor(address: DeliveryRouteAddress) {
+    const suggestedAddress = {
+      street: address.street,
+      ...(address.addressLine2 !== undefined ? { addressLine2: address.addressLine2 } : {}),
+      city: address.city,
+      state: address.state,
+      postalCode: address.postalCode,
+    };
+    super({
+      code: 'ADDRESS_CONFIRMATION_REQUIRED',
+      message: 'Confirm the suggested address before continuing.',
+      suggestedAddress,
+    });
+    this.suggestedAddress = suggestedAddress;
+  }
+}
+
+class AddressVerificationFailedException extends BadRequestException {
+  constructor(message: string) {
+    super({ code: 'ADDRESS_VERIFICATION_FAILED', message });
   }
 }
 
@@ -110,6 +131,56 @@ const criticalComponents = new Set([
   'postal_code',
 ]);
 
+type ValidationResult = NonNullable<GoogleAddressValidationResponse['result']>;
+type AddressComponent = NonNullable<NonNullable<ValidationResult['address']>['addressComponents']>[number];
+const comparableAddressText = (value: unknown): string => typeof value === 'string'
+  ? value.trim().replace(/\s+/g, ' ').toUpperCase() : '';
+
+function streetAndUnit(value: string): { street: string; unit?: string } {
+  const match = value.match(/(?:^|,\s*|\s+)(?:#\s*|(?:APT\.?|APARTMENT|UNIT|SUITE|STE\.?|LOT)\s+)([A-Z0-9][A-Z0-9 -]*)$/i);
+  return match
+    ? { street: comparableAddressText(value.slice(0, match.index)), unit: comparableAddressText(match[1]) }
+    : { street: comparableAddressText(value) };
+}
+
+function confirmedStreetName(result: ValidationResult): string | null {
+  const components = result.address?.addressComponents ?? [];
+  const parts = ['street_number', 'route'].map(type => components.filter(component => component.componentType === type));
+  if (parts.some(matching => matching.length !== 1 || matching[0].confirmationLevel !== 'CONFIRMED' ||
+    !comparableAddressText(matching[0].componentName?.text))) return null;
+  return parts.map(matching => matching[0].componentName!.text!.trim()).join(' ');
+}
+
+// Compare only spellings supplied by Google: its postal line or its confirmed
+// street-number + route. Preserve inline units and require their exact evidence.
+function matchesReturnedStreet(input: string, result: ValidationResult): boolean {
+  const lines = result.address?.postalAddress?.addressLines;
+  const components = result.address?.addressComponents ?? [];
+  if (!lines || lines.length < 1 || lines.length > 2 ||
+    lines.some(line => typeof line !== 'string' || !line.trim() || /[\r\n]/.test(line))) return false;
+  const entered = streetAndUnit(input);
+  const postal = streetAndUnit(lines[0]);
+  const numbers = components.filter(component => component.componentType === 'street_number');
+  const number = comparableAddressText(numbers[0]?.componentName?.text);
+  if (numbers.length !== 1 || number &&
+    (!entered.street.startsWith(`${number} `) || !postal.street.startsWith(`${number} `))) return false;
+  if (lines.length === 2) {
+    if (postal.unit) return false;
+    const separateUnit = streetAndUnit(lines[1]);
+    if (separateUnit.street || !separateUnit.unit) return false;
+    postal.unit = separateUnit.unit;
+  }
+  if (entered.unit !== postal.unit) return false;
+  if (entered.unit) {
+    const units = components.filter(component => component.componentType === 'subpremise');
+    if (units.length !== 1 || units[0].confirmationLevel !== 'CONFIRMED' ||
+      units[0].replaced === true || units[0].unexpected === true ||
+      comparableAddressText(units[0].componentName?.text) !== entered.unit) return false;
+  }
+  if (entered.street === postal.street) return true;
+  return entered.street === comparableAddressText(confirmedStreetName(result));
+}
+
 function correctedPostalAddress(
   input: DeliveryRouteAddress,
   result: NonNullable<GoogleAddressValidationResponse['result']>,
@@ -139,11 +210,14 @@ function correctedPostalAddress(
   if (streetWasReplaced && (
     result.verdict?.inputGranularity !== 'PREMISE' ||
     components.some(component => ['subpremise', 'floor', 'room'].includes(component.componentType ?? '')) ||
-    /(?:#|\b(?:apt|apartment|unit|suite|ste|floor|flr|room|rm)\b)/i.test(input.street)
+    /(?:#|\b(?:apt|apartment|unit|suite|ste|lot|floor|flr|room|rm)\b)/i.test(input.street)
   )) return null;
 
+  const namedStreet = streetWasReplaced ? confirmedStreetName(result) : null;
+  if (namedStreet && !matchesReturnedStreet(namedStreet, result)) return null;
+
   const suggestion = {
-    street: streetWasReplaced ? lines.map(text).join(', ') : input.street.trim(),
+    street: streetWasReplaced ? namedStreet ?? lines.map(text).join(', ') : input.street.trim(),
     ...(input.addressLine2 !== undefined ? { addressLine2: normalizeAddressLine2(input.addressLine2) } : {}),
     city: text(postal?.locality),
     state: text(postal?.administrativeArea).toUpperCase(),
@@ -295,10 +369,45 @@ export class GoogleAddressValidationService {
         criticalComponents.has(component) &&
         !(component === 'subpremise' && unitWasEntered),
     );
+    const comparable = comparableAddressText;
+    const postal = address.postalAddress;
+    // A replacement flag can persist after submitting the suggested value.
+    // Neutralize only named, confirmed components that already match this input.
+    // This never bypasses missing/unconfirmed data, DPV, FIX, or map confirmation.
+    const matchingPostalAddress = Boolean(
+      verdict.addressComplete === true &&
+      ['PREMISE', 'SUB_PREMISE', 'PREMISE_PROXIMITY'].includes(verdict.validationGranularity ?? '') &&
+      locationHasUsefulPrecision &&
+      locationMatchesAddress && placeId && anchor &&
+      comparable(input.city) && comparable(postal?.locality) === comparable(input.city) &&
+      (!input.postalCode.includes('-') || comparable(postal?.postalCode) === comparable(input.postalCode)) &&
+      matchesReturnedStreet(input.street, result) &&
+      Array.from(criticalComponents).every(type => {
+        const matching = components.filter(component => component.componentType === type);
+        return matching.length === 1 && (matching[0].confirmationLevel === 'CONFIRMED' ||
+          type === 'street_number' && matching[0].confirmationLevel === 'UNCONFIRMED_BUT_PLAUSIBLE');
+      }) &&
+      components.every(component => component.unexpected !== true &&
+        (component.replaced !== true || criticalComponents.has(component.componentType ?? ''))),
+    );
+    const replacementMatchesInput = (component: AddressComponent): boolean => {
+      const name = comparable(component.componentName?.text);
+      if (!matchingPostalAddress || component.confirmationLevel !== 'CONFIRMED' || !name) return false;
+      switch (component.componentType) {
+        case 'locality': return name === comparable(input.city);
+        case 'postal_code': return name === input.postalCode.trim().slice(0, 5);
+        case 'administrative_area_level_1': return name === comparable(input.state);
+        case 'street_number':
+        case 'route':
+          return streetAndUnit(input.street).street === comparable(confirmedStreetName(result));
+        default: return false;
+      }
+    };
     const replacedCriticalComponent = components.some(
       (component) =>
         component.replaced === true &&
-        criticalComponents.has(component.componentType ?? ''),
+        criticalComponents.has(component.componentType ?? '') &&
+        !replacementMatchesInput(component),
     );
     const unconfirmedCriticalComponent = components.some(
       (component) =>
@@ -359,7 +468,8 @@ export class GoogleAddressValidationService {
       // position. Confirm that position explicitly, without overriding DPV N.
       const confirmedAddressNeedsPrecision = verdict.validationGranularity === 'PREMISE_PROXIMITY' &&
         dpvConfirmation !== 'N' && missing.length === 0 && unconfirmed.length === 0 &&
-        !components.some(component => component.replaced === true && component.componentType !== 'postal_code') &&
+        !components.some(component => component.replaced === true && component.componentType !== 'postal_code' &&
+          !replacementMatchesInput(component)) &&
         components.some(component => component.componentType === 'street_number' &&
           component.confirmationLevel === 'CONFIRMED');
       // Shared evidence for a map, including after an explicitly accepted ZIP
@@ -409,16 +519,16 @@ export class GoogleAddressValidationService {
         throw new AddressLocationRequiredException(anchor);
       }
       if (missingStreet) {
-        throw new BadRequestException(
+        throw new AddressVerificationFailedException(
           'Enter a complete street address, including the street number, and try again.',
         );
       }
       if (postalCodeNeedsCorrection) {
-        throw new BadRequestException(
+        throw new AddressVerificationFailedException(
           'The ZIP code does not match this street address. Enter the correct ZIP code and try again.',
         );
       }
-      throw new BadRequestException(
+      throw new AddressVerificationFailedException(
         'We could not verify the address exactly as entered. Check the street, city, state, and ZIP code and try again.',
       );
     }
@@ -428,7 +538,7 @@ export class GoogleAddressValidationService {
         throw new ServiceUnavailableException('The property location could not be verified. Please try again.');
       }
       if (!locationMatchesAddress || !locationHasUsefulPrecision) {
-        throw new BadRequestException('The property location could not be matched to this address. Check the address and try again.');
+        throw new AddressVerificationFailedException('The property location could not be matched to this address. Check the address and try again.');
       }
       if (distanceMeters(anchor, input.confirmedLocation) > MAX_ADDRESS_LOCATION_ADJUSTMENT_METERS + LOCATION_DISTANCE_TOLERANCE_METERS) {
         throw new AddressLocationRequiredException(anchor);
