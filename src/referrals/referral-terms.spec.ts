@@ -162,7 +162,7 @@ describe('Referral registration integration', () => {
     db.$transaction = jest.fn(async work => work(db));
     const auth = new AuthService({} as any, db, {} as any, {} as any, {} as any,
       { getProgram: async () => ({ version: 'a'.repeat(64) }) } as any,
-      { checkAddress: async () => ({ available: true }) } as any);
+      { checkAddress: async () => ({ available: true }) } as any, { enqueue: jest.fn() } as any);
     const data = { username: 'new-client', firstName: 'Test', lastName: 'Client', phone: '+13055550111',
       email: 'new-client@example.test', password: 'Example-password-123',
       street: '123 Example St', city: 'Miami', state: 'FL', postalCode: '33101',

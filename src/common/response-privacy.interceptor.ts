@@ -39,7 +39,7 @@ const companyFinancials = new Set([
 ]);
 const dealerFinancials = new Set(['netProfitD', 'dealerMarkup', 'dealerMarkupDecimal', 'dealerEarnings', 'dealerEarningsPlanSnapshot', 'dealerEarningsPlanId', 'dealerEarningsPlan', 'dealerEarningsType', 'dealerEarningsPercent']);
 const userFields = new Set([
-  'id', 'username', 'firstName', 'lastName', 'email', 'phone', 'street', 'addressLine2',
+  'id', 'username', 'firstName', 'lastName', 'email', 'contactEmail', 'phone', 'street', 'addressLine2',
   'parentDealerId', 'parentDealer', 'dealerLevel',
   'networkSuspended', 'networkAccessBlocked', 'networkSalesBlocked',
   'city', 'state', 'postalCode', 'role', 'idRole', 'dealerMode',
@@ -120,6 +120,7 @@ export function presentApiResponse(value: unknown, user?: AuthUser): any {
     const isUser = 'username' in input && ('idRole' in input || 'password' in input);
     return Object.fromEntries(Object.entries(input)
       .filter(([key]) => !credentials.has(key) && (!isUser || userFields.has(key)) &&
+        (key !== 'contactEmail' || staff) &&
         (user?.role?.name === 'admin' || !referralAdministration.has(key)) &&
         (user?.role?.name === 'admin' || !paymentPlanAdministration.has(key)) &&
         (staff || field !== 'doorDesignSnapshot' || key !== 'unitPrice') &&

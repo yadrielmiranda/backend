@@ -7,7 +7,8 @@ import { RegisterUserDto } from './dto/register-user.dto';
 
 // Se ejecuta el registro real con almacenamiento transaccional simulado.
 function fixture() {
-  const state: any = { users: [], registration: [], sms: [], events: [], blocks: [], fail: null, roleExists: true };
+  const state: any = { users: [], registration: [], sms: [], events: [], blocks: [], welcome: [], fail: null, roleExists: true };
+  let transactionOpen = false;
   const clone = (value: any) => structuredClone(value);
   const db: any = {
     platformTermsState: { findUniqueOrThrow: async () => ({ currentVersion: null }) },
@@ -56,12 +57,20 @@ function fixture() {
     $queryRaw: async (_strings: unknown, phone: string) => state.users.filter((u: any) => u.phone === phone).map((u: any) => ({ id: u.id })),
     $transaction: async (run: any) => {
       const previous = clone(state);
+      transactionOpen = true;
       try { return await run(db); } catch (error) { Object.assign(state, previous); throw error; }
+      finally { transactionOpen = false; }
     },
   };
   const sms = new SmsConsentService(db);
   const coverage = { checkAddress: jest.fn(async () => ({ available: true })) };
-  const auth = new AuthService({} as any, db, {} as any, {} as any, {} as any, sms, coverage as any);
+  const welcome = { enqueue: jest.fn(async (userId: number, transaction: unknown) => {
+    expect(transaction).toBe(db);
+    expect(transactionOpen).toBe(true);
+    state.welcome.push(userId);
+    if (state.fail === 'welcome') throw new Error('Storage unavailable');
+  }) };
+  const auth = new AuthService({} as any, db, {} as any, {} as any, {} as any, sms, coverage as any, welcome as any);
   const payload = async (extra: Record<string, unknown> = {}) => ({
     username: 'new-client', firstName: 'Test', lastName: 'Client',
     phone: '+13055551234', email: 'client@example.com', password: 'Example-only-123',
@@ -70,10 +79,21 @@ function fixture() {
     consentVersion: (await sms.getProgram()).version, ...extra,
   });
   const register = async (extra: Record<string, unknown> = {}) => auth.registerUser(await payload(extra) as any);
-  return { state, db, sms, auth, coverage, payload, register };
+  return { state, db, sms, auth, coverage, welcome, payload, register };
 }
 
 describe('Registration messaging consent', () => {
+  it('queues a welcome in the account transaction independently of either SMS consent', async () => {
+    for (const serviceConsent of [false, true]) {
+      for (const promotionsConsent of [false, true]) {
+        const f = fixture();
+        const account = await f.register({ serviceConsent, promotionsConsent });
+        expect(f.state.welcome).toEqual([account.id]);
+        expect(f.welcome.enqueue).toHaveBeenCalledTimes(1);
+        expect(f.welcome.enqueue).toHaveBeenCalledWith(account.id, f.db);
+      }
+    }
+  });
   it('creates an international account without opting into unsupported SMS', async () => {
     const f = fixture();
     const pipe = new ValidationPipe({ transform: true, whitelist: true, transformOptions: { enableImplicitConversion: true } });
@@ -228,10 +248,10 @@ describe('Registration messaging consent', () => {
   });
 
   it('does not create a partial account if any consent write fails', async () => {
-    for (const failure of ['registration', 'sms', 'event']) {
+    for (const failure of ['registration', 'sms', 'event', 'welcome']) {
       const f = fixture(); f.state.fail = failure;
       await assert.rejects(f.register());
-      for (const field of ['users', 'registration', 'sms', 'events']) assert.equal(f.state[field].length, 0);
+      for (const field of ['users', 'registration', 'sms', 'events', 'welcome']) assert.equal(f.state[field].length, 0);
     }
   });
 

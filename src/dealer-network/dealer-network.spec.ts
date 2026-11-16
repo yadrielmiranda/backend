@@ -14,6 +14,8 @@ import { InstallationWorkflowService } from '@/installation/installation-workflo
 
 const actor = (id: number, role = 'dealer'): any => ({ id, role: { name: role } });
 function fixture(rootMode: 'INTERNAL' | 'EXTERNAL' = 'INTERNAL', subMode: 'INTERNAL' | 'EXTERNAL' = 'INTERNAL') {
+  const pending: number[] = [];
+  let transactionOpen = false;
   const users: any[] = [1, 2, 3].map((id, i) => ({
     id, username: `dealer${id}`, firstName: `Dealer ${id}`, lastName: 'Test', email: `dealer${id}@example.test`, phone: '+13055551234',
     role: { name: 'dealer', markup: '.25' }, idRole: 2, isActive: true, deletedAt: null,
@@ -34,12 +36,27 @@ function fixture(rootMode: 'INTERNAL' | 'EXTERNAL' = 'INTERNAL', subMode: 'INTER
       }),
       findMany: jest.fn(async ({ where }) => users.filter(u => typeof where.parentDealerId === 'number'
         ? u.parentDealerId === where.parentDealerId : where.parentDealerId?.in?.includes(u.parentDealerId))),
-      create: jest.fn(async ({ data }) => ({ id: 4, username: data.username, parentDealerId: data.parentDealerId })),
+      create: jest.fn(async ({ data }) => {
+        const saved = { ...data, id: 4, role: { name: 'dealer', markup: '.25' }, isActive: true, deletedAt: null };
+        users.push(saved);
+        return { id: saved.id, username: saved.username, parentDealerId: saved.parentDealerId };
+      }),
       update: jest.fn(async ({ where }) => ({ id: where.id })),
     },
   };
-  db.$transaction = jest.fn(async work => work(db));
-  return { users, db };
+  db.$transaction = jest.fn(async work => {
+    const previous = users.map(user => ({ ...user })), before = pending.slice();
+    transactionOpen = true;
+    try { return await work(db); }
+    catch (error) { users.splice(0, users.length, ...previous); pending.splice(0, pending.length, ...before); throw error; }
+    finally { transactionOpen = false; }
+  });
+  const welcome = { enqueue: jest.fn(async (userId: number, transaction: unknown) => {
+    expect(transaction).toBe(db);
+    expect(transactionOpen).toBe(true);
+    pending.push(userId);
+  }) };
+  return { users, db, welcome, pending };
 }
 const basePiece = (qty = 1): any => ({ qty, rate: new Decimal(800), price: new Decimal(1000), regularPrice: new Decimal(1000), dealerMarkupDecimal: new Decimal('.2') });
 async function estimateFixture(rootMode: 'INTERNAL' | 'EXTERNAL' = 'INTERNAL', subMode: 'INTERNAL' | 'EXTERNAL' = 'INTERNAL', ownerId = 3) {
@@ -133,20 +150,39 @@ describe('Three-level dealer network', () => {
 
   it('enforces account creation type, parent and maximum depth on the server', async () => {
     const f = fixture(), logs: any = { log: jest.fn() };
-    const service = new DealerNetworkService(f.db, logs, {} as any);
+    const service = new DealerNetworkService(f.db, logs, {} as any, f.welcome as any);
     const dto: any = { username: 'Newdealer', password: 'a-test-password', markupPercent: 10, dealerMode: 'INTERNAL', subdealerEarningsMode: 'MARKUP' };
     await expect(service.create({ ...dto, parentDealerId: 2 }, actor(1))).rejects.toThrow(ForbiddenException);
     await expect(service.create(dto, actor(3))).rejects.toThrow('Distributors');
     await expect(service.create(dto, actor(2))).rejects.toThrow('Only an internal dealer');
     await expect(service.create(dto, actor(1))).resolves.toMatchObject({ parentDealerId: 1 });
     expect(f.db.user.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ dealerMode: 'INTERNAL', subdealerEarningsMode: 'MARKUP', subdealerEarningsPercent: '100', parentDealerId: 1 }) }));
+    expect(f.welcome.enqueue).toHaveBeenCalledTimes(1);
+    expect(f.welcome.enqueue).toHaveBeenCalledWith(4, f.db);
+    expect(f.pending).toEqual([4]);
+  });
+
+  it.each([1, 2])('queues a welcome for a new network account under dealer level %s and rolls back failed enrollment', async (parentId) => {
+    const f = fixture('EXTERNAL', 'EXTERNAL');
+    const service = new DealerNetworkService(f.db, { log: jest.fn() } as any, {} as any, f.welcome as any);
+    const input: any = { username: 'new.network', firstName: 'New', lastName: 'Dealer', password: 'example-password',
+      email: 'network@example.test', phone: '+13055550101', street: '1 Test St', city: 'Miami', state: 'FL', postalCode: '33101',
+      markupPercent: 10, dealerMode: 'EXTERNAL' };
+    f.welcome.enqueue.mockRejectedValueOnce(new Error('Queue storage unavailable'));
+    await expect(service.create(input, actor(parentId))).rejects.toThrow('Queue storage unavailable');
+    expect(f.users).toHaveLength(3);
+    expect(f.pending).toEqual([]);
+    const account = await service.create(input, actor(parentId));
+    expect(f.pending).toEqual([account.id]);
+    expect(f.welcome.enqueue).toHaveBeenLastCalledWith(account.id, f.db);
   });
 
   it('only the direct parent or admin can change network terms', async () => {
-    const f = fixture(), service = new DealerNetworkService(f.db, { log: jest.fn() } as any, {} as any);
+    const f = fixture(), service = new DealerNetworkService(f.db, { log: jest.fn() } as any, {} as any, f.welcome as any);
     await expect(service.updateMarkup(3, { markupPercent: 5 }, actor(1))).rejects.toThrow(NotFoundException);
     await expect(service.updateMarkup(3, { markupPercent: 5 }, actor(2))).resolves.toEqual({ id: 3 });
     await expect(service.updateMarkup(3, { markupPercent: 5, dealerMode: 'INTERNAL' }, actor(9, 'admin'))).rejects.toThrow('Distributors');
+    expect(f.welcome.enqueue).not.toHaveBeenCalled();
   });
 });
 

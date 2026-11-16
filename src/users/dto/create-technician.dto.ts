@@ -1,7 +1,7 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { Transform } from 'class-transformer';
-import { IsNotEmpty, IsString, Length, Matches, MaxLength } from 'class-validator';
-import { trimOnly } from '@/common/transforms';
+import { IsEmail, IsNotEmpty, IsOptional, IsString, Length, Matches, MaxLength } from 'class-validator';
+import { normalizeEmailOrNull, trimOnly } from '@/common/transforms';
 import {
   USERNAME_PATTERN,
   USERNAME_VALIDATION_MESSAGE,
@@ -18,6 +18,9 @@ export class CreateTechnicianDto {
 
   @IsString() @IsNotEmpty() @MaxLength(100) @Transform(trimOnly)
   lastName: string;
+
+  @IsOptional() @IsEmail() @MaxLength(254) @Transform(normalizeEmailOrNull)
+  contactEmail?: string | null;
 
   @IsString() @Length(8, 72)
   password: string;

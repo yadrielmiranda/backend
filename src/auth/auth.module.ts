@@ -10,6 +10,7 @@ import { PrismaModule } from '@/prisma/prisma.module';
 import { JwtStrategy } from './guards/auth/jwt.strategy';
 import { LogsModule } from '@/logs/logs.module';
 import { MailModule } from '@/mail/mail.module';
+import { WelcomeEmailModule } from '@/mail/welcome-email.module';
 import { SmsConsentModule } from '@/sms/sms-consent.module';
 import { DeliveriesModule } from '@/deliveries/deliveries.module';
 
@@ -18,6 +19,7 @@ import { DeliveriesModule } from '@/deliveries/deliveries.module';
     ConfigModule,
     UsersModule,
     MailModule,
+    WelcomeEmailModule,
     SmsConsentModule,
     DeliveriesModule,
     PrismaModule,

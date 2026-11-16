@@ -4,9 +4,10 @@ import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
 import { PrismaModule } from '@/prisma/prisma.module';
 import { LogsModule } from '@/logs/logs.module';
+import { WelcomeEmailModule } from '@/mail/welcome-email.module';
 
 @Module({
-  imports: [PrismaModule, LogsModule],
+  imports: [PrismaModule, LogsModule, WelcomeEmailModule],
   controllers: [UsersController],
   providers: [UsersService],
   exports: [UsersService],

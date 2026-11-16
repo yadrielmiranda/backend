@@ -18,6 +18,7 @@ import * as nodemailer from 'nodemailer';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { PrismaService } from '@/prisma/prisma.service';
 import { ESTIMATE_EMAIL_RECIPIENTS_ERROR, parseEstimateEmailRecipients } from './estimate-email-recipients';
+import { AccountWelcomeEmailContent, renderWelcomeEmail } from '@/mail/welcome-email-template';
 
 const recipientSelect = {
   email: true,
@@ -266,6 +267,36 @@ export class NotificationEmailService {
 
   canSendMaterialPurchaseEmail(): boolean {
     return this.settings() !== null;
+  }
+
+  canSendAccountWelcomeEmail(): boolean {
+    return this.settings() !== null;
+  }
+
+  /** Uses only notification SMTP; caller persists delivery state and safe retries. */
+  async sendAccountWelcome(input: AccountWelcomeEmailContent & { to: string }): Promise<MaterialPurchaseEmailResult> {
+    const to = input.to.trim().toLowerCase();
+    if (to.length > 254 || !isEmail(to)) return { status: 'FAILED', errorCode: 'INVALID_RECIPIENT' };
+    const settings = this.settings();
+    if (!settings) return { status: 'UNAVAILABLE', errorCode: 'EMAIL_NOT_CONFIGURED' };
+    const supportEmail = settings.replyTo || 'sales@authenticevolutionco.com';
+    const content = renderWelcomeEmail({ ...input, companyName: settings.name, origin: settings.origin, supportEmail });
+    let info: SMTPTransport.SentMessageInfo;
+    try {
+      info = await this.transport(settings).sendMail({
+        from: { name: settings.name, address: settings.from }, replyTo: supportEmail, to, ...content,
+      });
+    } catch (error) {
+      const responseCode = Number((error as { responseCode?: number })?.responseCode);
+      if (Number.isInteger(responseCode) && responseCode >= 400 && responseCode < 600)
+        return { status: responseCode < 500 ? 'RETRY' : 'FAILED', errorCode: `SMTP_${responseCode}` };
+      return { status: 'UNKNOWN', errorCode: 'SMTP_CONNECTION_ERROR' };
+    }
+    const matches = (address: string | { address: string }) =>
+      (typeof address === 'string' ? address : address.address)?.toLowerCase() === to;
+    if (info?.rejected?.some(matches)) return { status: 'FAILED', errorCode: 'RECIPIENT_REJECTED' };
+    if (!info?.accepted?.some(matches)) return { status: 'UNKNOWN', errorCode: 'INVALID_SMTP_RESPONSE' };
+    return { status: 'ACCEPTED', ...(info.messageId ? { providerMessageId: info.messageId } : {}) };
   }
 
   /** The caller persists this result; ambiguous SMTP outcomes must not be retried. */

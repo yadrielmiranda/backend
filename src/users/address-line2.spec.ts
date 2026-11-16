@@ -35,7 +35,7 @@ function accountFixture() {
     },
   };
   db.$transaction = jest.fn(async work => work(db));
-  return { db, service: new UsersService(db, { log: jest.fn() } as any) };
+  return { db, service: new UsersService(db, { log: jest.fn() } as any, { enqueue: jest.fn() } as any) };
 }
 
 describe('Optional account and branding address details', () => {

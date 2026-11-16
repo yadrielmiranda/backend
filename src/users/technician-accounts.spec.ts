@@ -1,6 +1,7 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ValidationPipe } from '@nestjs/common';
 import { UsersService } from './users.service';
-import { CreateTechnicianDto } from './dto/create-technician.dto';
+import { CreateTechnicianDto, UpdateTechnicianDto } from './dto/create-technician.dto';
+import { AuthService } from '@/auth/auth.service';
 
 jest.mock('bcrypt', () => ({ hash: jest.fn(async (value: string) => `test-only:${value}`) }));
 const admin = { id: 1, role: { name: 'admin' as const } };
@@ -10,14 +11,26 @@ function fixture() {
     email: 'carlos@example.test', phone: '+13055550123', street: '1 Test St', city: 'Miami', state: 'FL', postalCode: '33101',
     dealerMode: 'EXTERNAL', deletedAt: null, isActive: true, passwordUpdatedAt: new Date() }];
   const logs = { log: jest.fn(async () => undefined) };
+  const pending: number[] = [];
+  let transactionOpen = false;
+  const welcome = { enqueue: jest.fn(async (userId: number, transaction: unknown) => {
+    expect(transaction).toBe(db);
+    expect(transactionOpen).toBe(true);
+    pending.push(userId);
+  }) };
   const sessions = { findMany: jest.fn(async () => [{ id: 'session-tech' }]), updateMany: jest.fn(async () => ({ count: 1 })) };
   const db: any = {
     role: { findUnique: jest.fn(async ({ where }) => where.name === 'technician' || where.id === 5 ? { id: 5, name: 'technician' } : { id: 2, name: 'dealer' }) },
     user: {
-      findFirst: jest.fn(async ({ where }) => structuredClone(records.find((u) => u.id === where.id) ?? null)),
+      findFirst: jest.fn(async ({ where }) => structuredClone(records.find((u) =>
+        where.OR ? where.OR.some((match) => Object.entries(match).every(([key, value]) => u[key] === value)) : u.id === where.id,
+      ) ?? null)),
+      findUnique: jest.fn(async ({ where }) => structuredClone(records.find((u) =>
+        Object.entries(where).every(([key, value]) => u[key] === value),
+      ) ?? null)),
       findUniqueOrThrow: jest.fn(async ({ where }) => structuredClone(records.find((u) => u.id === where.id))),
       create: jest.fn(async ({ data }) => {
-        if (records.some((u) => u.username.toLowerCase() === data.username.toLowerCase())) throw { code: 'P2002' };
+        if (records.some((u) => u.username.toLowerCase() === data.username.toLowerCase() || data.email && u.email === data.email)) throw { code: 'P2002' };
         const user = { ...data, id: Math.max(...records.map((u) => u.id)) + 1, idRole: 5, role: { name: 'technician' }, isActive: true, deletedAt: null,
           createdAt: new Date(), updatedAt: new Date(), passwordUpdatedAt: new Date() };
         records.push(user); return structuredClone(user);
@@ -27,8 +40,15 @@ function fixture() {
       }),
     }, session: sessions, $queryRaw: jest.fn(async () => []),
   };
-  db.$transaction = jest.fn(async (work) => work(db));
-  return { records, logs, sessions, db, service: new UsersService(db, logs as any) };
+  db.$transaction = jest.fn(async (work) => {
+    if (Array.isArray(work)) return Promise.all(work);
+    const previous = structuredClone(records), pendingBefore = pending.slice();
+    transactionOpen = true;
+    try { return await work(db); }
+    catch (error) { records.splice(0, records.length, ...previous); pending.splice(0, pending.length, ...pendingBefore); throw error; }
+    finally { transactionOpen = false; }
+  });
+  return { records, logs, sessions, db, pending, welcome, service: new UsersService(db, logs as any, welcome as any) };
 }
 
 describe('Separate administrator-created technician accounts', () => {
@@ -59,6 +79,82 @@ describe('Separate administrator-created technician accounts', () => {
     const saved = await f.service.createTechnicianAsAdmin({ ...dto(), username: ' carlos.warehouse ', firstName: ' Carlos ', lastName: ' Test ' }, admin);
     expect(saved).toMatchObject({ username: 'carlos.warehouse', firstName: 'Carlos', lastName: 'Test' });
     expect(f.db.user.create.mock.calls[0][0].data.password).not.toBe(dto().password);
+  });
+  it('allows a dealer and multiple technician accounts to share a contact email without sharing a login identity', async () => {
+    const f = fixture(), dealerBefore = structuredClone(f.records[0]);
+    const first = await f.service.createTechnicianAsAdmin({ ...dto(), contactEmail: ' CARLOS@EXAMPLE.TEST ' }, admin);
+    const second = await f.service.createTechnicianAsAdmin({ ...dto(), username: 'carlos.second', contactEmail: 'carlos@example.test' }, admin);
+    expect(first).toMatchObject({ email: null, contactEmail: 'carlos@example.test' });
+    expect(second).toMatchObject({ email: null, contactEmail: 'carlos@example.test' });
+    expect(f.records[0]).toEqual(dealerBefore);
+    expect((await f.service.findOneByIdentifier('carlos@example.test'))?.id).toBe(dealerBefore.id);
+    expect((await f.service.findOneByIdentifier(first.username))?.id).toBe(first.id);
+    expect(f.pending).toEqual([first.id, second.id]);
+    expect(f.welcome.enqueue).toHaveBeenNthCalledWith(1, first.id, f.db);
+    expect(f.welcome.enqueue).toHaveBeenNthCalledWith(2, second.id, f.db);
+  });
+  it('updates and clears technician contact email without resending a welcome or changing login email', async () => {
+    const f = fixture();
+    const user = await f.service.createTechnicianAsAdmin({ ...dto(), contactEmail: 'first@example.test' }, admin);
+    const updated = await f.service.updateTechnicianAsAdmin(user.id, { contactEmail: ' CARLOS@EXAMPLE.TEST ' }, admin);
+    expect(updated).toMatchObject({ email: null, contactEmail: 'carlos@example.test' });
+    expect(f.logs.log).toHaveBeenCalledWith(expect.objectContaining({ meta: expect.objectContaining({ changedFields: ['contactEmail'] }) }));
+    const cleared = await f.service.updateTechnicianAsAdmin(user.id, { contactEmail: '' }, admin);
+    expect(cleared).toMatchObject({ email: null, contactEmail: null });
+    expect(f.welcome.enqueue).toHaveBeenCalledTimes(1);
+    expect(f.pending).toEqual([user.id]);
+  });
+  it.each([undefined, null, '', '   '])('allows an optional contact email of %p', async (contactEmail) => {
+    const f = fixture();
+    const saved = await f.service.createTechnicianAsAdmin({ ...dto(), contactEmail }, admin);
+    expect(saved.contactEmail).toBeNull();
+  });
+  it.each(['not-an-email', 'a@', 'a\r\n@example.test', 'a'.repeat(245) + '@example.test', 123, {}, []])('rejects invalid contact email %p before saving an account', async (contactEmail) => {
+    const f = fixture();
+    await expect(f.service.createTechnicianAsAdmin({ ...dto(), contactEmail } as any, admin)).rejects.toThrow(BadRequestException);
+    expect(f.db.user.create).not.toHaveBeenCalled();
+    expect(f.welcome.enqueue).not.toHaveBeenCalled();
+  });
+  it('accepts optional contact email through the real create and update validation pipe', async () => {
+    const pipe = new ValidationPipe({ transform: true, whitelist: true, transformOptions: { enableImplicitConversion: true } });
+    const created = await pipe.transform({ ...dto(), contactEmail: ' CARLOS@EXAMPLE.TEST ' }, { type: 'body', metatype: CreateTechnicianDto });
+    expect(created.contactEmail).toBe('carlos@example.test');
+    for (const contactEmail of ['', null]) {
+      const updated = await pipe.transform({ contactEmail }, { type: 'body', metatype: UpdateTechnicianDto });
+      expect(updated.contactEmail).toBeNull();
+    }
+    await expect(pipe.transform({ ...dto(), contactEmail: 'invalid' }, { type: 'body', metatype: CreateTechnicianDto })).rejects.toThrow();
+  });
+  it('rolls back a technician account if storing its welcome fails and never queues for a failed duplicate creation', async () => {
+    const f = fixture(), before = structuredClone(f.records);
+    f.welcome.enqueue.mockRejectedValueOnce(new Error('Storage unavailable'));
+    await expect(f.service.createTechnicianAsAdmin({ ...dto(), contactEmail: 'carlos@example.test' }, admin)).rejects.toThrow('Storage unavailable');
+    expect(f.records).toEqual(before);
+    expect(f.pending).toEqual([]);
+    f.welcome.enqueue.mockClear();
+    await expect(f.service.createTechnicianAsAdmin({ ...dto(), username: 'carlos.sales', contactEmail: 'carlos@example.test' }, admin)).rejects.toThrow(ConflictException);
+    expect(f.welcome.enqueue).not.toHaveBeenCalled();
+  });
+  it('uses the unique login email for recovery even when technicians share that contact address', async () => {
+    const f = fixture();
+    await f.service.createTechnicianAsAdmin({ ...dto(), contactEmail: 'carlos@example.test' }, admin);
+    f.db.passwordResetToken = { updateMany: jest.fn(async () => ({ count: 0 })), create: jest.fn(async () => ({})) };
+    const mail = { sendPasswordResetEmail: jest.fn() };
+    const auth = new AuthService(f.service, f.db, {} as any, f.logs as any, mail as any, {} as any, {} as any, f.welcome as any);
+    const before = process.env.PUBLIC_FRONTEND_URL;
+    process.env.PUBLIC_FRONTEND_URL = 'https://portal.example.test';
+    try {
+      await auth.forgotPassword({ email: 'carlos@example.test' });
+      expect(f.db.passwordResetToken.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ userId: 2 }) }));
+      expect(mail.sendPasswordResetEmail).toHaveBeenCalledTimes(1);
+      f.records.splice(0, 1);
+      expect(await f.service.findOneByIdentifier('carlos@example.test')).toBeNull();
+      await auth.forgotPassword({ email: 'carlos@example.test' });
+      expect(mail.sendPasswordResetEmail).toHaveBeenCalledTimes(1);
+    } finally {
+      if (before === undefined) delete process.env.PUBLIC_FRONTEND_URL;
+      else process.env.PUBLIC_FRONTEND_URL = before;
+    }
   });
   it.each([
     { username: 'abc' }, { username: 'staff@example.test' }, { username: 'a b' }, { username: 'x'.repeat(25) },

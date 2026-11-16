@@ -164,7 +164,7 @@ describe('SMS consent', () => {
 
   it('revokes on a real profile phone change and never restores by changing back', async () => {
     const f = fixture(); await f.subscribe();
-    const users = new UsersService(f.db, {} as any);
+    const users = new UsersService(f.db, {} as any, { enqueue: jest.fn() } as any);
     await users.updateUser({ where: { id: 1 }, data: { phone: '+13055559876' } });
     assert.equal((await f.service.getPreferences(1)).enabled, false);
     assert.equal(f.state.events.at(-1).action, 'PHONE_CHANGED');
@@ -173,7 +173,7 @@ describe('SMS consent', () => {
   });
 
   it('keeps consent for unrelated profile edits and revokes it when deactivated', async () => {
-    const f = fixture(); await f.subscribe(); const users = new UsersService(f.db, {} as any);
+    const f = fixture(); await f.subscribe(); const users = new UsersService(f.db, {} as any, { enqueue: jest.fn() } as any);
     await users.updateUser({ where: { id: 1 }, data: { firstName: 'New name', phone: '+13055551234' } });
     assert.equal((await f.service.getPreferences(1)).enabled, true);
     await users.updateUser({ where: { id: 1 }, data: { isActive: false } });
@@ -183,7 +183,7 @@ describe('SMS consent', () => {
 
   it('revokes consent when the account is deleted', async () => {
     const f = fixture(); await f.subscribe();
-    await new UsersService(f.db, {} as any).deleteUser({ id: 1 });
+    await new UsersService(f.db, {} as any, { enqueue: jest.fn() } as any).deleteUser({ id: 1 });
     assert.equal(f.state.consents[0].enabled, false);
     assert.equal(f.state.events.at(-1).action, 'ACCOUNT_DISABLED');
   });

@@ -13,6 +13,8 @@ import { dealerChain, descendantIds, NETWORK_LABELS, validateSubdealerPlan, netw
 import { CreateNetworkMemberDto, SetNetworkSuspensionDto, ReviewNetworkSuspensionDto, UpdateNetworkMarkupDto } from './dealer-network.dto';
 import { networkAccessBlocked, networkSalesBlocked, networkParentSelect } from './network-access';
 import { normalizeAddressLine2 } from '@/common/address-line2';
+import { WelcomeEmailModule } from '@/mail/welcome-email.module';
+import { WelcomeEmailService } from '@/mail/welcome-email.service';
 
 const memberSelect = {
   id: true, username: true, firstName: true, lastName: true, email: true, phone: true,
@@ -28,7 +30,8 @@ const memberSelect = {
 
 @Injectable()
 export class DealerNetworkService {
-  constructor(private prisma: PrismaService, private logs: LogsService, private notifications: NotificationsService) {}
+  constructor(private prisma: PrismaService, private logs: LogsService, private notifications: NotificationsService,
+    private welcome: WelcomeEmailService) {}
 
   private requireDealerOrStaff(actor: AuthUser) {
     if (!['dealer', 'admin', 'operator'].includes(actor.role?.name ?? '')) throw new ForbiddenException('Dealer network access required.');
@@ -123,6 +126,7 @@ export class DealerNetworkService {
             networkTaxRate: dto.taxPercent != null ? new Prisma.Decimal(dto.taxPercent).div(100).toString() : null, ...terms },
           meta: { source: 'DealerNetworkService.create' },
         }, tx);
+        await this.welcome.enqueue(account.id, tx);
         return account;
       });
     } catch (error) {
@@ -334,5 +338,5 @@ export class DealerNetworkController {
   }
 }
 
-@Module({ imports: [PrismaModule, LogsModule, NotificationsModule], controllers: [DealerNetworkController], providers: [DealerNetworkService] })
+@Module({ imports: [PrismaModule, LogsModule, NotificationsModule, WelcomeEmailModule], controllers: [DealerNetworkController], providers: [DealerNetworkService] })
 export class DealerNetworkModule {}

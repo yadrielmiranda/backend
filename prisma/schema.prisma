@@ -308,6 +308,9 @@ model User {
   firstName                      String
   lastName                       String
   email                          String?                 @unique
+  // Optional technician notifications address; never used for login or password recovery.
+  contactEmail                   String?                 @db.VarChar(254)
+  welcomeEmail                   AccountWelcomeEmail?
   phone                          String?                 @unique
   password                       String
   passwordUpdatedAt              DateTime                @default(now())
@@ -2725,6 +2728,23 @@ model NotificationEmail {
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
   notification      Notification            @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+}
+
+// One welcome per newly created account; existing accounts are not backfilled.
+model AccountWelcomeEmail {
+  userId            Int                     @id
+  email             String                  @db.VarChar(254)
+  status            NotificationEmailStatus @default(PENDING)
+  attempts          Int                     @default(0)
+  nextAttemptAt     DateTime                @default(now())
+  attemptedAt       DateTime?
+  providerMessageId String?                 @db.VarChar(320)
+  errorCode         String?                 @db.VarChar(60)
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  user              User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([status, nextAttemptAt])
 }

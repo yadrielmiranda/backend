@@ -80,10 +80,10 @@ function fixture() {
   const logs = { log: jest.fn() };
   const jwt = new JwtService({ secret });
   const auth = new AuthService({ findOneByIdentifier: async (username: string) => users.find(user => user.username === username) } as any,
-    db, jwt, logs as any, {} as any, {} as any, {} as any);
+    db, jwt, logs as any, {} as any, {} as any, {} as any, { enqueue: jest.fn() } as any);
   (auth as any).bcryptRounds = 4;
   const notifications = { createAndSendToRoles: jest.fn(), createAndSend: jest.fn() };
-  const service = new DealerNetworkService(db, logs as any, notifications as any);
+  const service = new DealerNetworkService(db, logs as any, notifications as any, { enqueue: jest.fn() } as any);
   const sessionFor = async (id: number) => {
     const user = users.find(user => user.id === id), sid = auth.newSessionId();
     const refresh = await auth.signRefreshToken(id, sid, user.passwordUpdatedAt);

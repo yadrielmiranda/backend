@@ -21,6 +21,19 @@ const allowed = (controller: any, method: string, role = 'technician') => new Ro
 } as any);
 
 describe('Technician authentication and default-deny authorization', () => {
+  it('keeps the optional technician contact email visible to account-management staff only', () => {
+    const account = { id: 3, username: 'staff.one', idRole: 5, role: { name: 'technician' },
+      email: null, contactEmail: 'dealer@example.test', password: 'hidden' };
+    for (const role of ['admin', 'operator'] as const) {
+      const result = presentApiResponse(account, { id: 1, role: { name: role } });
+      expect(result.contactEmail).toBe('dealer@example.test');
+      expect(result).not.toHaveProperty('password');
+    }
+    for (const role of ['client', 'dealer', 'technician'] as const) {
+      expect(presentApiResponse(account, { id: 1, role: { name: role } })).not.toHaveProperty('contactEmail');
+    }
+    expect(presentApiResponse(account, undefined)).not.toHaveProperty('contactEmail');
+  });
   it.each([
     'state',
     'pending',

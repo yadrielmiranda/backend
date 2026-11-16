@@ -64,7 +64,7 @@ function fixture(mode: string | null = 'INTERNAL', roleName = 'dealer') {
   };
   db.$transaction = jest.fn(async work => work(db));
   const logs = { log: jest.fn() };
-  return { account, accounts, records, db, estimates, logs, service: new UsersService(db, logs as any), plans: new EarningsPlansService(db) };
+  return { account, accounts, records, db, estimates, logs, service: new UsersService(db, logs as any, { enqueue: jest.fn() } as any), plans: new EarningsPlansService(db) };
 }
 
 describe('Admin-created earnings plan catalog and dealer assignments', () => {

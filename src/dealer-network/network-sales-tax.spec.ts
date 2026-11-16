@@ -40,7 +40,7 @@ function fixture(rootMode = 'EXTERNAL', subMode = 'EXTERNAL') {
   };
   db.$transaction = jest.fn(async work => work(db));
   const logs = { log: jest.fn() };
-  const service = new DealerNetworkService(db, logs as any, {} as any);
+  const service = new DealerNetworkService(db, logs as any, {} as any, { enqueue: jest.fn() } as any);
   const estimate = async (ownerId = 3) => {
     const snapshot = (await createNetworkSnapshot(db, users[ownerId - 1], '.07'))!;
     const piece: any = applyNetworkPricing({ qty: 1, price: new Decimal(1000), rate: new Decimal(800),

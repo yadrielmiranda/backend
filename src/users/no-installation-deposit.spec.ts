@@ -11,6 +11,8 @@ import { ROLES_KEY } from '@/auth/roles.decorator';
 jest.mock('bcrypt', () => ({ hash: jest.fn(async () => 'test-only-hash') }));
 
 function fixture(roleName = 'dealer') {
+  const state: { created: any[]; pending: number[]; failWelcome: boolean } = { created: [], pending: [], failWelcome: false };
+  let transactionOpen = false;
   const account: any = {
     id: 7,
     idRole: 2,
@@ -27,25 +29,77 @@ function fixture(roleName = 'dealer') {
       count: jest.fn(async () => 0),
       findFirst: jest.fn(async () => ({ ...account })),
       findUniqueOrThrow: jest.fn(async () => account),
-      create: jest.fn(async ({ data }) => ({ ...account, ...data })),
+      create: jest.fn(async ({ data }) => {
+        const saved = { ...account, ...data };
+        state.created.push(saved);
+        return saved;
+      }),
       update: jest.fn(async ({ data }) => Object.assign(account, data)),
     },
     role: { findUnique: jest.fn(async () => ({ id: 2, name: roleName })) },
   };
   const prisma: any = {
     ...tx,
-    $transaction: jest.fn(async (work) => work(tx)),
+    $transaction: jest.fn(async (work) => {
+      const createdBefore = state.created.slice(), pendingBefore = state.pending.slice();
+      transactionOpen = true;
+      try { return await work(tx); }
+      catch (error) { state.created = createdBefore; state.pending = pendingBefore; throw error; }
+      finally { transactionOpen = false; }
+    }),
   };
   const logs = { log: jest.fn() };
+  const welcome = { enqueue: jest.fn(async (userId: number, transaction: unknown) => {
+    expect(transaction).toBe(tx);
+    expect(transactionOpen).toBe(true);
+    state.pending.push(userId);
+    if (state.failWelcome) throw new Error('Queue storage unavailable');
+  }) };
   return {
     account,
+    state,
     tx,
     logs,
-    service: new UsersService(prisma, logs as never),
+    welcome,
+    service: new UsersService(prisma, logs as never, welcome as any),
   };
 }
 
 describe('Admin-managed No installation deposit setting', () => {
+  it.each(['client', 'dealer', 'admin', 'operator'])('queues a welcome when an administrator creates a %s account', async (roleName) => {
+    const f = fixture(roleName);
+    const account = await f.service.createUserAsAdmin({
+      username: 'new.account', firstName: 'New', lastName: 'Account', idRole: 2,
+      password: 'example-password', email: 'new@example.test', phone: '+13055550101',
+      street: '1 Test St', city: 'Miami', state: 'FL', postalCode: '33101',
+    }, { id: 1, role: { name: 'admin' } });
+    expect(f.welcome.enqueue).toHaveBeenCalledTimes(1);
+    expect(f.welcome.enqueue).toHaveBeenCalledWith(account.id, f.tx);
+    expect(f.tx.user.create.mock.invocationCallOrder[0]).toBeLessThan(f.welcome.enqueue.mock.invocationCallOrder[0]);
+  });
+  it('does not queue a welcome when account creation fails or an existing account is edited', async () => {
+    const f = fixture();
+    f.tx.user.create.mockRejectedValueOnce(new Error('Duplicate account'));
+    await expect(f.service.createUser({
+      username: 'new.account', firstName: 'New', lastName: 'Account', idRole: 2,
+      password: 'example-password', email: 'new@example.test', phone: '+13055550101',
+      street: '1 Test St', city: 'Miami', state: 'FL', postalCode: '33101',
+    })).rejects.toThrow('Duplicate account');
+    await f.service.updateUser({ where: { id: 7 }, data: { firstName: 'Updated' } });
+    expect(f.welcome.enqueue).not.toHaveBeenCalled();
+  });
+  it('rolls back the new administrative account and welcome together if queue storage fails', async () => {
+    const f = fixture('client');
+    f.state.failWelcome = true;
+    await expect(f.service.createUserAsAdmin({
+      username: 'new.account', firstName: 'New', lastName: 'Account', idRole: 2,
+      password: 'example-password', email: 'new@example.test', phone: '+13055550101',
+      street: '1 Test St', city: 'Miami', state: 'FL', postalCode: '33101',
+    }, { id: 1, role: { name: 'admin' } })).rejects.toThrow('Queue storage unavailable');
+    expect(f.state.created).toEqual([]);
+    expect(f.state.pending).toEqual([]);
+    expect(f.logs.log).not.toHaveBeenCalled();
+  });
   it('persists the setting and records the change in the existing user audit', async () => {
     const f = fixture();
     await f.service.updateUserAsAdmin(

@@ -18,6 +18,8 @@ import { getRoleName } from '@/auth/utils/get-role-name';
 import { revokeSmsConsent } from '@/sms/sms-consent.helpers';
 import { networkParentSelect } from '@/dealer-network/network-access';
 import { normalizeAddressLine2 } from '@/common/address-line2';
+import { isEmail } from 'class-validator';
+import { WelcomeEmailService } from '@/mail/welcome-email.service';
 import {
   isValidUsername,
   USERNAME_VALIDATION_MESSAGE,
@@ -39,6 +41,7 @@ export class UsersService {
   constructor(
     private prisma: PrismaService,
     private logs: LogsService,
+    private welcome: WelcomeEmailService,
   ) {}
 
   private normalizeMarkupOverride(value: string | null): Prisma.Decimal | null {
@@ -77,6 +80,7 @@ export class UsersService {
     firstName: true,
     lastName: true,
     email: true,
+    contactEmail: true,
     phone: true,
     street: true,
     addressLine2: true,
@@ -107,6 +111,7 @@ export class UsersService {
       id: u.id,
       username: u.username,
       email: u.email,
+      contactEmail: u.contactEmail,
       firstName: u.firstName,
       lastName: u.lastName,
       phone: u.phone,
@@ -143,6 +148,7 @@ export class UsersService {
     if ('username' in dto && cmp(before.username, after.username))
       changed.push('username');
     if ('email' in dto && cmp(before.email, after.email)) changed.push('email');
+    if ('contactEmail' in dto && cmp(before.contactEmail, after.contactEmail)) changed.push('contactEmail');
     if ('firstName' in dto && cmp(before.firstName, after.firstName))
       changed.push('firstName');
     if ('lastName' in dto && cmp(before.lastName, after.lastName))
@@ -257,6 +263,8 @@ export class UsersService {
 
     if (role.name === 'technician')
       throw new BadRequestException('Create a separate technician account using New technician.');
+    if ('contactEmail' in userData)
+      throw new BadRequestException('Contact email is only available for technician accounts.');
     this.assertCommercialContact(userData);
 
     const resolvedDealerMode = this.resolveDealerMode({
@@ -283,7 +291,7 @@ export class UsersService {
     const created = await this.prisma.$transaction(async tx => {
       const earningsPlan = resolvedDealerMode === DealerMode.INTERNAL
         ? await loadActiveEarningsPlan(tx, dealerEarningsPlanId) : null;
-      return tx.user.create({
+      const account = await tx.user.create({
         data: {
           ...rest,
           addressLine2: normalizeAddressLine2(userData.addressLine2),
@@ -299,6 +307,8 @@ export class UsersService {
         },
         select: this.safeSelect,
       });
+      await this.welcome.enqueue(account.id, tx);
+      return account;
     });
 
     return created as UserSafe;
@@ -340,13 +350,15 @@ export class UsersService {
     }
 
     if (existing.role.name === 'technician') {
-      const allowed = new Set(['username', 'firstName', 'lastName', 'password', 'isActive']);
+      const allowed = new Set(['username', 'firstName', 'lastName', 'password', 'isActive', 'contactEmail']);
       if (Object.keys(userData).some((key) => !allowed.has(key)))
         throw new BadRequestException('Technician accounts cannot have a commercial role, contact or pricing settings.');
       Object.assign(rest, this.technicianFields(userData, true));
       if (userData.isActive !== undefined && typeof userData.isActive !== 'boolean')
         throw new BadRequestException('isActive must be a boolean.');
     } else {
+      if ('contactEmail' in userData)
+        throw new BadRequestException('Contact email is only available for technician accounts.');
       // PartialType omite null: la validación de servicio impide borrar contactos obligatorios.
       this.assertCommercialContact(userData, true);
     }
@@ -502,6 +514,7 @@ export class UsersService {
           deletedAt: now,
           username: `deleted_${user.id}_${user.username}`,
           email: user.email === null ? null : `deleted_${user.id}_${user.email}`,
+          contactEmail: null,
           phone: user.phone === null ? null : `+1000000${String(user.id).padStart(4, '0')}`,
         },
         select: this.safeSelect,
@@ -545,6 +558,15 @@ export class UsersService {
       this.assertTechnicianPassword(dto.password);
       data.password = dto.password;
     }
+    if (dto.contactEmail !== undefined) {
+      const value = dto.contactEmail;
+      if (value !== null && typeof value !== 'string')
+        throw new BadRequestException('Enter a valid contact email.');
+      const normalized = value?.trim().toLowerCase() || null;
+      if (normalized && (normalized.length > 254 || !isEmail(normalized)))
+        throw new BadRequestException('Enter a valid contact email.');
+      data.contactEmail = normalized;
+    }
     return data;
   }
 
@@ -553,16 +575,21 @@ export class UsersService {
     const role = await this.prisma.role.findUnique({ where: { name: 'technician' }, select: { id: true } });
     if (!role) throw new BadRequestException('Apply the technician account migration before creating an account.');
     let created: UserSafe;
+    const password = await bcrypt.hash(data.password, 10);
     try {
-      created = await this.prisma.user.create({
-        data: {
-          username: data.username, firstName: data.firstName, lastName: data.lastName,
-          password: await bcrypt.hash(data.password, 10),
-          email: null, phone: null, street: null, addressLine2: null, city: null, state: null, postalCode: null,
-          role: { connect: { id: role.id } },
-          dealerMode: null, isTaxExempt: false, noInstallationDeposit: false,
-        }, select: this.safeSelect,
-      }) as UserSafe;
+      created = await this.prisma.$transaction(async tx => {
+        const account = await tx.user.create({
+          data: {
+            username: data.username, firstName: data.firstName, lastName: data.lastName,
+            password, contactEmail: data.contactEmail ?? null,
+            email: null, phone: null, street: null, addressLine2: null, city: null, state: null, postalCode: null,
+            role: { connect: { id: role.id } },
+            dealerMode: null, isTaxExempt: false, noInstallationDeposit: false,
+          }, select: this.safeSelect,
+        });
+        await this.welcome.enqueue(account.id, tx);
+        return account as UserSafe;
+      });
     } catch (error) {
       if (error?.code === 'P2002') throw new ConflictException('This username is already in use. Choose another username.');
       throw error;

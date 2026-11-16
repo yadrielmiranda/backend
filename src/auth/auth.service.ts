@@ -20,6 +20,7 @@ import { addDays } from 'date-fns';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { LogsService } from '@/logs/logs.service';
 import { MailService } from '@/mail/mail.service';
+import { WelcomeEmailService } from '@/mail/welcome-email.service';
 import { SmsConsentService } from '@/sms/sms-consent.service';
 import { pickProfileFields } from './dto/self-service-fields';
 import { assertTokenPurpose, SessionTokenPayload } from './access-session';
@@ -44,6 +45,7 @@ export class AuthService {
     private mail: MailService,
     private smsConsent: SmsConsentService,
     private deliveryCoverage: DeliveryCoverageService,
+    private welcome: WelcomeEmailService,
   ) { }
 
   private accessTtl = process.env.JWT_ACCESS_TTL || '15m';
@@ -283,6 +285,7 @@ export class AuthService {
             },
           });
         }
+        await this.welcome.enqueue(user.id, tx);
         return user;
       });
       return { ...user, deliveryAvailable: coverage.available };
