@@ -8,6 +8,7 @@ import {
   Delete,
   Query,
   ParseIntPipe,
+  Header,
 } from '@nestjs/common';
 import { SystemsService } from './systems.service';
 import { CreateSystemDto } from './dto/create-system.dto';
@@ -18,10 +19,14 @@ import { UpdateSystemConfigOptionsDto } from './dto/update-system-config-options
 import { UpdateSystemCrystalsDto } from './dto/update-system-crystals.dto';
 import { UpdateSystemFrameColorsDto } from './dto/update-system-frame-colors.dto';
 import { UpdateSystemConfigPricingComponentsDto } from './dto/update-system-config-pricing-components.dto';
+import { SystemInstallationApprovalService } from './system-installation-approval.service';
 
 @Controller('systems')
 export class SystemsController {
-  constructor(private readonly systemsService: SystemsService) { }
+  constructor(
+    private readonly systemsService: SystemsService,
+    private readonly installationApprovals: SystemInstallationApprovalService,
+  ) { }
 
   // 🔒 WRITE: solo admin
   @Roles('admin')
@@ -122,6 +127,20 @@ export class SystemsController {
     @Body() body: UpdateSystemFrameColorsDto,
   ) {
     return this.systemsService.updateSystemFrameColors(id, body);
+  }
+
+  @Roles('admin', 'operator', 'dealer', 'client', 'technician')
+  @Get('approvals')
+  @Header('Cache-Control', 'no-store')
+  getProductApprovals(@Query('ids') ids: unknown) {
+    return this.installationApprovals.findBatch(ids);
+  }
+
+  @Roles('admin', 'operator', 'dealer', 'client', 'technician')
+  @Get(':id/installation-approval')
+  @Header('Cache-Control', 'no-store')
+  getInstallationApproval(@Param('id', ParseIntPipe) id: number) {
+    return this.installationApprovals.find(id);
   }
 
   @Get(':id')

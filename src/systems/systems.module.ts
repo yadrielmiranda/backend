@@ -6,10 +6,12 @@ import { SystemMuntinsController } from './system-muntins.controller';
 import { SystemMuntinsService } from './system-muntins.service';
 import { SystemDesignsController } from './system-designs.controller';
 import { SystemDesignsService } from './system-designs.service';
+import { HttpModule } from '@nestjs/axios';
+import { SystemInstallationApprovalService } from './system-installation-approval.service';
 
 @Module({
-  imports:[PrismaModule],
+  imports:[PrismaModule, HttpModule],
   controllers: [SystemsController, SystemMuntinsController, SystemDesignsController],
-  providers: [SystemsService, SystemMuntinsService, SystemDesignsService],
+  providers: [SystemsService, SystemMuntinsService, SystemDesignsService, SystemInstallationApprovalService],
 })
 export class SystemsModule {}
