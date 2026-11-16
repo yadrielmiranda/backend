@@ -12,7 +12,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-export const FRAME_PRICE_DECIMAL_PATTERN = /^\d{1,18}(?:\.\d{1,20})?$/;
+export const FRAME_PRICE_DECIMAL_PATTERN = /^-?\d{1,18}(?:\.\d{1,20})?$/;
 const POSITIVE_FRAME_PRICE_DECIMAL_PATTERN = /^(?!0+(?:\.0+)?$)\d{1,18}(?:\.\d{1,20})?$/;
 const decimalText = ({ value }: { value: unknown }) =>
   typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : value;
@@ -49,7 +49,7 @@ export class UpdateSystemFrameColorItemDto {
   @Transform(decimalText)
   @IsString()
   @Matches(FRAME_PRICE_DECIMAL_PATTERN, {
-    message: 'Base price deduction must be zero or greater, with at most 18 integer digits and 20 decimal digits.',
+    message: 'Base price deduction must be a number with at most 18 integer digits and 20 decimal digits. Negative values add to the base price.',
   })
   basePriceDeduction?: string | number;
 }

@@ -17,6 +17,7 @@ function applyBaseModifier(
   modifier: FrameBaseModifier | null,
   option: string,
   settingsPage: string,
+  allowNegativeDeduction = false,
 ): Decimal {
   if (modifier?.modifierEnabled !== true) return basePrice;
 
@@ -29,8 +30,10 @@ function applyBaseModifier(
     throw new BadRequestException(`The ${option} modifier has invalid values. Review it in ${settingsPage}.`);
   }
 
-  if (!multiplier.isFinite() || multiplier.lte(0) || !deduction.isFinite() || deduction.lt(0)) {
-    throw new BadRequestException(`The ${option} modifier requires a positive multiplier and a deduction of zero or greater. Review it in ${settingsPage}.`);
+  if (!multiplier.isFinite() || multiplier.lte(0) || !deduction.isFinite()
+    || (!allowNegativeDeduction && deduction.lt(0))) {
+    const deductionRequirement = allowNegativeDeduction ? 'a finite deduction' : 'a deduction of zero or greater';
+    throw new BadRequestException(`The ${option} modifier requires a positive multiplier and ${deductionRequirement}. Review it in ${settingsPage}.`);
   }
 
   const adjustedBasePrice = basePrice.mul(multiplier).sub(deduction);
@@ -41,7 +44,7 @@ function applyBaseModifier(
 }
 
 export function applyFrameBaseModifier(basePrice: Decimal, modifier: FrameBaseModifier): Decimal {
-  return applyBaseModifier(basePrice, modifier, 'frame color', 'Manage Frame Colors');
+  return applyBaseModifier(basePrice, modifier, 'frame color', 'Manage Frame Colors', true);
 }
 
 export function applyDesignBaseModifier(basePrice: Decimal, modifier: FrameBaseModifier | null): Decimal {

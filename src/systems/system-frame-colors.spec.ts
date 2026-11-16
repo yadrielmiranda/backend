@@ -74,6 +74,23 @@ describe('Frame base modifiers configured per series and frame color', () => {
     expect((await f.service.getSystemFrameColorsForManage(10)).selectedFrameColors[0].basePriceMultiplier).toBe(multiplier);
   });
 
+  it('preserves the requested signed coefficients exactly through saving, toggles and legacy ordering', async () => {
+    const f = fixture();
+    const requestedMultiplier = '1.24406135468983310710';
+    const requestedDeduction = '-0.7873041943803069';
+    const expected = { basePriceMultiplier: '1.2440613546898331071', basePriceDeduction: requestedDeduction };
+    const result = await f.update({ modifierEnabled: true, basePriceMultiplier: requestedMultiplier, basePriceDeduction: requestedDeduction });
+    expect(result.selectedFrameColors[0]).toMatchObject({ modifierEnabled: true, ...expected });
+    const stored = f.tx.systemFrameColor.createMany.mock.calls[0][0].data[0];
+    expect(stored.basePriceMultiplier.toFixed(20)).toBe(requestedMultiplier);
+    expect(stored.basePriceDeduction.toFixed(16)).toBe(requestedDeduction);
+    expect((await f.update({ modifierEnabled: false })).selectedFrameColors[0]).toMatchObject({ modifierEnabled: false, ...expected });
+    expect((await f.update({ modifierEnabled: true })).selectedFrameColors[0]).toMatchObject({ modifierEnabled: true, ...expected });
+    const reordered = await f.service.updateSystemFrameColors(10, { frameColorIds: [8, 7] });
+    expect(reordered.selectedFrameColors.find(row => row.idFrameColor === 7)).toMatchObject({ modifierEnabled: true, ...expected });
+    expect((await f.service.getSystemFrameColorsForManage(20)).selectedFrameColors[0].basePriceDeduction).toBe('0');
+  });
+
   it('disables and re-enables the modifier without erasing its saved coefficients', async () => {
     const f = fixture();
     await f.update({ modifierEnabled: true, basePriceMultiplier: multiplier, basePriceDeduction: deduction });
@@ -128,9 +145,11 @@ describe('Frame base modifiers configured per series and frame color', () => {
     { basePriceMultiplier: '-1' }, { basePriceMultiplier: '' }, { basePriceMultiplier: true },
     { basePriceMultiplier: 'NaN' }, { basePriceMultiplier: Infinity },
     { basePriceMultiplier: '1000000000000000000' }, { basePriceMultiplier: '1.123456789012345678901' },
-    { basePriceDeduction: null }, { basePriceDeduction: '-1' }, { basePriceDeduction: '' },
+    { basePriceDeduction: null }, { basePriceDeduction: '' },
+    { basePriceDeduction: '-' }, { basePriceDeduction: '--1' }, { basePriceDeduction: '+1' }, { basePriceDeduction: '-1e-20' },
     { basePriceDeduction: 'Infinity' }, { basePriceDeduction: NaN },
     { basePriceDeduction: '1000000000000000000' }, { basePriceDeduction: '0.123456789012345678901' },
+    { basePriceDeduction: '-1000000000000000000' }, { basePriceDeduction: '-0.123456789012345678901' },
   ])('rejects invalid modifier data before writing even when disabled: %j', async changes => {
     const f = fixture();
     await expect(f.update({ modifierEnabled: false, ...changes })).rejects.toThrow();
@@ -151,4 +170,18 @@ describe('Frame base modifiers configured per series and frame color', () => {
       expect(await validate(dto, { whitelist: true })).toEqual([]);
     }
   });
+
+  it.each([-0.5, '-0.00000000000000000001', '-999999999999999999.99999999999999999999'])(
+    'accepts and persists a signed deduction within the exact decimal boundary: %s', async basePriceDeduction => {
+      const f = fixture();
+      const dto = plainToInstance(UpdateSystemFrameColorsDto, {
+        frameColors: [{ frameColorId: 7, sortOrder: 0, modifierEnabled: false, basePriceMultiplier: '1', basePriceDeduction }],
+      }, { enableImplicitConversion: true });
+      expect(await validate(dto, { whitelist: true })).toEqual([]);
+      const result = await f.service.updateSystemFrameColors(10, dto);
+      expect(result.selectedFrameColors[0].basePriceDeduction).toBe(new Prisma.Decimal(basePriceDeduction).toFixed());
+      expect(f.tx.systemFrameColor.createMany.mock.calls[0][0].data[0].basePriceDeduction.toFixed(20))
+        .toBe(new Prisma.Decimal(basePriceDeduction).toFixed(20));
+    },
+  );
 });

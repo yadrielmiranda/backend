@@ -186,6 +186,24 @@ describe('Configured frame base modifier in the shared calculator', () => {
     } }));
   });
 
+  it('adds the requested negative deduction before high bottom, extras, margins and quantity', async () => {
+    const f = fixture();
+    Object.assign(f.frames.get('1-7'), {
+      basePriceMultiplier: '1.24406135468983310710', basePriceDeduction: '-0.7873041943803069',
+    });
+    Object.assign(f.cache.brandTint.get('1-1'), { surchargeEnabled: true, costoA: '2', costoB: '.5', costoC: '3' });
+    Object.assign(f.cache.brandCoating.get('1-1'), { surchargeEnabled: true, costoA: '0', costoB: '0', costoC: '4' });
+    Object.assign(f.cache.brandPrivacy.get('1-1'), { surchargeEnabled: true, costoA: '0', costoB: '0', costoC: '5' });
+    const result = await f.calculate({ idFC: 7, highBottom: true, qty: 3, dealerMarkup: 20 }, '.1');
+    // Base 1244.848658884213414; high bottom 10%, glass extras 52+4+5;
+    // company margin 10%, then dealer margin 20% on the rounded unit price.
+    expect(result.rate.toFixed(2)).toBe('1430.33');
+    expect(result.price.toFixed(2)).toBe('1573.37');
+    expect(result.subtotal.toFixed(2)).toBe('4720.11');
+    expect(result.customerPrice.toFixed(2)).toBe('1888.04');
+    expect(result.customerSubtotal.toFixed(2)).toBe('5664.12');
+  });
+
   it('keeps series/color values separate in the calculation cache', async () => {
     const f = fixture();
     expect((await f.calculate({ idFC: 7 })).rate.toString()).toBe('1990');
@@ -210,11 +228,12 @@ describe('Configured frame base modifier in the shared calculator', () => {
     expect(result.subtotal.toString()).toBe('2190');
   });
 
-  it('subtracts once after aggregating Window Wall panels', async () => {
+  it.each([['10', '5990'], ['-10', '6010']])('applies deduction %s once after aggregating Window Wall panels', async (deduction, expected) => {
     const f = fixture();
     Object.assign(f.cache.sysConf.get('1-1'), { dimensionMode: 'WINDOW_WALL', requiresPanelCount: true });
+    f.frames.get('1-7').basePriceDeduction = deduction;
     const result = await f.calculate({ idFC: 7, width: '144', panelCount: 3 });
-    expect(result.rate.toString()).toBe('5990');
+    expect(result.rate.toString()).toBe(expected);
   });
 
   it('supports linear pieces with the same configured modifier', async () => {
@@ -312,6 +331,15 @@ describe('Design color modifier precedence in the shared calculator', () => {
       basePriceMultiplier: '1.00000000000000000001', basePriceDeduction: '0.00000000000000000001',
     }).toString()).toBe('2.00000000000000000001');
   });
+
+  it('still rejects negative design deductions instead of applying the newly allowed frame behavior', async () => {
+    const modifier = { modifierEnabled: true, basePriceMultiplier: '1', basePriceDeduction: '-0.00000000000000000001' };
+    expect(() => applyDesignBaseModifier(new Decimal(100), modifier)).toThrow('Manage Designs');
+    const f = fixture();
+    f.frames.get('1-7').basePriceDeduction = '-10';
+    f.designModifiers.set('1-12', modifier);
+    await expect(f.calculate({ idDesign: 11, idDesignColor: 12 })).rejects.toThrow('Manage Designs');
+  });
 });
 
 describe('Frame base modifier decimal arithmetic', () => {
@@ -321,10 +349,18 @@ describe('Frame base modifier decimal arithmetic', () => {
     }).toString()).toBe('2.00000000000000000001');
   });
 
+  it('adds signed deductions with the full stored precision and remains neutral when disabled', () => {
+    const modifier = { modifierEnabled: true, basePriceMultiplier: '1.24406135468983310710', basePriceDeduction: '-0.7873041943803069' };
+    expect(applyFrameBaseModifier(new Decimal(1000), modifier).toString()).toBe('1244.848658884213414');
+    expect(applyFrameBaseModifier(new Decimal(1000), { ...modifier, modifierEnabled: false }).toString()).toBe('1000');
+    expect(applyFrameBaseModifier(new Decimal(2), { modifierEnabled: true,
+      basePriceMultiplier: '1.00000000000000000001', basePriceDeduction: '-0.00000000000000000001',
+    }).toString()).toBe('2.00000000000000000003');
+  });
+
   it.each([
     { basePriceMultiplier: '0', basePriceDeduction: '0' },
     { basePriceMultiplier: '-1', basePriceDeduction: '0' },
-    { basePriceMultiplier: '1', basePriceDeduction: '-1' },
     { basePriceMultiplier: 'NaN', basePriceDeduction: '0' },
     { basePriceMultiplier: 'Infinity', basePriceDeduction: '0' },
     { basePriceMultiplier: '1', basePriceDeduction: 'bad' },
