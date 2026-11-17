@@ -13,12 +13,12 @@ import {
   Prisma,
 } from '@prisma/client';
 import { isEmail } from 'class-validator';
-import { isIP } from 'node:net';
 import * as nodemailer from 'nodemailer';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { PrismaService } from '@/prisma/prisma.service';
 import { ESTIMATE_EMAIL_RECIPIENTS_ERROR, parseEstimateEmailRecipients } from './estimate-email-recipients';
 import { AccountWelcomeEmailContent, renderWelcomeEmail } from '@/mail/welcome-email-template';
+import { isEmailDeliveryEnabled } from '@/mail/email-delivery-policy';
 
 const recipientSelect = {
   email: true,
@@ -92,6 +92,7 @@ export class NotificationEmailService {
   ) {}
 
   private settings(): EmailSettings | null {
+    if (!isEmailDeliveryEnabled(this.config)) return null;
     const get = (name: string) =>
       this.config.get<string>(`NOTIFICATIONS_SMTP_${name}`);
     const host = get('HOST')?.trim();
@@ -118,24 +119,8 @@ export class NotificationEmailService {
       return null;
     try {
       const url = new URL(this.config.get<string>('PUBLIC_FRONTEND_URL') ?? '');
-      const environment = this.config.get<string>('NODE_ENV') ?? 'development';
-      const [first, second] = isIP(url.hostname) === 4
-        ? url.hostname.split('.').map(Number)
-        : [];
-      const localHost =
-        url.hostname === 'localhost' ||
-        url.hostname === '[::1]' ||
-        first === 127 ||
-        first === 10 ||
-        (first === 172 && second >= 16 && second <= 31) ||
-        (first === 192 && second === 168);
-      // nest start --watch no define NODE_ENV; HTTP solo sirve para la red local.
-      const localDevelopmentHttp =
-        url.protocol === 'http:' &&
-        ['development', 'test'].includes(environment) &&
-        localHost;
       if (
-        (url.protocol !== 'https:' && !localDevelopmentHttp) ||
+        url.protocol !== 'https:' ||
         url.username || url.password
       )
         return null;

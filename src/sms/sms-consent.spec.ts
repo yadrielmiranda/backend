@@ -115,6 +115,8 @@ describe('SMS consent', () => {
     assert.equal(f.state.events[0].userId, 1);
     assert.equal(f.state.events[0].phone, result.phone);
     assert.deepEqual(JSON.parse(f.state.events[0].consentText).program, result.program);
+    const sharing = result.program.privacy.find((section) => section.title === 'Sharing')!;
+    assert(sharing.text.endsWith('All the above categories exclude text messaging originator opt-in data and consent; this information won’t be shared with any third parties.'));
     assert.equal(f.state.events[0].category, 'SERVICE');
     assert(types.isDate(f.state.events[0].createdAt));
     assert.equal((await f.service.getPreferences(2)).enabled, false);

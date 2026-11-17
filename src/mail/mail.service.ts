@@ -2,11 +2,13 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BrandingType } from '@prisma/client';
 import * as nodemailer from 'nodemailer';
 import { PrismaService } from '@/prisma/prisma.service';
+import { isEmailDeliveryEnabled } from './email-delivery-policy';
 
 const escapeHtml = (value: string) =>
   value
@@ -19,12 +21,24 @@ const escapeHtml = (value: string) =>
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
-  private readonly transporter: nodemailer.Transporter;
+  private transporter?: nodemailer.Transporter;
 
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
-  ) {
+  ) {}
+
+  private assertDeliveryEnabled() {
+    if (!isEmailDeliveryEnabled(this.config)) {
+      throw new ServiceUnavailableException(
+        'Email delivery is disabled in this environment.',
+      );
+    }
+  }
+
+  private transport(): nodemailer.Transporter {
+    this.assertDeliveryEnabled();
+    if (this.transporter) return this.transporter;
     const host = this.config.get<string>('SMTP_HOST');
     const port = Number(this.config.get<string>('SMTP_PORT') ?? 587);
     const secure = this.config.get<string>('SMTP_SECURE') === 'true';
@@ -46,6 +60,7 @@ export class MailService {
         pass,
       },
     });
+    return this.transporter;
   }
 
   private async getCompanyName() {
@@ -80,6 +95,7 @@ export class MailService {
     resetLink: string;
     expiresInMinutes: number;
   }) {
+    this.assertDeliveryEnabled();
     const companyName = await this.getCompanyName();
     const safeCompanyName = escapeHtml(companyName);
     const subject = 'Reset your password';
@@ -139,7 +155,7 @@ export class MailService {
     `;
 
     try {
-      await this.transporter.sendMail({
+      await this.transport().sendMail({
         from: this.getFrom(companyName),
         to: params.to,
         subject,

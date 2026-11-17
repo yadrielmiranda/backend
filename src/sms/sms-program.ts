@@ -17,7 +17,7 @@ export function buildSmsProgram(company: {
     companyName,
     supportEmail,
     supportPhone,
-    effectiveDate: 'September 10, 2026',
+    effectiveDate: 'November 17, 2026',
     consentText: `I agree to receive automated service SMS from ${companyName} about my estimates, installation appointments, orders, payments, and account activity at the phone number shown above.`,
     disclosure: 'Both SMS options are optional. Consent is not a condition of creating an account, using the service, or making a purchase. Message frequency varies. Message and data rates may apply. You can turn off either SMS category in Profile and select Save preferences. Reply STOP to unsubscribe from all SMS or HELP for help.',
     registration: {
@@ -39,7 +39,7 @@ export function buildSmsProgram(company: {
     privacy: [
       { title: 'Information we collect', text: 'For this SMS program, we record your account identifier, phone number, separate service and promotional SMS choices, consent date, and the disclosure and policy version you accepted. We also keep unsubscribe records and identifiers of related SMS opt-in or opt-out messages.' },
       { title: 'How we use it', text: 'We use this information to send SMS in the categories you authorize, manage your SMS preferences, honor unsubscribe requests, assist you, and document your choices.' },
-      { title: 'Sharing', text: 'We do not sell, rent, or share mobile numbers or SMS opt-in data and consent with third parties or affiliates for marketing or promotional purposes. We provide necessary information to messaging service providers, including Twilio and mobile carriers, solely to deliver and manage this SMS service. We may disclose information when required by law.' },
+      { title: 'Sharing', text: 'We do not sell, rent, or share mobile numbers or SMS opt-in data and consent with third parties or affiliates for marketing or promotional purposes. Messaging service providers, including Twilio and mobile carriers, process the destination number and message content to deliver SMS and return delivery information. Other information may be disclosed when required by law. All the above categories exclude text messaging originator opt-in data and consent; this information won’t be shared with any third parties.' },
       { title: 'Your choices and records', text: 'You can unsubscribe from all program SMS by replying STOP or manage each SMS category in Profile. We keep consent and unsubscribe records as needed to document your choices, prevent unwanted messages, and meet applicable obligations. Removing your account does not automatically erase these historical records.' },
       { title: 'Contact', text: contactText },
     ],

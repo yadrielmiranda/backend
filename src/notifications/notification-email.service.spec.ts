@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import { NotificationEmailService } from './notification-email.service';
 import { MailService } from '@/mail/mail.service';
+import { isEmailDeliveryEnabled } from '@/mail/email-delivery-policy';
 
 jest.mock('nodemailer', () => ({ createTransport: jest.fn() }));
 const createTransport = jest.mocked(nodemailer.createTransport);
@@ -43,6 +44,7 @@ function fixture() {
     updatedAt: new Date(),
   };
   const values: Record<string, string> = {
+    NODE_ENV: 'production',
     NOTIFICATIONS_SMTP_HOST: 'smtp.example.com',
     NOTIFICATIONS_SMTP_PORT: '465',
     NOTIFICATIONS_SMTP_SECURE: 'true',
@@ -116,6 +118,72 @@ describe('NotificationEmailService', () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
+  });
+
+  describe('outbound email policy', () => {
+    it.each([
+      [undefined, undefined, false],
+      [undefined, 'true', false],
+      ['development', undefined, false],
+      ['development', 'true', false],
+      ['test', 'true', false],
+      ['staging', 'true', false],
+      ['Production', 'true', false],
+      ['production ', 'true', false],
+      ['production', undefined, true],
+      ['production', 'true', true],
+      ['production', 'false', false],
+      ['production', '', false],
+      ['production', 'TRUE', false],
+      ['production', '1', false],
+      ['production', 'unknown', false],
+    ])('allows delivery only for the production policy: %s / %s', (mode, enabled, allowed) => {
+      const values = { NODE_ENV: mode, EMAIL_DELIVERY_ENABLED: enabled };
+      const config = { get: jest.fn((key: keyof typeof values) => values[key]) };
+      expect(isEmailDeliveryEnabled(config as never)).toBe(allowed);
+    });
+
+    it.each([
+      [undefined, undefined],
+      ['development', undefined],
+      ['development', 'true'],
+      ['test', 'true'],
+      ['staging', 'true'],
+      ['production', 'false'],
+      ['production', 'unknown'],
+    ])('blocks every notification mail path and leaves restored pending rows untouched: %s / %s', async (mode, enabled) => {
+      const f = fixture();
+      if (mode === undefined) delete f.values.NODE_ENV;
+      else f.values.NODE_ENV = mode;
+      if (enabled !== undefined) f.values.EMAIL_DELIVERY_ENABLED = enabled;
+      // A pending row copied from production must not be expired, claimed, or sent locally.
+      f.row.createdAt = new Date(Date.now() - 2 * 86_400_000);
+      const savedRow = { ...f.row };
+
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.service.canSendAccountWelcomeEmail()).toBe(false);
+      expect(f.service.canSendMaterialPurchaseEmail()).toBe(false);
+      await expect(f.service.sendAccountWelcome({
+        to: email, firstName: 'Example', username: 'example', roleName: 'client',
+      })).resolves.toEqual({ status: 'UNAVAILABLE', errorCode: 'EMAIL_NOT_CONFIGURED' });
+      await expect(f.service.sendMaterialPurchaseEmail({
+        to: email, path: `/public/material-sales/${'a'.repeat(64)}`,
+        customerName: 'Example', saleCode: 'MS-123', total: '48.15', currency: 'USD',
+      })).resolves.toEqual({ status: 'UNAVAILABLE', errorCode: 'EMAIL_NOT_CONFIGURED' });
+      expect(() => f.service.assertEstimateShareReady()).toThrow('Estimate email is unavailable');
+      await expect(f.service.sendEstimateShare({
+        to: email, path: '/public/estimates/example-token', estimateNumber: '191013',
+      })).rejects.toThrow('Estimate email is unavailable');
+
+      expect(f.row).toEqual(savedRow);
+      expect(f.db.user.findUnique).not.toHaveBeenCalled();
+      expect(f.db.notification.findUnique).not.toHaveBeenCalled();
+      for (const method of Object.values(f.db.notificationEmail)) expect(method).not.toHaveBeenCalled();
+      expect(createTransport).not.toHaveBeenCalled();
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(f.config.get.mock.calls.every(([key]) => ['NODE_ENV', 'EMAIL_DELIVERY_ENABLED'].includes(key))).toBe(true);
+    });
   });
 
   it('queues and sends a material purchase alert to an admin without enabling unrelated admin emails', async () => {
@@ -747,7 +815,7 @@ describe('NotificationEmailService', () => {
       },
     );
 
-    describe('configured public origin for local development', () => {
+    describe('configured public origin and delivery environment', () => {
       it.each([
         [undefined, 'http://192.168.1.139:3000'],
         ['development', 'http://localhost:3000'],
@@ -756,29 +824,23 @@ describe('NotificationEmailService', () => {
         ['test', 'http://10.0.0.1:3000'],
         ['development', 'http://172.16.0.1:3000'],
         ['test', 'http://172.31.255.254:3000'],
-      ])('uses local HTTP for both email paths when NODE_ENV=%s and origin=%s', async (mode, origin) => {
+      ])('never sends locally when NODE_ENV=%s and origin=%s', async (mode, origin) => {
         const f = fixture();
         if (mode === undefined) delete f.values.NODE_ENV;
         else f.values.NODE_ENV = mode;
         f.values.PUBLIC_FRONTEND_URL = origin!;
 
-        await expect(f.service.sendEstimateShare(share())).resolves.toEqual({ sent: true });
+        await expect(f.service.sendEstimateShare(share())).rejects.toThrow('Estimate email is unavailable');
         await f.service.enqueue(f.notification as never, f.db as never);
         await f.service.processPending();
 
-        expect(f.db.notificationEmail.create).toHaveBeenCalledWith({
-          data: { notificationId: 10, email },
-        });
-        expect(f.row.status).toBe('ACCEPTED');
-        expect(sendMail).toHaveBeenCalledTimes(2);
-        expect(sendMail.mock.calls[0][0].html).toContain(`href="${origin}${share().path}"`);
-        expect(sendMail.mock.calls[1][0].html).toContain(`href="${origin}/orders/21"`);
-        expect(createTransport).toHaveBeenCalledTimes(1);
-        expect(createTransport).toHaveBeenCalledWith(expect.objectContaining({
-          host: 'smtp.example.com', port: 465, secure: true,
-          auth: { user: 'notifications@example.com', pass: 'fake-notifications-secret' },
-        }));
-        expect(f.config.get.mock.calls.some(([key]) => key.startsWith('SMTP_'))).toBe(false);
+        expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+        expect(f.db.notificationEmail.findMany).not.toHaveBeenCalled();
+        expect(f.db.notificationEmail.updateMany).not.toHaveBeenCalled();
+        expect(f.row.status).toBe('PENDING');
+        expect(sendMail).not.toHaveBeenCalled();
+        expect(createTransport).not.toHaveBeenCalled();
+        expect(f.config.get.mock.calls.some(([key]) => key.startsWith('SMTP_') || key.startsWith('NOTIFICATIONS_SMTP_'))).toBe(false);
       });
 
       it.each(['production', 'staging'])(
@@ -798,9 +860,10 @@ describe('NotificationEmailService', () => {
         },
       );
 
-      it('keeps HTTPS working for both email paths in production', async () => {
+      it.each([undefined, 'true'])('keeps HTTPS working for both email paths in production with EMAIL_DELIVERY_ENABLED=%s', async (enabled) => {
         const f = fixture();
         f.values.NODE_ENV = 'production';
+        if (enabled !== undefined) f.values.EMAIL_DELIVERY_ENABLED = enabled;
         f.values.PUBLIC_FRONTEND_URL = 'https://portal.example.test:8443';
 
         await f.service.sendEstimateShare(share());
