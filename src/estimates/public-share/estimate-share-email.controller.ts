@@ -4,12 +4,23 @@ import { JwtAuthGuard } from '@/auth/guards/auth/auth.guard';
 import { Roles } from '@/auth/roles.decorator';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { ShareEstimateEmailDto } from '../dto/share-estimate-email.dto';
+import { ShareEstimateMessageDto } from '../dto/share-estimate-message.dto';
 import { EstimateShareEmailService } from './estimate-share-email.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('estimates')
 export class EstimateShareEmailController {
   constructor(private readonly service: EstimateShareEmailService) {}
+
+  @Post(':id/share-message')
+  @Roles('admin', 'dealer')
+  sendMessage(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ShareEstimateMessageDto,
+    @Req() req: Request,
+  ) {
+    return this.service.sendMessage(id, dto, req.user as AuthUser);
+  }
 
   @Post(':id/share-email')
   @Roles('admin', 'dealer')

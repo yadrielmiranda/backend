@@ -63,7 +63,7 @@ function fixture() {
   };
   const contracts = { prepare: jest.fn(async () => ({ current: { id: 'agreement-id', ready: true } })) };
   const email = { assertEstimateShareReady: jest.fn(), sendEstimateShare: jest.fn(async (_input: unknown): Promise<ShareResult> => ({ sent: true })) };
-  const service = new EstimateShareEmailService(prisma as any, publicShare as any, contracts as any, email as any);
+  const service = new EstimateShareEmailService(prisma as any, publicShare as any, contracts as any, email as any, {} as any);
   return { service, people, estimate, branding, agreement, prisma, publicShare, contracts, email };
 }
 

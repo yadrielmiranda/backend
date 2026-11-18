@@ -56,6 +56,13 @@ export type EstimateShareEmailResult =
   | { sent: true }
   | { sent: false; accepted: string[]; rejected: string[]; unconfirmed: string[] };
 
+/** A confirmed rejection is safe to correct and retry, unlike an unknown outcome. */
+export class EstimateShareEmailRejectedException extends ServiceUnavailableException {
+  constructor() {
+    super('The email service rejected the recipient.');
+  }
+}
+
 export type MaterialPurchaseEmail = {
   to: string;
   path: string;
@@ -248,7 +255,7 @@ export class NotificationEmailService {
     if (accepted.length === recipients.all.length) return { sent: true };
     if (accepted.length > 0) return { sent: false, accepted, rejected, unconfirmed };
     if (rejected.length === recipients.all.length)
-      throw new ServiceUnavailableException('The email service rejected the recipient.');
+      throw new EstimateShareEmailRejectedException();
     throw new ServiceUnavailableException(
       'The email service did not confirm acceptance of this estimate email. Check whether the recipients received it before resending.',
     );

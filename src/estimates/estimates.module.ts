@@ -20,6 +20,7 @@ import { EstimateCustomerChargesService } from './estimate-customer-charges.serv
 import { ContractsModule } from '@/contracts/contracts.module';
 import { EstimateShareEmailController } from './public-share/estimate-share-email.controller';
 import { EstimateShareEmailService } from './public-share/estimate-share-email.service';
+import { EstimateShareSmsService } from './public-share/estimate-share-sms.service';
 import { EstimateInternalNoteController } from './estimate-internal-note.controller';
 import { EstimateInternalNoteService } from './estimate-internal-note.service';
 import { EstimateNoteAttachmentsController, EstimateNoteUploadCapacityInterceptor, EstimateNoteUploadGuard } from './estimate-note-attachments.controller';
@@ -47,6 +48,7 @@ import { EstimateNoteAttachmentsService } from './estimate-note-attachments.serv
     EstimatePublicShareService,
     EstimateCustomerChargesService,
     EstimateShareEmailService,
+    EstimateShareSmsService,
     EstimateInternalNoteService,
     EstimateNoteAttachmentsService,
     EstimateNoteUploadGuard,
