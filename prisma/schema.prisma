@@ -311,6 +311,7 @@ model User {
   // Optional technician notifications address; never used for login or password recovery.
   contactEmail                   String?                 @db.VarChar(254)
   welcomeEmail                   AccountWelcomeEmail?
+  welcomeSms                     AccountWelcomeSms?
   phone                          String?                 @unique
   password                       String
   passwordUpdatedAt              DateTime                @default(now())
@@ -2745,6 +2746,24 @@ model AccountWelcomeEmail {
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
   user              User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+}
+
+// Only newly created accounts with service SMS consent get a welcome; no backfill.
+model AccountWelcomeSms {
+  userId             Int                   @id
+  phone              String                @db.VarChar(20)
+  consentedAt        DateTime
+  status             NotificationSmsStatus @default(PENDING)
+  attempts           Int                   @default(0)
+  nextAttemptAt      DateTime              @default(now())
+  attemptedAt        DateTime?
+  providerMessageSid String?               @unique @db.VarChar(34)
+  errorCode          String?               @db.VarChar(60)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  user               User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([status, nextAttemptAt])
 }

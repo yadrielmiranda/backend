@@ -4,6 +4,8 @@ import { AuthService } from './auth.service';
 import { SmsConsentService } from '@/sms/sms-consent.service';
 import { ValidationPipe } from '@nestjs/common';
 import { RegisterUserDto } from './dto/register-user.dto';
+import { AccountWelcomeService } from '@/mail/account-welcome.service';
+import { WelcomeSmsService } from '@/sms/welcome-sms.service';
 
 // Se ejecuta el registro real con almacenamiento transaccional simulado.
 function fixture() {
@@ -83,6 +85,40 @@ function fixture() {
 }
 
 describe('Registration messaging consent', () => {
+  it.each([
+    [false, false], [false, true], [true, false], [true, true],
+  ])('queues the welcome SMS only with service consent saved in the same registration transaction: %s/%s', async (serviceConsent, promotionsConsent) => {
+    const f = fixture();
+    f.state.welcomeSms = [];
+    f.db.accountWelcomeSms = { createMany: jest.fn(async ({ data }: any) => {
+      f.state.welcomeSms.push(...data);
+      return { count: data.length };
+    }) };
+    const email = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const sender = { canSendAccountWelcomeSms: () => true, sendAccountWelcomeSms: jest.fn() };
+    const welcomes = new AccountWelcomeService(email as never, new WelcomeSmsService(f.db, sender as never));
+    f.welcome.enqueue.mockImplementation((id, tx) => welcomes.enqueue(id, tx as never));
+    const account = await f.register({ serviceConsent, promotionsConsent });
+    expect(email.enqueue).toHaveBeenCalledWith(account.id, f.db);
+    expect(f.state.welcomeSms).toEqual(serviceConsent ? [{
+      userId: account.id, phone: account.phone, consentedAt: f.state.sms[0].consentedAt,
+    }] : []);
+    expect(sender.sendAccountWelcomeSms).not.toHaveBeenCalled();
+  });
+
+  it('rolls back registration and both welcome reservations if the SMS outbox cannot be saved', async () => {
+    const f = fixture();
+    f.db.accountWelcomeSms = { createMany: jest.fn().mockRejectedValue(new Error('Storage unavailable')) };
+    const email = { enqueue: jest.fn(async (id: number) => { f.state.welcome.push(id); }) };
+    const sender = { canSendAccountWelcomeSms: () => true };
+    const welcomes = new AccountWelcomeService(email as never, new WelcomeSmsService(f.db, sender as never));
+    f.welcome.enqueue.mockImplementation((id, tx) => welcomes.enqueue(id, tx as never));
+    await expect(f.register()).rejects.toThrow();
+    expect(f.state.users).toHaveLength(0);
+    expect(f.state.welcome).toHaveLength(0);
+    expect(f.state.sms).toHaveLength(0);
+  });
+
   it('queues a welcome in the account transaction independently of either SMS consent', async () => {
     for (const serviceConsent of [false, true]) {
       for (const promotionsConsent of [false, true]) {

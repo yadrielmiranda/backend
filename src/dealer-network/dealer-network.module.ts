@@ -14,7 +14,7 @@ import { CreateNetworkMemberDto, SetNetworkSuspensionDto, ReviewNetworkSuspensio
 import { networkAccessBlocked, networkSalesBlocked, networkParentSelect } from './network-access';
 import { normalizeAddressLine2 } from '@/common/address-line2';
 import { WelcomeEmailModule } from '@/mail/welcome-email.module';
-import { WelcomeEmailService } from '@/mail/welcome-email.service';
+import { AccountWelcomeService } from '@/mail/account-welcome.service';
 
 const memberSelect = {
   id: true, username: true, firstName: true, lastName: true, email: true, phone: true,
@@ -31,7 +31,7 @@ const memberSelect = {
 @Injectable()
 export class DealerNetworkService {
   constructor(private prisma: PrismaService, private logs: LogsService, private notifications: NotificationsService,
-    private welcome: WelcomeEmailService) {}
+    private welcome: AccountWelcomeService) {}
 
   private requireDealerOrStaff(actor: AuthUser) {
     if (!['dealer', 'admin', 'operator'].includes(actor.role?.name ?? '')) throw new ForbiddenException('Dealer network access required.');

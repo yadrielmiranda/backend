@@ -19,7 +19,7 @@ import { revokeSmsConsent } from '@/sms/sms-consent.helpers';
 import { networkParentSelect } from '@/dealer-network/network-access';
 import { normalizeAddressLine2 } from '@/common/address-line2';
 import { isEmail } from 'class-validator';
-import { WelcomeEmailService } from '@/mail/welcome-email.service';
+import { AccountWelcomeService } from '@/mail/account-welcome.service';
 import {
   isValidUsername,
   USERNAME_VALIDATION_MESSAGE,
@@ -41,7 +41,7 @@ export class UsersService {
   constructor(
     private prisma: PrismaService,
     private logs: LogsService,
-    private welcome: WelcomeEmailService,
+    private welcome: AccountWelcomeService,
   ) {}
 
   private normalizeMarkupOverride(value: string | null): Prisma.Decimal | null {

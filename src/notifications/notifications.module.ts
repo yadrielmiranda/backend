@@ -34,6 +34,6 @@ import { NotificationEmailService } from './notification-email.service';
     NotificationEmailService,
   ],
   controllers: [NotificationsController],
-  exports: [NotificationsService, NotificationEmailService],
+  exports: [NotificationsService, NotificationEmailService, NotificationSmsService],
 })
 export class NotificationsModule {}

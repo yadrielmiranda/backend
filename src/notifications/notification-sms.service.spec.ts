@@ -135,6 +135,56 @@ describe('NotificationSmsService', () => {
     jest.restoreAllMocks();
   });
 
+  it('sends the personalized welcome exactly once without the ordinary notification wrapper', async () => {
+    const f = fixture();
+    expect(f.service.canSendAccountWelcomeSms()).toBe(true);
+    await expect(f.service.sendAccountWelcomeSms({ phone, firstName: 'Yadriel' })).resolves.toEqual({
+      status: 'ACCEPTED', providerMessageSid: messageSid,
+    });
+    expect(post).toHaveBeenCalledTimes(1);
+    const body = new URLSearchParams(post.mock.calls[0][1] as string);
+    expect(body.get('To')).toBe(phone);
+    expect(body.get('MessagingServiceSid')).toBe(messagingService);
+    expect(body.get('Body')).toBe('Authentic Evolution: Welcome, Yadriel! Your account is ready. Access the portal to get started. Reply STOP to unsubscribe.');
+    expect(body.get('Body')!.length).toBeLessThanOrEqual(160);
+    expect(f.consent.getProgram).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'development', 'test', 'staging'])(
+    'blocks direct welcome SMS outside production (%s), even with credentials and the flag enabled', async environment => {
+      const f = fixture();
+      if (environment === undefined) delete f.values.NODE_ENV;
+      else f.values.NODE_ENV = environment;
+      f.values.SMS_DELIVERY_ENABLED = 'true';
+      expect(f.service.canSendAccountWelcomeSms()).toBe(false);
+      await expect(f.service.sendAccountWelcomeSms({ phone, firstName: 'Yadriel' })).resolves.toMatchObject({ status: 'UNAVAILABLE' });
+      expect(post).not.toHaveBeenCalled();
+    },
+  );
+
+  it('blocks welcome SMS when production sending is disabled or configuration is incomplete', async () => {
+    const f = fixture();
+    f.values.SMS_DELIVERY_ENABLED = 'false';
+    await expect(f.service.sendAccountWelcomeSms({ phone, firstName: null })).resolves.toMatchObject({ status: 'UNAVAILABLE' });
+    delete f.values.SMS_DELIVERY_ENABLED;
+    delete f.values.TWILIO_API_KEY_SECRET;
+    await expect(f.service.sendAccountWelcomeSms({ phone, firstName: null })).resolves.toMatchObject({ status: 'UNAVAILABLE' });
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('does not send a welcome to an unsupported phone', async () => {
+    const f = fixture();
+    await expect(f.service.sendAccountWelcomeSms({ phone: '+34612345678', firstName: 'Ana' })).resolves.toMatchObject({ status: 'FAILED' });
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('records provider STOP for welcome messages through the existing consent service', async () => {
+    const f = fixture();
+    post.mockResolvedValue({ status: 400, data: { code: 21610 } } as never);
+    await expect(f.service.sendAccountWelcomeSms({ phone, firstName: 'Ana' })).resolves.toMatchObject({ status: 'FAILED', errorCode: '21610' });
+    expect(f.consent.recordProviderChoice).toHaveBeenCalledWith(phone, null, 'STOP');
+  });
+
   it.each([undefined, 'development', 'test', 'staging'])(
     'never reads, changes or sends restored SMS queues outside production (%s)',
     async (environment) => {

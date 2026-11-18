@@ -7,11 +7,13 @@ import {
   NotificationSmsStatus,
   Prisma,
 } from '@prisma/client';
-import axios, { AxiosResponse } from 'axios';
 import { PrismaService } from '@/prisma/prisma.service';
 import { SmsConsentService } from '@/sms/sms-consent.service';
 import { supportsSmsPhone } from '@/sms/sms-phone-support';
 import { isSmsDeliveryEnabled } from '@/sms/sms-delivery-policy';
+import { hasActiveServiceSmsConsent } from '@/sms/sms-recipient-policy';
+import { deliverSms, SmsDeliveryResult, SmsSettings } from '@/sms/sms-transport';
+import { renderWelcomeSms } from '@/sms/welcome-sms-template';
 import {
   allowsStaffNotificationDelivery,
   isStaffNotification,
@@ -27,19 +29,6 @@ const recipientSelect = {
   smsConsent: true,
 } satisfies Prisma.UserSelect;
 type Recipient = Prisma.UserGetPayload<{ select: typeof recipientSelect }>;
-type SmsSettings = {
-  account: string;
-  key: string;
-  secret: string;
-  service: string;
-};
-type TwilioResponse = {
-  sid?: string;
-  status?: string;
-  code?: number;
-  error_code?: number;
-};
-
 const MAX_ATTEMPTS = 3;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_ATTEMPT_MS = 10 * 60 * 1000;
@@ -74,7 +63,7 @@ export class NotificationSmsService {
   }
 
   private isEligible(user: Recipient | null, notification: Pick<Notification, 'dedupeKey'>): user is Recipient {
-    if (!user?.isActive || user.deletedAt) return false;
+    if (!hasActiveServiceSmsConsent(user)) return false;
     const role = user.role.name.toLowerCase();
     // Los avisos del personal nunca pasan al público al cambiar el rol del destinatario.
     // El proyecto trata a los dealers anteriores sin modo como EXTERNAL.
@@ -83,16 +72,28 @@ export class NotificationSmsService {
       : role !== 'client' &&
         !(role === 'dealer' && (user.dealerMode ?? 'EXTERNAL') === 'EXTERNAL'))
       return false;
-    const consent = user.smsConsent;
-    return Boolean(
-      supportsSmsPhone(user.phone) &&
-        consent?.enabled &&
-        consent.phone === user.phone &&
-        consent.consentedAt &&
-        consent.consentVersion &&
-        consent.consentText &&
-        !consent.revokedAt,
-    );
+    return true;
+  }
+
+  canSendAccountWelcomeSms(): boolean {
+    return this.settings() !== null;
+  }
+
+  /** The welcome outbox has already rechecked the account's current service consent. */
+  async sendAccountWelcomeSms(input: { phone: string; firstName: string | null }): Promise<SmsDeliveryResult> {
+    const settings = this.settings();
+    if (!settings) return { status: 'UNAVAILABLE', errorCode: 'SMS_UNAVAILABLE' };
+    if (!supportsSmsPhone(input.phone)) return { status: 'FAILED', errorCode: 'UNSUPPORTED_PHONE' };
+    return this.deliver(settings, input.phone, renderWelcomeSms(input.firstName));
+  }
+
+  private async deliver(settings: SmsSettings, phone: string, body: string): Promise<SmsDeliveryResult> {
+    const result = await deliverSms(settings, phone, body);
+    if (result.status !== 'ACCEPTED' && result.errorCode === '21610') {
+      // Provider STOP applies to both notification and welcome outboxes.
+      await this.consent.recordProviderChoice(phone, null, 'STOP');
+    }
+    return result;
   }
 
   async enqueue(notification: Notification, db: Prisma.TransactionClient) {
@@ -251,73 +252,29 @@ export class NotificationSmsService {
       return;
     }
 
-    const body = new URLSearchParams({
-      To: entry.phone,
-      MessagingServiceSid: settings.service,
-      Body: this.messageBody(notification, companyName),
-    });
-    let response: AxiosResponse<TwilioResponse>;
-    try {
-      response = await axios.post<TwilioResponse>(
-        `https://api.twilio.com/2010-04-01/Accounts/${settings.account}/Messages.json`,
-        body.toString(),
-        {
-          auth: { username: settings.key, password: settings.secret },
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          timeout: 10_000,
-          maxRedirects: 0,
-          validateStatus: () => true,
-        },
-      );
-    } catch {
-      await this.finish(id, 'UNKNOWN', 'NETWORK_ERROR');
+    const result = await this.deliver(settings, entry.phone, this.messageBody(notification, companyName));
+    if (result.status === 'ACCEPTED') {
+      // ACCEPTED means Twilio accepted the request, not handset delivery.
+      await this.finish(id, 'ACCEPTED', null, result.providerMessageSid);
       return;
     }
-    const sid =
-      typeof response.data?.sid === 'string' &&
-      /^(?:SM|MM)[\da-f]{32}$/i.test(response.data.sid)
-        ? response.data.sid
-        : undefined;
-    const code = response.data?.code ?? response.data?.error_code;
-    const errorCode = Number.isInteger(code)
-      ? String(code)
-      : `HTTP_${response.status}`;
-    if (response.status >= 200 && response.status < 300) {
-      if (!sid) {
-        await this.finish(id, 'UNKNOWN', 'INVALID_PROVIDER_RESPONSE');
-      } else if (
-        ['failed', 'undelivered', 'canceled'].includes(
-          response.data.status ?? '',
-        )
-      ) {
-        await this.finish(id, 'FAILED', errorCode, sid);
-      } else {
-        // ACCEPTED significa recibido por Twilio, no entregado al teléfono.
-        await this.finish(id, 'ACCEPTED', null, sid);
-      }
-      return;
-    }
-    if (response.status === 429 && !sid && entry.attempts + 1 < MAX_ATTEMPTS) {
+    if (result.status === 'RETRY' && entry.attempts + 1 < MAX_ATTEMPTS) {
       // Twilio confirma que los HTTP 429 no se procesan: este reintento sí es seguro.
       await this.prisma.notificationSms.updateMany({
         where: { notificationId: id, status: 'SENDING' },
         data: {
           status: 'PENDING',
-          errorCode,
+          errorCode: result.errorCode,
           nextAttemptAt: new Date(Date.now() + 60_000 * 2 ** entry.attempts),
         },
       });
       return;
     }
-    if (code === 21610) {
-      // Sincroniza una baja aunque su webhook no haya llegado. No inventa un MessageSid.
-      await this.consent.recordProviderChoice(entry.phone, null, 'STOP');
-    }
     await this.finish(
       id,
-      response.status >= 500 || sid ? 'UNKNOWN' : 'FAILED',
-      errorCode,
-      sid,
+      result.status === 'UNKNOWN' ? 'UNKNOWN' : 'FAILED',
+      result.errorCode,
+      result.providerMessageSid,
     );
   }
 }
