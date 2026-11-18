@@ -328,6 +328,68 @@ describe('NotificationSmsService', () => {
     },
   );
 
+  describe('referral withdrawal notifications', () => {
+    function withdrawalFixture() {
+      const f = fixture();
+      f.user.role.name = 'admin';
+      Object.assign(f.notification, {
+        dedupeKey: 'referral-payout:18:requested:admin',
+        message: 'Example Dealer requested a referral withdrawal of USD 125.50 (request #18).',
+        actionUrl: '/settings/referrals',
+        actionLabel: 'Review withdrawals',
+      });
+      return f;
+    }
+
+    it('queues and sends the admin SMS with active service consent', async () => {
+      const f = withdrawalFixture();
+      Object.assign(f.user.smsConsent, { promotionsEnabled: false });
+      await f.service.enqueue(f.notification as never, f.db as never);
+      expect(f.db.notificationSms.create).toHaveBeenCalledWith({ data: {
+        notificationId: 10, phone, consentedAt: acceptedAt,
+      } });
+      expect(post).not.toHaveBeenCalled();
+      await f.service.processPending();
+      expect(post).toHaveBeenCalledTimes(1);
+      const body = new URLSearchParams(post.mock.calls[0][1] as string).get('Body');
+      expect(body).toBe(`Example Company: ${f.notification.message}\nReply STOP to unsubscribe.`);
+      expect(f.row.status).toBe('ACCEPTED');
+    });
+
+    it.each(['missing-consent', 'opted-out', 'revoked', 'STOP', 'inactive', 'operator', 'client', 'dealer', 'technician'])(
+      'rejects new and queued withdrawal SMS after eligibility changes: %s', async change => {
+        const f = withdrawalFixture();
+        await f.service.enqueue(f.notification as never, f.db as never);
+        expect(f.db.notificationSms.create).toHaveBeenCalledTimes(1);
+        f.db.notificationSms.create.mockClear();
+        if (change === 'missing-consent') f.user.smsConsent = null as never;
+        if (change === 'opted-out') f.user.smsConsent.enabled = false;
+        if (change === 'revoked') f.user.smsConsent.revokedAt = new Date();
+        if (change === 'STOP') f.db.smsPhoneBlock.findUnique.mockResolvedValue({ phone });
+        if (change === 'inactive') f.user.isActive = false;
+        if (['operator', 'client', 'dealer', 'technician'].includes(change)) f.user.role.name = change;
+        f.user.dealerMode = 'EXTERNAL';
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+        expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+        expect(post).not.toHaveBeenCalled();
+        expect(f.row.status).toBe('SKIPPED');
+      },
+    );
+
+    it('keeps withdrawal SMS disabled in development even with the delivery flag enabled', async () => {
+      const f = withdrawalFixture();
+      f.values.NODE_ENV = 'development';
+      f.values.SMS_DELIVERY_ENABLED = 'true';
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+      expect(f.db.notificationSms.findMany).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('PENDING');
+    });
+  });
+
   it.each([
     'payment:42:paid:admin',
     'payment:42:partial:pi_example:admin',

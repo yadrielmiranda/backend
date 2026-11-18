@@ -10,6 +10,7 @@ const adminEvents = [
   'payment:12:partial:pi_example:admin',
   'payment:12:partial:2026-11-18T12:00:00.000Z:admin',
   'refund:re_example:review',
+  'referral-payout:18:requested:admin',
   'order:20:pickup:selected:admin',
   'order:20:delivery:3:selected:admin',
   'installation:5:quote:8:customer:APPROVED:admin',
@@ -113,6 +114,10 @@ describe('staff notification delivery scope', () => {
     'material-sale:3:paid',
     'material-sale:3:paid:customer',
     'network-business:6:reviewed',
+    'referral-payout:18:requested:owner',
+    'referral-payout:18:requested:admin:unexpected',
+    'referral-payout:18:paid:admin',
+    'referral-payout:invalid:requested:admin',
     'order:20:extra:3:response:PAYMENT_DUE:creator:unexpected',
     'installation:5:appointment:9:response:proposed',
   ])('does not extend staff access to unrelated event %s', dedupeKey => {

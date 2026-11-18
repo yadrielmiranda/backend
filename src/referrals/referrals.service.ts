@@ -3,6 +3,7 @@ import { Prisma, ReferralRole, ReferralRewardMode } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import Decimal from 'decimal.js';
 import { PrismaService } from '@/prisma/prisma.service';
+import { NotificationsService } from '@/notifications/notifications.service';
 import { ReferralBankCipher, validateReferralBank } from './referral-bank';
 import { allowedReferralModes, effectiveReferralProfile, initialReferralDefault, referralRole, referralRoleModes, referralRoles, resolveRegistrationReferral } from './referral-terms';
 import { calculateReferralReward, referralRewardEstimateInclude } from './referral-rewards';
@@ -96,7 +97,11 @@ function payoutDto(payout: any, admin = false) {
 
 @Injectable()
 export class ReferralsService {
-  constructor(private readonly prisma: PrismaService, private readonly bankCipher: ReferralBankCipher) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly bankCipher: ReferralBankCipher,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   private async activeOwner(db: Prisma.TransactionClient, userId: number) {
     const user = await db.user.findUnique({ where: { id: userId }, select: userSelection });
@@ -254,7 +259,7 @@ export class ReferralsService {
       throw new BadRequestException('Provide a valid payout request identifier.');
     const found = await this.profileForOwner(userId);
     return this.refreshed(found.id, async (db, profile) => {
-      await this.activeOwner(db, userId);
+      const owner = await this.activeOwner(db, userId);
       const existing = await db.referralPayout.findUnique({ where: { requestKey: input.requestKey } });
       if (existing) {
         if (existing.profileId !== profile.id || !amount.eq(existing.amount.toString()))
@@ -273,6 +278,16 @@ export class ReferralsService {
       const payout = await db.referralPayout.create({ data: { profileId: profile.id, requestKey: input.requestKey, amount: amount.toFixed(2),
         encryptedDestination, accountLast4: bank.accountLast4, bankName: bank.bankName,
         events: { create: { actorId: userId, status: 'REQUESTED' } } } });
+      const requesterName = [owner.firstName, owner.lastName].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim() || owner.username;
+      // Only a new withdrawal emits an alert. Its notification and delivery
+      // outboxes commit with the reservation; retries return the existing payout.
+      await this.notifications.createAndSendToRoles(['admin'], {
+        actorId: userId,
+        message: `${requesterName} requested a referral withdrawal of $${amount.toFixed(2)} (request #${payout.id}).`,
+        actionUrl: '/settings/referrals',
+        actionLabel: 'Review withdrawals',
+        dedupeKey: `referral-payout:${payout.id}:requested:admin`,
+      }, { db });
       return payoutDto(payout);
     });
   }

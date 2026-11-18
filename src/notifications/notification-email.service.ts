@@ -347,6 +347,11 @@ export class NotificationEmailService {
   }
 
   private heading(notification: Notification) {
+    const referralPayout = notification.dedupeKey?.match(/^referral-payout:(\d+):requested:admin$/);
+    if (referralPayout) return {
+      title: 'Referral withdrawal requested',
+      subject: `Referral withdrawal #${referralPayout[1]} requested`,
+    };
     // La clave existente identifica el evento sin cambiar la notificación de la app.
     const [entity, , event, subevent, detail, decision] =
       notification.dedupeKey?.split(':') ?? [];

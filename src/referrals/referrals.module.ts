@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Header, Module, Param, ParseIntPipe, Patch, Post, Put, Query, Req } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '@/prisma/prisma.module';
+import { NotificationsModule } from '@/notifications/notifications.module';
 import { Roles } from '@/auth/roles.decorator';
 import { Public } from '@/auth/public.decorator';
 import type { AuthUser } from '@/auth/types/auth-user.type';
@@ -61,5 +62,5 @@ export class ReferralsController {
   }
 }
 
-@Module({ imports: [PrismaModule, ConfigModule], controllers: [ReferralsController], providers: [ReferralsService, ReferralBankCipher] })
+@Module({ imports: [PrismaModule, ConfigModule, NotificationsModule], controllers: [ReferralsController], providers: [ReferralsService, ReferralBankCipher] })
 export class ReferralsModule {}

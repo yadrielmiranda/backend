@@ -88,6 +88,51 @@ describe('NotificationsService', () => {
     expect(email.enqueue).not.toHaveBeenCalled();
   });
 
+  it('queues referral withdrawal alerts for active admins in the reservation transaction and publishes only after commit', async () => {
+    const stored: any[] = [];
+    let committed = false;
+    const tx = {
+      user: { findMany: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]) },
+      notification: {
+        createMany: jest.fn(async ({ data }) => {
+          const row = data[0];
+          if (stored.some(existing => existing.recipientId === row.recipientId && existing.dedupeKey === row.dedupeKey)) return { count: 0 };
+          stored.push({ ...row, id: stored.length + 1, isRead: false, createdAt: new Date() });
+          return { count: 1 };
+        }),
+        findFirstOrThrow: jest.fn(async ({ where }) => stored.find(row => row.recipientId === where.recipientId && row.dedupeKey === where.dedupeKey)),
+      },
+    };
+    const prisma = { notification: { findMany: jest.fn(async () => committed ? stored : []) } };
+    const service = new NotificationsService(prisma as never, gateway as never, sms as never, email as never);
+    const data = {
+      actorId: 7,
+      message: 'Test Owner requested a referral withdrawal of $120.00 (request #41).',
+      actionUrl: '/settings/referrals', actionLabel: 'Review withdrawals',
+      dedupeKey: 'referral-payout:41:requested:admin',
+    };
+    await service.createAndSendToRoles(['admin'], data, { db: tx as never });
+    expect(tx.user.findMany).toHaveBeenCalledWith({
+      where: { isActive: true, deletedAt: null, role: { name: { in: ['admin'] } } },
+      select: { id: true },
+    });
+    expect(stored.map(row => row.recipientId)).toEqual([1, 2]);
+    for (const row of stored) {
+      expect(sms.enqueue).toHaveBeenCalledWith(row, tx);
+      expect(email.enqueue).toHaveBeenCalledWith(row, tx);
+    }
+    await service.publishCommittedNotifications();
+    expect(gateway.sendNotificationToUser).not.toHaveBeenCalled();
+    committed = true;
+    await service.publishCommittedNotifications();
+    await service.createAndSendToRoles(['admin'], data, { db: tx as never });
+    await service.publishCommittedNotifications();
+    expect(stored).toHaveLength(2);
+    expect(gateway.sendNotificationToUser).toHaveBeenCalledTimes(2);
+    expect(sms.enqueue).toHaveBeenCalledTimes(2);
+    expect(email.enqueue).toHaveBeenCalledTimes(2);
+  });
+
   it('publishes an in-app-only storage warning without queuing SMS or email', async () => {
     const created = { id: 48, recipientId: 7, message: 'Attachment storage reached 9 GB.' };
     const tx = { notification: { create: jest.fn().mockResolvedValue(created) } };

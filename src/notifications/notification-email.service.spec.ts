@@ -222,6 +222,67 @@ describe('NotificationEmailService', () => {
     expect(f.row.status).toBe('SKIPPED');
   });
 
+  describe('referral withdrawal notifications', () => {
+    function withdrawalFixture() {
+      const f = fixture();
+      f.user.role.name = 'admin';
+      Object.assign(f.notification, {
+        dedupeKey: 'referral-payout:18:requested:admin',
+        message: 'Example Dealer requested a referral withdrawal of USD 125.50 (request #18).',
+        actionUrl: '/settings/referrals',
+        actionLabel: 'Review withdrawals',
+      });
+      return f;
+    }
+
+    it('queues and sends the admin email independently of SMS preferences', async () => {
+      const f = withdrawalFixture();
+      f.user.registrationConsent!.serviceEmailAccepted = false;
+      Object.assign(f.user, { smsConsent: { enabled: false, promotionsEnabled: false } });
+      await f.service.enqueue(f.notification as never, f.db as never);
+      expect(f.db.notificationEmail.create).toHaveBeenCalledWith({ data: { notificationId: 10, email } });
+      expect(sendMail).not.toHaveBeenCalled();
+      await f.service.processPending();
+      expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+        to: email,
+        subject: 'Referral withdrawal #18 requested',
+        text: expect.stringContaining(f.notification.message),
+        html: expect.stringContaining('Review withdrawals'),
+      }));
+      expect(sendMail.mock.calls[0][0].text).toContain('https://portal.example.test/settings/referrals');
+      expect(f.row.status).toBe('ACCEPTED');
+    });
+
+    it.each(['operator', 'client', 'dealer', 'technician', 'inactive'])(
+      'rejects new and queued withdrawal emails after the admin becomes %s', async change => {
+        const f = withdrawalFixture();
+        await f.service.enqueue(f.notification as never, f.db as never);
+        expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
+        f.db.notificationEmail.create.mockClear();
+        if (change === 'inactive') f.user.isActive = false;
+        else f.user.role.name = change;
+        f.user.dealerMode = 'EXTERNAL';
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+        expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+        expect(sendMail).not.toHaveBeenCalled();
+        expect(f.row.status).toBe('SKIPPED');
+      },
+    );
+
+    it('keeps withdrawal email disabled in development even with the delivery flag enabled', async () => {
+      const f = withdrawalFixture();
+      f.values.NODE_ENV = 'development';
+      f.values.EMAIL_DELIVERY_ENABLED = 'true';
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+      expect(f.db.notificationEmail.findMany).not.toHaveBeenCalled();
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('PENDING');
+    });
+  });
+
   describe('selected staff notifications', () => {
     const adminEvents = [
       ['payment:31:paid:admin', 'Payment confirmed'],

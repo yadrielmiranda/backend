@@ -39,6 +39,7 @@ function staffAudience({ dedupeKey }: NotificationEvent): StaffAudience | null {
     /^payment:\d+:paid:admin$/.test(key) ||
     /^payment:\d+:partial:.+:admin$/.test(key) ||
     /^refund:[a-zA-Z0-9_-]+:review$/.test(key) ||
+    /^referral-payout:\d+:requested:admin$/.test(key) ||
     /^order:\d+:pickup:selected:admin$/.test(key) ||
     /^order:\d+:delivery:\d+:selected:admin$/.test(key) ||
     /^installation:\d+:quote:(?:\d+|latest):customer:(?:APPROVED|REJECTED):admin$/.test(key) ||

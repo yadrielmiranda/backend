@@ -13,7 +13,7 @@ const requestKey = '39a36be3-e2cb-4eba-876a-40f4f664cfed';
 const otherKey = '57aad73d-89ef-4cbf-9046-c861384b9b41';
 
 function fixture() {
-  const owner = { id: 7, firstName: 'Test', lastName: 'Owner', role: { name: 'client' }, isActive: true, deletedAt: null, parentDealerId: null };
+  const owner = { id: 7, firstName: 'Test', lastName: 'Owner', username: 'test-owner', role: { name: 'client' }, isActive: true, deletedAt: null, parentDealerId: null };
   const profile: any = { id: 3, userId: owner.id, code: 'a'.repeat(36), mode: 'CUSTOM_PERCENT', percent: new Decimal(20), enabled: true,
     revision: 1, useRoleDefaults: true, linkCreatedAt: null };
   const roleDefaults: any[] = [{ role: 'CLIENT', mode: 'CUSTOM_PERCENT', percent: new Decimal(10), revision: 1 }];
@@ -51,11 +51,14 @@ function fixture() {
     },
     eventLog: { create: jest.fn(async () => ({})) },
   };
-  // Model transactions serializing at the database locks. Tests also inspect lock SQL.
+  const notifications = { createAndSendToRoles: jest.fn().mockResolvedValue([]) };
+  const transactionDb = new Proxy(db, {});
+  // Model transactions serializing at the database locks, without simulating rollback.
+  // A distinct client lets tests verify that notification writes join the transaction.
   let queue = Promise.resolve();
-  db.$transaction = (fn: any) => { const task = queue.then(() => fn(db)); queue = task.catch(() => undefined); return task; };
-  const service = new ReferralsService(db, cipher);
-  return { service, db, owner, profile, roleDefaults, payouts, bank, cipher, bankInput, setFunds: (value: string) => { funds = value; } };
+  db.$transaction = (fn: any) => { const task = queue.then(() => fn(transactionDb)); queue = task.catch(() => undefined); return task; };
+  const service = new ReferralsService(db, cipher, notifications as any);
+  return { service, db, transactionDb, notifications, owner, profile, roleDefaults, payouts, bank, cipher, bankInput, setFunds: (value: string) => { funds = value; } };
 }
 
 describe('referral withdrawal accounting', () => {
@@ -170,6 +173,7 @@ describe('referral withdrawal accounting', () => {
     await f.service.requestPayout(7, { amount: '120.00', requestKey });
     expect(f.db.referralPayout.create).toHaveBeenCalledTimes(1);
     await expect(f.service.requestPayout(7, { amount: '121', requestKey })).rejects.toThrow(ConflictException);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
     const lockSql = f.db.$queryRaw.mock.calls.map(args => args[0].join('?')).join('\n');
     expect(lockSql).toContain('ReferralProfile WHERE id = ? FOR UPDATE');
   });
@@ -183,6 +187,116 @@ describe('referral withdrawal accounting', () => {
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
     expect(f.payouts).toHaveLength(1);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+  });
+
+  it('notifies only administrators of a new withdrawal with its owner, USD amount and review link inside the transaction', async () => {
+    const f = fixture();
+    const payout = await f.service.requestPayout(7, { amount: '12.5', requestKey });
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledWith(['admin'], {
+      actorId: 7,
+      message: `Test Owner requested a referral withdrawal of $12.50 (request #${payout.id}).`,
+      actionUrl: '/settings/referrals',
+      actionLabel: 'Review withdrawals',
+      dedupeKey: `referral-payout:${payout.id}:requested:admin`,
+    }, { db: f.transactionDb });
+    expect(f.notifications.createAndSendToRoles.mock.calls[0][2].db).not.toBe(f.db);
+    const payload = JSON.stringify(f.notifications.createAndSendToRoles.mock.calls[0][1]);
+    for (const privateValue of [f.bankInput.bankName, f.bankInput.routingNumber, f.bankInput.accountNumber,
+      f.bank.accountLast4, f.bank.encryptedDetails, f.payouts[0].encryptedDestination])
+      expect(payload).not.toContain(privateValue);
+  });
+
+  it('uses the owner username when a withdrawal requester has no name', async () => {
+    const f = fixture();
+    Object.assign(f.owner, { firstName: null, lastName: null });
+    await f.service.requestPayout(7, { amount: '10', requestKey });
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledWith(['admin'], expect.objectContaining({
+      message: 'test-owner requested a referral withdrawal of $10.00 (request #1).',
+    }), { db: f.transactionDb });
+  });
+
+  it('creates one administrator notification for concurrent retries of the same withdrawal', async () => {
+    const f = fixture();
+    const results = await Promise.all([
+      f.service.requestPayout(7, { amount: '100', requestKey }),
+      f.service.requestPayout(7, { amount: '100.00', requestKey }),
+    ]);
+    expect(results[0]).toEqual(results[1]);
+    expect(f.db.referralPayout.create).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives separate withdrawals distinct administrator notification keys', async () => {
+    const f = fixture();
+    const first = await f.service.requestPayout(7, { amount: '25', requestKey });
+    const second = await f.service.requestPayout(7, { amount: '25', requestKey: otherKey });
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(2);
+    expect(f.notifications.createAndSendToRoles.mock.calls.map(([, payload]) => payload.dedupeKey)).toEqual([
+      `referral-payout:${first.id}:requested:admin`, `referral-payout:${second.id}:requested:admin`,
+    ]);
+    expect(first.id).not.toBe(second.id);
+  });
+
+  it.each(['0', '-1', '1.001', '1e2'])('does not notify administrators for invalid withdrawal amount %s', async amount => {
+    const f = fixture();
+    await expect(f.service.requestPayout(7, { amount, requestKey })).rejects.toThrow(BadRequestException);
+    expect(f.db.referralPayout.create).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
+  });
+
+  it.each(['invalid request key', 'missing bank', 'insufficient earnings', 'below minimum', 'inactive owner', 'ineligible role'])
+  ('does not notify administrators when a withdrawal is rejected for %s', async reason => {
+    const f = fixture();
+    if (reason === 'missing bank') f.db.referralBankAccount.findUnique.mockResolvedValue(null);
+    if (reason === 'insufficient earnings') f.setFunds('5');
+    if (reason === 'below minimum') f.db.referralSettings.findUnique.mockResolvedValue({ minimumWithdrawal: new Decimal(50) });
+    if (reason === 'inactive owner') f.owner.isActive = false;
+    if (reason === 'ineligible role') f.owner.role.name = 'operator';
+    await expect(f.service.requestPayout(7, { amount: '10', requestKey: reason === 'invalid request key' ? 'invalid' : requestKey }))
+      .rejects.toThrow(reason === 'inactive owner' || reason === 'ineligible role' ? ForbiddenException : BadRequestException);
+    expect(f.db.referralPayout.create).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
+  });
+
+  it('does not notify administrators when saving the new withdrawal fails', async () => {
+    const f = fixture();
+    const failure = new Error('Payout could not be saved');
+    f.db.referralPayout.create.mockRejectedValueOnce(failure);
+    await expect(f.service.requestPayout(7, { amount: '10', requestKey })).rejects.toBe(failure);
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
+  });
+
+  it('propagates notification persistence failure from the withdrawal transaction', async () => {
+    const f = fixture();
+    const failure = new Error('Notification could not be saved');
+    f.notifications.createAndSendToRoles.mockRejectedValueOnce(failure);
+    await expect(f.service.requestPayout(7, { amount: '10', requestKey })).rejects.toBe(failure);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledWith(['admin'], expect.any(Object), { db: f.transactionDb });
+  });
+
+  it.each(['PROCESSING', 'PAID', 'REJECTED', 'CANCELED', 'FAILED'] as const)
+  ('does not send another request notification when an administrator marks a withdrawal %s', async status => {
+    const f = fixture();
+    await f.service.requestPayout(7, { amount: '10', requestKey });
+    if (status === 'PAID' || status === 'FAILED') await f.service.transition(1, 1, { status: 'PROCESSING' });
+    await f.service.transition(1, 1, {
+      status, note: 'Verified withdrawal outcome', confirmedNotSent: true,
+      reference: 'ACH-test', paidAt: new Date().toISOString(),
+    });
+    await f.service.requestPayout(7, { amount: '10', requestKey });
+    expect(f.payouts[0].status).toBe(status);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not send another request notification when the owner cancels or retries a canceled withdrawal', async () => {
+    const f = fixture();
+    await f.service.requestPayout(7, { amount: '10', requestKey });
+    await f.service.cancelPayout(7, 1);
+    await f.service.requestPayout(7, { amount: '10', requestKey });
+    expect(f.payouts[0].status).toBe('CANCELED');
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes earned amounts once, reverses availability for a refund review, and restores it with append-only deltas', async () => {
