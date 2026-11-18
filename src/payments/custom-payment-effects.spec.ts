@@ -40,8 +40,9 @@ function fixture(sequence = 1) {
     order: { findUnique: jest.fn(async () => estimate.order) },
   };
   const workflow: any = { markPaymentPaid: jest.fn(async () => false) };
-  const notifications: any = { createAndSendToRoles: jest.fn(async () => []) };
-  const service = new PaymentsService(tx, { get: () => 'sk_test_only_memory' } as any, workflow, notifications);
+  const notifications = { createAndSend: jest.fn(async (..._args: any[]) => ({})),
+    createAndSendToRoles: jest.fn(async (..._args: any[]) => []) };
+  const service = new PaymentsService(tx, { get: () => 'sk_test_only_memory' } as any, workflow, notifications as any);
   const createOrder = jest.spyOn(service as any, 'ensureOrderForInitialPayment').mockResolvedValue(false);
   const advanceRelease = jest.spyOn(service as any, 'advanceAwaitingReleaseOrder').mockResolvedValue(false);
   return { estimate, payment, tx, workflow, notifications, createOrder, advanceRelease, service,
@@ -56,7 +57,8 @@ describe('Custom contributions keep installment requirements intact', () => {
     expect(f.createOrder).not.toHaveBeenCalled();
     expect(f.workflow.markPaymentPaid).not.toHaveBeenCalled();
     expect(f.advanceRelease).not.toHaveBeenCalled();
-    expect(f.notifications.createAndSendToRoles.mock.calls[0][1].message).toContain('Remaining installment balance: $4320.64');
+    expect(f.notifications.createAndSend).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
   });
 
   it('locks promotion terms after actual money is received without releasing the installment', async () => {
@@ -65,6 +67,8 @@ describe('Custom contributions keep installment requirements intact', () => {
     expect(f.estimate.promotionLockedAt).toEqual(f.payment.paidAt);
     expect(f.createOrder).not.toHaveBeenCalled();
     expect(f.workflow.markPaymentPaid).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSend).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
   });
 
   it('applies $8000 as $5320.64 plus $2679.36 and keeps material release blocked', async () => {
@@ -74,6 +78,8 @@ describe('Custom contributions keep installment requirements intact', () => {
         expect.objectContaining({ paid: '2679.36', balance: '2641.27' })] });
     expect(f.workflow.markPaymentPaid).not.toHaveBeenCalled();
     expect(f.advanceRelease).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSend).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
   });
 
   it('requires the last cent before invoking release effects', async () => {
@@ -86,6 +92,20 @@ describe('Custom contributions keep installment requirements intact', () => {
     expect(buildPaymentSchedule(f.estimate)?.canRelease).toBe(true);
     expect(f.workflow.markPaymentPaid).toHaveBeenCalledTimes(1);
     expect(f.advanceRelease).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSend).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
+  });
+
+  it('reconciles the same partial contribution without issuing another receipt or announcing a milestone', async () => {
+    const f = fixture();
+    await f.confirm();
+    await f.confirm();
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ paid: '1000.00', balance: '9641.27', canRelease: false });
+    expect(f.createOrder).not.toHaveBeenCalled();
+    expect(f.workflow.markPaymentPaid).not.toHaveBeenCalled();
+    expect(f.advanceRelease).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSend).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
   });
 });
 

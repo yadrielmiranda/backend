@@ -358,7 +358,8 @@ export class NotificationEmailService {
     const message = cleanText(notification.message);
     let title = 'Project update';
     if (entity === 'payment') {
-      title = event === 'partial' ? 'Partial payment received' : 'Payment confirmed';
+      title = event === 'received' ? 'Payment received'
+        : event === 'partial' ? 'Partial payment received' : 'Payment confirmed';
     } else if (entity === 'refund') {
       title = 'Refund recorded';
     } else if (entity === 'network-business' && ['requested', 'applied'].includes(event)) {

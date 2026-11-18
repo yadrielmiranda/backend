@@ -20,6 +20,7 @@ const ownerProjectEvents = [
   /^installation:\d+:appointment:\d+:proposed:owner$/,
   /^payment:\d+:paid(?::.+)?:owner$/,
   /^payment:\d+:partial:.+:owner$/,
+  /^payment:\d+:received:(?:stripe|checkout|manual):[a-zA-Z0-9_-]+:owner$/,
 ];
 
 export function isOwnerProjectNotification({ dedupeKey }: NotificationEvent): boolean {
@@ -38,8 +39,10 @@ function staffAudience({ dedupeKey }: NotificationEvent): StaffAudience | null {
   if (
     /^payment:\d+:paid:admin$/.test(key) ||
     /^payment:\d+:partial:.+:admin$/.test(key) ||
+    /^payment:\d+:received:(?:stripe|checkout|manual):[a-zA-Z0-9_-]+:admin$/.test(key) ||
     /^refund:[a-zA-Z0-9_-]+:review$/.test(key) ||
     /^referral-payout:\d+:requested:admin$/.test(key) ||
+    /^order:\d+:created:admin$/.test(key) ||
     /^order:\d+:pickup:selected:admin$/.test(key) ||
     /^order:\d+:delivery:\d+:selected:admin$/.test(key) ||
     /^installation:\d+:quote:(?:\d+|latest):customer:(?:APPROVED|REJECTED):admin$/.test(key) ||

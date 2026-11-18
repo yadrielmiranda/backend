@@ -394,7 +394,11 @@ describe('NotificationSmsService', () => {
     'payment:42:paid:admin',
     'payment:42:partial:pi_example:admin',
     'payment:42:partial:2026-11-18T12:00:00.000Z:admin',
+    'payment:42:received:stripe:ch_example:admin',
+    'payment:42:received:checkout:cs_test_example:admin',
+    'payment:42:received:manual:12345678-1234-4234-8234-123456789abc:admin',
     'refund:re_example:review',
+    'order:20:created:admin',
     'order:20:pickup:selected:admin',
     'order:20:delivery:8:selected:admin',
     'installation:3:quote:8:customer:APPROVED:admin',
@@ -438,6 +442,14 @@ describe('NotificationSmsService', () => {
     ['admin', 'installation:3:remeasurement-completed:admin'],
     ['admin', 'material-revision:8:applied'],
     ['operator', 'payment:42:paid:admin'],
+    ['operator', 'payment:42:received:stripe:ch_example:admin'],
+    ['client', 'payment:42:received:stripe:ch_example:admin'],
+    ['dealer', 'payment:42:received:stripe:ch_example:admin'],
+    ['technician', 'payment:42:received:stripe:ch_example:admin'],
+    ['operator', 'order:20:created:admin'],
+    ['client', 'order:20:created:admin'],
+    ['dealer', 'order:20:created:admin'],
+    ['technician', 'order:20:created:admin'],
     ['operator', 'installation:3:appointment:7:response:ACCEPT:admin'],
     ['operator', 'order:20:extra:7:response:REJECTED:admin'],
     ['technician', 'installation:3:appointment:7:response:ACCEPT'],
@@ -477,23 +489,64 @@ describe('NotificationSmsService', () => {
     expect(post).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['no-consent', 'revoked', 'blocked', 'changed-phone', 'new-consent', 'inactive'])(
-    'retains SMS consent and account checks for admin notifications: %s',
-    async (reason) => {
+  it.each(['payment:42:paid:admin', 'payment:42:received:stripe:ch_example:admin', 'order:20:created:admin'].flatMap(key =>
+    ['no-consent', 'revoked', 'blocked', 'changed-phone', 'new-consent', 'inactive', 'operator'].map(reason => [key, reason]),
+  ))(
+    'retains SMS consent, account and role checks for admin event %s: %s',
+    async (dedupeKey, reason) => {
       const f = fixture();
       f.user.role.name = 'admin';
-      f.notification.dedupeKey = 'payment:42:paid:admin';
+      f.notification.dedupeKey = dedupeKey;
+      await f.service.enqueue(f.notification as never, f.db as never);
+      expect(f.db.notificationSms.create).toHaveBeenCalledTimes(1);
+      f.db.notificationSms.create.mockClear();
       if (reason === 'no-consent') f.user.smsConsent.enabled = false;
       if (reason === 'revoked') f.user.smsConsent.revokedAt = new Date();
       if (reason === 'blocked') f.db.smsPhoneBlock.findUnique.mockResolvedValue({ phone } as never);
       if (reason === 'changed-phone') f.user.phone = '+13055559876';
       if (reason === 'inactive') f.user.isActive = false;
       if (reason === 'new-consent') f.user.smsConsent.consentedAt = new Date();
+      if (reason === 'operator') f.user.role.name = 'operator';
+      if (reason !== 'new-consent') {
+        await f.service.enqueue(f.notification as never, f.db as never);
+        expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+      }
       await f.service.processPending();
       expect(post).not.toHaveBeenCalled();
       expect(f.row.status).toBe('SKIPPED');
     },
   );
+
+  it.each(['order:20:created:admin', 'payment:42:received:stripe:ch_example:admin'])(
+    'keeps admin event %s disabled in development', async dedupeKey => {
+      const f = fixture(); f.user.role.name = 'admin'; f.notification.dedupeKey = dedupeKey;
+      f.values.NODE_ENV = 'development';
+      f.values.SMS_DELIVERY_ENABLED = 'true';
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+      expect(f.db.notificationSms.findMany).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('PENDING');
+    },
+  );
+
+  it.each([
+    ['admin', 'admin', 'Payment of $450.00 received for Estimate #191013. Remaining balance: $550.00.'],
+    ['dealer', 'owner', 'Full payment of $1,000.00 received for Estimate #191013. Remaining balance: $0.00.'],
+  ])('sends the %s payment recipient one SMS preserving the amount and balance', async (role, audience, message) => {
+    const f = fixture(); f.user.role.name = role; f.user.dealerMode = 'INTERNAL';
+    f.notification.dedupeKey = `payment:42:received:stripe:ch_example:${audience}`;
+    f.notification.message = message;
+    await f.service.enqueue(f.notification as never, f.db as never);
+    await f.service.processPending();
+    await f.service.processPending();
+    expect(f.db.notificationSms.create).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(new URLSearchParams(post.mock.calls[0][1] as string).get('Body'))
+      .toBe(`Example Company: ${message}\nReply STOP to unsubscribe.`);
+    expect(f.row.status).toBe('ACCEPTED');
+  });
 
   it.each([
     ['client', null, true],
@@ -598,6 +651,9 @@ describe('NotificationSmsService', () => {
     'payment:42:paid:manual:12345678-1234-4234-8234-123456789abc:owner',
     'payment:42:partial:pi_example:owner',
     'payment:42:partial:manual:12345678-1234-4234-8234-123456789abc:owner',
+    'payment:42:received:stripe:ch_example:owner',
+    'payment:42:received:checkout:cs_test_example:owner',
+    'payment:42:received:manual:12345678-1234-4234-8234-123456789abc:owner',
   ])('queues and sends project event %s only to its internal dealer recipient', async dedupeKey => {
     const f = fixture();
     f.user.role.name = 'dealer';
@@ -616,7 +672,7 @@ describe('NotificationSmsService', () => {
     expect(post).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['estimate:5:order-review:owner', 'payment:42:partial:manual:12345678-1234-4234-8234-123456789abc:owner'])(
+  it.each(['estimate:5:order-review:owner', 'payment:42:partial:manual:12345678-1234-4234-8234-123456789abc:owner', 'payment:42:received:stripe:ch_example:owner'])(
     'retains consent, STOP and development protections for project event %s', async dedupeKey => {
       for (const reason of ['disabled', 'blocked', 'revoked', 'development']) {
         const f = fixture();

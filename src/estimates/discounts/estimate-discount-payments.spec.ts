@@ -115,7 +115,6 @@ describe('Manual discount payment integration', () => {
       {} as any, { get: () => 'sk_test_no_network' } as any,
       { markPaymentPaid: jest.fn().mockResolvedValue(false) } as any, {} as any,
     );
-    service.notifyPaymentConfirmed = jest.fn();
     await service.ensurePaidPaymentEffects(f.tx, {
       type: PaymentType.INSTALLATION_DEPOSIT, status: 'PAID', idEst: 1,
       paidAt: new Date('2026-10-07T12:00:00Z'), estimate: f.estimate,
@@ -167,7 +166,6 @@ describe('Manual discount payment integration', () => {
       { markPaymentPaid: jest.fn().mockResolvedValue(false) } as any,
       {} as any,
     );
-    service.notifyPaymentConfirmed = jest.fn();
     await service.ensurePaidPaymentEffects(f.tx, {
       type: PaymentType.INSTALLATION_DEPOSIT, status: 'PAID',
       idEst: 1,
@@ -280,7 +278,6 @@ describe('Manual discount payment integration', () => {
       { markPaymentPaid: jest.fn().mockResolvedValue(false) } as any,
       {} as any,
     );
-    service.notifyPaymentConfirmed = jest.fn();
     const payment = {
       type: PaymentType.INSTALLATION_DEPOSIT, status: 'PAID',
       idEst: 1,

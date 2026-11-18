@@ -8,8 +8,18 @@ const snapshot = (amount: string) => freezeProcessingCostSnapshot({ baseAmount: 
   processingComponents: singleProcessingComponent('material', amount) });
 
 function fixture() {
-  const estimate: any = { id: 7, materialProcessingCost: money(0), materialProcessingCostPending: false,
-    order: null, installationJob: null, status: { name: 'Active' }, user: { role: { name: 'dealer' } } };
+  const estimate: any = { id: 7, idUser: 9, number: '190007', units: 1,
+    materialProcessingCost: money(0), materialProcessingCostPending: false,
+    order: null, installationJob: null, status: { name: 'Active' },
+    dealerModeSnapshot: 'INTERNAL', totalPayable: money('10641.28'), customerTotalPayable: money('10641.28'),
+    user: { id: 9, role: { name: 'dealer' }, dealerMode: 'INTERNAL' },
+    paymentPlanSnapshot: { version: 1, name: '50/50', definition: {
+      withoutInstallation: [{ milestone: 'ORDER', basis: 'MATERIAL', percent: 50 },
+        { milestone: 'RELEASE', basis: 'MATERIAL', percent: 50 }],
+      withInstallation: [{ milestone: 'ORDER', basis: 'PROJECT', percent: 50 },
+        { milestone: 'RELEASE', basis: 'PROJECT', percent: 50 }],
+    } },
+  };
   const payments: any[] = ['5320.64', '2679.36'].map((amount, index) => ({
     id: index + 1, idEst: 7, type: 'INSTALLMENT', sequence: index + 1, status: 'PENDING',
     stripeSessionId: 'cs_first', stripePaymentIntentId: null, currency: 'usd',
@@ -17,9 +27,12 @@ function fixture() {
     processingCostSnapshot: snapshot(amount), paidAt: null, refundedAmount: money(0), refundCreditAmount: money(0),
     refundReviewBaseAmount: money(0), refundReviewPending: false,
   }));
+  estimate.payments = payments;
   const tx: any = {
     $queryRaw: jest.fn(async () => []),
-    estimate: { update: jest.fn(async ({ data }) => Object.assign(estimate, data)) },
+    estimate: { findUnique: jest.fn(async () => estimate),
+      update: jest.fn(async ({ data }) => Object.assign(estimate, data)) },
+    order: { findUnique: jest.fn(async () => estimate.order) },
     payment: {
       findMany: jest.fn(async ({ where }) => payments.filter(payment => payment.stripeSessionId === where.stripeSessionId).map(payment => ({ ...payment, estimate }))),
       findUnique: jest.fn(async ({ where }) => {
@@ -30,8 +43,9 @@ function fixture() {
     },
   };
   const ledger = attachLedgerStore(tx, () => payments);
-  const service = new PaymentsService(tx, { get: () => 'sk_test_in_memory' } as any, {} as any,
-    { createAndSendToRoles: jest.fn(async () => []) } as any);
+  const notifications = { createAndSend: jest.fn(async (..._args: any[]) => ({})),
+    createAndSendToRoles: jest.fn(async (..._args: any[]) => []) };
+  const service = new PaymentsService(tx, { get: () => 'sk_test_in_memory' } as any, {} as any, notifications as any);
   const effects = jest.spyOn(service as any, 'ensurePaidPaymentEffects').mockResolvedValue(false);
   const refunds: any[] = [];
   const charge: any = { id: 'ch_first', payment_intent: 'pi_first', status: 'succeeded', paid: true, captured: true,
@@ -48,13 +62,28 @@ function fixture() {
     status: 'PENDING', stripeSessionId: id, stripePaymentIntentId: null,
     amount: money(amount), baseAmount: money(amount), processingCostSnapshot: snapshot(amount), paidAt: null,
   });
-  return { estimate, payments, ledger, effects, charge, session, refunds, tx,
+  return { estimate, payments, ledger, effects, charge, session, refunds, tx, notifications,
     confirm: () => (service as any).processPaidCheckoutSession(tx, session), startNext };
 }
 
 describe('Checkout replay after a partially paid installment starts another checkout', () => {
+  it('does not issue another collection receipt when the original paid checkout is replayed', async () => {
+    const f = fixture();
+    await f.confirm();
+    await f.confirm();
+    expect(f.ledger.receipts).toHaveLength(2);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSend).toHaveBeenCalledTimes(1);
+    expect(f.effects.mock.calls.map(call => (call[1] as any).id)).toEqual([1, 2, 1, 2]);
+    expect(f.effects.mock.calls.every(call => call.length === 2)).toBe(true);
+    expect(f.tx.$queryRaw.mock.calls.every(call => call[0].join('?').includes('FOR UPDATE'))).toBe(true);
+  });
+
   it('uses both original receipts when only one Payment still points to the $8000 session', async () => {
     const f = fixture(); await f.confirm();
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSend).toHaveBeenCalledTimes(1);
+    f.notifications.createAndSendToRoles.mockClear(); f.notifications.createAndSend.mockClear();
     const original = f.ledger.receipts.map(receipt => JSON.stringify(receipt.processingCostSnapshot));
     f.startNext(f.payments[1], '2641.28'); f.effects.mockClear();
     await expect(f.confirm()).resolves.toBe(true);
@@ -66,19 +95,25 @@ describe('Checkout replay after a partially paid installment starts another chec
     expect(f.effects.mock.calls.map(call => (call[1] as any).id)).toEqual([1]);
     expect(f.ledger.processingCosts).toHaveLength(1);
     expect(f.estimate.materialProcessingCost.toFixed(2)).toBe('5.00');
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSend).not.toHaveBeenCalled();
   });
 
   it('finds the paid session after every Payment has moved to a later attempt', async () => {
     const f = fixture(); await f.confirm();
+    f.notifications.createAndSendToRoles.mockClear(); f.notifications.createAndSend.mockClear();
     f.startNext(f.payments[0], '100.00', 'cs_third'); f.startNext(f.payments[1], '2641.28');
     f.effects.mockClear();
     await expect(f.confirm()).resolves.toBe(true);
     expect(f.ledger.receipts).toHaveLength(2); expect(f.effects).not.toHaveBeenCalled();
     expect(f.payments.map(payment => payment.stripeSessionId)).toEqual(['cs_third', 'cs_second']);
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSend).not.toHaveBeenCalled();
   });
 
   it('reconciles a refund of the first charge against its original receipts while preserving the second attempt', async () => {
     const f = fixture(); await f.confirm(); f.startNext(f.payments[1], '2641.28');
+    f.notifications.createAndSendToRoles.mockClear(); f.notifications.createAndSend.mockClear();
     f.refunds.push({ id: 're_first', amount: 100000, currency: 'usd', status: 'succeeded', created: 1700000001,
       balance_transaction: { id: 'txn_refund', fee: 0, currency: 'usd' } });
     f.effects.mockClear(); await f.confirm(); await f.confirm();
@@ -89,10 +124,16 @@ describe('Checkout replay after a partially paid installment starts another chec
     expect(f.effects.mock.calls.some(call => (call[1] as any).id === 2)).toBe(false);
     expect(f.estimate.materialProcessingCost.toFixed(2)).toBe('5.00');
     expect(f.ledger.processingCosts).toHaveLength(1);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledWith(['admin'], expect.objectContaining({
+      dedupeKey: 'refund:re_first:review',
+    }), { db: f.tx });
+    expect(f.notifications.createAndSend).not.toHaveBeenCalled();
   });
 
   it.each(['amount', 'currency', 'charge'])('rejects a replay with inconsistent %s without rewriting receipts', async field => {
     const f = fixture(); await f.confirm(); f.startNext(f.payments[1], '2641.28');
+    f.notifications.createAndSendToRoles.mockClear(); f.notifications.createAndSend.mockClear();
     const before = JSON.stringify(f.ledger.receipts);
     if (field === 'amount') f.session.amount_total++;
     if (field === 'currency') f.session.currency = 'eur';
@@ -100,5 +141,7 @@ describe('Checkout replay after a partially paid installment starts another chec
     await expect(f.confirm()).rejects.toThrow(/original receipts/);
     expect(JSON.stringify(f.ledger.receipts)).toBe(before);
     expect(f.payments[1]).toMatchObject({ status: 'PENDING', stripeSessionId: 'cs_second' });
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSend).not.toHaveBeenCalled();
   });
 });

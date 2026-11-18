@@ -288,7 +288,11 @@ describe('NotificationEmailService', () => {
       ['payment:31:paid:admin', 'Payment confirmed'],
       ['payment:31:partial:pi_example:admin', 'Partial payment received'],
       ['payment:31:partial:2026-11-18T15:00:00.000Z:admin', 'Partial payment received'],
+      ['payment:31:received:stripe:ch_example:admin', 'Payment received'],
+      ['payment:31:received:checkout:cs_test_example:admin', 'Payment received'],
+      ['payment:31:received:manual:12345678-1234-4234-8234-123456789abc:admin', 'Payment received'],
       ['refund:re_example:review', 'Refund recorded'],
+      ['order:21:created:admin', 'Order created'],
       ['order:21:pickup:selected:admin', 'Pickup selected'],
       ['order:21:delivery:32:selected:admin', 'Delivery selected'],
       ['installation:33:quote:34:customer:APPROVED:admin', 'Installation quote approved by owner'],
@@ -345,14 +349,49 @@ describe('NotificationEmailService', () => {
       expect(f.row.status).toBe('SKIPPED');
     });
 
-    it.each(['client', 'dealer', 'operator', 'technician'])('rechecks staff-only audience if the queued admin becomes %s', async role => {
-      const f = fixture(); f.user.role.name = 'admin'; f.notification.dedupeKey = 'payment:31:paid:admin';
+    it.each(['payment:31:paid:admin', 'payment:31:received:stripe:ch_example:admin', 'order:21:created:admin'].flatMap(key =>
+      ['client', 'dealer', 'operator', 'technician'].map(role => [key, role]),
+    ))('rechecks staff-only event %s if the queued admin becomes %s', async (dedupeKey, role) => {
+      const f = fixture(); f.user.role.name = 'admin'; f.notification.dedupeKey = dedupeKey;
       await f.service.enqueue(f.notification as never, f.db as never);
       expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
       f.user.role.name = role; f.user.dealerMode = 'EXTERNAL';
       await f.service.processPending();
       expect(sendMail).not.toHaveBeenCalled();
       expect(f.row.status).toBe('SKIPPED');
+    });
+
+    it.each(['order:21:created:admin', 'payment:31:received:stripe:ch_example:admin'])(
+      'keeps admin event %s disabled in development', async dedupeKey => {
+        const f = fixture(); f.user.role.name = 'admin'; f.notification.dedupeKey = dedupeKey;
+        f.values.NODE_ENV = 'development';
+        f.values.EMAIL_DELIVERY_ENABLED = 'true';
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+        expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+        expect(f.db.notificationEmail.findMany).not.toHaveBeenCalled();
+        expect(sendMail).not.toHaveBeenCalled();
+        expect(f.row.status).toBe('PENDING');
+      },
+    );
+
+    it.each([
+      'Payment of $450.00 received for Estimate #191013. Remaining balance: $550.00.',
+      'Full payment of $1,000.00 received for Estimate #191013. Remaining balance: $0.00.',
+    ])('preserves actual payment and balance details independently of SMS consent: %s', async message => {
+      const f = fixture(); f.user.role.name = 'admin';
+      f.notification.dedupeKey = 'payment:31:received:stripe:ch_example:admin';
+      f.notification.message = message;
+      Object.assign(f.user, { smsConsent: { enabled: false, promotionsEnabled: false } });
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      await f.service.processPending();
+      expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+        subject: 'Payment received - Estimate #191013', text: expect.stringContaining(message),
+      }));
+      expect(f.row.status).toBe('ACCEPTED');
     });
 
     it.each([
@@ -443,6 +482,9 @@ describe('NotificationEmailService', () => {
       ['payment:12:paid:manual:12345678-1234-4234-8234-123456789abc:owner', 'Payment confirmed for Estimate #191013.', '/orders/21'],
       ['payment:12:partial:pi_example:owner', 'Partial payment confirmed for Estimate #191013.', '/orders/21'],
       ['payment:12:partial:manual:12345678-1234-4234-8234-123456789abc:owner', 'Partial payment confirmed for Estimate #191013.', '/orders/21'],
+      ['payment:12:received:stripe:ch_example:owner', 'Payment of $450.00 received for Estimate #191013. Remaining balance: $550.00.', '/orders/21'],
+      ['payment:12:received:checkout:cs_test_example:owner', 'Payment of $450.00 received for Estimate #191013. Remaining balance: $550.00.', '/orders/21'],
+      ['payment:12:received:manual:12345678-1234-4234-8234-123456789abc:owner', 'Full payment of $1,000.00 received for Estimate #191013. Remaining balance: $0.00.', '/orders/21'],
     ])('queues and sends the existing owner event %s', async (dedupeKey, message, actionUrl) => {
       const f = internalDealer();
       Object.assign(f.notification, { dedupeKey, message, actionUrl });
@@ -505,7 +547,7 @@ describe('NotificationEmailService', () => {
       expect(f.row.status).toBe('SKIPPED');
     });
 
-    it.each(['order:21:created:owner', 'estimate:104:order-review:owner', statusKey])('keeps internal dealer event %s disabled in development', async dedupeKey => {
+    it.each(['order:21:created:owner', 'estimate:104:order-review:owner', 'payment:12:received:stripe:ch_example:owner', statusKey])('keeps internal dealer event %s disabled in development', async dedupeKey => {
       const f = internalDealer();
       f.notification.dedupeKey = dedupeKey;
       f.values.NODE_ENV = 'development';

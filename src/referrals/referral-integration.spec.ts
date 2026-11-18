@@ -25,7 +25,7 @@ describe('Referral order creation and response privacy', () => {
       referralReward: { create: jest.fn() },
     };
     const service = new PaymentsService({} as any, { get: () => 'sk_test_referrals_offline' } as any,
-      {} as any, { createAndSend: jest.fn() } as any);
+      {} as any, { createAndSend: jest.fn(), createAndSendToRoles: jest.fn() } as any);
     expect(await (service as any).ensureOrderForInitialPayment(db, payment)).toBe(true);
     expect(db.order.create).toHaveBeenCalledTimes(1);
     expect(db.referralReward.create).toHaveBeenCalledWith({ data: expect.objectContaining({

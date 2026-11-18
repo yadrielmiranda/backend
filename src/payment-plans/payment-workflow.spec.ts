@@ -205,7 +205,7 @@ function fixture({
   const ledger = attachLedgerStore(tx, () => estimate.payments);
   tx.order.findUniqueOrThrow = tx.order.findUnique;
   tx.$transaction = jest.fn(async (work) => work(tx));
-  const notifications: any = {
+  const notifications = {
     createAndSend: jest.fn(),
     createAndSendToRoles: jest.fn(),
   };
@@ -227,7 +227,7 @@ function fixture({
           ? 'http://localhost:3000'
           : undefined,
   } as ConfigService;
-  const service = new PaymentsService(tx, config, workflow, notifications);
+  const service = new PaymentsService(tx, config, workflow, notifications as never);
   const stripe = (service as any).stripe as Stripe;
   const refunds = jest.spyOn(stripe.refunds, 'list').mockResolvedValue({ data: [], has_more: false } as any);
   const intent = jest.spyOn(stripe.paymentIntents, 'retrieve').mockImplementation(async (id: string) => {
@@ -256,7 +256,7 @@ function fixture({
       reference: `receipt-${sequence}`,
       actor: admin ? { id: 1, role: { name: 'admin' } } : actor,
     });
-  return { ledger, refunds, intent, stripe, estimate, tx, service, workflow, actor, manual, approve, createSession };
+  return { ledger, refunds, intent, stripe, estimate, tx, service, workflow, notifications, actor, manual, approve, createSession };
 }
 
 describe('Material-only threshold through payment collection', () => {
@@ -290,6 +290,8 @@ describe('Material-only threshold through payment collection', () => {
     });
     await pay(120, 240);
     expect(f.estimate.order).toBeNull();
+    expect(f.notifications.createAndSendToRoles.mock.calls.map(([, notice]) => notice.dedupeKey))
+      .not.toContain('order:22:created:admin');
     expect(buildPaymentSchedule(f.estimate)?.rows).toMatchObject([
       { milestone: 'ORDER', amount: '240.00', paid: '120.00', balance: '120.00' },
     ]);
@@ -666,6 +668,8 @@ describe('Order review and permit installments', () => {
     expect(f.estimate.status.name).toBe('Pending order review');
     expect(f.estimate.order).toBeNull();
     expect(f.tx.orderSequence.create).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSendToRoles.mock.calls.map(([, notice]) => notice.dedupeKey))
+      .not.toContain('order:22:created:admin');
     expect(buildPaymentSchedule(f.estimate)?.next).toBeNull();
     await expect(f.manual(2)).rejects.toThrow('not available');
     for (const role of ['dealer', 'operator', 'client'] as const) {
@@ -675,6 +679,17 @@ describe('Order review and permit installments', () => {
     await f.approve();
     expect(f.tx.order.create).toHaveBeenCalledTimes(1);
     expect(f.tx.orderSequence.create).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSendToRoles.mock.calls.filter(([, notice]) => notice.dedupeKey === 'order:22:created:admin'))
+      .toEqual([[
+        ['admin'],
+        {
+          message: 'Order #ORD-1022 has been created from Estimate #190999.',
+          actionUrl: '/orders/22', actionLabel: 'Open order', dedupeKey: 'order:22:created:admin',
+        },
+        { db: f.tx },
+      ]]);
+    expect(f.notifications.createAndSend.mock.calls.filter(([notice]) => notice.dedupeKey === 'order:22:created:owner'))
+      .toHaveLength(1);
     expect(f.estimate.status.name).toBe('Ordered');
     expect(f.estimate.installationJob.status).toBe('MATERIAL_PAID');
     expect(f.tx.eventLog.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ entityType: 'Order', userId: 1 }) }));
@@ -1373,6 +1388,58 @@ describe('Early full balance and operational milestones', () => {
     method: PaymentMethod.CHECK, fundsVerified: true, reference: 'FULL-42', actor: { id: 1, role: { name: 'admin' } },
   });
 
+  it('announces one new order and one full payment across both installments, without replaying either notice', async () => {
+    const f = fixture({ deposit: 0, installation: 0 });
+    await f.service.createCheckoutSessionForEstimate({
+      estimateId: 1, type: PaymentType.INSTALLMENT, payFullBalance: true,
+      expectedBalance: 8000, user: f.actor,
+    });
+    expect(f.estimate.order).toBeNull();
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
+    const payments = f.estimate.payments.filter(p => p.stripeSessionId === 'cs_simulated');
+    expect(payments.map(p => p.sequence)).toEqual([1, 2]);
+    const session = {
+      id: 'cs_simulated', payment_intent: 'pi_cs_simulated', payment_status: 'paid', currency: 'usd',
+      amount_total: payments.reduce((sum, p) => sum + Math.round(Number(p.amount) * 100), 0),
+    };
+
+    await (f.service as any).processPaidCheckoutSession(f.tx, session);
+
+    expect(f.tx.order.create).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSendToRoles.mock.calls).toEqual([
+      [
+        ['admin'],
+        {
+          message: 'Order #ORD-1022 has been created from Estimate #190999.',
+          actionUrl: '/orders/22', actionLabel: 'Open order', dedupeKey: 'order:22:created:admin',
+        },
+        { db: f.tx },
+      ],
+      [
+        ['admin'],
+        expect.objectContaining({
+          message: expect.stringContaining('Full payment of $8,240.00'),
+          actionUrl: '/orders/22', dedupeKey: `payment:${payments[0].id}:received:stripe:ch_pi_cs_simulated:admin`,
+        }),
+        { db: f.tx },
+      ],
+    ]);
+    expect(f.notifications.createAndSend).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSend).toHaveBeenCalledWith(expect.objectContaining({
+      recipientId: 7, dedupeKey: 'order:22:created:owner',
+    }), f.tx);
+    expect(f.ledger.receipts).toHaveLength(2);
+
+    await (f.service as any).processPaidCheckoutSession(f.tx, session);
+
+    expect(f.tx.order.create).toHaveBeenCalledTimes(1);
+    expect(f.ledger.receipts).toHaveLength(2);
+    expect(f.notifications.createAndSendToRoles.mock.calls.filter(([, notice]) => notice.dedupeKey === 'order:22:created:admin'))
+      .toHaveLength(1);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(2);
+    expect(f.notifications.createAndSend).toHaveBeenCalledTimes(1);
+  });
+
   it('credits the deposit once, pays all installments and preserves administrative order review', async () => {
     const f = fixture();
     await fullManual(f, 9750);
@@ -1380,7 +1447,17 @@ describe('Early full balance and operational milestones', () => {
     expect(f.estimate.payments.filter(p => p.type === 'INSTALLMENT').map(p => p.baseAmount.toFixed(2))).toEqual(['4750.00', '4000.00', '1000.00']);
     expect(f.estimate.status.name).toBe('Pending order review');
     expect(f.estimate.order).toBeNull();
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledWith(['admin'], expect.objectContaining({
+      message: expect.stringMatching(/Full payment of \$9,750\.00.*Pending order review\./),
+      dedupeKey: expect.stringMatching(/^payment:\d+:received:manual:/),
+    }), { db: f.tx });
     await f.approve();
+    await f.approve();
+    expect(f.notifications.createAndSendToRoles.mock.calls.filter(([, notice]) => notice.dedupeKey === 'order:22:created:admin'))
+      .toHaveLength(1);
+    expect(f.notifications.createAndSend.mock.calls.filter(([notice]) => notice.dedupeKey === 'order:22:created:owner'))
+      .toHaveLength(1);
     expect(f.estimate.order.status.name).toBe('Pending');
     expect(f.estimate.installationJob.status).toBe('MATERIAL_PAID');
     f.estimate.order.status.name = 'Ready to pick up';
@@ -1667,8 +1744,8 @@ describe('Custom installment amounts with real schedule and receipt ledger', () 
     await expect(pipe.transform({ ...data, customAmount: 1.001 }, { type: 'body', metatype })).rejects.toThrow();
   });
 
-  function cardFixture(internal = false) {
-    const f = fixture({ material: 10641.28, installation: 0, deposit: 0, mode: internal ? 'INTERNAL' : 'EXTERNAL' });
+  function cardFixture(internal = false, material = 10641.28) {
+    const f = fixture({ material, installation: 0, deposit: 0, mode: internal ? 'INTERNAL' : 'EXTERNAL' });
     const sessions = new Map<string, any>();
     f.createSession.mockImplementation(async (params: any) => {
       const id = `cs_custom_${sessions.size + 1}`;
@@ -1689,6 +1766,95 @@ describe('Custom installment amounts with real schedule and receipt ledger', () 
     };
     return { ...f, sessions, retrieve, expire, checkout, confirm };
   }
+
+  it('sends one manual receipt for $3,500 across two $2,000 installments, then distinct receipts for the reused row', async () => {
+    const f = fixture({ material: 4000, installation: 0, deposit: 0, mode: 'INTERNAL' });
+    f.estimate.user.dealerMode = 'INTERNAL';
+    const pay = (customAmount: number, expectedBalance: number) => f.service.recordManualPayment({
+      estimateId: 1, type: PaymentType.INSTALLMENT, customAmount, expectedBalance,
+      method: PaymentMethod.CHECK, fundsVerified: true, reference: 'SAME-REFERENCE',
+      paidAt: '2026-08-06T12:00:00Z', actor: admin,
+    });
+    const adminReceipts = () => f.notifications.createAndSendToRoles.mock.calls
+      .map(([, notice]) => notice).filter(notice => notice.dedupeKey.includes(':received:'));
+    const ownerReceipts = () => f.notifications.createAndSend.mock.calls
+      .map(([notice]) => notice).filter(notice => notice.dedupeKey.includes(':received:'));
+
+    await pay(3500, 4000);
+
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ balance: '500.00', rows: [
+      { amount: '2000.00', paid: '2000.00', balance: '0.00' },
+      { amount: '2000.00', paid: '1500.00', balance: '500.00' },
+    ] });
+    expect(adminReceipts()).toHaveLength(1);
+    expect(ownerReceipts()).toHaveLength(1);
+    for (const notice of [...adminReceipts(), ...ownerReceipts()]) {
+      expect(notice.message).toMatch(/^Payment of \$3,500\.00.*Remaining payment-plan balance: \$500\.00\./);
+      expect(notice.message).not.toContain('Full payment');
+    }
+
+    await pay(250, 500);
+    await pay(250, 250);
+
+    expect(f.estimate.payments).toHaveLength(2);
+    expect(f.ledger.receipts).toHaveLength(4);
+    expect(adminReceipts()).toHaveLength(3);
+    expect(ownerReceipts()).toHaveLength(3);
+    expect(adminReceipts()[1].message).toMatch(/^Payment of \$250\.00.*Remaining payment-plan balance: \$250\.00\./);
+    expect(adminReceipts()[2].message).toMatch(/^Full payment of \$250\.00/);
+    expect(ownerReceipts()[2].message).toMatch(/^Full payment of \$250\.00/);
+    expect(new Set(adminReceipts().map(notice => notice.dedupeKey)).size).toBe(3);
+    expect(new Set(ownerReceipts().map(notice => notice.dedupeKey)).size).toBe(3);
+    expect(buildPaymentSchedule(f.estimate)?.balance).toBe('0.00');
+    expect(f.notifications.createAndSendToRoles.mock.calls.filter(([, notice]) => notice.dedupeKey === 'order:22:created:admin'))
+      .toHaveLength(1);
+  });
+
+  it('sends one card receipt for $3,500 applied with $500 left and preserves grouping through replay and later payment', async () => {
+    const f = cardFixture(true, 4000);
+    f.estimate.user.dealerMode = 'INTERNAL';
+    const adminReceipts = () => f.notifications.createAndSendToRoles.mock.calls
+      .map(([, notice]) => notice).filter(notice => notice.dedupeKey.includes(':received:'));
+    const ownerReceipts = () => f.notifications.createAndSend.mock.calls
+      .map(([notice]) => notice).filter(notice => notice.dedupeKey.includes(':received:'));
+    await f.checkout(3500, 4000);
+    expect(f.sessions.get('cs_custom_1').amount_total).toBe(360500);
+    await f.confirm('cs_custom_1');
+    const firstCharge = (await f.stripe.paymentIntents.retrieve('pi_cs_custom_1') as any).latest_charge;
+
+    expect(buildPaymentSchedule(f.estimate)).toMatchObject({ paid: '3500.00', balance: '500.00' });
+    expect(adminReceipts()).toHaveLength(1);
+    expect(ownerReceipts()).toHaveLength(1);
+    for (const notice of [...adminReceipts(), ...ownerReceipts()]) {
+      expect(notice.message).toMatch(/^Payment of \$3,605\.00.*Remaining payment-plan balance: \$500\.00\./);
+      expect(notice.message).toContain('Includes $105.00 in processing fees; $3,500.00 applied to the balance.');
+      expect(notice.message).not.toContain('Full payment');
+    }
+    expect(f.ledger.receipts.map(receipt => receipt.baseAmount.toFixed(2))).toEqual(['2000.00', '1500.00']);
+
+    await f.confirm('cs_custom_1');
+    expect(adminReceipts()).toHaveLength(1);
+    expect(ownerReceipts()).toHaveLength(1);
+    await f.checkout(500, 500);
+    await f.confirm('cs_custom_2');
+    expect(adminReceipts()).toHaveLength(2);
+    expect(ownerReceipts()).toHaveLength(2);
+    expect(adminReceipts()[1].message).toMatch(/^Full payment of \$515\.00/);
+    expect(ownerReceipts()[1].message).toMatch(/^Full payment of \$515\.00/);
+    expect(adminReceipts()[1].dedupeKey).not.toBe(adminReceipts()[0].dedupeKey);
+    expect(f.estimate.payments).toHaveLength(2);
+    expect(f.ledger.receipts).toHaveLength(3);
+    expect(buildPaymentSchedule(f.estimate)?.balance).toBe('0.00');
+
+    // The first captured amount remains immutable after installment #2 is reused.
+    f.intent.mockResolvedValueOnce({ status: 'succeeded', latest_charge: firstCharge } as any);
+    await f.confirm('cs_custom_1');
+    await f.confirm('cs_custom_2');
+    expect(adminReceipts()).toHaveLength(2);
+    expect(ownerReceipts()).toHaveLength(2);
+    expect(f.ledger.receipts).toHaveLength(3);
+    expect(f.tx.order.create).toHaveBeenCalledTimes(1);
+  });
 
   it('records 8000 as 5320.64 plus 2679.36, then allows repeated payments of the second installment', async () => {
     const f = fixture({ material: 10641.28, installation: 0, deposit: 0 });

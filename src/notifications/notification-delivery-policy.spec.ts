@@ -9,8 +9,12 @@ const adminEvents = [
   'payment:12:paid:admin',
   'payment:12:partial:pi_example:admin',
   'payment:12:partial:2026-11-18T12:00:00.000Z:admin',
+  'payment:12:received:stripe:ch_example:admin',
+  'payment:12:received:checkout:cs_test_example:admin',
+  'payment:12:received:manual:12345678-1234-4234-8234-123456789abc:admin',
   'refund:re_example:review',
   'referral-payout:18:requested:admin',
+  'order:20:created:admin',
   'order:20:pickup:selected:admin',
   'order:20:delivery:3:selected:admin',
   'installation:5:quote:8:customer:APPROVED:admin',
@@ -61,6 +65,9 @@ describe('owner project delivery scope', () => {
     'payment:12:partial:manual:12345678-1234-4234-8234-123456789abc:owner',
     'payment:12:partial:2026-11-18T12:00:00.000Z:owner',
     'payment:12:partial:25.00:owner',
+    'payment:12:received:stripe:ch_example:owner',
+    'payment:12:received:checkout:cs_test_example:owner',
+    'payment:12:received:manual:12345678-1234-4234-8234-123456789abc:owner',
   ])('recognizes project owner event %s without making it a staff broadcast', dedupeKey => {
     expect(isOwnerProjectNotification({ dedupeKey })).toBe(true);
     expect(isStaffNotification({ dedupeKey })).toBe(false);
@@ -77,6 +84,10 @@ describe('owner project delivery scope', () => {
     'order:20:status:4', 'order:20:status:4:admin',
     'order:20:status:4:2026-11-18T19:15:25.123Z:admin',
     'payment:12:partial::owner', 'payment:12:paid:owner:admin',
+    'payment:12:received:owner', 'payment:12:received:stripe::owner',
+    'payment:invalid:received:stripe:ch_example:owner',
+    'payment:12:received:other:ch_example:owner',
+    'payment:12:received:stripe:ch_example:owner:unexpected',
   ])('does not grant internal dealers unrelated or staff event %s', dedupeKey => {
     expect(isOwnerProjectNotification({ dedupeKey })).toBe(false);
   });
@@ -106,7 +117,15 @@ describe('staff notification delivery scope', () => {
   it.each([
     null,
     'order:20:created:owner',
+    'payment:12:received:stripe:ch_example:owner',
+    'payment:12:received:admin', 'payment:12:received:stripe::admin',
+    'payment:invalid:received:stripe:ch_example:admin',
+    'payment:12:received:other:ch_example:admin',
+    'payment:12:received:stripe:ch_example:admin:unexpected',
     'order:20:delivery:3:payment:owner',
+    'order:20:created:admin:unexpected',
+    'order:invalid:created:admin',
+    'order:20:created:operator',
     'installation:5:quote:8:admin-approval',
     'installation:5:quote:8:admin:APPROVED:owner',
     'installation:5:remeasurement-completed:admin',

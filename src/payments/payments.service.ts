@@ -295,6 +295,12 @@ export class PaymentsService {
       },
       tx,
     );
+    await this.notifications.createAndSendToRoles(['admin'], {
+      message: `Order #${order.number} has been created from Estimate #${estimate.number}.`,
+      actionUrl: `/orders/${order.id}`,
+      actionLabel: 'Open order',
+      dedupeKey: `order:${order.id}:created:admin`,
+    }, { db: tx });
     return true;
   }
 
@@ -419,7 +425,6 @@ export class PaymentsService {
   private async ensurePaidPaymentEffects(
     tx: Prisma.TransactionClient,
     payment: PaymentWithEstimate,
-    ownerReceiptSource?: string,
   ): Promise<boolean> {
     let installmentRemaining: string | null = null;
     if (payment.type === PaymentType.INSTALLMENT) {
@@ -454,10 +459,10 @@ export class PaymentsService {
       changed = true;
     }
 
-    // A confirmed contribution locks its agreed pricing and gets a receipt
-    // notification, but never unlocks a milestone with an outstanding balance.
+    // A confirmed contribution locks its agreed pricing, but never unlocks
+    // a milestone with an outstanding balance. Its collection is notified once
+    // after all of its allocations have been processed.
     if (installmentRemaining !== null) {
-      await this.notifyPaymentConfirmed(tx, payment, installmentRemaining, ownerReceiptSource);
       return changed;
     }
 
@@ -513,8 +518,6 @@ export class PaymentsService {
         }
       }
     }
-    await this.notifyPaymentConfirmed(tx, payment, undefined, ownerReceiptSource);
-
     return changed;
   }
 
@@ -552,18 +555,33 @@ export class PaymentsService {
     }
   }
 
-  private async notifyPaymentConfirmed(
+  private async notifyPaymentCollection(
     tx: Prisma.TransactionClient,
-    payment: PaymentWithEstimate,
-    installmentRemaining?: string,
-    ownerReceiptSource?: string,
+    payments: PaymentWithEstimate[],
+    source: string,
   ) {
+    if (!payments.length) return;
+    const payment = payments[0];
+    if (payments.some(item => item.idEst !== payment.idEst)) {
+      throw new Error('A payment notification cannot combine different estimates.');
+    }
+    // baseAmount is this collection's allocation, not the cumulative amount
+    // already credited to an installment. The receipt identities remain separate.
+    const principal = payments.reduce((sum, item) => sum.add(item.baseAmount), new Prisma.Decimal(0));
+    const surcharge = payments.reduce((sum, item) => sum.add(item.surchargeAmount), new Prisma.Decimal(0));
+    const received = principal.add(surcharge);
+    if (!received.gt(0) || payments.some(item => item.status !== PaymentStatus.PAID || item.refundReviewPending)) return;
+    const formatMoney = (value: Prisma.Decimal.Value) => new Prisma.Decimal(value).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const scheduled = payments.every(item => item.type === PaymentType.INSTALLMENT);
+    const schedule = scheduled ? await getPaymentSchedule(tx, payment.idEst) : null;
+    const fullPayment = schedule && new Prisma.Decimal(schedule.balance).eq(0) &&
+      !schedule.provisional && !schedule.refundReviewPending;
     const copy = this.paymentNotificationCopy(payment.type, payment.sequence);
     const order = await tx.order.findUnique({
       where: { idEst: payment.idEst },
       select: { id: true },
     });
-    const pendingReview = !order && payment.estimate.status.name === PENDING_ORDER_REVIEW &&
+    const pendingReview = !order && (schedule?.orderReviewPending || payment.estimate.status.name === PENDING_ORDER_REVIEW) &&
       (payment.type === PaymentType.MATERIAL || (payment.type === PaymentType.INSTALLMENT && payment.sequence === 1));
     const actionUrl = pendingReview ? `/estimates/${payment.idEst}/edit` : order
       ? `/orders/${order.id}`
@@ -572,16 +590,25 @@ export class PaymentsService {
         : `/estimates/${payment.idEst}`;
     const payer = payment.payerName?.trim();
     const payerSuffix = payer ? ` from ${payer}` : '';
-    const eventKey = installmentRemaining
-      ? `payment:${payment.id}:partial:${payment.stripePaymentIntentId ?? payment.paidAt?.toISOString() ?? paidPrincipal(payment).toFixed(2)}`
-      : `payment:${payment.id}:paid`;
+    const eventKey = `payment:${payment.id}:received:${source}`;
+    const label = scheduled ? fullPayment ? 'Full payment' : 'Payment'
+      : payments.length === 1 ? copy.label : 'Payment';
+    // The payment plan excludes independently billed extras and deliveries.
+    // Do not present their balances, or an unapproved future quote, as settled.
+    const balanceCopy = schedule
+      ? ` ${schedule.provisional ? 'Preliminary' : 'Remaining'} payment-plan balance: $${formatMoney(schedule.balance)}.${schedule.provisional ? ' Final charges are pending.' : ''}${schedule.refundReviewPending ? ' Refund review pending.' : ''}`
+      : '';
+    const feeCopy = surcharge.gt(0)
+      ? ` Includes $${formatMoney(surcharge)} in processing fees; $${formatMoney(principal)} applied to the balance.`
+      : '';
+    const paymentCopy = `${label} of $${formatMoney(received)} confirmed`;
 
     await this.notifications.createAndSendToRoles(
       ['admin'],
       {
-        message: `${copy.label} ${installmentRemaining ? `partial payment of $${payment.baseAmount.toFixed(2)}` : 'confirmed'}${payerSuffix} for Estimate #${payment.estimate.number}.${installmentRemaining ? ` Remaining installment balance: $${installmentRemaining}.` : ''}${pendingReview ? " Pending order review." : ""}`,
+        message: `${paymentCopy}${payerSuffix} for Estimate #${payment.estimate.number}.${balanceCopy}${feeCopy}${pendingReview ? ' Pending order review.' : ''}`,
         actionUrl,
-        actionLabel: installmentRemaining ? 'Open payment schedule' : pendingReview ? 'Review order' : copy.adminNextStep,
+        actionLabel: pendingReview ? 'Review order' : scheduled ? 'Open payment schedule' : copy.adminNextStep,
         dedupeKey: `${eventKey}:admin`,
       },
       {
@@ -592,17 +619,15 @@ export class PaymentsService {
     // El dealer interno sigue los pagos de su proyecto, aunque pague el cliente
     // o el propio dealer registre el pago. Las confirmaciones administrativas se conservan.
     const owner = payment.estimate.user;
-    if (ownerReceiptSource && owner?.role?.name.toLowerCase() === 'dealer' && owner.dealerMode === DealerMode.INTERNAL) {
+    if (owner?.role?.name.toLowerCase() === 'dealer' && owner.dealerMode === DealerMode.INTERNAL) {
       await this.notifications.createAndSend({
         recipientId: payment.estimate.idUser,
         actorId: payment.recordedById ?? payment.estimate.idUser,
         notifyActor: true,
-        message: installmentRemaining
-          ? `Partial payment of $${payment.baseAmount.toFixed(2)} received for Estimate #${payment.estimate.number}. Installment balance: $${installmentRemaining}.`
-          : `${copy.label} of $${payment.baseAmount.toFixed(2)} confirmed for Estimate #${payment.estimate.number}.`,
+        message: `${paymentCopy} for Estimate #${payment.estimate.number}.${balanceCopy}${feeCopy}`,
         actionUrl: order ? `/orders/${order.id}` : `/estimates/${payment.idEst}`,
         actionLabel: order ? 'View order' : 'View estimate',
-        dedupeKey: `payment:${payment.id}:${installmentRemaining ? 'partial' : 'paid'}:${ownerReceiptSource}:owner`,
+        dedupeKey: `${eventKey}:owner`,
       }, tx);
     }
   }
@@ -671,6 +696,7 @@ export class PaymentsService {
     }
     const method = charge ? stripePaymentMethod(charge) : { paymentMethod: PaymentMethod.OTHER, paymentMethodLabel: 'No payment required' };
     const paidAt = charge ? new Date(charge.created * 1000) : new Date();
+    const newlyConfirmed = payments.some(payment => ![PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(payment.status as any));
     for (const payment of payments) {
       if ([PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(payment.status as any)) continue;
       await tx.payment.update({ where: { id: payment.id }, data: {
@@ -692,17 +718,18 @@ export class PaymentsService {
       await this.applyStripeRefunds(tx, charge);
     }
     // Aplica los efectos cuando todos los conceptos ya están pagados, con datos actuales.
+    const collection: PaymentWithEstimate[] = [];
     for (const payment of payments) {
       const confirmed = await tx.payment.findUniqueOrThrow({ where: { id: payment.id }, include: {
         estimate: { include: { order: true, installationJob: true, status: true, user: { include: { role: true } } } },
       } });
-      // El cambio a PAID y su aviso se confirman juntos. Reprocesar un pago
-      // histórico no debe generar un recibo nuevo para su dueño.
-      const newlyConfirmed = ![PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(payment.status as any);
-      const ownerReceiptSource = newlyConfirmed
-        ? charge ? `stripe:${charge.id}:${payment.id}` : `checkout:${session.id}:${payment.id}`
-        : undefined;
-      await this.ensurePaidPaymentEffects(tx, confirmed, ownerReceiptSource);
+      await this.ensurePaidPaymentEffects(tx, confirmed);
+      collection.push(confirmed);
+    }
+    // A replay or historical reconciliation may repair milestones, but must not
+    // announce an old payment under the new collection-level event key.
+    if (newlyConfirmed) {
+      await this.notifyPaymentCollection(tx, collection, charge ? `stripe:${charge.id}` : `checkout:${session.id}`);
     }
     return true;
   }
@@ -2084,7 +2111,7 @@ export class PaymentsService {
         priorPayments.set(context.paymentSequence, current);
       }
       const paymentIds: number[] = [];
-      const ownerReceiptSources = new Map<number, string>();
+      let collectionSource: string | undefined;
       for (const context of contexts) {
         const payer = this.getPayerSnapshot(context.estimate);
         const baseAmount = new Prisma.Decimal(context.baseAmount.toFixed(2));
@@ -2156,7 +2183,7 @@ export class PaymentsService {
         });
         const receiptSource = `manual:${randomUUID()}`;
         await recordManualReceipt(tx, payment, receiptSource);
-        ownerReceiptSources.set(payment.id, receiptSource);
+        collectionSource ??= receiptSource;
         paymentIds.push(payment.id);
         await tx.eventLog.create({
           data: {
@@ -2180,12 +2207,15 @@ export class PaymentsService {
         });
 
       }
+      const collection: PaymentWithEstimate[] = [];
       for (const id of paymentIds) {
         const confirmed = await tx.payment.findUniqueOrThrow({ where: { id }, include: {
           estimate: { include: { order: true, installationJob: true, status: true, user: { include: { role: true } } } },
         } });
-        await this.ensurePaidPaymentEffects(tx, confirmed, ownerReceiptSources.get(id));
+        await this.ensurePaidPaymentEffects(tx, confirmed);
+        collection.push(confirmed);
       }
+      if (collectionSource) await this.notifyPaymentCollection(tx, collection, collectionSource);
       return tx.payment.findUniqueOrThrow({
         where: { id: paymentIds[0] },
         include: { order: true },
