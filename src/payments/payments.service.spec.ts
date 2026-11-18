@@ -19,6 +19,8 @@ import {
 } from '@prisma/client';
 import Stripe from 'stripe';
 import { PaymentsService } from './payments.service';
+import * as paymentSchedule from '@/payment-plans/payment-schedule';
+import { recordManualReceipt } from './payment-ledger';
 import { buildInstallationProcessingShare, freezeProcessingCostSnapshot, singleProcessingComponent, withInstallationProcessingShare } from './processing-cost-snapshot';
 
 describe('PaymentsService reconciliation', () => {
@@ -670,7 +672,7 @@ describe('PaymentsService reconciliation', () => {
     expect(notifications.createAndSend).not.toHaveBeenCalled();
   });
 
-  it.each(Object.values(PaymentType))('notifies only admins about a confirmed %s payment', async (type) => {
+  it.each(Object.values(PaymentType))('keeps confirmed %s payment receipts admin-only for external dealers', async (type) => {
     const payment = materialPayment({
       type,
       estimate: {
@@ -709,6 +711,170 @@ describe('PaymentsService reconciliation', () => {
     expect(notifications.createAndSendToRoles).toHaveBeenCalledWith(
       ['admin'], expect.objectContaining({ dedupeKey: 'payment:41:paid:admin' }), { db: tx },
     );
+  });
+
+  describe('internal dealer payment receipts', () => {
+    function internalPayment(overrides: Record<string, unknown> = {}) {
+      const payment = materialPayment();
+      return materialPayment({
+        recordedById: payment.estimate.idUser,
+        ...overrides,
+        estimate: {
+          ...payment.estimate,
+          dealerModeSnapshot: DealerMode.INTERNAL,
+          user: { ...payment.estimate.user, dealerMode: DealerMode.INTERNAL },
+        },
+      });
+    }
+
+    function receiptHarness(order: { id: number } | null = { id: 11 }) {
+      const tx = { order: { findUnique: jest.fn().mockResolvedValue(order) } };
+      const service = new PaymentsService({} as never, config, {} as never, notifications as never);
+      return { tx, service, confirm: (payment: unknown, remaining?: string, receiptSource: string | null = 'stripe:ch_paid:41') =>
+        (service as any).notifyPaymentConfirmed(tx, payment, remaining, receiptSource ?? undefined) };
+    }
+
+    it.each(Object.values(PaymentType))('notifies the internal owner and admins about a confirmed %s payment', async type => {
+      const payment = internalPayment({ type });
+      const f = receiptHarness();
+      await f.confirm(payment);
+      expect(notifications.createAndSend).toHaveBeenCalledTimes(1);
+      expect(notifications.createAndSend).toHaveBeenCalledWith(expect.objectContaining({
+        recipientId: 7,
+        actorId: 7,
+        notifyActor: true,
+        message: expect.stringContaining('of $1250.00 confirmed for Estimate #EST-1009.'),
+        actionUrl: '/orders/11',
+        actionLabel: 'View order',
+        dedupeKey: 'payment:41:paid:stripe:ch_paid:41:owner',
+      }), f.tx);
+      expect(notifications.createAndSendToRoles).toHaveBeenCalledWith(
+        ['admin'], expect.objectContaining({ dedupeKey: 'payment:41:paid:admin' }), { db: f.tx },
+      );
+    });
+
+    it('uses the estimate owner rather than the payer or payment recorder and links an unordered estimate', async () => {
+      const payment = internalPayment({ userId: 81, recordedById: 1,
+        payerType: PaymentPayerType.CUSTOMER, payerName: 'Final Customer' });
+      const f = receiptHarness(null);
+      await f.confirm(payment);
+      expect(notifications.createAndSend).toHaveBeenCalledWith(expect.objectContaining({
+        recipientId: 7, actorId: 1, notifyActor: true,
+        actionUrl: '/estimates/9', actionLabel: 'View estimate',
+        dedupeKey: 'payment:41:paid:stripe:ch_paid:41:owner',
+      }), f.tx);
+    });
+
+    it.each([
+      { stripePaymentIntentId: 'pi_partial_1', paidAt: new Date('2026-08-06T12:00:00Z'), suffix: 'pi_partial_1' },
+      { stripePaymentIntentId: null, paidAt: new Date('2026-08-06T12:00:00Z'), suffix: '2026-08-06T12:00:00.000Z' },
+      { stripePaymentIntentId: null, paidAt: null, suffix: '1000.00' },
+    ])('preserves the admin partial identity but keys the owner notice by its receipt: $suffix', async ({ suffix, ...identity }) => {
+      const payment = internalPayment({ type: PaymentType.INSTALLMENT,
+        baseAmount: new Prisma.Decimal('1000.00'), netPaidBaseAmount: new Prisma.Decimal('1000.00'), ...identity });
+      const f = receiptHarness();
+      await f.confirm(payment, '250.00');
+      expect(notifications.createAndSend).toHaveBeenCalledWith(expect.objectContaining({
+        recipientId: 7, notifyActor: true,
+        message: 'Partial payment of $1000.00 received for Estimate #EST-1009. Installment balance: $250.00.',
+        dedupeKey: 'payment:41:partial:stripe:ch_paid:41:owner',
+      }), f.tx);
+      expect(notifications.createAndSendToRoles).toHaveBeenCalledWith(
+        ['admin'], expect.objectContaining({ dedupeKey: `payment:41:partial:${suffix}:admin` }), { db: f.tx },
+      );
+    });
+
+    it('uses distinct receipt keys for successive partial contributions and the final confirmation', async () => {
+      const f = receiptHarness();
+      await f.confirm(internalPayment({ stripePaymentIntentId: 'pi_first' }), '250.00', 'stripe:ch_first:41');
+      await f.confirm(internalPayment({ stripePaymentIntentId: 'pi_second' }), '100.00', 'stripe:ch_second:41');
+      await f.confirm(internalPayment({ stripePaymentIntentId: 'pi_final' }), undefined, 'stripe:ch_final:41');
+      expect(notifications.createAndSend.mock.calls.map(([notice]) => notice.dedupeKey)).toEqual([
+        'payment:41:partial:stripe:ch_first:41:owner', 'payment:41:partial:stripe:ch_second:41:owner', 'payment:41:paid:stripe:ch_final:41:owner',
+      ]);
+    });
+
+    it('distinguishes separate manual receipts with the same paidAt and reuses the key for the same receipt', async () => {
+      const f = receiptHarness();
+      const payment = internalPayment({ stripePaymentIntentId: null, paidAt: new Date('2026-08-06T00:00:00Z') });
+      await f.confirm(payment, '500.00', 'manual:receipt-one');
+      await f.confirm(payment, '250.00', 'manual:receipt-two');
+      await f.confirm(payment, '250.00', 'manual:receipt-two');
+      await f.confirm(payment, undefined, 'manual:receipt-three');
+      await f.confirm(payment, undefined, 'manual:repayment-after-refund');
+      expect(notifications.createAndSend.mock.calls.map(([notice]) => notice.dedupeKey)).toEqual([
+        'payment:41:partial:manual:receipt-one:owner',
+        'payment:41:partial:manual:receipt-two:owner',
+        'payment:41:partial:manual:receipt-two:owner',
+        'payment:41:paid:manual:receipt-three:owner',
+        'payment:41:paid:manual:repayment-after-refund:owner',
+      ]);
+    });
+
+    it.each([undefined, '250.00'])('does not backfill historical owner receipts during repair (remaining: %s)', async remaining => {
+      const f = receiptHarness();
+      await f.confirm(internalPayment(), remaining, null);
+      expect(notifications.createAndSend).not.toHaveBeenCalled();
+      expect(notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [PaymentStatus.PENDING, true], [PaymentStatus.PAID, false], [PaymentStatus.REFUNDED, false],
+    ])('only requests an owner receipt on a new Stripe confirmation, not a %s replay', async (status, newlyConfirmed) => {
+      const payment = internalPayment({ type: PaymentType.PERMIT, status });
+      const confirmed = { ...payment, status: PaymentStatus.PAID };
+      const f = receiptHarness();
+      const effects = jest.spyOn(f.service as any, 'ensurePaidPaymentEffects').mockResolvedValue(false);
+      const tx = {
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        payment: {
+          findMany: jest.fn().mockResolvedValue([payment]),
+          findUniqueOrThrow: jest.fn().mockResolvedValue(confirmed),
+          update: jest.fn().mockResolvedValue(confirmed),
+        },
+      };
+      await (f.service as any).processPaidCheckoutSession(tx, {
+        id: payment.stripeSessionId, payment_status: 'paid', payment_intent: 'pi_test_125000',
+        amount_total: 125000, currency: 'usd',
+      });
+      expect(effects).toHaveBeenCalledWith(tx, confirmed, newlyConfirmed ? 'stripe:ch_pi_test_125000:41' : undefined);
+    });
+
+    it.each([true, false])('propagates new-confirmation=%s through partial effects and reports this contribution, not the accumulated total', async newlyConfirmed => {
+      const schedule = jest.spyOn(paymentSchedule, 'getPaymentSchedule').mockResolvedValue({
+        rows: [{ sequence: 1, balance: '500.00', status: 'PARTIAL' }],
+      } as never);
+      try {
+        const payment = internalPayment({ type: PaymentType.INSTALLMENT,
+          baseAmount: new Prisma.Decimal('250.00'), netPaidBaseAmount: new Prisma.Decimal('1000.00'),
+          originalBaseAmount: new Prisma.Decimal('1500.00') });
+        const f = receiptHarness();
+        await (f.service as any).ensurePaidPaymentEffects(f.tx, payment, newlyConfirmed ? 'manual:receipt-new' : undefined);
+        expect(notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+        if (newlyConfirmed) {
+          expect(notifications.createAndSend).toHaveBeenCalledWith(expect.objectContaining({
+            recipientId: 7,
+            message: 'Partial payment of $250.00 received for Estimate #EST-1009. Installment balance: $500.00.',
+          }), f.tx);
+        } else expect(notifications.createAndSend).not.toHaveBeenCalled();
+      } finally {
+        schedule.mockRestore();
+      }
+    });
+
+    it.each([
+      ['dealer', DealerMode.EXTERNAL], ['dealer', null], ['client', DealerMode.INTERNAL],
+      ['admin', DealerMode.INTERNAL], ['operator', DealerMode.INTERNAL],
+    ])('does not add owner payment receipts for role %s and mode %s', async (role, dealerMode) => {
+      const payment = internalPayment();
+      payment.estimate.user = { ...payment.estimate.user, dealerMode,
+        role: { ...payment.estimate.user.role, name: role } } as typeof payment.estimate.user;
+      const f = receiptHarness();
+      await f.confirm(payment);
+      await f.confirm(payment, '250.00');
+      expect(notifications.createAndSend).not.toHaveBeenCalled();
+      expect(notifications.createAndSendToRoles).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('requires an internal dealer charge to use the final-customer public link', async () => {
@@ -793,6 +959,7 @@ describe('PaymentsService reconciliation', () => {
   it.each(['admin', 'dealer'] as const)('lets %s record a verified internal-customer check without requiring a contract signature', async role => {
     const internalEstimate = {
       ...materialPayment().estimate,
+      user: { ...materialPayment().estimate.user, dealerMode: DealerMode.INTERNAL },
       priceT: new Prisma.Decimal(1200),
       customerPriceT: new Prisma.Decimal(1380),
       rateT: new Prisma.Decimal(1000),
@@ -811,6 +978,7 @@ describe('PaymentsService reconciliation', () => {
       amount: new Prisma.Decimal(1380),
       paymentMethod: PaymentMethod.CHECK,
       payerType: PaymentPayerType.CUSTOMER,
+      recordedById: role === 'admin' ? 1 : internalEstimate.idUser,
       estimate: internalEstimate,
     });
     const context = {
@@ -907,5 +1075,12 @@ describe('PaymentsService reconciliation', () => {
       }),
     );
     expect(tx.eventLog.create).toHaveBeenCalledTimes(2);
+    expect(notifications.createAndSend).toHaveBeenCalledWith(expect.objectContaining({
+      recipientId: internalEstimate.idUser,
+      actorId: role === 'admin' ? 1 : internalEstimate.idUser,
+      notifyActor: true,
+      message: 'Material payment of $1380.00 confirmed for Estimate #EST-1009.',
+      dedupeKey: `payment:${paidPayment.id}:paid:${jest.mocked(recordManualReceipt).mock.calls.at(-1)![2]}:owner`,
+    }), tx);
   });
 });

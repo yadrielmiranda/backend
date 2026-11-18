@@ -112,8 +112,10 @@ function fixture() {
 }
 
 describe('NotificationSmsService', () => {
-  it.each(['material-sale:21:paid', 'material-sale:21:paid:customer'])('never texts a material purchase event %s', async key => {
-    const f = fixture(); f.notification.dedupeKey = key;
+  it.each(['client', 'dealer', 'admin', 'operator'])('never texts the Materials administrative broadcast to %s', async role => {
+    const f = fixture();
+    f.user.role.name = role;
+    f.notification.dedupeKey = 'material-sale:21:paid';
     await f.service.enqueue(f.notification as never, f.db as never);
     await f.service.processPending();
     expect(f.db.notificationSms.create).not.toHaveBeenCalled();
@@ -133,6 +135,97 @@ describe('NotificationSmsService', () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
+  });
+
+  describe('Materials buyer payment confirmation', () => {
+    function buyerFixture() {
+      const f = fixture();
+      f.notification.dedupeKey = 'material-sale:21:paid:customer';
+      f.notification.message = 'Your material order #MS-TEST is paid in full (USD 100.00). Show your order number or invoice at warehouse pickup.';
+      f.notification.actionUrl = '/public/material-sales/buyer-order-token';
+      f.user.role.name = 'dealer';
+      f.user.dealerMode = 'INTERNAL';
+      return f;
+    }
+
+    it.each([
+      ['client', null], ['dealer', 'EXTERNAL'], ['dealer', 'INTERNAL'],
+      ['dealer', null], ['admin', null], ['operator', null],
+    ])('queues and sends once to the opted-in buyer %s / %s', async (role, mode) => {
+      const f = buyerFixture();
+      f.user.role.name = role as string;
+      f.user.dealerMode = mode as typeof f.user.dealerMode;
+      await f.service.enqueue(f.notification as never, f.db as never);
+      expect(f.db.user.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 7 } }));
+      expect(f.db.notificationSms.create).toHaveBeenCalledWith({ data: {
+        notificationId: f.notification.id, phone, consentedAt: acceptedAt,
+      } });
+      await f.service.processPending();
+      await f.service.processPending();
+      expect(post).toHaveBeenCalledTimes(1);
+      const body = new URLSearchParams(post.mock.calls[0][1] as string);
+      expect(body.get('To')).toBe(phone);
+      expect(body.get('Body')).toBe(`Example Company: ${f.notification.message}\nReply STOP to unsubscribe.`);
+      expect(f.row.status).toBe('ACCEPTED');
+    });
+
+    it.each(['technician', 'unknown'])('does not extend buyer notifications to unsupported role %s', async role => {
+      const f = buyerFixture();
+      f.user.role.name = role;
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('SKIPPED');
+    });
+
+    it.each(['missing-consent', 'disabled', 'revoked', 'blocked', 'inactive', 'deleted', 'changed-phone'])(
+      'does not queue or send an ineligible Materials buyer: %s', async reason => {
+        const f = buyerFixture();
+        if (reason === 'missing-consent') f.user.smsConsent = null as never;
+        if (reason === 'disabled') f.user.smsConsent.enabled = false;
+        if (reason === 'revoked') f.user.smsConsent.revokedAt = new Date();
+        if (reason === 'blocked') f.db.smsPhoneBlock.findUnique.mockResolvedValue({ phone });
+        if (reason === 'inactive') f.user.isActive = false;
+        if (reason === 'deleted') f.user.deletedAt = new Date();
+        if (reason === 'changed-phone') f.user.phone = '+13055559876';
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+        expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+        expect(post).not.toHaveBeenCalled();
+        expect(f.row.status).toBe('SKIPPED');
+      },
+    );
+
+    it.each(['disabled', 'revoked', 'blocked', 'changed-phone', 'new-consent'])(
+      'rechecks Materials buyer consent before sending: %s', async reason => {
+        const f = buyerFixture();
+        await f.service.enqueue(f.notification as never, f.db as never);
+        expect(f.db.notificationSms.create).toHaveBeenCalledTimes(1);
+        if (reason === 'disabled') f.user.smsConsent.enabled = false;
+        if (reason === 'revoked') f.user.smsConsent.revokedAt = new Date();
+        if (reason === 'blocked') f.db.smsPhoneBlock.findUnique.mockResolvedValue({ phone });
+        if (reason === 'changed-phone') f.user.phone = '+13055559876';
+        if (reason === 'new-consent') f.user.smsConsent.consentedAt = new Date();
+        await f.service.processPending();
+        expect(post).not.toHaveBeenCalled();
+        expect(f.row.status).toBe('SKIPPED');
+      },
+    );
+
+    it.each([undefined, 'development', 'test', 'staging'])(
+      'blocks Materials SMS outside production (%s), even with the sending flag enabled', async environment => {
+        const f = buyerFixture();
+        if (environment === undefined) delete f.values.NODE_ENV;
+        else f.values.NODE_ENV = environment;
+        f.values.SMS_DELIVERY_ENABLED = 'true';
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+        expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+        expect(f.db.notificationSms.findMany).not.toHaveBeenCalled();
+        expect(post).not.toHaveBeenCalled();
+      },
+    );
   });
 
   it('sends the personalized welcome exactly once without the ordinary notification wrapper', async () => {
@@ -356,6 +449,153 @@ describe('NotificationSmsService', () => {
     expect(f.db.notificationSms.create).toHaveBeenCalledTimes(expected ? 1 : 0);
     expect(post).not.toHaveBeenCalled();
   });
+
+  it('queues and sends order status changes for an internal dealer with active service consent', async () => {
+    const f = fixture();
+    f.user.role.name = 'dealer';
+    f.user.dealerMode = 'INTERNAL';
+    f.notification.dedupeKey = 'order:20:status:2:2026-11-18T14:30:00.000Z';
+    f.notification.message = 'The status of your order #190974 has changed to "In production".';
+    await f.service.enqueue(f.notification as never, f.db as never);
+    expect(f.db.notificationSms.create).toHaveBeenCalledWith({ data: {
+      notificationId: f.notification.id, phone, consentedAt: acceptedAt,
+    } });
+    await f.service.processPending();
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(new URLSearchParams(post.mock.calls[0][1] as string).get('To')).toBe(phone);
+    expect(new URLSearchParams(post.mock.calls[0][1] as string).get('Body')).toContain(f.notification.message);
+    expect(f.row.status).toBe('ACCEPTED');
+  });
+
+  it.each(['disabled', 'revoked', 'blocked', 'inactive', 'deleted', 'changed-phone', 'new-consent'])(
+    'rechecks internal dealer status SMS permission before sending: %s', async reason => {
+      const f = fixture();
+      f.user.role.name = 'dealer';
+      f.user.dealerMode = 'INTERNAL';
+      f.notification.dedupeKey = 'order:20:status:2:2026-11-18T14:30:00.000Z';
+      await f.service.enqueue(f.notification as never, f.db as never);
+      expect(f.db.notificationSms.create).toHaveBeenCalledTimes(1);
+      if (reason === 'disabled') f.user.smsConsent.enabled = false;
+      if (reason === 'revoked') f.user.smsConsent.revokedAt = new Date();
+      if (reason === 'blocked') f.db.smsPhoneBlock.findUnique.mockResolvedValue({ phone });
+      if (reason === 'inactive') f.user.isActive = false;
+      if (reason === 'deleted') f.user.deletedAt = new Date();
+      if (reason === 'changed-phone') f.user.phone = '+13055559876';
+      if (reason === 'new-consent') f.user.smsConsent.consentedAt = new Date();
+      await f.service.processPending();
+      expect(post).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('SKIPPED');
+    },
+  );
+
+  it('does not queue internal dealer status SMS without enabled service consent', async () => {
+    const f = fixture();
+    f.user.role.name = 'dealer';
+    f.user.dealerMode = 'INTERNAL';
+    f.user.smsConsent.enabled = false;
+    f.notification.dedupeKey = 'order:20:status:2:2026-11-18T14:30:00.000Z';
+    await f.service.enqueue(f.notification as never, f.db as never);
+    expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('keeps internal dealer order status SMS blocked in development', async () => {
+    const f = fixture();
+    f.user.role.name = 'dealer';
+    f.user.dealerMode = 'INTERNAL';
+    f.notification.dedupeKey = 'order:20:status:2:2026-11-18T14:30:00.000Z';
+    f.values.NODE_ENV = 'development';
+    f.values.SMS_DELIVERY_ENABLED = 'true';
+    await f.service.enqueue(f.notification as never, f.db as never);
+    await f.service.processPending();
+    expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+    expect(f.db.notificationSms.findMany).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'estimate:5:order-review:owner',
+    'order:20:created:owner',
+    'order:20:installation-balance-due',
+    'order:20:extra:7:approval:owner',
+    'order:20:pickup:completed:owner',
+    'order:20:delivery:8:payment:owner',
+    'order:20:delivery:8:scheduled:2026-11-18T14:30:00.000Z',
+    'order:20:delivery:8:completed:owner',
+    'material-revision:4:approval',
+    'installation:3:dealer-measurements-accepted',
+    'installation:3:remeasurement-unchanged:owner',
+    'installation:3:quote:8:admin:APPROVED:owner',
+    'installation:3:permit:2026-11-18T14:30:00.000Z:owner',
+    'installation:3:appointment:7:proposed:owner',
+    'installation:3:started:owner',
+    'installation:3:completed:owner',
+    'installation:3:canceled:owner',
+    'payment:42:paid:owner',
+    'payment:42:paid:stripe:ch_example:42:owner',
+    'payment:42:paid:manual:12345678-1234-4234-8234-123456789abc:owner',
+    'payment:42:partial:pi_example:owner',
+    'payment:42:partial:manual:12345678-1234-4234-8234-123456789abc:owner',
+  ])('queues and sends project event %s only to its internal dealer recipient', async dedupeKey => {
+    const f = fixture();
+    f.user.role.name = 'dealer';
+    f.user.dealerMode = 'INTERNAL';
+    f.notification.dedupeKey = dedupeKey;
+    await f.service.enqueue(f.notification as never, f.db as never);
+    expect(f.db.user.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 7 } }));
+    expect(f.db.notificationSms.create).toHaveBeenCalledWith({ data: {
+      notificationId: f.notification.id, phone, consentedAt: acceptedAt,
+    } });
+    await f.service.processPending();
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(new URLSearchParams(post.mock.calls[0][1] as string).get('To')).toBe(phone);
+    expect(f.row.status).toBe('ACCEPTED');
+    await f.service.processPending();
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['estimate:5:order-review:owner', 'payment:42:partial:manual:12345678-1234-4234-8234-123456789abc:owner'])(
+    'retains consent, STOP and development protections for project event %s', async dedupeKey => {
+      for (const reason of ['disabled', 'blocked', 'revoked', 'development']) {
+        const f = fixture();
+        f.user.role.name = 'dealer';
+        f.user.dealerMode = 'INTERNAL';
+        f.notification.dedupeKey = dedupeKey;
+        if (reason === 'disabled') f.user.smsConsent.enabled = false;
+        if (reason === 'blocked') f.db.smsPhoneBlock.findUnique.mockResolvedValue({ phone });
+        if (reason === 'revoked') f.user.smsConsent.revokedAt = new Date();
+        if (reason === 'development') {
+          f.values.NODE_ENV = 'development';
+          f.values.SMS_DELIVERY_ENABLED = 'true';
+        }
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+        expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+        expect(post).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([
+    'payment:42:paid:admin', 'payment:42:partial:pi_example:admin',
+    'order:20:pickup:selected:admin', 'order:20:delivery:8:selected:admin',
+    'installation:3:appointment:7:response:ACCEPT',
+    'installation:3:deposit-due:owner', 'installation:3:no-deposit:owner',
+    'installation:3:canceled:admin', 'material-revision:4:applied',
+    'material-sale:21:paid', 'network-business:6:reviewed', null,
+  ])(
+    'does not extend internal dealer SMS to unrelated, staff-only or retired event %s', async dedupeKey => {
+      const f = fixture();
+      f.user.role.name = 'dealer';
+      f.user.dealerMode = 'INTERNAL';
+      f.notification.dedupeKey = dedupeKey as never;
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('SKIPPED');
+    },
+  );
 
   it.each([
     'missing',

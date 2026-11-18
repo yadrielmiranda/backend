@@ -4,6 +4,7 @@ import { getPaymentSchedule } from '@/payment-plans/payment-schedule';
 import { PaymentsService } from '@/payments/payments.service';
 import { OrdersService } from './orders.service';
 import { orderStatusNotification } from './order-status-notification';
+import { isOwnerProjectNotification } from '@/notifications/notification-delivery-policy';
 
 jest.mock('@/payment-plans/payment-schedule', () => ({
   ...jest.requireActual('@/payment-plans/payment-schedule'),
@@ -64,6 +65,7 @@ describe('Pickup and delivery choice notification', () => {
       dedupeKey: `order:1:status:4:${f.order.updateStatus.toISOString()}`,
     });
     expect(f.order.fulfillmentMethod).toBe('UNDECIDED');
+    expect(isOwnerProjectNotification(f.notifications.createAndSend.mock.calls[0][0])).toBe(true);
   });
 
   it('keeps the normal status message for an order with active installation', async () => {
@@ -94,6 +96,7 @@ describe('Pickup and delivery choice notification', () => {
     }, f.db);
     expect(await f.advance()).toBe(false);
     expect(f.notifications.createAndSend).toHaveBeenCalledTimes(1);
+    expect(isOwnerProjectNotification(f.notifications.createAndSend.mock.calls[0][0])).toBe(true);
   });
 
   it('keeps the normal automatic message and installation delivery when installation is active', async () => {

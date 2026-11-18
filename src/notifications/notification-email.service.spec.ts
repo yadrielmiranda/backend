@@ -343,11 +343,126 @@ describe('NotificationEmailService', () => {
     });
   });
 
+  describe('internal dealer project email', () => {
+    const statusKey = 'order:21:status:2:2026-09-09T12:00:00.000Z';
+    const internalDealer = () => {
+      const f = fixture();
+      f.user.role.name = 'dealer';
+      f.user.dealerMode = 'INTERNAL';
+      f.notification.dedupeKey = statusKey;
+      f.notification.message = 'The status of your order #ORD-1021 has changed to "In production".';
+      return f;
+    };
+
+    it('queues and sends the owner status email once independently of SMS preferences', async () => {
+      const f = internalDealer();
+      f.user.registrationConsent!.serviceEmailAccepted = false;
+      Object.assign(f.user, { smsConsent: { enabled: false, promotionsEnabled: false } });
+      await f.service.enqueue(f.notification as never, f.db as never);
+      expect(f.db.user.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 7 } }));
+      expect(f.db.notificationEmail.create).toHaveBeenCalledWith({ data: { notificationId: 10, email } });
+      await f.service.processPending();
+      await f.service.processPending();
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      expect(sendMail.mock.calls[0][0]).toMatchObject({ to: email, subject: 'Order #ORD-1021 status updated' });
+      expect(f.row.status).toBe('ACCEPTED');
+    });
+
+    it.each([
+      ['estimate:104:order-review:owner', 'Payment confirmed for Estimate #191013. Pending order review.', '/estimates/104/edit'],
+      ['order:21:created:owner', 'Your order #ORD-1021 has been created from Estimate #191013.', '/orders/21'],
+      ['order:21:delivery:3:scheduled:2026-09-09T12:00:00.000Z', 'Delivery scheduled for Order #ORD-1021.', '/orders/21'],
+      ['order:21:installation-balance-due', 'The next project installment is due for Order #ORD-1021.', '/orders/21'],
+      ['installation:5:quote:8:admin:APPROVED:owner', 'Your installation quote was approved.', '/installations/5'],
+      ['installation:5:appointment:9:proposed:owner', 'A date was proposed for your installation.', '/installations/5'],
+      ['installation:5:completed:owner', 'Your installation is complete.', '/installations/5'],
+      ['installation:5:canceled:owner', 'Your paid installation was canceled.', '/installations/5'],
+      ['payment:12:paid:owner', 'Payment confirmed for Estimate #191013.', '/orders/21'],
+      ['payment:12:paid:stripe:ch_example:12:owner', 'Payment confirmed for Estimate #191013.', '/orders/21'],
+      ['payment:12:paid:manual:12345678-1234-4234-8234-123456789abc:owner', 'Payment confirmed for Estimate #191013.', '/orders/21'],
+      ['payment:12:partial:pi_example:owner', 'Partial payment confirmed for Estimate #191013.', '/orders/21'],
+      ['payment:12:partial:manual:12345678-1234-4234-8234-123456789abc:owner', 'Partial payment confirmed for Estimate #191013.', '/orders/21'],
+    ])('queues and sends the existing owner event %s', async (dedupeKey, message, actionUrl) => {
+      const f = internalDealer();
+      Object.assign(f.notification, { dedupeKey, message, actionUrl });
+      await f.service.enqueue(f.notification as never, f.db as never);
+      expect(f.db.user.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 7 } }));
+      expect(f.db.notificationEmail.create).toHaveBeenCalledWith({ data: { notificationId: 10, email } });
+      await f.service.processPending();
+      await f.service.processPending();
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ to: email, text: expect.stringContaining(message) }));
+      expect(sendMail.mock.calls[0][0].text).toContain(`https://portal.example.test${actionUrl}`);
+      expect(f.row.status).toBe('ACCEPTED');
+    });
+
+    it.each([
+      'payment:12:paid:admin',
+      'payment:12:partial:pi_example:admin',
+      'refund:re_example:review',
+      'order:21:pickup:selected:admin',
+      'order:21:extra:3:response:PAYMENT_DUE:creator',
+      'installation:5:appointment:9:response:ACCEPT',
+      'installation:5:deposit-due:owner',
+      'installation:5:no-deposit:owner',
+      'installation:5:canceled:admin',
+      'material-sale:21:paid',
+      'network-business:37:reviewed',
+      'order:21:status:2',
+      'order:21:status:2:2026-09-09T12:00:00.000Z:admin',
+      '',
+    ])('keeps staff-only, retired, and non-project event %s excluded for internal dealers', async dedupeKey => {
+      const f = internalDealer();
+      f.notification.dedupeKey = dedupeKey;
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('SKIPPED');
+    });
+
+    it.each(['inactive', 'deleted', 'invalid-email'])(
+      'rejects an %s internal dealer both at enqueue and before sending', async reason => {
+        const f = internalDealer();
+        if (reason === 'inactive') f.user.isActive = false;
+        if (reason === 'deleted') f.user.deletedAt = new Date();
+        if (reason === 'invalid-email') f.user.email = 'bad\r\nBcc: someone@example.com';
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+        expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+        expect(sendMail).not.toHaveBeenCalled();
+        expect(f.row.status).toBe('SKIPPED');
+      },
+    );
+
+    it('does not redirect a queued internal dealer email to a changed address', async () => {
+      const f = internalDealer();
+      await f.service.enqueue(f.notification as never, f.db as never);
+      f.user.email = 'changed@example.com';
+      await f.service.processPending();
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('SKIPPED');
+    });
+
+    it.each(['order:21:created:owner', 'estimate:104:order-review:owner', statusKey])('keeps internal dealer event %s disabled in development', async dedupeKey => {
+      const f = internalDealer();
+      f.notification.dedupeKey = dedupeKey;
+      f.values.NODE_ENV = 'development';
+      f.values.EMAIL_DELIVERY_ENABLED = 'true';
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+      expect(f.db.notificationEmail.findMany).not.toHaveBeenCalled();
+      expect(f.db.notificationEmail.updateMany).not.toHaveBeenCalled();
+      expect(sendMail).not.toHaveBeenCalled();
+    });
+  });
+
   it.each([
     ['client', null, true],
     ['dealer', 'EXTERNAL', true],
     ['dealer', null, true],
-    ['dealer', 'INTERNAL', false],
+    ['dealer', 'INTERNAL', true],
     ['admin', null, false],
     ['operator', null, false],
   ])(
@@ -468,8 +583,7 @@ describe('NotificationEmailService', () => {
       const f = fixture();
       if (change === 'email') f.user.email = 'someoneelse@example.com';
       if (change === 'role') {
-        f.user.role.name = 'dealer';
-        f.user.dealerMode = 'INTERNAL';
+        f.user.role.name = 'technician';
       }
       if (change === 'inactive') f.user.isActive = false;
       await f.service.processPending();

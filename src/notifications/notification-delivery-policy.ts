@@ -1,6 +1,31 @@
 type NotificationEvent = { dedupeKey?: string | null };
 type StaffAudience = 'admin' | 'staff';
 
+// Emitters select the project owner; this only controls delivery channels.
+// Keep account/network notices and repeated public-view pings out of this scope.
+const ownerProjectEvents = [
+  /^estimate:\d+:order-review:owner$/,
+  /^order:\d+:created:owner$/,
+  /^order:\d+:status:\d+:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+  /^order:\d+:installation-balance-due$/,
+  /^order:\d+:extra:\d+:approval:owner$/,
+  /^order:\d+:pickup:completed:owner$/,
+  /^order:\d+:delivery:\d+:(?:payment|completed):owner$/,
+  /^order:\d+:delivery:\d+:scheduled:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+  /^material-revision:\d+:approval$/,
+  /^installation:\d+:dealer-measurements-accepted$/,
+  /^installation:\d+:(?:canceled|remeasurement-unchanged|started|completed):owner$/,
+  /^installation:\d+:quote:(?:\d+|latest):admin:(?:APPROVED|REJECTED):owner$/,
+  /^installation:\d+:permit:(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z|[A-Z_]+):owner$/,
+  /^installation:\d+:appointment:\d+:proposed:owner$/,
+  /^payment:\d+:paid(?::.+)?:owner$/,
+  /^payment:\d+:partial:.+:owner$/,
+];
+
+export function isOwnerProjectNotification({ dedupeKey }: NotificationEvent): boolean {
+  return ownerProjectEvents.some(pattern => pattern.test(dedupeKey ?? ''));
+}
+
 // Only these operational events may reach staff outside the portal. Keep the
 // event keys aligned with their emitters; message text is never an access rule.
 function staffAudience({ dedupeKey }: NotificationEvent): StaffAudience | null {

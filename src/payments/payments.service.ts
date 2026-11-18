@@ -419,6 +419,7 @@ export class PaymentsService {
   private async ensurePaidPaymentEffects(
     tx: Prisma.TransactionClient,
     payment: PaymentWithEstimate,
+    ownerReceiptSource?: string,
   ): Promise<boolean> {
     let installmentRemaining: string | null = null;
     if (payment.type === PaymentType.INSTALLMENT) {
@@ -456,7 +457,7 @@ export class PaymentsService {
     // A confirmed contribution locks its agreed pricing and gets a receipt
     // notification, but never unlocks a milestone with an outstanding balance.
     if (installmentRemaining !== null) {
-      await this.notifyPaymentConfirmed(tx, payment, installmentRemaining);
+      await this.notifyPaymentConfirmed(tx, payment, installmentRemaining, ownerReceiptSource);
       return changed;
     }
 
@@ -512,7 +513,7 @@ export class PaymentsService {
         }
       }
     }
-    await this.notifyPaymentConfirmed(tx, payment);
+    await this.notifyPaymentConfirmed(tx, payment, undefined, ownerReceiptSource);
 
     return changed;
   }
@@ -555,6 +556,7 @@ export class PaymentsService {
     tx: Prisma.TransactionClient,
     payment: PaymentWithEstimate,
     installmentRemaining?: string,
+    ownerReceiptSource?: string,
   ) {
     const copy = this.paymentNotificationCopy(payment.type, payment.sequence);
     const order = await tx.order.findUnique({
@@ -570,6 +572,9 @@ export class PaymentsService {
         : `/estimates/${payment.idEst}`;
     const payer = payment.payerName?.trim();
     const payerSuffix = payer ? ` from ${payer}` : '';
+    const eventKey = installmentRemaining
+      ? `payment:${payment.id}:partial:${payment.stripePaymentIntentId ?? payment.paidAt?.toISOString() ?? paidPrincipal(payment).toFixed(2)}`
+      : `payment:${payment.id}:paid`;
 
     await this.notifications.createAndSendToRoles(
       ['admin'],
@@ -577,16 +582,29 @@ export class PaymentsService {
         message: `${copy.label} ${installmentRemaining ? `partial payment of $${payment.baseAmount.toFixed(2)}` : 'confirmed'}${payerSuffix} for Estimate #${payment.estimate.number}.${installmentRemaining ? ` Remaining installment balance: $${installmentRemaining}.` : ''}${pendingReview ? " Pending order review." : ""}`,
         actionUrl,
         actionLabel: installmentRemaining ? 'Open payment schedule' : pendingReview ? 'Review order' : copy.adminNextStep,
-        dedupeKey: installmentRemaining
-          ? `payment:${payment.id}:partial:${payment.stripePaymentIntentId ?? payment.paidAt?.toISOString() ?? paidPrincipal(payment).toFixed(2)}:admin`
-          : `payment:${payment.id}:paid:admin`,
+        dedupeKey: `${eventKey}:admin`,
       },
       {
         db: tx,
       },
     );
 
-    // El pago se comunica a administración; el dueño recibe solo el aviso de orden creada.
+    // El dealer interno sigue los pagos de su proyecto, aunque pague el cliente
+    // o el propio dealer registre el pago. Las confirmaciones administrativas se conservan.
+    const owner = payment.estimate.user;
+    if (ownerReceiptSource && owner?.role?.name.toLowerCase() === 'dealer' && owner.dealerMode === DealerMode.INTERNAL) {
+      await this.notifications.createAndSend({
+        recipientId: payment.estimate.idUser,
+        actorId: payment.recordedById ?? payment.estimate.idUser,
+        notifyActor: true,
+        message: installmentRemaining
+          ? `Partial payment of $${payment.baseAmount.toFixed(2)} received for Estimate #${payment.estimate.number}. Installment balance: $${installmentRemaining}.`
+          : `${copy.label} of $${payment.baseAmount.toFixed(2)} confirmed for Estimate #${payment.estimate.number}.`,
+        actionUrl: order ? `/orders/${order.id}` : `/estimates/${payment.idEst}`,
+        actionLabel: order ? 'View order' : 'View estimate',
+        dedupeKey: `payment:${payment.id}:${installmentRemaining ? 'partial' : 'paid'}:${ownerReceiptSource}:owner`,
+      }, tx);
+    }
   }
 
   private async processPaidCheckoutSession(
@@ -678,7 +696,13 @@ export class PaymentsService {
       const confirmed = await tx.payment.findUniqueOrThrow({ where: { id: payment.id }, include: {
         estimate: { include: { order: true, installationJob: true, status: true, user: { include: { role: true } } } },
       } });
-      await this.ensurePaidPaymentEffects(tx, confirmed);
+      // El cambio a PAID y su aviso se confirman juntos. Reprocesar un pago
+      // histórico no debe generar un recibo nuevo para su dueño.
+      const newlyConfirmed = ![PaymentStatus.PAID, PaymentStatus.REFUNDED].includes(payment.status as any);
+      const ownerReceiptSource = newlyConfirmed
+        ? charge ? `stripe:${charge.id}:${payment.id}` : `checkout:${session.id}:${payment.id}`
+        : undefined;
+      await this.ensurePaidPaymentEffects(tx, confirmed, ownerReceiptSource);
     }
     return true;
   }
@@ -2060,6 +2084,7 @@ export class PaymentsService {
         priorPayments.set(context.paymentSequence, current);
       }
       const paymentIds: number[] = [];
+      const ownerReceiptSources = new Map<number, string>();
       for (const context of contexts) {
         const payer = this.getPayerSnapshot(context.estimate);
         const baseAmount = new Prisma.Decimal(context.baseAmount.toFixed(2));
@@ -2129,7 +2154,9 @@ export class PaymentsService {
             materialAcceptedAt: null,
           },
         });
-        await recordManualReceipt(tx, payment, `manual:${randomUUID()}`);
+        const receiptSource = `manual:${randomUUID()}`;
+        await recordManualReceipt(tx, payment, receiptSource);
+        ownerReceiptSources.set(payment.id, receiptSource);
         paymentIds.push(payment.id);
         await tx.eventLog.create({
           data: {
@@ -2157,7 +2184,7 @@ export class PaymentsService {
         const confirmed = await tx.payment.findUniqueOrThrow({ where: { id }, include: {
           estimate: { include: { order: true, installationJob: true, status: true, user: { include: { role: true } } } },
         } });
-        await this.ensurePaidPaymentEffects(tx, confirmed);
+        await this.ensurePaidPaymentEffects(tx, confirmed, ownerReceiptSources.get(id));
       }
       return tx.payment.findUniqueOrThrow({
         where: { id: paymentIds[0] },

@@ -19,7 +19,7 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { ESTIMATE_EMAIL_RECIPIENTS_ERROR, parseEstimateEmailRecipients } from './estimate-email-recipients';
 import { AccountWelcomeEmailContent, renderWelcomeEmail } from '@/mail/welcome-email-template';
 import { isEmailDeliveryEnabled } from '@/mail/email-delivery-policy';
-import { allowsStaffNotificationDelivery, isStaffNotification, isSuppressedInstallationNotification } from './notification-delivery-policy';
+import { allowsStaffNotificationDelivery, isOwnerProjectNotification, isStaffNotification, isSuppressedInstallationNotification } from './notification-delivery-policy';
 
 const recipientSelect = {
   email: true,
@@ -152,9 +152,11 @@ export class NotificationEmailService {
     if (customerPurchase ? !['admin', 'operator', 'client', 'dealer'].includes(role) : materialPurchase ? role !== 'admin' : isStaffNotification(notification)
       ? !allowsStaffNotificationDelivery(notification, role) : (
       role !== 'client' &&
-      !(role === 'dealer' && (user.dealerMode ?? 'EXTERNAL') === 'EXTERNAL')
+      !(role === 'dealer' && ((user.dealerMode ?? 'EXTERNAL') === 'EXTERNAL' ||
+        (user.dealerMode === 'INTERNAL' && isOwnerProjectNotification(notification))))
     ))
       return false;
+    // Los avisos del proyecto dirigidos al dueño también corresponden al dealer interno.
     // Son avisos operativos del proyecto, no promociones ni una suscripción SMS.
     // Las dos preferencias SMS no controlan el correo de servicio.
     return (

@@ -17,6 +17,7 @@ import { renderWelcomeSms } from '@/sms/welcome-sms-template';
 import {
   allowsStaffNotificationDelivery,
   isStaffNotification,
+  isOwnerProjectNotification,
   isSuppressedInstallationNotification,
 } from './notification-delivery-policy';
 
@@ -65,12 +66,17 @@ export class NotificationSmsService {
   private isEligible(user: Recipient | null, notification: Pick<Notification, 'dedupeKey'>): user is Recipient {
     if (!hasActiveServiceSmsConsent(user)) return false;
     const role = user.role.name.toLowerCase();
+    // Una compra de Materials avisa a su comprador registrado, también si es
+    // dealer interno o personal. No habilita el aviso general de administración.
+    if (/^material-sale:\d+:paid:customer$/.test(notification.dedupeKey ?? ''))
+      return ['admin', 'operator', 'client', 'dealer'].includes(role);
     // Los avisos del personal nunca pasan al público al cambiar el rol del destinatario.
-    // El proyecto trata a los dealers anteriores sin modo como EXTERNAL.
+    // Los dealers internos reciben los avisos operativos de sus proyectos.
     if (isStaffNotification(notification)
       ? !allowsStaffNotificationDelivery(notification, role)
       : role !== 'client' &&
-        !(role === 'dealer' && (user.dealerMode ?? 'EXTERNAL') === 'EXTERNAL'))
+        !(role === 'dealer' && ((user.dealerMode ?? 'EXTERNAL') === 'EXTERNAL'
+          || (user.dealerMode === 'INTERNAL' && isOwnerProjectNotification(notification)))))
       return false;
     return true;
   }
@@ -98,8 +104,8 @@ export class NotificationSmsService {
 
   async enqueue(notification: Notification, db: Prisma.TransactionClient) {
     if (isSuppressedInstallationNotification(notification)) return;
-    // Material purchases request bell and email only, independently of SMS consent.
-    if (/^material-sale:\d+:paid(?::customer)?$/.test(notification.dedupeKey ?? '')) return;
+    // Solo el comprador recibe SMS de Materials; el aviso administrativo no.
+    if (/^material-sale:\d+:paid$/.test(notification.dedupeKey ?? '')) return;
     // El bloqueo de desarrollo se aplica aun si hay credenciales de producción copiadas.
     if (!this.settings()) return;
     const user = await db.user.findUnique({
@@ -235,7 +241,7 @@ export class NotificationSmsService {
     if (
       !notification ||
       isSuppressedInstallationNotification(notification) ||
-      /^material-sale:\d+:paid(?::customer)?$/.test(notification.dedupeKey ?? '') ||
+      /^material-sale:\d+:paid$/.test(notification.dedupeKey ?? '') ||
       !this.isEligible(user, notification) ||
       user.phone !== entry.phone ||
       user.smsConsent!.consentedAt!.getTime() !== entry.consentedAt.getTime()
