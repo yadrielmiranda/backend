@@ -212,10 +212,9 @@ export class DealerNetworkService {
     await tx.networkBusinessAction.updateMany({ where: { accountId: account.id, activeSlot: 1,
       ...(requestId ? { id: { not: requestId } } : {}) },
       data: { status: 'SUPERSEDED', activeSlot: null, reviewedAt: now, reviewedById: actor.id } });
-    if (requestId) await tx.networkBusinessAction.update({ where: { id: requestId }, data: {
+    const action = requestId ? await tx.networkBusinessAction.update({ where: { id: requestId }, data: {
       status: 'APPLIED', activeSlot: null, reviewedById: actor.id, reviewedAt: now, reviewNote: reason,
-    } });
-    else await tx.networkBusinessAction.create({ data: {
+    } }) : await tx.networkBusinessAction.create({ data: {
       accountId: account.id, actorId: actor.id, actorName: actor.username ?? `${actor.role?.name} #${actor.id}`,
       suspended, reason, status: 'APPLIED', reviewedAt: now,
       reviewedById: actor.role?.name === 'admin' ? actor.id : null,
@@ -229,6 +228,12 @@ export class DealerNetworkService {
       before: { networkSuspended: account.networkSuspended }, after: { networkSuspended: suspended },
       meta: { source: 'DealerNetworkService.setSuspension', affectedAccountIds: affectedIds, requestId },
     }, tx);
+    await this.notifications.createAndSendToRoles(['admin'], {
+      actorId: actor.id,
+      message: `${actor.username ?? (actor.role?.name === 'admin' ? 'Administrator' : 'Dealer')} ${suspended ? 'paused' : 'resumed'} new business for ${account.username}.`,
+      actionUrl: '/dealers', actionLabel: 'View dealer network',
+      dedupeKey: `network-business:${action.id}:applied:admin`,
+    }, { db: tx });
     return updated;
   }
 
@@ -241,10 +246,6 @@ export class DealerNetworkService {
         throw new ForbiddenException('Request administrative approval to change new business for this account.');
       if (account.networkSuspended === suspended) return { id, networkSuspended: suspended };
       const result = await this.applySuspension(tx, account, suspended, actor, note);
-      if (actor.role?.name !== 'admin') await this.notifications.createAndSendToRoles(['admin'], {
-        actorId: actor.id, message: `${actor.username ?? 'Dealer'} ${suspended ? 'paused' : 'resumed'} new business for ${account.username}.`,
-        actionUrl: '/dealers', actionLabel: 'View dealer network',
-      }, { db: tx });
       return result;
     });
   }

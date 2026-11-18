@@ -123,13 +123,15 @@ function fixture(role: 'dealer' | 'client' = 'dealer') {
   };
   tx.installationQuoteCoverageSnapshot = { upsert: jest.fn(), findUnique: jest.fn().mockResolvedValue(null) };
   Object.assign(prisma, { installationQuoteCoverageSnapshot: tx.installationQuoteCoverageSnapshot });
+  const logs = { log: jest.fn() };
+  const notifications = { createAndSend: jest.fn(), createAndSendToRoles: jest.fn() };
   const workflow = new InstallationWorkflowService(
     prisma as never,
     pricing as never,
-    { log: jest.fn() } as never,
+    logs as never,
     {} as never,
     {} as never,
-    {} as never,
+    notifications as never,
   );
   Object.assign(workflow, { coverage: { prepare: jest.fn().mockResolvedValue({ address: confirmedAddress.installationAddress, snapshot: { schema: 1, revision: 1 } }), assertCurrent: jest.fn() } });
   // Se aísla el cálculo de piezas; la solicitud y la validación del pago son reales.
@@ -157,7 +159,7 @@ function fixture(role: 'dealer' | 'client' = 'dealer') {
       { preview },
     );
   };
-  return { estimate, job, tx, workflow, actor, deposit };
+  return { estimate, job, tx, workflow, actor, deposit, logs, notifications };
 }
 
 describe('Customer details at installation commitment', () => {
@@ -202,13 +204,34 @@ describe('Customer details at installation commitment', () => {
         measuredAt: null,
         measuredById: null,
       });
-      expect((f.workflow as any).notifyInstallationOwner).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: expect.stringContaining(
-            'No installation deposit or remeasurement',
-          ),
-        }),
+      expect((f.workflow as any).notifyInstallationOwner).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'keeps admin pricing requests quiet with no-deposit exemption %s while retaining the audit',
+    async (noInstallationDeposit) => {
+      const f = fixture();
+      const admin = { id: 1, role: { name: 'admin' as const } };
+      f.estimate.user.noInstallationDeposit = noInstallationDeposit;
+      // Leave notification routing real; only the transport-facing service is mocked.
+      (f.workflow as any).notifyInstallationOwner.mockRestore();
+      (f.workflow as any).notifyInstallationAdmins.mockRestore();
+
+      const result = await f.workflow.requestInstallation(
+        1,
+        { ...confirmedAddress, permitRequested: false },
+        admin,
       );
+
+      expect(result).toHaveProperty('id', f.job.id);
+      expect(f.tx.installationJob.create).toHaveBeenCalledTimes(1);
+      expect(f.job.status).toBe(noInstallationDeposit ? 'MATERIAL_PAYMENT_PENDING' : 'DEPOSIT_PAYMENT_PENDING');
+      expect(f.notifications.createAndSend).not.toHaveBeenCalled();
+      expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
+      expect(f.logs.log).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'CREATE', entityType: 'InstallationJob', entityId: f.job.id, userId: admin.id,
+      }));
     },
   );
 

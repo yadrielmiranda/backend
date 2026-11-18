@@ -72,8 +72,19 @@ describe('private note attachment storage', () => {
     await service.add(23, file, admin);
     expect(notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
     expect(notifications.createAndSendToRoles).toHaveBeenCalledWith(['admin'], {
-      message: 'Internal estimate attachments have reached 9 GB of the 10 GB storage limit.', inAppOnly: true,
+      message: 'Internal estimate attachments have reached 9 GB of the 10 GB storage limit.',
+      dedupeKey: expect.stringMatching(/^estimate-note-storage:warning:[0-9a-f-]{36}$/),
     }, { db: tx });
+    const firstKey = notifications.createAndSendToRoles.mock.calls[0][1].dedupeKey;
+    // Dropping below the threshold rearms the warning. A later crossing needs a
+    // new delivery key, but more uploads while above the threshold stay quiet.
+    quota.usedBytes = 8_000_000_000n;
+    await service.add(23, file, admin);
+    quota.usedBytes = 8_999_999_999n;
+    await service.add(23, file, admin);
+    await service.add(23, file, admin);
+    expect(notifications.createAndSendToRoles).toHaveBeenCalledTimes(2);
+    expect(notifications.createAndSendToRoles.mock.calls[1][1].dedupeKey).not.toBe(firstKey);
   });
 
   it('holds the reservation when disk deletion fails and releases it on retry', async () => {

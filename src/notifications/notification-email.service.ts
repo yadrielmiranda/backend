@@ -19,6 +19,7 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { ESTIMATE_EMAIL_RECIPIENTS_ERROR, parseEstimateEmailRecipients } from './estimate-email-recipients';
 import { AccountWelcomeEmailContent, renderWelcomeEmail } from '@/mail/welcome-email-template';
 import { isEmailDeliveryEnabled } from '@/mail/email-delivery-policy';
+import { allowsStaffNotificationDelivery, isStaffNotification, isSuppressedInstallationNotification } from './notification-delivery-policy';
 
 const recipientSelect = {
   email: true,
@@ -144,11 +145,12 @@ export class NotificationEmailService {
   }
 
   private isEligible(user: Recipient | null, notification: Pick<Notification, 'dedupeKey'>): user is Recipient {
-    if (!user?.isActive || user.deletedAt) return false;
+    if (!user?.isActive || user.deletedAt || isSuppressedInstallationNotification(notification)) return false;
     const role = user.role.name.toLowerCase();
     const materialPurchase = /^material-sale:\d+:paid$/.test(notification.dedupeKey ?? '');
     const customerPurchase = /^material-sale:\d+:paid:customer$/.test(notification.dedupeKey ?? '');
-    if (customerPurchase ? !['admin', 'operator', 'client', 'dealer'].includes(role) : materialPurchase ? role !== 'admin' : (
+    if (customerPurchase ? !['admin', 'operator', 'client', 'dealer'].includes(role) : materialPurchase ? role !== 'admin' : isStaffNotification(notification)
+      ? !allowsStaffNotificationDelivery(notification, role) : (
       role !== 'client' &&
       !(role === 'dealer' && (user.dealerMode ?? 'EXTERNAL') === 'EXTERNAL')
     ))
@@ -344,23 +346,32 @@ export class NotificationEmailService {
 
   private heading(notification: Notification) {
     // La clave existente identifica el evento sin cambiar la notificación de la app.
-    const [entity, , event, , detail, decision] =
+    const [entity, , event, subevent, detail, decision] =
       notification.dedupeKey?.split(':') ?? [];
     const message = cleanText(notification.message);
     let title = 'Project update';
-    if (entity === 'material-sale' && event === 'paid') {
+    if (entity === 'payment') {
+      title = event === 'partial' ? 'Partial payment received' : 'Payment confirmed';
+    } else if (entity === 'refund') {
+      title = 'Refund recorded';
+    } else if (entity === 'network-business' && ['requested', 'applied'].includes(event)) {
+      title = event === 'requested' ? 'Business status change requested' : 'Business status changed';
+    } else if (entity === 'estimate-note-storage') {
+      title = 'Attachment storage nearly full';
+    } else if (entity === 'material-sale' && event === 'paid') {
       title = 'Material order paid';
     } else if (entity === 'order') {
       const titles: Record<string, string> = {
         created: 'Order created',
         status: 'Order status updated',
         'installation-balance-due': 'Installation balance due',
-        pickup: 'Pickup completed',
+        pickup: subevent === 'selected' ? 'Pickup selected' : 'Pickup completed',
       };
       title = titles[event] ?? 'Order update';
       if (event === 'delivery') {
         const deliveryTitles: Record<string, string> = {
           payment: 'Delivery payment due',
+          selected: 'Delivery selected',
           scheduled: 'Delivery scheduled',
           completed: 'Delivery completed',
         };
@@ -386,6 +397,10 @@ export class NotificationEmailService {
             ? 'Installation quote ready for review'
             : detail === 'admin' && decision === 'REJECTED'
               ? 'Installation quote returned for revision'
+              : detail === 'customer' && decision === 'APPROVED'
+                ? 'Installation quote approved by owner'
+                : detail === 'customer' && decision === 'REJECTED'
+                  ? 'Installation quote rejected by owner'
               : 'Installation quote updated';
       } else if (event === 'appointment') {
         title =

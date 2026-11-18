@@ -103,6 +103,8 @@ describe('Preliminary installation request management', () => {
       await expect(f.workflow.cancelInstallation(f.job.id, {}, actor)).resolves.toBeNull();
       expect(f.tx.installationJob.delete).toHaveBeenCalledWith({ where: { id: f.job.id } });
       expect(f.logs.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'DELETE', userId: actor.id }));
+      expect(f.notifications.createAndSend).not.toHaveBeenCalled();
+      expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
     },
   );
 
@@ -245,7 +247,10 @@ describe('Admin cancellation after the installation deposit is paid', () => {
     }));
     expect(f.notifications.createAndSend).toHaveBeenCalledWith(expect.objectContaining({
       recipientId: owner.id, actorId: admin.id,
+      dedupeKey: `installation:${f.job.id}:canceled:owner`,
     }));
+    expect(f.notifications.createAndSend).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
   });
 
   it.each(['IN_PROGRESS', 'COMPLETED', 'BALANCE_PAID', 'PLACED_ORDER', 'ACTIVE_CHECKOUT'])(

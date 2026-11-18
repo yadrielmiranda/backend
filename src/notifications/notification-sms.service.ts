@@ -11,6 +11,12 @@ import axios, { AxiosResponse } from 'axios';
 import { PrismaService } from '@/prisma/prisma.service';
 import { SmsConsentService } from '@/sms/sms-consent.service';
 import { supportsSmsPhone } from '@/sms/sms-phone-support';
+import { isSmsDeliveryEnabled } from '@/sms/sms-delivery-policy';
+import {
+  allowsStaffNotificationDelivery,
+  isStaffNotification,
+  isSuppressedInstallationNotification,
+} from './notification-delivery-policy';
 
 const recipientSelect = {
   phone: true,
@@ -50,6 +56,7 @@ export class NotificationSmsService {
   ) {}
 
   private settings(): SmsSettings | null {
+    if (!isSmsDeliveryEnabled(this.config)) return null;
     const account = this.config.get<string>('TWILIO_ACCOUNT_SID')?.trim() ?? '';
     const key = this.config.get<string>('TWILIO_API_KEY_SID')?.trim() ?? '';
     const secret =
@@ -66,14 +73,15 @@ export class NotificationSmsService {
     return { account, key, secret, service };
   }
 
-  private isEligible(user: Recipient | null): user is Recipient {
+  private isEligible(user: Recipient | null, notification: Pick<Notification, 'dedupeKey'>): user is Recipient {
     if (!user?.isActive || user.deletedAt) return false;
     const role = user.role.name.toLowerCase();
+    // Los avisos del personal nunca pasan al público al cambiar el rol del destinatario.
     // El proyecto trata a los dealers anteriores sin modo como EXTERNAL.
-    if (
-      role !== 'client' &&
-      !(role === 'dealer' && (user.dealerMode ?? 'EXTERNAL') === 'EXTERNAL')
-    )
+    if (isStaffNotification(notification)
+      ? !allowsStaffNotificationDelivery(notification, role)
+      : role !== 'client' &&
+        !(role === 'dealer' && (user.dealerMode ?? 'EXTERNAL') === 'EXTERNAL'))
       return false;
     const consent = user.smsConsent;
     return Boolean(
@@ -88,15 +96,16 @@ export class NotificationSmsService {
   }
 
   async enqueue(notification: Notification, db: Prisma.TransactionClient) {
+    if (isSuppressedInstallationNotification(notification)) return;
     // Material purchases request bell and email only, independently of SMS consent.
     if (/^material-sale:\d+:paid(?::customer)?$/.test(notification.dedupeKey ?? '')) return;
-    // Sin credenciales, el desarrollo local y las notificaciones de la app siguen funcionando.
+    // El bloqueo de desarrollo se aplica aun si hay credenciales de producción copiadas.
     if (!this.settings()) return;
     const user = await db.user.findUnique({
       where: { id: notification.recipientId },
       select: recipientSelect,
     });
-    if (!this.isEligible(user)) return;
+    if (!this.isEligible(user, notification)) return;
     if (await db.smsPhoneBlock.findUnique({ where: { phone: user.phone } }))
       return;
     await db.notificationSms.create({
@@ -224,8 +233,9 @@ export class NotificationSmsService {
     const user = notification?.recipient ?? null;
     if (
       !notification ||
+      isSuppressedInstallationNotification(notification) ||
       /^material-sale:\d+:paid(?::customer)?$/.test(notification.dedupeKey ?? '') ||
-      !this.isEligible(user) ||
+      !this.isEligible(user, notification) ||
       user.phone !== entry.phone ||
       user.smsConsent!.consentedAt!.getTime() !== entry.consentedAt.getTime()
     ) {

@@ -222,6 +222,127 @@ describe('NotificationEmailService', () => {
     expect(f.row.status).toBe('SKIPPED');
   });
 
+  describe('selected staff notifications', () => {
+    const adminEvents = [
+      ['payment:31:paid:admin', 'Payment confirmed'],
+      ['payment:31:partial:pi_example:admin', 'Partial payment received'],
+      ['payment:31:partial:2026-11-18T15:00:00.000Z:admin', 'Partial payment received'],
+      ['refund:re_example:review', 'Refund recorded'],
+      ['order:21:pickup:selected:admin', 'Pickup selected'],
+      ['order:21:delivery:32:selected:admin', 'Delivery selected'],
+      ['installation:33:quote:34:customer:APPROVED:admin', 'Installation quote approved by owner'],
+      ['installation:33:quote:34:customer:REJECTED:admin', 'Installation quote rejected by owner'],
+      ['installation:33:appointment:35:response:ACCEPT:admin', 'Appointment response received'],
+      ['installation:33:appointment:35:response:REQUEST_RESCHEDULE:admin', 'Appointment response received'],
+      ['order:21:extra:36:response:PAYMENT_DUE:admin', 'Extra charge response received'],
+      ['order:21:extra:36:response:REJECTED:admin', 'Extra charge response received'],
+      ['network-business:37:requested', 'Business status change requested'],
+      ['network-business:37:applied:admin', 'Business status changed'],
+      ['estimate-note-storage:warning:68e638a2-1023-4b3c-86a3-06ef0f0149ac', 'Attachment storage nearly full'],
+    ];
+    const directStaffEvents = [
+      'installation:33:appointment:35:response:ACCEPT',
+      'installation:33:appointment:35:response:REQUEST_RESCHEDULE',
+      'order:21:extra:36:response:PAYMENT_DUE:creator',
+      'order:21:extra:36:response:REJECTED:creator',
+    ];
+
+    it.each(adminEvents)('queues and sends the requested admin event %s with its own subject', async (dedupeKey, title) => {
+      const f = fixture();
+      f.user.role.name = 'admin';
+      f.notification.dedupeKey = dedupeKey;
+      f.notification.message = 'An operational event for Estimate #191013 requires review.';
+      f.notification.actionUrl = '/estimates/104';
+      await f.service.enqueue(f.notification as never, f.db as never);
+      expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
+      expect(sendMail).not.toHaveBeenCalled();
+      await f.service.processPending();
+      expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+        to: email, subject: `${title} - Estimate #191013`,
+        text: expect.stringContaining('https://portal.example.test/estimates/104'),
+      }));
+      expect(f.row.status).toBe('ACCEPTED');
+    });
+
+    it.each(directStaffEvents.flatMap(key => ['admin', 'operator'].map(role => [key, role])))(
+      'delivers response %s to its %s proposer or creator', async (dedupeKey, role) => {
+        const f = fixture(); f.user.role.name = role; f.notification.dedupeKey = dedupeKey;
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+        expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
+        expect(sendMail).toHaveBeenCalledTimes(1);
+        expect(f.row.status).toBe('ACCEPTED');
+      },
+    );
+
+    it.each(adminEvents.map(([key]) => key))('does not widen admin-only event %s to operators', async dedupeKey => {
+      const f = fixture(); f.user.role.name = 'operator'; f.notification.dedupeKey = dedupeKey;
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('SKIPPED');
+    });
+
+    it.each(['client', 'dealer', 'operator', 'technician'])('rechecks staff-only audience if the queued admin becomes %s', async role => {
+      const f = fixture(); f.user.role.name = 'admin'; f.notification.dedupeKey = 'payment:31:paid:admin';
+      await f.service.enqueue(f.notification as never, f.db as never);
+      expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
+      f.user.role.name = role; f.user.dealerMode = 'EXTERNAL';
+      await f.service.processPending();
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('SKIPPED');
+    });
+
+    it.each([
+      'installation:33:remeasurement-completed:admin',
+      'installation:33:quote:34:admin-approval',
+      'material-revision:38:applied',
+      'order:21:status:2:2026-11-18T15:00:00.000Z',
+      'network-business:37:reviewed',
+    ])('leaves unrelated admin event %s internal', async dedupeKey => {
+      const f = fixture(); f.user.role.name = 'admin'; f.notification.dedupeKey = dedupeKey;
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('SKIPPED');
+    });
+
+    it.each(['inactive', 'deleted', 'invalid-email'])('still rejects a selected staff event for an %s recipient', async reason => {
+      const f = fixture(); f.user.role.name = 'admin'; f.notification.dedupeKey = 'payment:31:paid:admin';
+      if (reason === 'inactive') f.user.isActive = false;
+      if (reason === 'deleted') f.user.deletedAt = new Date();
+      if (reason === 'invalid-email') f.user.email = 'invalid';
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+      expect(sendMail).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'installation:33:deposit-due:owner',
+      'installation:33:no-deposit:owner',
+      'installation:33:canceled:admin',
+    ])('suppresses obsolete installation event %s including an already queued email', async dedupeKey => {
+      const f = fixture(); f.notification.dedupeKey = dedupeKey;
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('SKIPPED');
+    });
+
+    it('preserves the owner notice when a paid installation is canceled', async () => {
+      const f = fixture(); f.notification.dedupeKey = 'installation:33:canceled:owner';
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      expect(f.row.status).toBe('ACCEPTED');
+    });
+  });
+
   it.each([
     ['client', null, true],
     ['dealer', 'EXTERNAL', true],

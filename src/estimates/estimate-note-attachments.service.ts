@@ -106,7 +106,7 @@ export class EstimateNoteAttachmentsService {
         if (!quota.warned && Number(quota.usedBytes) >= warningBytes) {
           await this.notifications.createAndSendToRoles(['admin'], {
             message: 'Internal estimate attachments have reached 9 GB of the 10 GB storage limit.',
-            inAppOnly: true,
+            dedupeKey: `estimate-note-storage:warning:${id}`,
           }, { db: tx });
           await tx.estimateNoteAttachmentQuota.update({ where: { id: 1 }, data: { warned: true } });
         }

@@ -2160,19 +2160,8 @@ export class InstallationWorkflowService {
         depositAmount: createdJob.depositAmountSnapshot.toString(),
       },
     });
-    const result = await this.findJob(createdJob.id, user);
-    await this.notifyInstallationOwner({
-      ownerId: result.estimate.idUser,
-      actorId: user.id,
-      jobId: result.id,
-      message: result.dealerMeasurementsAcceptedAt
-        ? `Installation for Estimate #${result.estimate.number} is ready to continue with the current measurements and price. No installation deposit or remeasurement is required.`
-        : `Installation deposit is due for Estimate #${result.estimate.number}.`,
-      actionLabel: result.dealerMeasurementsAcceptedAt ? 'Open estimate' : 'Open payment',
-      dedupeKey: `installation:${result.id}:${result.dealerMeasurementsAcceptedAt ? 'no-deposit' : 'deposit-due'}:owner`,
-      actionUrl: `/estimates/${result.estimateId}/edit`,
-    });
-    return result;
+    // Adding installation can be a pricing preview, before any customer commitment.
+    return this.findJob(createdJob.id, user);
   }
 
   assertDealerMeasurementsCanBeAccepted(
@@ -2667,14 +2656,6 @@ export class InstallationWorkflowService {
         userId: user.id,
         message: `Installation request removed from Estimate #${job.estimate.number} before payment.`,
         before: { estimateId: job.estimateId, status: job.status },
-      });
-      await this.notifyInstallationAdmins({
-        jobId,
-        message: `Installation request canceled for Estimate #${job.estimate.number}.`,
-        actionLabel: 'Open estimate',
-        actionUrl: `/estimates/${job.estimateId}`,
-        dedupeKey: `installation:${jobId}:canceled:admin`,
-        actorId: user.id,
       });
       return null;
     }

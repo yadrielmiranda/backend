@@ -189,6 +189,25 @@ describe('Suspending direct network accounts', () => {
     await f.service.setSuspension(2, true, actor(1), 'Commercial review');
     expect(f.db.user.update).not.toHaveBeenCalled();
     expect(f.logs.log).not.toHaveBeenCalled();
+    expect(f.notifications.createAndSendToRoles).not.toHaveBeenCalled();
+  });
+
+  it.each(['dealer', 'admin'])('notifies admins once per applied pause/resumption by %s', async role => {
+    const f = fixture();
+    const author = actor(role === 'admin' ? 99 : 1, role);
+    await f.service.setSuspension(2, true, author, 'Commercial review');
+    await f.service.setSuspension(2, true, author, 'Same state');
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenNthCalledWith(1, ['admin'], expect.objectContaining({
+      actorId: author.id, dedupeKey: `network-business:${f.actions[0].id}:applied:admin`,
+      message: expect.stringContaining('paused new business'),
+    }), { db: f.db });
+    await f.service.setSuspension(2, false, author, 'Resolved');
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(2);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenNthCalledWith(2, ['admin'], expect.objectContaining({
+      actorId: author.id, dedupeKey: `network-business:${f.actions[1].id}:applied:admin`,
+      message: expect.stringContaining('resumed new business'),
+    }), { db: f.db });
   });
 
   it('shows inherited commercial suspension while keeping access available', async () => {
@@ -332,7 +351,9 @@ describe('New business authority and administrative requests', () => {
       reason: note, status: 'PENDING', activeSlot: 1, createdAt: expect.any(Date) })]);
     const member = (await f.service.list(actor(parentId))).members.find(member => member.id === target)!;
     expect(member).toMatchObject({ canSuspend: false, canRequestSuspension: true, canReviewSuspension: false, canWithdrawRequest: true });
-    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledWith(['admin'], expect.objectContaining({ actionUrl: '/dealers' }), { db: f.db });
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledWith(['admin'], expect.objectContaining({
+      actionUrl: '/dealers', dedupeKey: `network-business:${request.id}:requested`,
+    }), { db: f.db });
   });
 
   it('lets an external subdealer act directly even when its own parent is internal', async () => {
@@ -361,6 +382,10 @@ describe('New business authority and administrative requests', () => {
     await expect(f.service.reviewSuspension(request.id, true, actor(99, 'admin'))).rejects.toThrow(ConflictException);
     expect(f.db.user.update).toHaveBeenCalledTimes(1);
     expect(f.notifications.createAndSend).toHaveBeenCalledWith(expect.objectContaining({ recipientId: 1, actorId: 99 }), f.db);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenCalledTimes(2);
+    expect(f.notifications.createAndSendToRoles).toHaveBeenLastCalledWith(['admin'], expect.objectContaining({
+      actorId: 99, dedupeKey: `network-business:${request.id}:applied:admin`,
+    }), { db: f.db });
     expect(f.db.session.updateMany).not.toHaveBeenCalled();
   });
 

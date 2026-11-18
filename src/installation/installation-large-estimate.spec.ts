@@ -273,7 +273,7 @@ describe('Large installation calculations preserve individual units', () => {
     expect(f.tx.estimateAgreement.findMany).toHaveBeenCalledTimes(1);
     expect(f.measurements).toHaveLength(739); expect(f.lines).toHaveLength(739);
     expect(new Set(f.measurements.map(row => `${row.pieceId}:${row.unitIndex}`)).size).toBe(739);
-    expect(log).toHaveBeenCalledTimes(1); expect(notify).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledTimes(1); expect(notify).not.toHaveBeenCalled();
   });
 
   it('propagates a failed batch and does not calculate totals from partially written automatic lines', async () => {

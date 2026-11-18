@@ -56,6 +56,7 @@ function fixture() {
     updatedAt: new Date(),
   };
   const values: Record<string, string> = {
+    NODE_ENV: 'production',
     TWILIO_ACCOUNT_SID: account,
     TWILIO_API_KEY_SID: key,
     TWILIO_API_KEY_SECRET: 'fake-api-secret',
@@ -133,6 +134,161 @@ describe('NotificationSmsService', () => {
     jest.useRealTimers();
     jest.restoreAllMocks();
   });
+
+  it.each([undefined, 'development', 'test', 'staging'])(
+    'never reads, changes or sends restored SMS queues outside production (%s)',
+    async (environment) => {
+      for (const override of [undefined, 'true', 'false']) {
+        const f = fixture();
+        if (environment === undefined) delete f.values.NODE_ENV;
+        else f.values.NODE_ENV = environment;
+        if (override !== undefined) f.values.SMS_DELIVERY_ENABLED = override;
+        f.row.createdAt = new Date('2026-09-01T12:00:00Z');
+        const originalRow = { ...f.row };
+        await f.service.enqueue(f.notification as never, f.db as never);
+        await f.service.processPending();
+        expect(f.db.user.findUnique).not.toHaveBeenCalled();
+        expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+        expect(f.db.notificationSms.findMany).not.toHaveBeenCalled();
+        expect(f.db.notificationSms.updateMany).not.toHaveBeenCalled();
+        expect(f.consent.getProgram).not.toHaveBeenCalled();
+        expect(post).not.toHaveBeenCalled();
+        expect(f.row).toEqual(originalRow);
+      }
+    },
+  );
+
+  it.each(['false', '', '1', 'TRUE', 'yes'])(
+    'keeps production SMS disabled when SMS_DELIVERY_ENABLED is %j',
+    async (enabled) => {
+      const f = fixture();
+      f.values.SMS_DELIVERY_ENABLED = enabled;
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+      expect(f.db.notificationSms.findMany).not.toHaveBeenCalled();
+      expect(f.db.notificationSms.updateMany).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, 'true'])(
+    'permits configured production SMS with SMS_DELIVERY_ENABLED=%s',
+    async (enabled) => {
+      const f = fixture();
+      if (enabled !== undefined) f.values.SMS_DELIVERY_ENABLED = enabled;
+      await f.service.enqueue(f.notification as never, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationSms.create).toHaveBeenCalledTimes(1);
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(f.row.status).toBe('ACCEPTED');
+    },
+  );
+
+  it.each([
+    'payment:42:paid:admin',
+    'payment:42:partial:pi_example:admin',
+    'payment:42:partial:2026-11-18T12:00:00.000Z:admin',
+    'refund:re_example:review',
+    'order:20:pickup:selected:admin',
+    'order:20:delivery:8:selected:admin',
+    'installation:3:quote:8:customer:APPROVED:admin',
+    'installation:3:quote:8:customer:REJECTED:admin',
+    'installation:3:appointment:7:response:ACCEPT',
+    'installation:3:appointment:7:response:REQUEST_RESCHEDULE:admin',
+    'order:20:extra:7:response:PAYMENT_DUE:creator',
+    'order:20:extra:7:response:REJECTED:admin',
+    'network-business:13:requested',
+    'network-business:13:applied:admin',
+    'estimate-note-storage:warning:abf48bb0-ffad-4eb7-a4bf-c8347a7d3f7d',
+  ])('queues and sends the selected admin event %s', async (event) => {
+    const f = fixture();
+    f.user.role.name = 'admin';
+    f.notification.dedupeKey = event;
+    await f.service.enqueue(f.notification as never, f.db as never);
+    await f.service.processPending();
+    expect(f.db.notificationSms.create).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(f.row.status).toBe('ACCEPTED');
+  });
+
+  it.each([
+    'installation:3:appointment:7:response:ACCEPT',
+    'installation:3:appointment:7:response:REQUEST_RESCHEDULE',
+    'order:20:extra:7:response:PAYMENT_DUE:creator',
+    'order:20:extra:7:response:REJECTED:creator',
+  ])('allows the operator who proposed a date or created a charge: %s', async (event) => {
+    const f = fixture();
+    f.user.role.name = 'operator';
+    f.notification.dedupeKey = event;
+    await f.service.enqueue(f.notification as never, f.db as never);
+    await f.service.processPending();
+    expect(f.db.notificationSms.create).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['admin', 'order:20:status:3:2026-11-18'],
+    ['admin', 'installation:3:quote:8:admin-approval'],
+    ['admin', 'installation:3:remeasurement-completed:admin'],
+    ['admin', 'material-revision:8:applied'],
+    ['operator', 'payment:42:paid:admin'],
+    ['operator', 'installation:3:appointment:7:response:ACCEPT:admin'],
+    ['operator', 'order:20:extra:7:response:REJECTED:admin'],
+    ['technician', 'installation:3:appointment:7:response:ACCEPT'],
+    ['client', 'payment:42:paid:admin'],
+    ['dealer', 'installation:3:appointment:7:response:ACCEPT'],
+  ])('does not broaden %s delivery to an unrequested event %s', async (role, event) => {
+    const f = fixture();
+    f.user.role.name = role;
+    f.notification.dedupeKey = event;
+    await f.service.enqueue(f.notification as never, f.db as never);
+    await f.service.processPending();
+    expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(f.row.status).toBe('SKIPPED');
+  });
+
+  it.each([
+    'installation:3:deposit-due:owner',
+    'installation:3:no-deposit:owner',
+    'installation:3:canceled:admin',
+  ])('drops new and already-queued installation preparation noise: %s', async (event) => {
+    const f = fixture();
+    f.notification.dedupeKey = event;
+    await f.service.enqueue(f.notification as never, f.db as never);
+    await f.service.processPending();
+    expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(f.row.status).toBe('SKIPPED');
+  });
+
+  it('preserves the owner notification when a paid installation is canceled', async () => {
+    const f = fixture();
+    f.notification.dedupeKey = 'installation:3:canceled:owner';
+    await f.service.enqueue(f.notification as never, f.db as never);
+    await f.service.processPending();
+    expect(f.db.notificationSms.create).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['no-consent', 'revoked', 'blocked', 'changed-phone', 'new-consent', 'inactive'])(
+    'retains SMS consent and account checks for admin notifications: %s',
+    async (reason) => {
+      const f = fixture();
+      f.user.role.name = 'admin';
+      f.notification.dedupeKey = 'payment:42:paid:admin';
+      if (reason === 'no-consent') f.user.smsConsent.enabled = false;
+      if (reason === 'revoked') f.user.smsConsent.revokedAt = new Date();
+      if (reason === 'blocked') f.db.smsPhoneBlock.findUnique.mockResolvedValue({ phone } as never);
+      if (reason === 'changed-phone') f.user.phone = '+13055559876';
+      if (reason === 'inactive') f.user.isActive = false;
+      if (reason === 'new-consent') f.user.smsConsent.consentedAt = new Date();
+      await f.service.processPending();
+      expect(post).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('SKIPPED');
+    },
+  );
 
   it.each([
     ['client', null, true],
