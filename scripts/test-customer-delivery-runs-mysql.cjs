@@ -126,7 +126,13 @@ async function main() {
   const statusCode = expected => error => error.getStatus?.() === expected;
 
   // Deliberately inconsistent historical PO naming only in this disposable DB.
-  // The unrelated commercial graph is omitted; this order has no factory stock.
+  // PO labels read the estimate and its owner; the unrelated payment/status
+  // graph is omitted, and this order has no factory stock.
+  const estimateStatus = await db.estimateStatus.create({ data: { name: 'Synthetic draft' } });
+  await db.estimate.create({ data: {
+    id: 950000, number: 'SYNTHETIC-SAME-NUMBER', name: 'Synthetic same-number project',
+    units: 0, rateT: 0, priceT: 0, netProfit: 0, idUser: admin.id, statusId: estimateStatus.id,
+  } });
   sql(`SET FOREIGN_KEY_CHECKS=0;
     INSERT INTO \`Order\` (id, number, units, amount, price, saleSubtotal, rate, netProfit, poNumber, idEst, statusId, userId, paymentId, updatedAt)
     VALUES (950000, 'SYNTHETIC-SAME-NUMBER', 1, 0, 0, 0, 0, 0, '990020', 950000, 950000, ${admin.id}, 950000, CURRENT_TIMESTAMP(3));
@@ -581,9 +587,11 @@ async function main() {
   }
   console.log('PASS admin and technician delete unscanned deliveries with POs; deletion is audited, repeatable, hidden, and cannot be resurrected by a create retry');
 
-  const removable = await warehouse.startCustomerDeliveryRun(request(), tech);
+  const removableCreation = request();
+  const removable = await warehouse.startCustomerDeliveryRun(removableCreation, tech);
   await addKeys(removable.id, [removableKey, spareKey], tech);
-  await scan(removable.id, '99010001-WINDOW', { storeId: store.id }, tech);
+  const removableScan = { ...request(), storeId: store.id };
+  await scan(removable.id, '99010001-WINDOW', removableScan, tech);
   await scan(removable.id, '99010001-WINDOW', { storeId: otherStore.id }, tech);
   const scanned = await read(removable.id, tech);
   assert.equal(scanned.canDelete, false);
@@ -616,27 +624,52 @@ async function main() {
     await warehouse.removeCustomerDeliveryRunPart(removable.id, { ...request(), barcode: '99010001-WINDOW', storeId }, tech);
   const corrected = await read(removable.id, tech);
   assert.equal(corrected.totalParts, 0);
-  assert.equal(corrected.canDelete, false, 'Correcting all readings must not erase the scan history');
+  assert.equal(corrected.canDelete, true, 'An active delivery with all readings removed can be deleted without erasing its history');
   assert.equal(corrected.orders.find(order => order.key === removableKey).canRemove, true);
-  await assert.rejects(() => erase(removable.id, tech), statusCode(409));
   assert(!(await removePo(removable.id, removableKey, tech)).orders.some(order => order.key === removableKey));
   for (const poKey of ['', 'order:0', 'external:01', 'line:1', null])
     await assert.rejects(() => removePo(removable.id, poKey, tech), statusCode(400));
+  const completelyEmpty = await removePo(removable.id, spareKey, tech);
+  assert.equal(completelyEmpty.orders.length, 0);
+  assert.equal(completelyEmpty.totalParts, 0);
+  assert.equal(completelyEmpty.canDelete, true);
+  const clearedHistory = await db.warehouseCustomerDeliveryRunEvent.findMany({ where: { runId: removable.id }, orderBy: { id: 'asc' } });
+  assert.equal(clearedHistory.filter(event => event.action === 'SCAN').length, 2);
+  assert.equal(clearedHistory.filter(event => event.action === 'REMOVE').length, 2);
+  assert.deepEqual(await erase(removable.id, tech), { id: removable.id, deleted: true });
+  assert.deepEqual(await erase(removable.id, admin), { id: removable.id, deleted: true });
+  const deletedHistory = await db.warehouseCustomerDeliveryRunEvent.findMany({ where: { runId: removable.id }, orderBy: { id: 'asc' } });
+  assert.deepEqual(deletedHistory.slice(0, -1), clearedHistory, 'Soft deletion must retain each original scan, correction and PO event unchanged');
+  assert.equal(deletedHistory.at(-1).action, 'DELETE');
+  assert.equal(deletedHistory.at(-1).actorId, tech.id);
+  assert.equal((await db.warehouseCustomerDeliveryRun.findUniqueOrThrow({ where: { id: removable.id } })).status, 'DELETED');
+  for (const status of ['ACTIVE', 'CLOSED'])
+    assert(!(await warehouse.customerDeliveryRuns({ status, pageSize: '50' }, tech)).items.some(item => item.id === removable.id));
+  await assert.rejects(() => read(removable.id, tech), statusCode(404));
+  await assert.rejects(() => scan(removable.id, '99010001-WINDOW', removableScan, tech), statusCode(404));
+  await assert.rejects(() => removePo(removable.id, spareKey, tech, removalIdentity), statusCode(404));
+  await assert.rejects(() => warehouse.startCustomerDeliveryRun(removableCreation, tech), error => {
+    assert.equal(error.getStatus(), 409); assert.equal(error.getResponse().code, 'DELIVERY_DELETED'); return true;
+  });
+  assert.deepEqual(await immutableInventory(), beforeCorrections);
   assert.equal((await read(run.id)).canDelete, false);
   assert((await read(run.id)).orders.every(order => order.canRemove === false));
   await assert.rejects(() => erase(run.id, admin), statusCode(409));
   await assert.rejects(() => removePo(run.id, externalKey, tech), statusCode(409));
-  console.log('PASS PO removal preserves other scans, updates pending totals, survives uncertain retries and re-adds, and blocks scanned POs and closed receipts');
+  console.log('PASS cleared deliveries can be deleted with complete audit history and unchanged stock; old retries cannot resurrect them, while saved parts and closed receipts remain protected');
 
   const deleteRaceRun = await warehouse.startCustomerDeliveryRun(request(), admin);
   await addKeys(deleteRaceRun.id, [removableKey]);
+  await scan(deleteRaceRun.id, '99010001-WINDOW', { storeId: store.id });
+  await warehouse.removeCustomerDeliveryRunPart(deleteRaceRun.id, { ...request(), barcode: '99010001-WINDOW', storeId: store.id }, admin);
+  assert.equal((await read(deleteRaceRun.id)).canDelete, true);
   const deleteRace = await Promise.allSettled([
     erase(deleteRaceRun.id), scan(deleteRaceRun.id, '99010001-WINDOW', { storeId: store.id }),
   ]);
   assert.equal(deleteRace.filter(result => result.status === 'fulfilled').length, 1);
   const deleteRaceRecord = await db.warehouseCustomerDeliveryRun.findUniqueOrThrow({ where: { id: deleteRaceRun.id } });
   if (deleteRaceRecord.status === 'DELETED') {
-    assert.equal(await db.warehouseCustomerDeliveryRunEvent.count({ where: { runId: deleteRaceRun.id, action: 'SCAN' } }), 0);
+    assert.equal(await db.warehouseCustomerDeliveryRunEvent.count({ where: { runId: deleteRaceRun.id, action: 'SCAN' } }), 1, 'Deletion keeps the old corrected scan but prevents a concurrent new scan');
   } else {
     assert.equal(deleteRaceRecord.status, 'ACTIVE');
     assert.equal((await read(deleteRaceRun.id)).totalParts, 1);
@@ -707,8 +740,7 @@ async function main() {
   const manualReplayed = await manual(manualIdentity);
   assert.equal(manualReplayed.totalParts, 0);
   assert.equal(manualReplayed.orders.length, 0, 'Uncertain manual retry must not restore subsequently removed selections');
-  assert.equal(manualReplayed.canDelete, false, 'Correcting manual parts to zero must preserve their audit history');
-  await assert.rejects(() => erase(manualCreated.id), statusCode(409));
+  assert.equal(manualReplayed.canDelete, true, 'Manual deliveries become deletable after all saved parts have been removed');
   console.log('PASS manual PO action fills exact typed stock across locations, skips transit, respects filters and existing scans, preserves corrections on replay, and audits without stock movements');
 
   const unknownManualPo = await po('990130', [['99013001', 'Fixed Window', 1]]);
@@ -733,6 +765,18 @@ async function main() {
   await assert.rejects(() => manual({}), statusCode(409));
   assert.equal((await manual(manualIdentity)).id, manualCreated.id, 'Successful replay remains available during a physical count');
   await db.warehouseCount.update({ where: { id: physicalCount.id }, data: { activeSlot: null } });
+  const manualHistory = await db.warehouseCustomerDeliveryRunEvent.findMany({ where: { runId: manualCreated.id }, orderBy: { id: 'asc' } });
+  const beforeManualDeletion = await immutableInventory();
+  assert.equal(manualHistory.filter(event => event.action === 'MANUAL').length, 2);
+  assert.equal(manualHistory.filter(event => event.action === 'REMOVE').length, 5);
+  assert.deepEqual(await erase(manualCreated.id), { id: manualCreated.id, deleted: true });
+  assert.deepEqual(await erase(manualCreated.id), { id: manualCreated.id, deleted: true });
+  const manualDeletedHistory = await db.warehouseCustomerDeliveryRunEvent.findMany({ where: { runId: manualCreated.id }, orderBy: { id: 'asc' } });
+  assert.deepEqual(manualDeletedHistory.slice(0, -1), manualHistory);
+  assert.equal(manualDeletedHistory.at(-1).action, 'DELETE');
+  await assert.rejects(() => manual(manualIdentity), statusCode(404));
+  assert.deepEqual(await immutableInventory(), beforeManualDeletion, 'Deleting a cleared manual delivery must not change inventory or signed receipts');
+  console.log('PASS cleared manual deliveries can be deleted once with original manual/correction history retained and no resurrection or inventory changes');
   const manualBeforeClose = await read(manualScoped.id, tech);
   const stockBeforeManualClose = await immutableInventory();
   await assert.rejects(() => warehouse.closeCustomerDeliveryRun(manualScoped.id, closeBody(manualBeforeClose, { signatureStrokes: [] }), tech), statusCode(400));

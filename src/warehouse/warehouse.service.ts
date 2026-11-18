@@ -1761,11 +1761,9 @@ export class WarehouseService {
     if (run.status !== 'ACTIVE') throw new ConflictException('This delivery is already closed.');
   }
 
-  private async canDeleteCustomerDeliveryRun(tx: Tx, run: WarehouseCustomerDeliveryRun) {
-    if (run.status !== 'ACTIVE' || run.deliveryId !== null || deliveryRunAllocations(run).length) return false;
-    return !(await tx.warehouseCustomerDeliveryRunEvent.findFirst({
-      where: { runId: run.id, action: { in: ['SCAN', 'MANUAL'] } }, select: { id: true },
-    }));
+  private canDeleteCustomerDeliveryRun(run: WarehouseCustomerDeliveryRun) {
+    // Corrected scans remain in the audit trail when an empty preparation is soft-deleted.
+    return run.status === 'ACTIVE' && run.deliveryId === null && deliveryRunAllocations(run).length === 0;
   }
 
   private async deliveryRunPo(tx: Tx, value: string): Promise<DeliveryRunOrder> {
@@ -1914,7 +1912,7 @@ export class WarehouseService {
     const revision = hash([run.id, run.version, run.multiStore, sources, savedAllocations, stocks.map(stock => [stock.lineNumber, stock.version]), items, pendingItems]);
     return {
       id: run.id, status: run.status, source: 'WAREHOUSE' as const, multiStore: run.multiStore,
-      canDelete: await this.canDeleteCustomerDeliveryRun(tx, run),
+      canDelete: this.canDeleteCustomerDeliveryRun(run),
       storeId: run.storeId, storeName: run.multiStore ? 'Multiple locations' : run.storeName,
       createdById: run.createdById, createdBy: run.createdByName, createdAt: run.createdAt,
       updatedAt: run.updatedAt, closedAt: run.closedAt, revision,
@@ -1955,8 +1953,8 @@ export class WarehouseService {
       const run = await this.deliveryRunRecord(tx, id, true, true);
       if (run.status === 'DELETED') return { id, deleted: true as const };
       this.assertDeliveryRunActive(run);
-      if (!(await this.canDeleteCustomerDeliveryRun(tx, run))) throw new ConflictException({
-        code: 'DELIVERY_HAS_SCANS', message: 'Only deliveries that have never had recorded parts can be deleted.',
+      if (!this.canDeleteCustomerDeliveryRun(run)) throw new ConflictException({
+        code: 'DELIVERY_HAS_SCANS', message: 'Only active deliveries with no saved parts and no signed receipt can be deleted.',
       });
       // Preserve the create request and audit trail so an old retry cannot recreate it.
       await tx.warehouseCustomerDeliveryRun.update({ where: { id }, data: { status: 'DELETED', version: { increment: 1 } } });
