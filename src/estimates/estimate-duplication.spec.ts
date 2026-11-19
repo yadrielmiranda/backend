@@ -190,6 +190,21 @@ describe('Independent estimate duplication', () => {
     expect(f.source.pieces[0].energyRatingId).toBe(30);
   });
 
+  it('keeps registered root dealer tax separate from the global rate and the resale rate', async () => {
+    const f = fixture();
+    f.owner.networkTaxRate = '.07';
+    f.source.customerTaxRate = '.06';
+    await f.duplicate();
+    await f.service.createEmptyEstimate({ name: 'New estimate', customerTaxRate: .09 }, 7);
+    const [copy, empty] = f.created();
+    expect(copy.taxRate.toString()).toBe('0.07');
+    expect(copy.totalPayable.toFixed(2)).toBe('267.50');
+    expect(copy.customerTaxRate.toString()).toBe('0.06');
+    expect(empty.taxRate.toString()).toBe('0.07');
+    expect(empty.customerTaxRate.toString()).toBe('0.09');
+    expect(f.source.taxRate).toBe('.06');
+  });
+
   it.each([0, '.065'])('uses current subordinate tax %s for new estimates and copies without touching the original', async taxRate => {
     const f = fixture();
     const root = { ...f.owner, id: 1, username: 'root', parentDealerId: null };

@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import Decimal from 'decimal.js';
 import { DealerNetworkService } from './dealer-network.module';
 import { CreateNetworkMemberDto, UpdateNetworkMarkupDto } from './dealer-network.dto';
-import { applyNetworkPricing, billingEstimate, createNetworkSnapshot, networkAccountTaxRate, networkPieceTotals } from './dealer-network';
+import { applyNetworkPricing, billingEstimate, companySalesTaxRate, createNetworkSnapshot, networkAccountTaxRate, networkPieceTotals } from './dealer-network';
 import { presentApiResponse } from '@/common/response-privacy.interceptor';
 import { EstimatePieceCalculatorService } from '@/estimates/calculation/estimate-piece-calculator.service';
 import { scheduleAmounts } from '@/payment-plans/payment-schedule';
@@ -62,6 +62,17 @@ describe('Taxes for each direct network sale', () => {
     expect(f.db.user.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
       street: '123 Example St', addressLine2: 'Office 7',
     }) }));
+  });
+
+  it("applies an invited root dealer's rate to company sales, including sales billed through their branch", async () => {
+    const f = fixture(), root = f.users[0];
+    root.networkTaxRate = new Prisma.Decimal('.07');
+    expect(companySalesTaxRate(root, '.08').toString()).toBe('0.07');
+    expect((await createNetworkSnapshot(f.db, f.users[1], '.08'))?.billingTaxRate).toBe('0.07');
+    root.isTaxExempt = true;
+    expect(companySalesTaxRate(root, '.08').toString()).toBe('0');
+    expect((await createNetworkSnapshot(f.db, f.users[1], '.08'))?.billingTaxRate).toBe('0');
+    expect(companySalesTaxRate(f.users[1], '.08').toString()).toBe('0.08');
   });
 
   it.each([
@@ -124,10 +135,12 @@ describe('Taxes for each direct network sale', () => {
     expect(f.users[0].networkTaxRate).toBeNull();
   });
 
-  it('creates a direct account with an independent tax rate', async () => {
+  it.each(['dealer', 'admin'])('uses the markup and tax entered during manual account creation by a %s', async role => {
     const f = fixture(); f.users[0].isTaxExempt = true;
-    await f.service.create({ username: 'newchild', password: 'Example-password-123', markupPercent: 10, taxPercent: 8.25 } as any, actor(1));
+    await f.service.create({ username: 'newchild', password: 'Example-password-123', parentDealerId: 1,
+      markupPercent: 10, taxPercent: 8.25 } as any, actor(role === 'admin' ? 9 : 1, role));
     const saved = f.db.user.create.mock.calls[0][0].data;
+    expect(saved.networkMarkup.toString()).toBe('0.1');
     expect(saved.networkTaxRate.toString()).toBe('0.0825');
     expect(saved).toMatchObject({ isTaxExempt: false, parentDealerId: 1 });
   });

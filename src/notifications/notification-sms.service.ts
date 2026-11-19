@@ -14,11 +14,14 @@ import { isSmsDeliveryEnabled } from '@/sms/sms-delivery-policy';
 import { hasActiveServiceSmsConsent } from '@/sms/sms-recipient-policy';
 import { deliverSms, SmsDeliveryResult, SmsSettings } from '@/sms/sms-transport';
 import { renderWelcomeSms } from '@/sms/welcome-sms-template';
+import type { DealerPreferredLanguage } from '@prisma/client';
+import { renderRegistrationResultSms } from '@/dealer-network/dealer-registration-result-template';
 import {
   allowsStaffNotificationDelivery,
   isStaffNotification,
   isOwnerProjectNotification,
   isSuppressedInstallationNotification,
+  registrationReviewerRole,
 } from './notification-delivery-policy';
 
 const recipientSelect = {
@@ -66,6 +69,8 @@ export class NotificationSmsService {
   private isEligible(user: Recipient | null, notification: Pick<Notification, 'dedupeKey'>): user is Recipient {
     if (!hasActiveServiceSmsConsent(user)) return false;
     const role = user.role.name.toLowerCase();
+    const reviewerRole = registrationReviewerRole(notification);
+    if (reviewerRole) return role === reviewerRole;
     // Una compra de Materials avisa a su comprador registrado, también si es
     // dealer interno o personal. No habilita el aviso general de administración.
     if (/^material-sale:\d+:paid:customer$/.test(notification.dedupeKey ?? ''))
@@ -86,11 +91,22 @@ export class NotificationSmsService {
   }
 
   /** The welcome outbox has already rechecked the account's current service consent. */
-  async sendAccountWelcomeSms(input: { phone: string; firstName: string | null }): Promise<SmsDeliveryResult> {
+  async sendAccountWelcomeSms(input: { phone: string; firstName: string | null; approvalLanguage?: DealerPreferredLanguage }): Promise<SmsDeliveryResult> {
+    const message = input.approvalLanguage
+      ? renderRegistrationResultSms(input.approvalLanguage, true, this.config.get<string>('PUBLIC_FRONTEND_URL'))
+      : renderWelcomeSms(input.firstName);
+    return this.sendAccountSms(input.phone, message);
+  }
+
+  async sendDealerRegistrationRejectionSms(phone: string, language: DealerPreferredLanguage): Promise<SmsDeliveryResult> {
+    return this.sendAccountSms(phone, renderRegistrationResultSms(language, false));
+  }
+
+  private async sendAccountSms(phone: string, message: string): Promise<SmsDeliveryResult> {
     const settings = this.settings();
     if (!settings) return { status: 'UNAVAILABLE', errorCode: 'SMS_UNAVAILABLE' };
-    if (!supportsSmsPhone(input.phone)) return { status: 'FAILED', errorCode: 'UNSUPPORTED_PHONE' };
-    return this.deliver(settings, input.phone, renderWelcomeSms(input.firstName));
+    if (!supportsSmsPhone(phone)) return { status: 'FAILED', errorCode: 'UNSUPPORTED_PHONE' };
+    return this.deliver(settings, phone, message);
   }
 
   private async deliver(settings: SmsSettings, phone: string, body: string): Promise<SmsDeliveryResult> {
@@ -135,12 +151,21 @@ export class NotificationSmsService {
         .trim();
     const name = Array.from(clean(companyName)).slice(0, 80).join('');
     const message = clean(notification.message);
-    // El SMS informa del evento sin enlaces; conserva la compañía y la instrucción STOP.
     const shortMessage =
       Array.from(message).length > 320
         ? `${Array.from(message).slice(0, 317).join('')}...`
         : message;
-    return `${name}: ${shortMessage}\nReply STOP to unsubscribe.`;
+    const lines = [`${name}: ${shortMessage}`];
+    if (registrationReviewerRole(notification)) {
+      const configured = this.config.get<string>('PUBLIC_FRONTEND_URL');
+      const origin = configured && URL.canParse(configured) ? new URL(configured) : null;
+      const path = notification.actionUrl ?? '';
+      const linked = origin?.protocol === 'https:' && !origin.username && !origin.password &&
+        /^\/dealers\?registrationRequest=\d+$/.test(path);
+      lines.push(linked ? `Review application: ${new URL(path, origin).href}` : 'Review the application in your dealer network.');
+    }
+    lines.push('Reply STOP to unsubscribe.');
+    return lines.join('\n');
   }
 
   @Interval(10_000)

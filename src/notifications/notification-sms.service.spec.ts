@@ -137,6 +137,54 @@ describe('NotificationSmsService', () => {
     jest.restoreAllMocks();
   });
 
+  describe('dealer application reviewers', () => {
+    function reviewerFixture(audience: string) {
+      const f = fixture();
+      f.user.role.name = audience === 'admin' ? 'admin' : 'dealer';
+      Object.assign(f.notification, {
+        dedupeKey: 'dealer-registration:27:submitted:' + audience,
+        message: 'alex submitted a dealer application.',
+        actionUrl: '/dealers?registrationRequest=27', actionLabel: 'Review application',
+      });
+      return f;
+    }
+
+    it.each([['admin', null], ['inviter', 'INTERNAL'], ['inviter', 'EXTERNAL']] as const)(
+      'texts the opted-in %s/%s reviewer with a direct review link', async (audience, mode) => {
+        const f = reviewerFixture(audience);
+        f.user.dealerMode = mode;
+        await f.service.enqueue(f.notification, f.db as never);
+        await f.service.processPending();
+        expect(f.db.notificationSms.create).toHaveBeenCalledTimes(1);
+        const body = new URLSearchParams(post.mock.calls[0][1] as string).get('Body');
+        expect(body).toContain(f.notification.message);
+        expect(body).toContain('Review application: https://portal.example.test/dealers?registrationRequest=27');
+        expect(body).toContain('Reply STOP');
+      },
+    );
+
+    it.each([['admin', 'inviter'], ['dealer', 'admin'], ['operator', 'admin'], ['client', 'inviter'],
+      ['technician', 'inviter']])('excludes a %s from the %s reviewer SMS', async (role, audience) => {
+      const f = reviewerFixture(audience);
+      f.user.role.name = role;
+      await f.service.enqueue(f.notification, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+    });
+
+    it.each(['no consent', 'STOP', 'development'])('suppresses reviewer SMS with %s', async condition => {
+      const f = reviewerFixture('admin');
+      if (condition === 'no consent') f.user.smsConsent.enabled = false;
+      if (condition === 'STOP') f.db.smsPhoneBlock.findUnique.mockResolvedValue({ phone });
+      if (condition === 'development') f.values.NODE_ENV = 'development';
+      await f.service.enqueue(f.notification, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Materials buyer payment confirmation', () => {
     function buyerFixture() {
       const f = fixture();

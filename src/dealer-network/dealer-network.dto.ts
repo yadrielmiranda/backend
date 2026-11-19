@@ -1,7 +1,61 @@
-import { OmitType } from '@nestjs/mapped-types';
-import { IsNumber, Min, Max, MinLength, MaxLength, IsString, IsOptional, IsInt, IsIn, IsBoolean } from 'class-validator';
+import { OmitType, PickType } from '@nestjs/mapped-types';
+import { IsNumber, Min, Max, MinLength, MaxLength, IsString, IsOptional, IsInt, IsIn, IsBoolean, Matches } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { CreateUserDto } from '@/users/dto/create-user.dto';
+import { RegisterUserDto } from '@/auth/dto/register-user.dto';
+import { trimOrNull } from '@/common/transforms';
+
+export class UpdateDealerInviteDto {
+  // Keep the submitted decimal text, including the precision of a role markup.
+  @Transform(({ obj, key }) => {
+    const value: unknown = obj[key];
+    return typeof value === 'number' || typeof value === 'string' ? String(value).trim() : value;
+  })
+  @IsString()
+  @Matches(/^-?\d{1,8}(?:\.\d{1,16})?$/, { message: 'Enter a valid material markup percentage.' })
+  markupPercent: string;
+}
+
+export class SubmitDealerRegistrationDto extends PickType(RegisterUserDto, [
+  'username', 'firstName', 'lastName', 'email', 'phone', 'password',
+  'street', 'addressLine2', 'city', 'state', 'postalCode',
+  'platformTermsAccepted', 'platformTermsVersionId', 'serviceConsent', 'promotionsConsent', 'consentVersion',
+] as const) {
+  @MinLength(8)
+  declare password: string;
+
+  @Transform(({ obj, key }) => trimOrNull({ value: obj[key] }))
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  companyName?: string;
+
+  @Transform(({ obj, key }) => {
+    const value: unknown = obj[key];
+    return typeof value === 'string' && !value.trim() ? undefined : value;
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(999999999999.99)
+  estimatedMonthlySales?: number;
+
+  // Implicit conversion would otherwise turn an empty HTML field or false into zero.
+  @Transform(({ obj, key }) => obj[key])
+  @IsInt()
+  @Min(0)
+  @Max(2147483647)
+  yearsOfExperience: number;
+
+  @IsIn(['English', 'Spanish'])
+  preferredLanguage: 'English' | 'Spanish';
+}
+
+export class ReviewDealerRegistrationDto {
+  @Transform(({ obj, key }) => obj[key])
+  @IsBoolean()
+  approve: boolean;
+}
 
 export class CreateNetworkMemberDto extends OmitType(CreateUserDto, [
   'idRole', 'dealerMode', 'dealerEarningsPlanId',

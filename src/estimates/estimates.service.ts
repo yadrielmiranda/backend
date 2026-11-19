@@ -1,4 +1,4 @@
-import { createNetworkSnapshot, networkSnapshot, networkPresentation, canAccessOwner, descendantIds } from '@/dealer-network/dealer-network';
+import { createNetworkSnapshot, networkAccountTaxRate, networkSnapshot, networkPresentation, canAccessOwner, descendantIds } from '@/dealer-network/dealer-network';
 import { normalizeAddressLine2 } from '@/common/address-line2';
 import { networkParentSelect } from '@/dealer-network/network-access';
 import { DuplicateEstimateDto } from './dto/duplicate-estimate.dto';
@@ -1117,6 +1117,7 @@ export class EstimatesService {
         select: {
           id: true,
           parentDealerId: true,
+          networkTaxRate: true,
           networkSuspended: true,
           isTaxExempt: true,
           markupOverride: true,
@@ -1167,8 +1168,7 @@ export class EstimatesService {
       const customerTaxRate = new Decimal(dto.customerTaxRate ?? 0);
 
       const network = await createNetworkSnapshot(tx, user, taxParameter.value.toString());
-      const factoryTaxRate = new Decimal(network?.nodes.at(-1)?.taxRate ??
-        (user.isTaxExempt ? 0 : taxParameter.value.toString()));
+      const factoryTaxRate = networkAccountTaxRate(user, taxParameter.value.toString());
       const ownerMarkupSnapshot = network ? new Decimal(network.rootMarkup) : this.resolveBaseMarkupForUser(user);
       const ownerIsDealer = user.role.name === 'dealer';
       const earningsPlan = ownerIsDealer && !user.parentDealerId && user.dealerMode === DealerMode.INTERNAL
@@ -1332,7 +1332,7 @@ export class EstimatesService {
       }
       const totals = this.pieceCalculator.calculateEstimateTotals(
         calculated,
-        new Decimal(network?.nodes.at(-1)?.taxRate ?? (owner.isTaxExempt ? 0 : taxParameter.value.toString())),
+        networkAccountTaxRate(owner, taxParameter.value.toString()),
         new Decimal(source.customerTaxRate.toString()),
       );
       const standardExpiresAt = await this.getEstimateExpirationDate(tx);
@@ -2559,8 +2559,7 @@ export class EstimatesService {
         tx as PrismaTransactionClient,
       );
 
-      const factoryTaxRate = new Decimal(network?.nodes.at(-1)?.taxRate ??
-        (beforeEstimate.user.isTaxExempt ? 0 : taxParameter.value.toString()));
+      const factoryTaxRate = networkAccountTaxRate(beforeEstimate.user, taxParameter.value.toString());
 
       const customerTaxRate = new Decimal(
         Number(beforeEstimate.customerTaxRate ?? 0),

@@ -268,6 +268,15 @@ describe('Delivery warehouse origin and coverage', () => {
     expect(f.db.orderDelivery.update).not.toHaveBeenCalled();
   });
 
+  it('uses the invited root dealer’s saved tax for a taxable delivery', async () => {
+    const f = fixture(50000);
+    Object.assign(f.order.user, { dealerMode: 'EXTERNAL', parentDealerId: null, networkTaxRate: new Prisma.Decimal('.07') });
+    f.db.globalParameter.findUnique.mockResolvedValue({ value: new Prisma.Decimal('.08') });
+    const delivery = await f.service.createDelivery(40, { taxable: true }, actor);
+    const expected = calculateDeliveryPricing({ distanceMeters: 50000, ...f.pricing, taxRate: '0.07' });
+    expect(delivery.total.toString()).toBe(expected.total.toString());
+  });
+
   it('allows standard delivery from Preparing for pickup', async () => {
     const f = fixture(50000);
     f.order.status.name = 'Preparing for pickup';

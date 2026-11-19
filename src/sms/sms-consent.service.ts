@@ -5,7 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
-import { buildSmsProgram } from './sms-program';
+import { getSmsProgram } from './sms-program';
 import { UpdateSmsConsentDto } from './dto/update-sms-consent.dto';
 import { SMS_UNSUPPORTED_PHONE_MESSAGE, supportsSmsPhone } from './sms-phone-support';
 
@@ -14,11 +14,7 @@ export class SmsConsentService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getProgram() {
-    const company = await this.prisma.branding.findFirst({
-      where: { type: 'COMPANY', isActive: true },
-      select: { name: true, email: true, phone: true },
-    });
-    return buildSmsProgram(company);
+    return getSmsProgram(this.prisma);
   }
 
   async getPreferences(userId: number) {

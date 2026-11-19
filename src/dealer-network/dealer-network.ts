@@ -52,15 +52,25 @@ export async function dealerChain(db: Prisma.TransactionClient, ownerId: number)
   return chain;
 }
 
-// Cada venta usa su propia tasa; nunca hereda el impuesto pagado por el superior.
-export function networkAccountTaxRate(account: {
+type TaxAccount = {
   parentDealerId?: number | null;
+  dealerMode?: string | null;
   networkTaxRate?: { toString(): string } | null;
   isTaxExempt?: boolean;
-}, salesTax: Decimal.Value): Decimal {
+};
+
+export function companySalesTaxRate(account: TaxAccount, salesTax: Decimal.Value): Decimal {
+  if (account.isTaxExempt) return new Decimal(0);
+  if (account.parentDealerId == null && account.dealerMode && account.networkTaxRate != null)
+    return new Decimal(account.networkTaxRate.toString());
+  return new Decimal(salesTax);
+}
+
+// Cada venta usa su propia tasa; nunca hereda el impuesto pagado por el superior.
+export function networkAccountTaxRate(account: TaxAccount, salesTax: Decimal.Value): Decimal {
   if (account.parentDealerId != null && account.networkTaxRate != null)
     return new Decimal(account.networkTaxRate.toString());
-  return new Decimal(account.isTaxExempt ? 0 : salesTax);
+  return companySalesTaxRate(account, salesTax);
 }
 
 export async function createNetworkSnapshot(db: Prisma.TransactionClient, owner: any, salesTax: Decimal.Value): Promise<NetworkSnapshot | null> {

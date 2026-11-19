@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
-import { AccountWelcomeEmail, NotificationEmailStatus, Prisma } from '@prisma/client';
+import { AccountWelcomeEmail, DealerPreferredLanguage, NotificationEmailStatus, Prisma } from '@prisma/client';
 import { isEmail } from 'class-validator';
 import { PrismaService } from '@/prisma/prisma.service';
 import { NotificationEmailService } from '@/notifications/notification-email.service';
@@ -30,12 +30,13 @@ export class WelcomeEmailService {
   }
 
   /** Called only during new-account creation, inside the same transaction. No network I/O. */
-  async enqueue(userId: number, db: Prisma.TransactionClient): Promise<void> {
+  async enqueue(userId: number, db: Prisma.TransactionClient, approvalLanguage?: DealerPreferredLanguage): Promise<void> {
+    if (approvalLanguage && !this.email.canSendAccountWelcomeEmail()) return;
     const user = await db.user.findUnique({ where: { id: userId }, select: recipientSelect });
     const email = this.recipientEmail(user);
     if (!email) return;
     // A single durable delivery per account, even when different accounts share a contact address.
-    await db.accountWelcomeEmail.createMany({ data: [{ userId, email }], skipDuplicates: true });
+    await db.accountWelcomeEmail.createMany({ data: [{ userId, email, approvalLanguage }], skipDuplicates: true });
   }
 
   @Interval(10_000)
@@ -88,6 +89,7 @@ export class WelcomeEmailService {
     }
     const result = await this.email.sendAccountWelcome({
       to: row.email, firstName: user.firstName, username: user.username, roleName: user.role.name,
+      approvalLanguage: row.approvalLanguage ?? undefined,
     });
     if (result.status === 'ACCEPTED') {
       await this.finish(row.userId, 'ACCEPTED', null, result.providerMessageId);

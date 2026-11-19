@@ -25,7 +25,10 @@ import {
   USERNAME_VALIDATION_MESSAGE,
 } from '@/common/username-policy';
 
-export type UserSafe = Omit<User, 'password' | 'networkSuspendedByAdmin' | 'networkTaxRate'> & {
+export type UserSafe = Omit<User,
+  'password' | 'networkSuspendedByAdmin' | 'networkTaxRate' |
+  'companyName' | 'estimatedMonthlySales' | 'yearsOfExperience' | 'preferredLanguage'
+> & {
   role: Prisma.RoleGetPayload<{
     include: { installationPriceProfile: true };
   }>;

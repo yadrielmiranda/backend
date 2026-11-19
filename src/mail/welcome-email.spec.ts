@@ -36,6 +36,7 @@ function queueFixture() {
   };
   const row = {
     userId: 7, email: address, status: 'PENDING', attempts: 0,
+    approvalLanguage: null as 'Spanish' | 'English' | null,
     nextAttemptAt: new Date(), attemptedAt: null as Date | null,
     providerMessageId: null as string | null, errorCode: null as string | null,
     createdAt: new Date(), updatedAt: new Date(),
@@ -80,6 +81,35 @@ describe('welcome email', () => {
     sendMail.mockResolvedValue({ accepted: [address], rejected: [], messageId: '<welcome-id>' });
   });
   afterEach(() => { jest.useRealTimers(); jest.restoreAllMocks(); });
+
+  it('queues the dealer approval language and uses the same welcome delivery', async () => {
+    const f = queueFixture();
+    await f.service.enqueue(7, f.db as never, 'Spanish');
+    expect(f.db.accountWelcomeEmail.createMany).toHaveBeenCalledWith({
+      data: [{ userId: 7, email: address, approvalLanguage: 'Spanish' }], skipDuplicates: true,
+    });
+    f.row.approvalLanguage = 'Spanish';
+    await f.service.processPending();
+    expect(f.email.sendAccountWelcome).toHaveBeenCalledWith(expect.objectContaining({ to: address, approvalLanguage: 'Spanish' }));
+    expect(f.row.status).toBe('ACCEPTED');
+  });
+
+  it('does not enqueue an approval when local or delivery is disabled', async () => {
+    const f = queueFixture();
+    f.email.canSendAccountWelcomeEmail.mockReturnValue(false);
+    await f.service.enqueue(7, f.db as never, 'English');
+    expect(f.db.accountWelcomeEmail.createMany).not.toHaveBeenCalled();
+  });
+
+  it('delivers rejection through notification SMTP and honors the local transport gate', async () => {
+    const f = deliveryFixture();
+    f.values.NODE_ENV = 'development';
+    expect((await f.service.sendDealerRegistrationRejection(address, 'Spanish')).status).toBe('UNAVAILABLE');
+    expect(sendMail).not.toHaveBeenCalled();
+    f.values.NODE_ENV = 'production';
+    expect((await f.service.sendDealerRegistrationRejection(address, 'Spanish')).status).toBe('ACCEPTED');
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ to: address, subject: expect.stringContaining('no fue aprobada') }));
+  });
 
   describe('content', () => {
     it.each(['client', 'dealer'])('renders the approved %s welcome and contacts', role => {

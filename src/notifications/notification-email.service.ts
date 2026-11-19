@@ -18,8 +18,10 @@ import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { PrismaService } from '@/prisma/prisma.service';
 import { ESTIMATE_EMAIL_RECIPIENTS_ERROR, parseEstimateEmailRecipients } from './estimate-email-recipients';
 import { AccountWelcomeEmailContent, renderWelcomeEmail } from '@/mail/welcome-email-template';
+import type { DealerPreferredLanguage } from '@prisma/client';
+import { renderRegistrationResultEmail } from '@/dealer-network/dealer-registration-result-template';
 import { isEmailDeliveryEnabled } from '@/mail/email-delivery-policy';
-import { allowsStaffNotificationDelivery, isOwnerProjectNotification, isStaffNotification, isSuppressedInstallationNotification } from './notification-delivery-policy';
+import { allowsStaffNotificationDelivery, isOwnerProjectNotification, isStaffNotification, isSuppressedInstallationNotification, registrationReviewerRole } from './notification-delivery-policy';
 
 const recipientSelect = {
   email: true,
@@ -153,7 +155,10 @@ export class NotificationEmailService {
 
   private isEligible(user: Recipient | null, notification: Pick<Notification, 'dedupeKey'>): user is Recipient {
     if (!user?.isActive || user.deletedAt || isSuppressedInstallationNotification(notification)) return false;
+    if (typeof user.email !== 'string' || user.email.trim().length > 254 || !isEmail(user.email.trim())) return false;
     const role = user.role.name.toLowerCase();
+    const reviewerRole = registrationReviewerRole(notification);
+    if (reviewerRole) return role === reviewerRole;
     const materialPurchase = /^material-sale:\d+:paid$/.test(notification.dedupeKey ?? '');
     const customerPurchase = /^material-sale:\d+:paid:customer$/.test(notification.dedupeKey ?? '');
     if (customerPurchase ? !['admin', 'operator', 'client', 'dealer'].includes(role) : materialPurchase ? role !== 'admin' : isStaffNotification(notification)
@@ -166,11 +171,7 @@ export class NotificationEmailService {
     // Los avisos del proyecto dirigidos al dueño también corresponden al dealer interno.
     // Son avisos operativos del proyecto, no promociones ni una suscripción SMS.
     // Las dos preferencias SMS no controlan el correo de servicio.
-    return (
-      typeof user.email === 'string' &&
-      user.email.trim().length <= 254 &&
-      isEmail(user.email.trim())
-    );
+    return true;
   }
 
   assertEstimateShareReady(): void {
@@ -271,12 +272,23 @@ export class NotificationEmailService {
 
   /** Uses only notification SMTP; caller persists delivery state and safe retries. */
   async sendAccountWelcome(input: AccountWelcomeEmailContent & { to: string }): Promise<MaterialPurchaseEmailResult> {
-    const to = input.to.trim().toLowerCase();
+    return this.sendAccountEmail(input.to, (settings, supportEmail) =>
+      renderWelcomeEmail({ ...input, companyName: settings.name, origin: settings.origin, supportEmail }));
+  }
+
+  async sendDealerRegistrationRejection(to: string, language: DealerPreferredLanguage): Promise<MaterialPurchaseEmailResult> {
+    return this.sendAccountEmail(to, settings => renderRegistrationResultEmail(language, false, settings.name, settings.origin));
+  }
+
+  private async sendAccountEmail(address: string,
+    render: (settings: EmailSettings, supportEmail: string) => { subject: string; text: string; html: string },
+  ): Promise<MaterialPurchaseEmailResult> {
+    const to = address.trim().toLowerCase();
     if (to.length > 254 || !isEmail(to)) return { status: 'FAILED', errorCode: 'INVALID_RECIPIENT' };
     const settings = this.settings();
     if (!settings) return { status: 'UNAVAILABLE', errorCode: 'EMAIL_NOT_CONFIGURED' };
     const supportEmail = settings.replyTo || 'sales@authenticevolutionco.com';
-    const content = renderWelcomeEmail({ ...input, companyName: settings.name, origin: settings.origin, supportEmail });
+    const content = render(settings, supportEmail);
     let info: SMTPTransport.SentMessageInfo;
     try {
       info = await this.transport(settings).sendMail({
@@ -354,6 +366,9 @@ export class NotificationEmailService {
   }
 
   private heading(notification: Notification) {
+    if (registrationReviewerRole(notification)) {
+      return { title: 'New dealer network application', subject: 'Dealer network application awaiting review' };
+    }
     const referralPayout = notification.dedupeKey?.match(/^referral-payout:(\d+):requested:admin$/);
     if (referralPayout) return {
       title: 'Referral withdrawal requested',

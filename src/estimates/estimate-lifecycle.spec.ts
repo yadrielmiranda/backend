@@ -217,7 +217,7 @@ describe('Estimate cancellation and reactivation', () => {
     const f = fixture(), estimate = f.estimate();
     Object.assign(estimate.user, { username: 'subdealer', isActive: true, dealerMode: 'EXTERNAL',
       parentDealerId: 1, networkMarkup: '.2', networkTaxRate: '.0825', isTaxExempt: true });
-    const root = { ...estimate.user, id: 1, username: 'root', parentDealerId: null, isTaxExempt: false };
+    const root = { ...estimate.user, id: 1, username: 'root', parentDealerId: null, networkTaxRate: null, isTaxExempt: false };
     f.tx.user.findUnique.mockImplementation(async ({ where }: any) => where.id === 1 ? root : estimate.user);
     f.tx.user.findUniqueOrThrow = f.tx.user.findUnique;
     estimate.taxRate = '.01';

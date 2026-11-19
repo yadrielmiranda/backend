@@ -1,5 +1,6 @@
 import { decimalAmount, paidPrincipal, paymentIsCovered } from '@/payments/payment-accounting';
 import { normalizeAddressLine2 } from '@/common/address-line2';
+import { companySalesTaxRate } from '@/dealer-network/dealer-network';
 import { assertScheduleMilestone } from '@/payment-plans/payment-schedule';
 import { assertDirectFactoryPickup, recordDirectFactoryPickup } from '@/warehouse/factory-fulfillment';
 import {
@@ -573,10 +574,7 @@ export class DeliveriesService {
     }
 
     const taxable = role === 'admin' && dto.taxable === true;
-    const taxRate =
-      taxable && !order.user.isTaxExempt
-        ? (taxParameter?.value.toString() ?? '0')
-        : '0';
+    const taxRate = taxable ? companySalesTaxRate(order.user, taxParameter?.value.toString() ?? 0).toString() : '0';
     const destination =
       await this.addressValidation.validateDeliveryAddress(
         requestedDestination,

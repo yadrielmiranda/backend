@@ -120,6 +120,40 @@ describe('NotificationEmailService', () => {
     jest.restoreAllMocks();
   });
 
+  describe('dealer application reviewers', () => {
+    it.each([
+      ['admin', null, 'admin'], ['dealer', 'INTERNAL', 'inviter'], ['dealer', 'EXTERNAL', 'inviter'],
+    ] as const)('emails the authorized %s/%s reviewer with a direct review link', async (role, mode, audience) => {
+      const f = fixture();
+      f.user.role.name = role;
+      f.user.dealerMode = mode;
+      Object.assign(f.notification, {
+        dedupeKey: 'dealer-registration:27:submitted:' + audience,
+        message: 'alex submitted a dealer application.',
+        actionUrl: '/dealers?registrationRequest=27', actionLabel: 'Review application',
+      });
+      await f.service.enqueue(f.notification, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
+      expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+        subject: 'Dealer network application awaiting review',
+        text: expect.stringContaining('https://portal.example.test/dealers?registrationRequest=27'),
+        html: expect.stringContaining('Review application'),
+      }));
+    });
+
+    it.each([['admin', 'inviter'], ['dealer', 'admin'], ['operator', 'admin'], ['client', 'inviter'],
+      ['technician', 'inviter']])('excludes a %s from the %s reviewer email', async (role, audience) => {
+      const f = fixture();
+      f.user.role.name = role;
+      f.notification.dedupeKey = 'dealer-registration:27:submitted:' + audience;
+      await f.service.enqueue(f.notification, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+      expect(sendMail).not.toHaveBeenCalled();
+    });
+  });
+
   describe('outbound email policy', () => {
     it.each([
       [undefined, undefined, false],

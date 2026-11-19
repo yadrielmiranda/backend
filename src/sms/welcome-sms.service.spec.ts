@@ -75,6 +75,15 @@ describe('welcome SMS outbox', () => {
   });
   afterEach(() => { jest.useRealTimers(); jest.restoreAllMocks(); });
 
+  it('sends one approved-account welcome in the language chosen at application time', async () => {
+    const f = fixture(false);
+    await f.service.enqueue(7, f.db as never, 'Spanish');
+    await f.service.enqueue(7, f.db as never, 'Spanish');
+    await f.service.processPending();
+    expect(f.sms.sendAccountWelcomeSms).toHaveBeenCalledTimes(1);
+    expect(f.sms.sendAccountWelcomeSms).toHaveBeenCalledWith({ phone, firstName: 'Jordan', approvalLanguage: 'Spanish' });
+  });
+
   it.each(['client', 'dealer', 'admin', 'operator', 'warehouse', 'technician'])(
     'queues an authorized %s account without sending inside the creation transaction', async role => {
       const f = fixture(false);

@@ -209,6 +209,87 @@ enum DealerMode {
   INTERNAL
 }
 
+enum DealerPreferredLanguage {
+  English
+  Spanish
+}
+
+model DealerRegistrationInvite {
+  id             Int                         @id @default(autoincrement())
+  scopeKey       String                      @unique @db.VarChar(64)
+  parentDealerId Int?
+  parentDealer   User?                       @relation(fields: [parentDealerId], references: [id], onDelete: Restrict)
+  token          String                      @unique @db.VarChar(96)
+  markupPercent  Decimal                     @db.Decimal(24, 16)
+  requests       DealerRegistrationRequest[]
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+
+  @@index([parentDealerId])
+}
+
+// Approval consumes this row and copies its details to the dealer account.
+model DealerRegistrationRequest {
+  id                    Int                     @id @default(autoincrement())
+  inviteId              Int
+  invite                DealerRegistrationInvite @relation(fields: [inviteId], references: [id], onDelete: Restrict)
+  username              String                  @unique @db.VarChar(24)
+  email                 String                  @unique @db.VarChar(150)
+  phone                 String                  @unique @db.VarChar(20)
+  passwordHash          String                  @db.VarChar(255)
+  firstName             String                  @db.VarChar(100)
+  lastName              String                  @db.VarChar(100)
+  street                String                  @db.VarChar(150)
+  addressLine2          String?                 @db.VarChar(150)
+  city                  String                  @db.VarChar(100)
+  state                 String                  @db.VarChar(2)
+  postalCode            String                  @db.VarChar(10)
+  companyName           String?                 @db.VarChar(150)
+  estimatedMonthlySales Decimal?                @db.Decimal(14, 2)
+  yearsOfExperience     Int
+  preferredLanguage     DealerPreferredLanguage
+  serviceSmsAccepted    Boolean                 @default(false)
+  promotionalSmsAccepted Boolean                @default(false)
+  smsConsentVersion     String?                 @db.VarChar(64)
+  smsConsentText        String?                 @db.Text
+  smsConsentedAt        DateTime?
+  termsVersionId        Int?
+  termsVersion          PlatformTermsVersion?   @relation(fields: [termsVersionId], references: [id], onDelete: Restrict)
+  termsAcceptedAt       DateTime?
+  markupPercent         Decimal                 @db.Decimal(24, 16)
+  createdAt             DateTime                @default(now())
+
+  @@index([inviteId, createdAt])
+  @@index([termsVersionId])
+}
+
+enum DealerRegistrationDeliveryChannel {
+  EMAIL
+  SMS
+}
+
+// A rejected application has no account and is removed once reviewed.
+model DealerRegistrationRejectionDelivery {
+  requestId         Int
+  channel           DealerRegistrationDeliveryChannel
+  destination       String                       @db.VarChar(254)
+  language          DealerPreferredLanguage
+  smsConsentVersion String?                      @db.VarChar(64)
+  smsConsentText    String?                      @db.Text
+  smsConsentedAt    DateTime?
+  status            NotificationEmailStatus      @default(PENDING)
+  attempts          Int                          @default(0)
+  nextAttemptAt     DateTime                     @default(now())
+  attemptedAt       DateTime?
+  providerMessageId String?                      @db.VarChar(320)
+  errorCode         String?                      @db.VarChar(60)
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
+
+  @@id([requestId, channel])
+  @@index([channel, status, nextAttemptAt], map: "dealer_reg_rejection_delivery_queue_idx")
+}
+
 enum SubdealerEarningsMode {
   AVAILABLE_PROFIT
   MARKUP
@@ -287,6 +368,11 @@ enum EstimateCustomerChargePricingMode {
 
 model User {
   id                             Int                     @id @default(autoincrement())
+  dealerRegistrationInvites      DealerRegistrationInvite[]
+  companyName                    String?                 @db.VarChar(150)
+  estimatedMonthlySales          Decimal?                @db.Decimal(14, 2)
+  yearsOfExperience              Int?
+  preferredLanguage              DealerPreferredLanguage?
   referralProfile                ReferralProfile?
   referredBy                     ReferralAttribution?    @relation("ReferredClient")
   parentDealerId                 Int?
@@ -409,6 +495,7 @@ model PlatformTermsVersion {
   publishedBy   User?                     @relation("PlatformTermsPublisher", fields: [publishedById], references: [id], onDelete: SetNull)
   activeState   PlatformTermsState?
   acceptances   PlatformTermsAcceptance[]
+  dealerRegistrationRequests DealerRegistrationRequest[]
 }
 
 // La fila 1 serializa publicaciones y aceptaciones de la versión vigente.
@@ -2737,6 +2824,7 @@ model NotificationEmail {
 model AccountWelcomeEmail {
   userId            Int                     @id
   email             String                  @db.VarChar(254)
+  approvalLanguage  DealerPreferredLanguage?
   status            NotificationEmailStatus @default(PENDING)
   attempts          Int                     @default(0)
   nextAttemptAt     DateTime                @default(now())
@@ -2754,6 +2842,7 @@ model AccountWelcomeEmail {
 model AccountWelcomeSms {
   userId             Int                   @id
   phone              String                @db.VarChar(20)
+  approvalLanguage   DealerPreferredLanguage?
   consentedAt        DateTime
   status             NotificationSmsStatus @default(PENDING)
   attempts           Int                   @default(0)

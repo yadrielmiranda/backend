@@ -1,4 +1,13 @@
 import { createHash } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
+
+export async function getSmsProgram(db: Pick<Prisma.TransactionClient, 'branding'>) {
+  const company = await db.branding.findFirst({
+    where: { type: 'COMPANY', isActive: true },
+    select: { name: true, email: true, phone: true },
+  });
+  return buildSmsProgram(company);
+}
 
 export function buildSmsProgram(company: {
   name?: string | null;
@@ -45,9 +54,18 @@ export function buildSmsProgram(company: {
     ],
   };
 
-  // El mismo contenido se muestra y se guarda; las versiones antiguas permanecen intactas.
+  const version = createHash('sha256').update(JSON.stringify(content)).digest('hex');
+  const dealerRegistration = {
+    serviceConsentText: `I agree to receive automated service SMS from ${companyName} about my dealer network application, including its approval or rejection, and, if approved, my estimates, installation appointments, orders, payments, and account activity at the phone number I provide.`,
+    promotionsConsentText: `If my application is approved, I agree to receive automated promotional SMS from ${companyName}, including offers, discounts, and product news, at the phone number I provide.`,
+  };
+  // Each form versions the disclosures actually shown to its applicants.
   return {
     ...content,
-    version: createHash('sha256').update(JSON.stringify(content)).digest('hex'),
+    version,
+    dealerRegistration: {
+      ...dealerRegistration,
+      version: createHash('sha256').update(JSON.stringify([version, dealerRegistration])).digest('hex'),
+    },
   };
 }

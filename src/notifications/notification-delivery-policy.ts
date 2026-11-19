@@ -1,6 +1,13 @@
 type NotificationEvent = { dedupeKey?: string | null };
 type StaffAudience = 'admin' | 'staff';
 
+// The emitter addresses a branch application only to the dealer who issued its invitation.
+export function registrationReviewerRole({ dedupeKey }: NotificationEvent): 'admin' | 'dealer' | null {
+  const audience = /^dealer-registration:\d+:submitted:(admin|inviter)$/.exec(dedupeKey ?? '')?.[1];
+  if (!audience) return null;
+  return audience === 'admin' ? 'admin' : 'dealer';
+}
+
 // Emitters select the project owner; this only controls delivery channels.
 // Keep account/network notices and repeated public-view pings out of this scope.
 const ownerProjectEvents = [

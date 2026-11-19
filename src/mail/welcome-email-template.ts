@@ -1,7 +1,11 @@
+import type { DealerPreferredLanguage } from '@prisma/client';
+import { renderRegistrationResultEmail } from '@/dealer-network/dealer-registration-result-template';
+
 export type AccountWelcomeEmailContent = {
   firstName: string;
   username: string;
   roleName: string;
+  approvalLanguage?: DealerPreferredLanguage;
 };
 
 export type WelcomeEmailTemplateInput = AccountWelcomeEmailContent & {
@@ -21,6 +25,7 @@ export function renderWelcomeEmail(input: WelcomeEmailTemplateInput) {
   if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password)
     throw new Error('Invalid welcome email origin.');
   const company = clean(input.companyName).slice(0, 100);
+  if (input.approvalLanguage) return renderRegistrationResultEmail(input.approvalLanguage, true, company, origin.origin);
   const firstName = clean(input.firstName).slice(0, 100);
   const role = clean(input.roleName).toLowerCase();
   const technician = role === 'technician';

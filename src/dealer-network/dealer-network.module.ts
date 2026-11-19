@@ -12,7 +12,10 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 import { dealerChain, descendantIds, NETWORK_LABELS, validateSubdealerPlan, networkAccountTaxRate } from './dealer-network';
 import { CreateNetworkMemberDto, SetNetworkSuspensionDto, ReviewNetworkSuspensionDto, UpdateNetworkMarkupDto } from './dealer-network.dto';
 import { networkAccessBlocked, networkSalesBlocked, networkParentSelect } from './network-access';
-import { normalizeAddressLine2 } from '@/common/address-line2';
+import { createNetworkAccount, networkMarkupPercent } from './create-network-account';
+import { DealerRegistrationController } from './dealer-registration.controller';
+import { DealerRegistrationService } from './dealer-registration.service';
+import { DealerRegistrationRejectionService } from './dealer-registration-rejection.service';
 import { WelcomeEmailModule } from '@/mail/welcome-email.module';
 import { AccountWelcomeService } from '@/mail/account-welcome.service';
 
@@ -40,22 +43,26 @@ export class DealerNetworkService {
   async list(actor: AuthUser) {
     this.requireDealerOrStaff(actor);
     const staff = actor.role?.name !== 'dealer';
+    const admin = actor.role?.name === 'admin';
     const chain = staff ? null : await dealerChain(this.prisma, actor.id);
     const ids = staff ? null : await descendantIds(this.prisma, actor);
     const salesTax = await this.prisma.globalParameter.findUnique({ where: { key: 'SALES_TAX' } });
     if (!salesTax) throw new InternalServerErrorException('SALES_TAX config missing.');
     const members = await this.prisma.user.findMany({
       where: { role: { name: 'dealer' }, deletedAt: null, ...(ids ? { id: { in: ids } } : {}) },
-      select: memberSelect, orderBy: [{ parentDealerId: 'asc' }, { username: 'asc' }],
+      select: {
+        ...memberSelect,
+        _count: admin && { select: { dealerRegistrationInvites: true } },
+      },
+      orderBy: [{ parentDealerId: 'asc' }, { username: 'asc' }],
     });
     return {
-      canCreate: actor.role?.name === 'admin' || Boolean(chain && chain.length < 3 && !chain.some(networkSalesBlocked)),
+      canCreate: admin || Boolean(chain && chain.length < 3 && !chain.some(networkSalesBlocked)),
       level: chain ? NETWORK_LABELS[chain.length - 1] : null,
       defaultTaxPercent: salesTax.value.mul(100).toString(),
       members: members.map(member => {
         const level = member.parentDealerId == null ? 1 : member.parentDealer?.parentDealerId == null ? 2 : 3;
-        const canManage = actor.role?.name === 'admin' || actor.role?.name === 'dealer' && member.parentDealerId === actor.id;
-        const admin = actor.role?.name === 'admin';
+        const canManage = admin || actor.role?.name === 'dealer' && member.parentDealerId === actor.id;
         const available = canManage && member.isActive && (admin || Boolean(member.parentDealer && !networkAccessBlocked(member.parentDealer)));
         const action = member.networkBusinessActions?.[0] ?? null;
         return {
@@ -66,14 +73,15 @@ export class DealerNetworkService {
           parentDealerId: member.parentDealerId, parentName: member.parentDealer?.username ?? null,
           parentDealerMode: member.parentDealer?.dealerMode ?? null,
           level, levelLabel: NETWORK_LABELS[level - 1], dealerMode: member.dealerMode,
+          ...(admin && level < 3 ? { hasInvitationLink: Boolean(member._count?.dealerRegistrationInvites) } : {}),
           canSuspend: Boolean(available && (admin || member.parentDealer?.dealerMode !== 'INTERNAL' && !member.networkSuspendedByAdmin)),
           canRequestSuspension: Boolean(available && !admin && (member.parentDealer?.dealerMode === 'INTERNAL' || member.networkSuspendedByAdmin)),
           canReviewSuspension: admin && action?.status === 'PENDING',
           canWithdrawRequest: canManage && action?.status === 'PENDING' && action.actorId === actor.id,
           businessAction: canManage ? action : null,
           // En la raíz muestra el markup efectivo de Authentic; en los demás niveles, el del superior.
-          canManage, ...(canManage ? { markupPercent: (member.parentDealerId == null
-            ? member.markupOverride ?? member.role.markup : member.networkMarkup).mul(100).toString(),
+          canManage, ...(canManage ? { markupPercent: networkMarkupPercent(member.parentDealerId == null
+            ? member.markupOverride ?? member.role.markup : member.networkMarkup).toFixed(),
             taxPercent: networkAccountTaxRate(member, salesTax.value.toString()).mul(100).toString(),
             subdealerEarningsMode: member.subdealerEarningsMode, subdealerEarningsPercent: member.subdealerEarningsPercent?.toString() ?? null,
           } : {}),
@@ -109,24 +117,22 @@ export class DealerNetworkService {
         if (chain.some(networkSalesBlocked)) throw new BadRequestException('The parent network is inactive or suspended.');
         const parent = chain.at(-1)!;
         const terms = this.memberTerms(chain, dto);
-        const account = await tx.user.create({ data: {
+        const account = await createNetworkAccount(tx, {
           username: dto.username, firstName: dto.firstName, lastName: dto.lastName,
           email: dto.email, phone: dto.phone, password,
           street: dto.street, city: dto.city, state: dto.state, postalCode: dto.postalCode,
-          addressLine2: normalizeAddressLine2(dto.addressLine2),
+          addressLine2: dto.addressLine2,
           idRole: parent.idRole, ...terms, parentDealerId: parent.id,
           networkMarkup: new Prisma.Decimal(dto.markupPercent).div(100),
           ...(dto.taxPercent != null ? { networkTaxRate: new Prisma.Decimal(dto.taxPercent).div(100) } : {}),
-          // Las exenciones fiscales y de depósito siguen bajo control de administración.
-          isTaxExempt: false, noInstallationDeposit: false,
-        }, select: { id: true, username: true, parentDealerId: true } });
+        });
+        await this.welcome.enqueue(account.id, tx);
         await this.logs.log({ action: 'CREATE', entityType: 'User', entityId: account.id, userId: actor.id,
           message: `${NETWORK_LABELS[chain.length]} ${account.username} created under ${parent.username}.`,
           after: { ...account, networkMarkup: new Prisma.Decimal(dto.markupPercent).div(100).toString(),
             networkTaxRate: dto.taxPercent != null ? new Prisma.Decimal(dto.taxPercent).div(100).toString() : null, ...terms },
           meta: { source: 'DealerNetworkService.create' },
         }, tx);
-        await this.welcome.enqueue(account.id, tx);
         return account;
       });
     } catch (error) {
@@ -339,5 +345,9 @@ export class DealerNetworkController {
   }
 }
 
-@Module({ imports: [PrismaModule, LogsModule, NotificationsModule, WelcomeEmailModule], controllers: [DealerNetworkController], providers: [DealerNetworkService] })
+@Module({
+  imports: [PrismaModule, LogsModule, NotificationsModule, WelcomeEmailModule],
+  controllers: [DealerNetworkController, DealerRegistrationController],
+  providers: [DealerNetworkService, DealerRegistrationService, DealerRegistrationRejectionService],
+})
 export class DealerNetworkModule {}

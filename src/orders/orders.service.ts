@@ -1,4 +1,4 @@
-import { canAccessOwner, descendantIds, networkPresentation } from '@/dealer-network/dealer-network';
+import { canAccessOwner, companySalesTaxRate, descendantIds, networkPresentation } from '@/dealer-network/dealer-network';
 import { assertMaterialReadyForFactory } from '@/estimates/material-revisions/material-revision-policy';
 import { decimalAmount, hasRefundHistory, paidPrincipal, remainingRefundBalance } from '@/payments/payment-accounting';
 import { buildMaterialEarningsReport, buildMaterialEarningsReportForRead, referralReportMaterialRelations, referralReportOrderInclude } from '@/referrals/referral-report';
@@ -577,9 +577,7 @@ export class OrdersService {
       const taxParameter = await tx.globalParameter.findUnique({
         where: { key: GlobalParameterKey.SALES_TAX },
       });
-      const taxRate = order.user.isTaxExempt
-        ? new Decimal(0)
-        : new Decimal(taxParameter?.value.toString() ?? 0);
+      const taxRate = companySalesTaxRate(order.user, taxParameter?.value.toString() ?? 0);
       if (taxRate.lt(0) || taxRate.gt(1)) {
         throw new BadRequestException(
           'Sales tax must be stored as a decimal fraction between 0 and 1.',

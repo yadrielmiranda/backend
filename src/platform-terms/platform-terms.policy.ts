@@ -42,11 +42,12 @@ export async function savePlatformTermsAcceptance(
   userId: number,
   versionId: number,
   source: 'REGISTRATION' | 'ACCOUNT',
+  acceptedAt?: Date,
 ) {
   // Los reintentos conservan la fecha y procedencia de la aceptación original.
   return tx.platformTermsAcceptance.upsert({
     where: { userId_versionId: { userId, versionId } },
-    create: { userId, versionId, source },
+    create: { userId, versionId, source, ...(acceptedAt && { acceptedAt }) },
     update: {},
   });
 }

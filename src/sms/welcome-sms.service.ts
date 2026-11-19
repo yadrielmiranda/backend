@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
-import { AccountWelcomeSms, NotificationSmsStatus, Prisma } from '@prisma/client';
+import { AccountWelcomeSms, DealerPreferredLanguage, NotificationSmsStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
 import { NotificationSmsService } from '@/notifications/notification-sms.service';
 import { hasActiveServiceSmsConsent } from './sms-recipient-policy';
@@ -21,13 +21,13 @@ export class WelcomeSmsService {
   constructor(private readonly prisma: PrismaService, private readonly sms: NotificationSmsService) {}
 
   /** Only called from new-account creation; no provider calls inside the transaction. */
-  async enqueue(userId: number, db: Prisma.TransactionClient): Promise<void> {
+  async enqueue(userId: number, db: Prisma.TransactionClient, approvalLanguage?: DealerPreferredLanguage): Promise<void> {
     if (!this.sms.canSendAccountWelcomeSms()) return;
     const user = await db.user.findUnique({ where: { id: userId }, select: recipientSelect });
     if (!hasActiveServiceSmsConsent(user)) return;
     if (await db.smsPhoneBlock.findUnique({ where: { phone: user.phone } })) return;
     await db.accountWelcomeSms.createMany({
-      data: [{ userId, phone: user.phone, consentedAt: user.smsConsent.consentedAt }],
+      data: [{ userId, phone: user.phone, consentedAt: user.smsConsent.consentedAt, approvalLanguage }],
       skipDuplicates: true,
     });
   }
@@ -86,7 +86,9 @@ export class WelcomeSmsService {
       await this.finish(row.userId, 'SKIPPED', 'PROVIDER_STOP');
       return;
     }
-    const result = await this.sms.sendAccountWelcomeSms({ phone: row.phone, firstName: user.firstName });
+    const result = await this.sms.sendAccountWelcomeSms({
+      phone: row.phone, firstName: user.firstName, approvalLanguage: row.approvalLanguage ?? undefined,
+    });
     if (result.status === 'ACCEPTED') {
       await this.finish(row.userId, 'ACCEPTED', null, result.providerMessageSid);
     } else if (result.status === 'UNAVAILABLE') {
