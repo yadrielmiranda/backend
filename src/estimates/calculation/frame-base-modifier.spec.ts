@@ -61,6 +61,42 @@ function fixture(linear = false) {
   return { calculate, cache, tx, frames, designModifiers, designTemplates };
 }
 
+describe('High Bottom pricing', () => {
+  it.each([null, '0'])('keeps High Bottom selected at the regular price when the brand percentage is %p', async percent => {
+    const { cache, calculate } = fixture();
+    cache.highBottomSettings.get('1-1').brandProduct.brand.highBottomPercent = percent;
+    const regular = await calculate({ highBottom: false });
+    const selected = await calculate({ highBottom: true });
+    expect(regular.highBottomPercent).toBeNull();
+    expect(selected.highBottom).toBe(true);
+    expect(selected.highBottomPercent?.toString()).toBe('0');
+    expect(selected.rate.toString()).toBe(regular.rate.toString());
+    expect(selected.price.toString()).toBe(regular.price.toString());
+  });
+
+  it('charges the configured brand percentage on a selected High Bottom', async () => {
+    const { calculate } = fixture();
+    const regular = await calculate({ highBottom: false });
+    const selected = await calculate({ highBottom: true });
+    expect(regular.price.toString()).toBe('1000');
+    expect(selected.highBottom).toBe(true);
+    expect(selected.highBottomPercent?.toString()).toBe('10');
+    expect(selected.price.toString()).toBe('1100');
+  });
+
+  it('rejects High Bottom when disabled for the system', async () => {
+    const { cache, calculate } = fixture();
+    cache.highBottomSettings.get('1-1').allowHighBottom = false;
+    await expect(calculate({ highBottom: true })).rejects.toThrow('High Bottom is not allowed for the selected System.');
+  });
+
+  it('rejects a negative brand percentage on a selected High Bottom', async () => {
+    const { cache, calculate } = fixture();
+    cache.highBottomSettings.get('1-1').brandProduct.brand.highBottomPercent = '-1';
+    await expect(calculate({ highBottom: true })).rejects.toThrow('High Bottom percentage cannot be negative');
+  });
+});
+
 describe('Solid garage design pricing', () => {
   const solid = { version: 1, columns: [1], rows: [.5, .5], cells: [['slat'], ['slat']] };
   const glazed = { ...solid, cells: [['glass'], ['slat']] };

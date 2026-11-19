@@ -988,29 +988,20 @@ export class EstimatePieceCalculatorService {
       );
     }
 
-    const brandHighBottomPercent =
-      highBottomSettings.brandProduct?.brand?.highBottomPercent == null
-        ? null
-        : new Decimal(
-          highBottomSettings.brandProduct.brand.highBottomPercent.toString(),
-        );
-
     if (highBottom && !highBottomSettings.allowHighBottom) {
       throw new BadRequestException(
         "High Bottom is not allowed for the selected System.",
       );
     }
 
-    if (
-      highBottom &&
-      (!brandHighBottomPercent || brandHighBottomPercent.lte(0))
-    ) {
+    const highBottomPercent = highBottom
+      ? new Decimal(highBottomSettings.brandProduct?.brand?.highBottomPercent?.toString() ?? 0)
+      : null;
+    if (highBottomPercent?.lt(0)) {
       throw new BadRequestException(
-        "High Bottom percentage is not configured for this Brand.",
+        "High Bottom percentage cannot be negative for this Brand.",
       );
     }
-
-    const highBottomPercent = highBottom ? brandHighBottomPercent! : null;
 
     const allowedActiveOptionIds = new Set<number>(
       sysConf.activeOptions.map((x) => x.optionId),
@@ -1718,7 +1709,7 @@ export class EstimatePieceCalculatorService {
     }
 
     const adjustedBaseRate = adjustBase(baseRate);
-    const baseRateWithHighBottom = highBottomPercent
+    const baseRateWithHighBottom = highBottomPercent?.gt(0)
       ? adjustedBaseRate.mul(new Decimal(1).add(highBottomPercent.div(100)))
       : adjustedBaseRate;
 
