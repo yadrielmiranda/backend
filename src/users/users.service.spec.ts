@@ -1,18 +1,19 @@
-import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
+import { Test } from '@nestjs/testing';
+import { PrismaService } from '@/prisma/prisma.service';
+import { UsersModule } from './users.module';
 import { UsersService } from './users.service';
 
 describe('UsersService', () => {
-  let service: UsersService;
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [UsersService],
-    }).compile();
-
-    service = module.get<UsersService>(UsersService);
-  });
-
-  it('should be defined', () => {
-    expect(service).toBeDefined();
+  it('resolves the account creation dependencies in UsersModule', async () => {
+    const module = await Test.createTestingModule({ imports: [UsersModule] })
+      .overrideProvider(PrismaService).useValue({})
+      .overrideProvider(ConfigService).useValue({ get: (key: string) => key === 'JWT_SECRET_KEY' ? 'test-only-secret' : undefined })
+      .compile();
+    try {
+      expect(module.get(UsersService)).toBeInstanceOf(UsersService);
+    } finally {
+      await module.close();
+    }
   });
 });

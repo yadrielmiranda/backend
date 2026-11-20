@@ -20,12 +20,15 @@ describe('account welcome channels', () => {
     await module.close();
   });
 
-  it('still checks SMS eligibility when the new account has no welcome email', async () => {
+  it('checks welcome channels and records the admin notice in the creation transaction even without welcome deliveries', async () => {
     const db = {};
     const email = { enqueue: jest.fn().mockResolvedValue(undefined) };
     const sms = { enqueue: jest.fn().mockResolvedValue(undefined) };
-    await new AccountWelcomeService(email as never, sms as never).enqueue(7, db as never);
+    const notifications = { notifyAdminsOfAccountCreation: jest.fn().mockResolvedValue(undefined) };
+    await new AccountWelcomeService(email as never, sms as never, notifications as never).enqueue(7, db as never);
     expect(email.enqueue).toHaveBeenCalledWith(7, db, undefined);
     expect(sms.enqueue).toHaveBeenCalledWith(7, db, undefined);
+    expect(notifications.notifyAdminsOfAccountCreation).toHaveBeenCalledTimes(1);
+    expect(notifications.notifyAdminsOfAccountCreation).toHaveBeenCalledWith(7, db);
   });
 });

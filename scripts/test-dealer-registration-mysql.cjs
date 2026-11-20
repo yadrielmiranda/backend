@@ -22,7 +22,8 @@ async function verifyRegistration(db) {
   const { Test } = require('@nestjs/testing');
   const { JwtService } = require('@nestjs/jwt');
   const { JwtAuthGuard } = require('../src/auth/guards/auth/auth.guard');
-  const { JwtStrategy } = require('../src/auth/guards/auth/jwt.strategy');
+  const { AuthModule } = require('../src/auth/auth.module');
+  const { DeliveryCoverageService } = require('../src/deliveries/delivery-coverage.service');
   const { SessionTouchGuard } = require('../src/auth/guards/auth/session-touch.guard');
   const { RolesGuard } = require('../src/auth/guards/roles/roles.guard');
   const { ResponsePrivacyInterceptor } = require('../src/common/response-privacy.interceptor');
@@ -35,9 +36,9 @@ async function verifyRegistration(db) {
 
   // No scheduled workers or external mail/SMS transport run in this test module.
   const fixture = Test.createTestingModule({
-    imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true }), PrismaModule, PlatformTermsModule, DealerNetworkModule],
-    providers: [JwtStrategy],
+    imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true }), PrismaModule, AuthModule, PlatformTermsModule, DealerNetworkModule],
   });
+  fixture.overrideProvider(DeliveryCoverageService).useValue({ checkAddress: async () => ({ available: true }) });
   if (db) fixture.overrideProvider(PrismaService).useValue(db);
   const module = await fixture.compile();
   const app = module.createNestApplication();
@@ -91,6 +92,22 @@ async function exerciseFlow(db, http, jwt) {
   const invitation = base + '/invitation';
   const requests = base + '/registration-requests';
   const admins = [await seedAccount('admin', 'test.admin'), await seedAccount('admin', 'review.admin')];
+  const disabledAdmin = await seedAccount('admin', 'disabled.admin');
+  await db.user.update({ where: { id: disabledAdmin.id }, data: { isActive: false } });
+  const deletedAdmin = await seedAccount('admin', 'deleted.admin');
+  await db.user.update({ where: { id: deletedAdmin.id }, data: { deletedAt: new Date() } });
+  const accountEvents = { dedupeKey: { startsWith: 'account:' } };
+  async function checkAccountNotice(account, role, mode) {
+    const notices = await db.notification.findMany({
+      where: { dedupeKey: 'account:' + account.id + ':created:admin' }, orderBy: { recipientId: 'asc' },
+    });
+    assert.deepEqual(notices.map(notice => notice.recipientId), admins.map(admin => admin.id));
+    for (const notice of notices) {
+      const lines = ['New account created', 'Username: ' + account.username, 'Role: ' + role];
+      if (mode) lines.push('Type: ' + mode);
+      assert.equal(notice.message, lines.join('\n'));
+    }
+  }
   const [admin, secondAdmin] = await Promise.all(admins.map(session));
   const otherDealer = await seedAccount('dealer', 'other.branch');
   const otherBranch = await session(otherDealer);
@@ -177,6 +194,7 @@ async function exerciseFlow(db, http, jwt) {
     await http.post(publicPath).send(person).expect(201);
     await http.post(publicPath).send(person).expect(409);
     assert.equal(await db.user.count({ where: { username: person.username } }), 0);
+    assert.equal(await db.notification.count({ where: { ...accountEvents, message: { contains: person.username } } }), 0);
     assert.equal(await db.accountWelcomeEmail.count({ where: { email: person.email } }), 0);
     const [pending] = await list(reviewer);
     assert.equal(pending.username, person.username);
@@ -221,6 +239,7 @@ async function exerciseFlow(db, http, jwt) {
     assert(outcomes.some(result => [404, 409].includes(result.status)), 'The repeated approval must give a controlled response: ' + observed);
     assert.deepEqual(await list(reviewer), []);
     const account = await db.user.findUniqueOrThrow({ where: { username: person.username }, include: { role: true } });
+    await checkAccountNotice(account, level, 'External');
     assert.equal(account.parentDealerId, parentId);
     assert.equal(account.dealerMode, 'EXTERNAL');
     assert.equal(account.role.name, 'dealer');
@@ -262,6 +281,7 @@ async function exerciseFlow(db, http, jwt) {
     const [next] = await list(reviewer);
     assert.equal(next.markupPercent, '29');
     await review(reviewer, next.id, false).expect(200);
+    assert.equal(await db.notification.count({ where: { ...accountEvents, message: { contains: declined.username } } }), 0);
     assert.equal(await db.user.count({ where: { username: declined.username } }), 0);
     assert.equal(await db.accountWelcomeEmail.count({ where: { email: declined.email } }), 0);
     assert.deepEqual(await list(reviewer), []);
@@ -280,10 +300,36 @@ async function exerciseFlow(db, http, jwt) {
   assert.equal(await db.dealerRegistrationInvite.count(), 3);
   assert.equal(await db.dealerRegistrationRequest.count(), 0);
   assert.equal(await db.accountWelcomeEmail.count(), 0);
+
+  const newUser = (username, suffix) => ({
+    username, firstName: 'Test', lastName: 'Account', password: 'example-password',
+    email: username + '@example.test', phone: '+130555501' + suffix,
+    street: '100 Example St', city: 'Miami', state: 'FL', postalCode: '33101',
+  });
+  const client = { ...newUser('public.client', '21'), platformTermsAccepted: true, platformTermsVersionId: currentTerms.id };
+  const { body: registered } = await http.post('/api/auth/register').send(client).expect(201);
+  await http.post('/api/auth/register').send(client).expect(409);
+  await checkAccountNotice(registered, 'Client');
+  const dealerRole = await db.role.findUniqueOrThrow({ where: { name: 'dealer' } });
+  const earningsPlan = await db.dealerEarningsPlan.create({ data: { name: 'Fixture earnings', basis: 'DEALER_MARKUP', percent: 25 } });
+  const { body: internalDealer } = await http.post('/api/users').set('Cookie', admin).send({
+    ...newUser('internal.dealer', '22'), idRole: dealerRole.id, dealerMode: 'INTERNAL', dealerEarningsPlanId: earningsPlan.id,
+  }).expect(201);
+  await checkAccountNotice(internalDealer, 'Dealer', 'Internal');
+  const { body: internalSubdealer } = await http.post(base).set('Cookie', admin).send({
+    ...newUser('manual.subdealer', '23'), parentDealerId: internalDealer.id,
+    markupPercent: 15, dealerMode: 'INTERNAL', subdealerEarningsMode: 'MARKUP',
+  }).expect(201);
+  await checkAccountNotice(internalSubdealer, 'Subdealer', 'Internal');
+  const { body: technician } = await http.post('/api/users/technicians').set('Cookie', admin).send({
+    username: 'new.technician', firstName: 'Test', lastName: 'Technician', password: 'example-password',
+  }).expect(201);
+  assert.equal(await db.notification.count({ where: { dedupeKey: 'account:' + technician.id + ':created:admin' } }), 0);
   assert.equal(await db.accountWelcomeSms.count(), 0);
   assert.equal(await db.notificationEmail.count(), 0);
   assert.equal(await db.notificationSms.count(), 0);
   assert.equal(await db.dealerRegistrationRejectionDelivery.count(), 0);
+  console.log('PASS: Public, manual and invitation creation notify both active admins exactly once with the saved username, role and type. Pending requests, rejections and technicians do not trigger this notice.');
   console.log('PASS: All three levels use the invitation markup at approval and retain it after later edits. Reviewer notifications, private consents, terms, local delivery restrictions and other network settings also passed.');
 }
 

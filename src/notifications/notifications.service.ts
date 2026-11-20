@@ -6,6 +6,7 @@ import { Notification, Prisma } from '@prisma/client';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { NotificationSmsService } from './notification-sms.service';
 import { NotificationEmailService } from './notification-email.service';
+import { NETWORK_LABELS } from '@/dealer-network/dealer-network';
 
 type NotificationDb = PrismaService | Prisma.TransactionClient;
 type NotificationInput = CreateNotificationDto & {
@@ -27,6 +28,34 @@ export class NotificationsService {
     private sms: NotificationSmsService,
     private email: NotificationEmailService,
   ) {}
+
+  async notifyAdminsOfAccountCreation(userId: number, tx: Prisma.TransactionClient): Promise<void> {
+    const account = await tx.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: {
+        username: true,
+        role: { select: { name: true } },
+        dealerMode: true,
+        parentDealer: { select: { parentDealerId: true } },
+      },
+    });
+    const role = account.role.name;
+    if (role !== 'dealer' && role !== 'client') return;
+
+    const lines = ['New account created', `Username: ${account.username}`];
+    if (role === 'dealer') {
+      // The parent of a distributor is itself a subdealer.
+      const depth = !account.parentDealer ? 0 : account.parentDealer.parentDealerId == null ? 1 : 2;
+      lines.push(`Role: ${NETWORK_LABELS[depth]}`, `Type: ${account.dealerMode === 'INTERNAL' ? 'Internal' : 'External'}`);
+    } else {
+      lines.push('Role: Client');
+    }
+
+    await this.createAndSendToRoles(['admin'], {
+      message: lines.join('\n'),
+      dedupeKey: `account:${userId}:created:admin`,
+    }, { db: tx });
+  }
 
   async createAndSend(
     data: NotificationInput,

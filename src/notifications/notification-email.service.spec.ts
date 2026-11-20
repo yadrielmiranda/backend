@@ -120,6 +120,41 @@ describe('NotificationEmailService', () => {
     jest.restoreAllMocks();
   });
 
+  describe('new account alerts', () => {
+    const message = 'New account created\nUsername: jbel\nRole: Subdealer\nType: External';
+
+    it.each(['production', 'development'])('delivers the admin email only in production (%s)', async environment => {
+      const f = fixture();
+      f.values.NODE_ENV = environment;
+      f.user.role.name = 'admin';
+      f.user.registrationConsent = null;
+      Object.assign(f.notification, { dedupeKey: 'account:34:created:admin', message, actionUrl: null, actionLabel: null });
+      await f.service.enqueue(f.notification, f.db as never);
+      await f.service.processPending();
+      if (environment === 'production') {
+        expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
+        expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+          subject: 'New account created', text: expect.stringMatching(/Username: jbel\s+Role: Subdealer\s+Type: External/),
+        }));
+      } else {
+        expect(f.db.notificationEmail.create).not.toHaveBeenCalled();
+        expect(sendMail).not.toHaveBeenCalled();
+      }
+    });
+
+    it('skips a queued admin email if the recipient becomes a client', async () => {
+      const f = fixture();
+      f.notification.dedupeKey = 'account:34:created:admin';
+      f.user.role.name = 'admin';
+      await f.service.enqueue(f.notification, f.db as never);
+      expect(f.db.notificationEmail.create).toHaveBeenCalledTimes(1);
+      f.user.role.name = 'client';
+      await f.service.processPending();
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(f.row.status).toBe('SKIPPED');
+    });
+  });
+
   describe('dealer application reviewers', () => {
     it.each([
       ['admin', null, 'admin'], ['dealer', 'INTERNAL', 'inviter'], ['dealer', 'EXTERNAL', 'inviter'],

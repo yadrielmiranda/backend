@@ -44,6 +44,7 @@ function staffAudience({ dedupeKey }: NotificationEvent): StaffAudience | null {
   ) return 'staff';
 
   if (
+    /^account:\d+:created:admin$/.test(key) ||
     /^payment:\d+:paid:admin$/.test(key) ||
     /^payment:\d+:partial:.+:admin$/.test(key) ||
     /^payment:\d+:received:(?:stripe|checkout|manual):[a-zA-Z0-9_-]+:admin$/.test(key) ||

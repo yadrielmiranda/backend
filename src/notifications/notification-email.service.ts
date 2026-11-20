@@ -379,7 +379,9 @@ export class NotificationEmailService {
       notification.dedupeKey?.split(':') ?? [];
     const message = cleanText(notification.message);
     let title = 'Project update';
-    if (entity === 'payment') {
+    if (entity === 'account' && event === 'created' && subevent === 'admin') {
+      title = 'New account created';
+    } else if (entity === 'payment') {
       title = event === 'received' ? 'Payment received'
         : event === 'partial' ? 'Partial payment received' : 'Payment confirmed';
     } else if (entity === 'refund') {
@@ -482,9 +484,12 @@ export class NotificationEmailService {
     } catch {
       /* Si la acción es inválida, se abre el portal. */
     }
-    const message = notification.message;
     const label = notification.actionLabel?.trim() || 'Open portal';
     const { title, subject } = this.heading(notification);
+    const headingLine = `${title}\n`;
+    const message = notification.message.startsWith(headingLine)
+      ? notification.message.slice(headingLine.length)
+      : notification.message;
     return this.renderMessage(settings, title, subject, message, label, link);
   }
 

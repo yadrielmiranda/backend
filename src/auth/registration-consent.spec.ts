@@ -96,10 +96,12 @@ describe('Registration messaging consent', () => {
     }) };
     const email = { enqueue: jest.fn().mockResolvedValue(undefined) };
     const sender = { canSendAccountWelcomeSms: () => true, sendAccountWelcomeSms: jest.fn() };
-    const welcomes = new AccountWelcomeService(email as never, new WelcomeSmsService(f.db, sender as never));
+    const notifications = { notifyAdminsOfAccountCreation: jest.fn() };
+    const welcomes = new AccountWelcomeService(email as never, new WelcomeSmsService(f.db, sender as never), notifications as never);
     f.welcome.enqueue.mockImplementation((id, tx) => welcomes.enqueue(id, tx as never));
     const account = await f.register({ serviceConsent, promotionsConsent });
-    expect(email.enqueue).toHaveBeenCalledWith(account.id, f.db);
+    expect(email.enqueue).toHaveBeenCalledWith(account.id, f.db, undefined);
+    expect(notifications.notifyAdminsOfAccountCreation).toHaveBeenCalledWith(account.id, f.db);
     expect(f.state.welcomeSms).toEqual(serviceConsent ? [{
       userId: account.id, phone: account.phone, consentedAt: f.state.sms[0].consentedAt,
     }] : []);
@@ -111,9 +113,11 @@ describe('Registration messaging consent', () => {
     f.db.accountWelcomeSms = { createMany: jest.fn().mockRejectedValue(new Error('Storage unavailable')) };
     const email = { enqueue: jest.fn(async (id: number) => { f.state.welcome.push(id); }) };
     const sender = { canSendAccountWelcomeSms: () => true };
-    const welcomes = new AccountWelcomeService(email as never, new WelcomeSmsService(f.db, sender as never));
+    const notifications = { notifyAdminsOfAccountCreation: jest.fn() };
+    const welcomes = new AccountWelcomeService(email as never, new WelcomeSmsService(f.db, sender as never), notifications as never);
     f.welcome.enqueue.mockImplementation((id, tx) => welcomes.enqueue(id, tx as never));
     await expect(f.register()).rejects.toThrow();
+    expect(notifications.notifyAdminsOfAccountCreation).not.toHaveBeenCalled();
     expect(f.state.users).toHaveLength(0);
     expect(f.state.welcome).toHaveLength(0);
     expect(f.state.sms).toHaveLength(0);

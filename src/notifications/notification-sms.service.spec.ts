@@ -137,6 +137,35 @@ describe('NotificationSmsService', () => {
     jest.restoreAllMocks();
   });
 
+  describe('new account alerts', () => {
+    const message = 'New account created\nUsername: jbel\nRole: Subdealer\nType: External';
+
+    it('texts an opted-in admin the account details', async () => {
+      const f = fixture();
+      f.user.role.name = 'admin';
+      Object.assign(f.notification, { dedupeKey: 'account:34:created:admin', message });
+      await f.service.enqueue(f.notification, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationSms.create).toHaveBeenCalledTimes(1);
+      const form = new URLSearchParams(post.mock.calls[0][1] as string);
+      expect(form.get('Body')).toMatch(/New account created\s+Username: jbel\s+Role: Subdealer\s+Type: External/);
+      expect(form.get('To')).toBe(phone);
+    });
+
+    it.each(['development', 'no service consent', 'STOP', 'operator'])('suppresses the SMS for %s', async reason => {
+      const f = fixture();
+      f.notification.dedupeKey = 'account:34:created:admin';
+      f.user.role.name = reason === 'operator' ? 'operator' : 'admin';
+      if (reason === 'development') f.values.NODE_ENV = 'development';
+      if (reason === 'no service consent') Object.assign(f.user.smsConsent, { enabled: false, promotionsEnabled: true });
+      if (reason === 'STOP') f.db.smsPhoneBlock.findUnique.mockResolvedValue({ phone });
+      await f.service.enqueue(f.notification, f.db as never);
+      await f.service.processPending();
+      expect(f.db.notificationSms.create).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+    });
+  });
+
   describe('dealer application reviewers', () => {
     function reviewerFixture(audience: string) {
       const f = fixture();
