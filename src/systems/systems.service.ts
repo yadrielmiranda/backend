@@ -32,6 +32,7 @@ import {
 import { MUNTIN_ASSIGNMENTS_INCLUDE, catalogMuntinRules, withMuntinRules } from './muntin-rules';
 import { SYSTEM_DESIGN_OPTIONS_INCLUDE } from './system-designs.service';
 import { DOOR_DESIGN_PICKER, DoorDesignSeries, isFrenchDoorProduct, seriesDoorDesignKind } from '@/door-designs/door-design-policy';
+import { sortStandardDoorDesigns } from '@/door-designs/door-design-order';
 
 type EstimateConfig = Prisma.SysConfGetPayload<{
   include: { config: true; muntinAssignments: typeof MUNTIN_ASSIGNMENTS_INCLUDE };
@@ -59,7 +60,7 @@ export class SystemsService {
     const frenchDesignsEnabled = (system: DoorDesignSeries) =>
       system.allowDesign && isFrenchDoorProduct(system.brandProduct?.product);
     const catalog = systems.some(frenchDesignsEnabled)
-      ? await this.prisma.frenchDoorDesign.findMany(DOOR_DESIGN_PICKER)
+      ? sortStandardDoorDesigns(await this.prisma.frenchDoorDesign.findMany(DOOR_DESIGN_PICKER))
       : [];
     return systems.map(system => ({
       ...system,
@@ -688,9 +689,9 @@ export class SystemsService {
     }
 
     const doorDesignKind = seriesDoorDesignKind(sysConf.system, sysConf);
-    const doorDesigns = doorDesignKind ? await this.prisma.frenchDoorDesign.findMany({
+    const doorDesigns = doorDesignKind ? sortStandardDoorDesigns(await this.prisma.frenchDoorDesign.findMany({
       ...DOOR_DESIGN_PICKER, where: { ...DOOR_DESIGN_PICKER.where, kind: doorDesignKind },
-    }) : [];
+    })) : [];
     return {
       idSystem: systemId,
       idConfig: configId,

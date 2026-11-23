@@ -1,11 +1,14 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@/prisma/prisma.service';
+import { sortStandardDoorDesigns } from './door-design-order';
 
 @Injectable()
 export class DoorDesignsService {
   constructor(private readonly db: PrismaService) {}
 
-  list() { return this.db.frenchDoorDesign.findMany({ orderBy: [{ kind: 'asc' }, { code: 'asc' }] }); }
+  async list() {
+    return sortStandardDoorDesigns(await this.db.frenchDoorDesign.findMany({ orderBy: [{ kind: 'asc' }, { code: 'asc' }] }));
+  }
 
   async edit(id: number, data: { code?: string; unitPrice?: string | null }) {
     if (data.code === undefined && data.unitPrice === undefined) throw new BadRequestException('Choose a code or price to update.');
