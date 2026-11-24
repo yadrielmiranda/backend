@@ -23,7 +23,11 @@ describe('factory barcode compatibility', () => {
     },
   );
 
-  it.each(['0-FRAME', '123-OTHER', '123-DOOR-extra', 'I123-DOOR', '123 -FRAME', '-WINDOW', null, '0-SIDELITE', 'I123-SIDELITE', '123-SIDELITE-extra'])(
+  it('recognizes a panel label and preserves it for checking the series', () => {
+    expect(parseFactoryBarcode(' 001153760-Panel\r\n')).toMatchObject({ lineNumber: '1153760', partType: 'WINDOW', panelLabel: true });
+  });
+
+  it.each(['0-FRAME', '123-OTHER', '123-DOOR-extra', 'I123-DOOR', '123 -FRAME', '-WINDOW', null, '0-SIDELITE', 'I123-SIDELITE', '123-SIDELITE-extra', '0-PANEL', 'I123-PANEL', '123-PANEL-extra'])(
     'rejects an invalid factory barcode %s', value => {
       expect(() => parseFactoryBarcode(value)).toThrow();
     },

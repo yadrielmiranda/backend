@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { MAX_FACTORY_FILE_BYTES, MAX_FACTORY_LINES } from '@/orders/factory-import/factory-import-matching';
-import { MAX_PARTS } from '../warehouse-parts';
+import { MAX_PARTS, PANEL_LABEL_SERIES } from '../warehouse-parts';
 
 export type ExternalPoLine = {
   lineNumber: string;
@@ -46,6 +46,18 @@ const frenchDoorNames = [
   /\bseries?\s+950\s+aluminum\s+outswing\s+door\b/i,
 ];
 
+function isPanelLabelTitle(name: string): boolean {
+  if (!/\b(?:window\s*wall|store[\s-]*front)\b/i.test(name) || /\b(?:mullion|door)\b/i.test(name)) return false;
+  const series = name.match(/\bseries?\s*[-#]?\s*(\d+)\b/i)?.[1]
+    ?? name.match(/\b(?:window\s*wall|store[\s-]*front)\s*[-#]?\s*(\d+)\b/i)?.[1]
+    ?? name.match(/^(\d+)\s*[-:]?\s*(?:window\s*wall|store[\s-]*front)\b/i)?.[1];
+  return PANEL_LABEL_SERIES.includes(series ?? '');
+}
+
+export function isPanelLabelDescription(description: string): boolean {
+  return isPanelLabelTitle(description.split(/\r?\n/, 1)[0].trim());
+}
+
 export function externalProductFamily(description: string): ExternalPoLine['family'] {
   const name = description.split(/\r?\n/, 1)[0];
   const french = frenchDoorNames.some((pattern) => pattern.test(name));
@@ -54,7 +66,7 @@ export function externalProductFamily(description: string): ExternalPoLine['fami
   if (french) return 'FRENCH_DOOR';
   if (sliding) return 'SLIDING_DOOR';
   if (/\bmullion\b/i.test(name)) return 'LINEAR_MATERIAL';
-  if (/\bwindow\b/i.test(name)) return 'WINDOW';
+  if (/\bwindow\b/i.test(name) || isPanelLabelTitle(name)) return 'WINDOW';
   return 'UNKNOWN';
 }
 

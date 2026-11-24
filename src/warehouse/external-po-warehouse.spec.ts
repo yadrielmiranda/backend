@@ -145,6 +145,55 @@ describe('External PO warehouse inventory', () => {
 });
 
 describe('Mixed internal and external factory pickups', () => {
+  it.each(['Series 400 Window Wall', 'Window Wall 450', 'Series 475 Storefront'])(
+    'collects, receives and releases PANEL labels against the saved window quantity for %s', async (description) => {
+      const f = fixture();
+      const stock = f.stocks.find((row) => row.lineNumber === line)!;
+      Object.assign(stock, { description, panels: 2, expectedParts: 2 });
+      const run = await f.service.startFactoryPickup({ poNumbers: ['EX100'], technicianIds: [tech.id] }, admin);
+      const collect = (suffix: string) =>
+        f.service.factoryPickupScan(run.id, { ...request(), barcode: `${line}-${suffix}` }, tech);
+
+      await expect(collect('DOOR')).rejects.toThrow();
+      await expect(collect('FRAME')).rejects.toThrow();
+      await collect('PANEL');
+      expect(await collect('WINDOW')).toMatchObject({
+        kind: 'COLLECTED', stock: { expectedParts: 2, partTracking: { inTransit: { WINDOW: 2 } } },
+        pickup: { collectedParts: 2, remainingParts: 0 },
+      });
+      await expect(collect('PANEL')).rejects.toThrow('already been collected');
+      await f.service.finishFactoryPickup(run.id, { cycle: 0 }, tech);
+      for (let i = 0; i < 2; i++) {
+        await f.service.technicianScan({ ...request(), action: 'RECEIVE', storeId: 1, barcode: `${line}-PANEL` }, tech);
+      }
+      expect(await f.service.unit(line, admin)).toMatchObject({
+        expectedParts: 2, inTransit: 0, onHand: 2, partTracking: { expected: { WINDOW: 2 }, onHand: { WINDOW: 2 } },
+      });
+      const release = () => f.service.technicianScan({ ...request(), action: 'RELEASE', storeId: 1, barcode: `${line}-PANEL` }, tech);
+      expect(await release()).toMatchObject({
+        stock: { onHand: 1, partTracking: { stores: [{ id: 1, parts: { WINDOW: 1 } }], released: { WINDOW: 1 } } },
+        movement: { type: 'RELEASE', quantity: 1, fromStore: { id: 1 } },
+      });
+      await release();
+      await expect(release()).rejects.toThrow('no parts');
+      expect(await f.service.unit(line, admin)).toMatchObject({
+        inTransit: 0, onHand: 0, released: 2, partTracking: { stores: [], released: { WINDOW: 2 } },
+      });
+    },
+  );
+
+  it.each(['Series 451 Window Wall', 'Horizontal Rolling Window\nAccessory: Series 475 Storefront'])(
+    'rejects PANEL in an external pickup for %s without collecting the unit', async (description) => {
+      const f = fixture();
+      const stock = f.stocks.find((row) => row.lineNumber === line)!;
+      Object.assign(stock, { description, panels: 1, expectedParts: 1 });
+      const run = await f.service.startFactoryPickup({ poNumbers: ['EX100'], technicianIds: [tech.id] }, admin);
+      await expect(f.service.factoryPickupScan(run.id, { ...request(), barcode: `${line}-PANEL` }, tech)).rejects.toThrow();
+      expect(f.movements).toHaveLength(0);
+      expect((await f.service.factoryPickup(run.id, tech)).collectedParts).toBe(0);
+    },
+  );
+
   it.each([
     'Series 800 Commercial Alum. Outswing Door - L.M.I. XX White Left Active',
     'Series 950 Aluminum Outswing Door LMI',

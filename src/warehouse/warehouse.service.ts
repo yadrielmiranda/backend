@@ -12,12 +12,14 @@ import type { AuthUser } from '@/auth/types/auth-user.type';
 import { assertScheduleMilestone } from '@/payment-plans/payment-schedule';
 import {
   barcodeLine,
+  PANEL_LABEL_SERIES,
   parseFactoryBarcode,
+  type FactoryBarcode,
   expectedPhysicalParts,
   assertBalances,
 } from './warehouse-parts';
 import { applyPartMovement, partTracking, resolvePartQuantities, reconcilePartCount } from './warehouse-part-tracking';
-import { externalProductFamily } from './external-po/external-po-parser';
+import { externalProductFamily, isPanelLabelDescription } from './external-po/external-po-parser';
 import { assertWarehouseRelease } from './warehouse-release';
 import { customerDeliverySignature } from './customer-delivery-signature';
 import { assertCompanyFactoryCollection } from './factory-fulfillment';
@@ -176,7 +178,9 @@ function requestedPartType(barcode: string, explicit?: string) {
     throw new BadRequestException('Choose a valid physical part type.');
   if (parsed.partType && explicit && parsed.partType !== explicit)
     throw new BadRequestException('The selected part type does not match this barcode.');
-  return { lineNumber: parsed.lineNumber, partType: parsed.partType ?? explicit as 'DOOR' | 'FRAME' | 'WINDOW' | undefined };
+  const partType = parsed.partType ?? explicit as FactoryBarcode['partType'];
+  // A replay of a WINDOW request cannot stand in for a series-restricted PANEL label.
+  return { ...parsed, partType, hashPartType: parsed.panelLabel ? 'PANEL' : partType };
 }
 function requestedParts(item: { barcode: string; quantity: number; version?: number; parts?: PartQuantities }) {
   const parsed = parseFactoryBarcode(item.barcode);
@@ -195,8 +199,13 @@ function requestedParts(item: { barcode: string; quantity: number; version?: num
       throw new BadRequestException('The selected part quantities do not match this barcode.');
     selected = { [parsed.partType]: item.quantity };
   }
-  return { lineNumber: parsed.lineNumber, quantity: item.quantity, ...(item.version === undefined ? {} : { version: item.version }),
-    ...(selected === undefined ? {} : { parts: selected }) };
+  return {
+    lineNumber: parsed.lineNumber,
+    ...(parsed.panelLabel ? { panelLabel: parsed.panelLabel } : {}),
+    quantity: item.quantity,
+    ...(item.version === undefined ? {} : { version: item.version }),
+    ...(selected === undefined ? {} : { parts: selected }),
+  };
 }
 function separateFrame(stock: Stock) {
   if (stock.unit.piece?.prod.kind === 'LINEAR_MATERIAL') return false;
@@ -597,7 +606,7 @@ export class WarehouseService {
 
   async technicianWarehouseUnit(barcode: string, actor: AuthUser) {
     this.technician(actor);
-    const stock = await this.load(this.prisma, barcodeLine(barcode));
+    const stock = await this.load(this.prisma, parseFactoryBarcode(barcode));
     if (!stock.onHand) throw new NotFoundException('This unit has no parts in the warehouse.');
     return this.technicianWarehouseStock(presentStock(stock));
   }
@@ -1251,13 +1260,14 @@ export class WarehouseService {
     actor: AuthUser,
   ) {
     this.factoryPickupStaff(actor);
-    const { lineNumber, partType } = requestedPartType(dto.barcode, dto.partType);
+    const reading = requestedPartType(dto.barcode, dto.partType);
+    const { lineNumber, partType, hashPartType } = reading;
     const requestHash = hash([
       actor.id,
       'PICKUP_COLLECT',
       pickupRunId,
       lineNumber,
-      ...(partType ? [{ partType }] : []),
+      ...(hashPartType ? [{ partType: hashPartType }] : []),
     ]);
 
     return this.transaction(async (tx) => {
@@ -1281,7 +1291,7 @@ export class WarehouseService {
       if (run.status !== 'ACTIVE' || run.activeSlot !== 1)
         throw new ConflictException('This factory pickup is already closed.');
       await this.noCount(tx);
-      const stock = await this.load(tx, lineNumber);
+      const stock = await this.load(tx, reading);
       const order = stock.unit.piece?.estim.order;
       const source = pickupSource(stock);
       if (order) assertCompanyFactoryCollection(order);
@@ -1497,7 +1507,8 @@ export class WarehouseService {
         throw new ConflictException('This store is inactive. Choose an active store.');
     }
   }
-  private async load(tx: Tx, lineNumber: string): Promise<Stock> {
+  private async load(tx: Tx, barcode: string | Pick<FactoryBarcode, 'lineNumber' | 'panelLabel'>): Promise<Stock> {
+    const lineNumber = typeof barcode === 'string' ? barcode : barcode.lineNumber;
     // Use the same external PO lock as reimports before reading operational counts.
     await tx.$queryRaw`SELECT p.id FROM factory_pos p INNER JOIN factory_units u ON u.externalPoId = p.id WHERE u.lineNumber = ${lineNumber} FOR UPDATE`;
     const stock = await tx.warehouseStock.findUnique({
@@ -1512,6 +1523,15 @@ export class WarehouseService {
       throw new BadRequestException(
         'This factory unit is not associated with an order or External PO.',
       );
+    if (typeof barcode !== 'string' && barcode.panelLabel) {
+      const piece = stock.unit.piece;
+      const acceptsPanel = piece
+        ? piece.prod.kind !== 'LINEAR_MATERIAL' && piece.prod.diagramFamily === 'WINDOW_WALL' &&
+          PANEL_LABEL_SERIES.includes(piece.syst.name.trim().match(/^series?\s+(\d+)$/i)?.[1] ?? '')
+        : isPanelLabelDescription(stock.unit.description ?? '');
+      if (!acceptsPanel)
+        throw new BadRequestException(`The -PANEL label is only expected for window wall or storefront units in series ${PANEL_LABEL_SERIES.join(', ')}.`);
+    }
     return stock;
   }
   private async noCount(tx: Tx) {
@@ -1733,7 +1753,7 @@ export class WarehouseService {
       await this.lockStores(tx, [dto.storeId], [dto.storeId]);
       const store = await tx.warehouseStore.findUniqueOrThrow({ where: { id: dto.storeId } });
       for (const [index, item] of items.entries()) {
-        const stock = await this.load(tx, item.lineNumber);
+        const stock = await this.load(tx, item);
         if (stock.version !== item.version)
           throw new ConflictException(`Unit I${item.lineNumber} changed. Refresh the selection before receiving. No parts were received by this request.`);
         if (stock.inTransit < item.quantity)
@@ -2223,7 +2243,7 @@ export class WarehouseService {
     // addPo is permission to include a missing PO, not the identity of a physical reading.
     // Keep the old hash when source was omitted so an uncertain legacy reading
     // remains recoverable even after another user upgrades or closes the run.
-    const requestHash = hash([actor.id, id, action, parsed.lineNumber, parsed.partType ?? null,
+    const requestHash = hash([actor.id, id, action, parsed.lineNumber, parsed.hashPartType ?? null,
       ...(explicitStore ? [{ storeId: dto.storeId }] : [])]);
     return this.transaction(async tx => {
       const run = await this.deliveryRunRecord(tx, id, true);
@@ -2238,7 +2258,7 @@ export class WarehouseService {
       if (storeId !== null) await this.lockStores(tx, [storeId]);
       const sourceStore = storeId === null ? null : await tx.warehouseStore.findUniqueOrThrow({ where: { id: storeId } });
       const sourceStoreName = sourceStore?.name ?? 'Unassigned';
-      const stock = await this.load(tx, parsed.lineNumber), source = pickupSource(stock);
+      const stock = await this.load(tx, parsed), source = pickupSource(stock);
       const detail = tracking(stock);
       const selectedParts = resolvePartQuantities(1, null, detail.types, parsed.partType);
       const type = Object.keys(selectedParts)[0] as PartType;
@@ -2430,7 +2450,7 @@ export class WarehouseService {
           throw new ForbiddenException(dto.pickupRunId === undefined
             ? 'These parts are not available from your assigned factory pickups. Refresh and review the delivery.'
             : 'These parts are not available from this factory pickup. Refresh and review the delivery.');
-        const stock = await this.load(tx, item.lineNumber);
+        const stock = await this.load(tx, item);
         if (stock.version !== item.version)
           throw new ConflictException(`Unit I${item.lineNumber} changed. Refresh and review the delivery before signing again. No parts were released by this request.`);
         const available = dto.source === 'TRANSIT' ? stock.inTransit : storeQuantity(stock, storeId);
@@ -2589,14 +2609,15 @@ export class WarehouseService {
       const stocks = new Map<string, Stock>(), sourceNames = new Map<number | null, string>([[null, 'Unassigned']]);
       const selected: Array<(typeof items)[number] & { parts: PartQuantities }> = [];
       for (const [lineNumber, version] of versions) {
-        const stock = await this.load(tx, lineNumber);
+        const locations = items.filter(item => item.lineNumber === lineNumber);
+        const stock = await this.load(tx, locations.find(item => item.panelLabel) ?? lineNumber);
         if (pickupSource(stock).key !== source.key)
           throw new BadRequestException('Every selected piece must belong to this exact PO. No parts were released by this request.');
         if (stock.version !== version)
           throw new ConflictException(`Unit I${lineNumber} changed. Refresh and review the release. No parts were released by this request.`);
         stocks.set(lineNumber, stock);
         for (const balance of stock.storeBalances) sourceNames.set(balance.storeId, balance.store.name);
-        const allocations = items.filter(item => item.lineNumber === lineNumber).map(item => ({ ...item,
+        const allocations = locations.map(item => ({ ...item,
           parts: resolvePartQuantities(item.quantity, locationParts(stock, item.storeId), tracking(stock).types, undefined, item.parts),
           storeName: sourceNames.get(item.storeId) ?? 'Unassigned',
         }));
@@ -2663,7 +2684,7 @@ export class WarehouseService {
       const sourceName = store?.name ?? 'Unassigned';
       const selected: Array<{ stock: Stock; quantity: number; parts?: PartQuantities }> = [];
       for (const item of items) {
-        const stock = await this.load(tx, item.lineNumber);
+        const stock = await this.load(tx, item);
         if (stock.version !== item.version)
           throw new ConflictException(`Unit I${item.lineNumber} changed. Refresh and review the release. No parts were released by this request.`);
         if (storeQuantity(stock, dto.storeId) < item.quantity)
@@ -2718,7 +2739,7 @@ export class WarehouseService {
           : { id: prior.installationJobId, address: prior.installationAddress ?? '' }, replayed: true };
       }
       await this.noCount(tx);
-      const first = await this.load(tx, items[0].lineNumber);
+      const first = await this.load(tx, items[0]);
       const source = pickupSource(first), estimateId = first.unit.piece?.idEst;
       let destination: ReturnType<typeof installationDestination> = null;
       // A physical delivery can belong to an external PO or an older order
@@ -2743,7 +2764,7 @@ export class WarehouseService {
       // Confirm one order or external PO at a time, including when neither has
       // an installation record. The complete batch rolls back on any conflict.
       for (const [index, item] of items.entries()) {
-        const stock = await this.load(tx, item.lineNumber);
+        const stock = await this.load(tx, item);
         if (pickupSource(stock).key !== source.key || stock.unit.piece?.idEst !== estimateId)
           throw new BadRequestException('Select parts for one order or external PO at a time. No parts were delivered by this request.');
         if (stock.version !== item.version)
@@ -2771,14 +2792,14 @@ export class WarehouseService {
         !Number.isSafeInteger(dto.version) || dto.version < 0)
       throw new BadRequestException('Choose different source and destination locations and a valid quantity.');
     const requestHash = hash([actor.id, 'TRANSFER', lineNumber, dto.fromStoreId, dto.toStoreId, dto.quantity, dto.version,
-      ...(requested.parts ? [{ parts: requested.parts }] : [])]);
+      ...(requested.parts ? [{ parts: requested.parts }] : []), ...(requested.panelLabel ? ['PANEL'] : [])]);
     return this.transaction(async (tx) => {
       const replay = await this.replay(tx, dto.requestKey, requestHash);
       if (replay) return replay;
       await this.noCount(tx);
       await this.lockStores(tx,
         dto.fromStoreId === null ? [dto.toStoreId] : [dto.fromStoreId, dto.toStoreId], [dto.toStoreId]);
-      const stock = await this.load(tx, lineNumber);
+      const stock = await this.load(tx, requested);
       if (stock.version !== dto.version)
         throw new ConflictException('This unit changed. Refresh its details before transferring parts.');
       if (storeQuantity(stock, dto.fromStoreId) < dto.quantity)
@@ -3014,7 +3035,7 @@ export class WarehouseService {
   }
   async unit(barcode: string, actor: AuthUser) {
     this.staff(actor);
-    return presentStock(await this.load(this.prisma, barcodeLine(barcode)));
+    return presentStock(await this.load(this.prisma, parseFactoryBarcode(barcode)));
   }
   async history(query: Query, actor: AuthUser) {
     this.staff(actor);
@@ -3044,10 +3065,11 @@ export class WarehouseService {
   }
   async scan(dto: WarehouseScanDto, actor: AuthUser) {
     this.receivingStaff(actor);
-    const { lineNumber, partType } = requestedPartType(dto.barcode, dto.partType),
+    const reading = requestedPartType(dto.barcode, dto.partType);
+    const { lineNumber, partType, hashPartType } = reading,
       requestHash = hash([...(dto.storeId === undefined
         ? [actor.id, dto.action, lineNumber]
-        : [actor.id, dto.action, lineNumber, dto.storeId]), ...(partType ? [{ partType }] : [])]);
+        : [actor.id, dto.action, lineNumber, dto.storeId]), ...(hashPartType ? [{ partType: hashPartType }] : [])]);
     return this.transaction(async (tx) => {
       const replay = await this.replay(tx, dto.requestKey, requestHash);
       if (replay) return replay;
@@ -3060,7 +3082,7 @@ export class WarehouseService {
         throw new BadRequestException('Choose the source store, or explicitly select Unassigned.');
       if (dto.storeId != null)
         await this.lockStores(tx, [dto.storeId], dto.action === 'RECEIVE' ? [dto.storeId] : []);
-      const stock = await this.load(tx, lineNumber);
+      const stock = await this.load(tx, reading);
       const deltas = { transitDelta: 0, onHandDelta: 0, releasedDelta: 0 };
       let installation: ReturnType<typeof installationDestination> = null;
       if (dto.action === 'COLLECT') {
@@ -3125,7 +3147,8 @@ export class WarehouseService {
   }
   async setParts(barcode: string, dto: WarehousePartsDto, actor: AuthUser) {
     this.staff(actor, true);
-    const lineNumber = barcodeLine(barcode),
+    const parsed = parseFactoryBarcode(barcode);
+    const { lineNumber } = parsed,
       requestHash = hash([
         actor.id,
         'PARTS',
@@ -3133,6 +3156,7 @@ export class WarehouseService {
         dto.expectedParts,
         dto.version,
         dto.reason,
+        ...(parsed.panelLabel ? ['PANEL'] : []),
       ]);
     if (
       !Number.isInteger(dto.expectedParts) ||
@@ -3145,7 +3169,7 @@ export class WarehouseService {
       const replay = await this.replay(tx, dto.requestKey, requestHash);
       if (replay) return replay;
       await this.noCount(tx);
-      const stock = await this.load(tx, lineNumber);
+      const stock = await this.load(tx, parsed);
       if (stock.version !== dto.version)
         throw new ConflictException(
           'This unit changed. Refresh before editing expected parts.',
@@ -3435,8 +3459,9 @@ export class WarehouseService {
   }
   async countScan(id: number, dto: WarehouseCountScanDto, actor: AuthUser) {
     this.staff(actor);
-    const { lineNumber, partType } = requestedPartType(dto.barcode, dto.partType),
-      requestHash = hash([actor.id, 'COUNT', id, lineNumber, ...(partType ? [{ partType }] : [])]);
+    const barcode = requestedPartType(dto.barcode, dto.partType);
+    const { lineNumber, partType, hashPartType } = barcode,
+      requestHash = hash([actor.id, 'COUNT', id, lineNumber, ...(hashPartType ? [{ partType: hashPartType }] : [])]);
     return this.transaction(async (tx) => {
       const replay = await this.replay(tx, dto.requestKey, requestHash);
       if (replay) {
@@ -3446,7 +3471,7 @@ export class WarehouseService {
         return { ...replay, counted: line.counted };
       }
       const count = await this.openCount(tx, id);
-      const stock = await this.load(tx, lineNumber),
+      const stock = await this.load(tx, barcode),
         expectedParts = parts(stock);
       if (!expectedParts)
         throw new BadRequestException(

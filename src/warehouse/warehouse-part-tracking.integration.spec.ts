@@ -111,6 +111,50 @@ describe('factory panels and frames through warehouse operations', () => {
     await expect(f.scan(`${door}-WINDOW`)).rejects.toThrow();
   });
 
+  it.each(['Serie 400', 'Serie 450', 'Serie 475'])('collects, receives and releases PANEL for internal %s units', async (series) => {
+    const f = fixture();
+    const stock = f.stocks.find(row => row.lineNumber === windowLine)!;
+    const piece = f.pieces.find(row => row.id === stock.pieceId)!;
+    piece.syst.name = series;
+    Object.assign(piece.prod, { name: 'Window Wall-Store Front', diagramFamily: 'WINDOW_WALL' });
+    stock.expectedParts = 2;
+    await f.scan(`${windowLine}-PANEL`, 'COLLECT');
+    await f.scan(windowLine, 'COLLECT');
+    await f.service.receive({
+      ...request(), storeId: 1, items: [{ barcode: `${windowLine}-PANEL`, quantity: 2, version: 2, parts: { WINDOW: 2 } }],
+    }, admin);
+    expect(await f.unit(windowLine)).toMatchObject({
+      expectedParts: 2, onHand: 2, inTransit: 0, partTracking: { expected: { WINDOW: 2 }, onHand: { WINDOW: 2 } },
+    });
+    const release = await f.scan(`${windowLine}-PANEL`, 'RELEASE');
+    expect(release).toMatchObject({
+      stock: { onHand: 1, released: 1, partTracking: { stores: [{ id: 1, parts: { WINDOW: 1 } }], released: { WINDOW: 1 } } },
+      movement: { quantity: 1, fromStore: { id: 1 } },
+    });
+    await f.service.technicianRelease({
+      ...request(), storeId: 1, items: [{ barcode: `${windowLine}-PANEL`, quantity: 1, version: release.stock.version }],
+    }, tech);
+    await expect(f.scan(`${windowLine}-PANEL`, 'RELEASE')).rejects.toThrow('no parts');
+    expect(await f.unit(windowLine)).toMatchObject({
+      onHand: 0, released: 2, partTracking: { stores: [], released: { WINDOW: 2 } },
+    });
+  });
+
+  it('rejects PANEL for an unrelated internal window even when its saved stock expects WINDOW', async () => {
+    const f = fixture();
+    await f.scan(`${windowLine}-WINDOW`, 'COLLECT');
+    const beforeReceipt = f.snapshot();
+    await expect(f.scan(`${windowLine}-PANEL`)).rejects.toThrow();
+    await expect(f.service.receive({
+      ...request(), storeId: 1, items: [{ barcode: `${windowLine}-PANEL`, quantity: 1, version: 1, parts: { WINDOW: 1 } }],
+    }, admin)).rejects.toThrow();
+    expect(f.snapshot()).toEqual(beforeReceipt);
+    await f.scan(`${windowLine}-WINDOW`);
+    const beforeRelease = f.snapshot();
+    await expect(f.scan(`${windowLine}-PANEL`, 'RELEASE')).rejects.toThrow();
+    expect(f.snapshot()).toEqual(beforeRelease);
+  });
+
   it.each(['FRAME', 'SIDELITE'])('does not initialize or alter existing data just by looking up a %s barcode', async suffix => {
     const f = fixture();
     f.stocks[0].inTransit = 1;

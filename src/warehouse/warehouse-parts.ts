@@ -1,26 +1,32 @@
 import { BadRequestException } from '@nestjs/common';
 
 export const MAX_PARTS = 200;
+export const PANEL_LABEL_SERIES: readonly string[] = ['400', '450', '475'];
 
 export type FactoryPartType = 'DOOR' | 'FRAME' | 'WINDOW';
 
-export function parseFactoryBarcode(value: unknown): {
+export type FactoryBarcode = {
   lineNumber: string;
   partType?: FactoryPartType;
-} {
+  panelLabel?: true;
+};
+
+export function parseFactoryBarcode(value: unknown): FactoryBarcode {
   if (typeof value !== 'string')
     throw new BadRequestException('Scan or enter a factory barcode.');
-  const match = value.trim().match(/^(?:I(\d{1,50})|(\d{1,50})(?:-(DOOR|SIDELITE|FRAME|WINDOW))?)$/i);
+  const match = value.trim().match(/^(?:I(\d{1,50})|(\d{1,50})(?:-(DOOR|SIDELITE|FRAME|WINDOW|PANEL))?)$/i);
   const digits = match?.[1] ?? match?.[2];
   if (!digits || /^0+$/.test(digits))
     throw new BadRequestException(
-      'Use a factory line number, I followed by the line number, or a line number followed by -DOOR, -SIDELITE, -FRAME or -WINDOW.',
+      'Use a factory line number, I followed by the line number, or a line number followed by -DOOR, -SIDELITE, -FRAME, -WINDOW or -PANEL.',
     );
   const suffix = match?.[3]?.toUpperCase();
+  const lineNumber = digits.replace(/^0+(?=\d)/, '');
+  if (suffix === 'PANEL') return { lineNumber, partType: 'WINDOW', panelLabel: true };
   // Sidelites share the existing door-panel quota; they do not add pieces.
   const partType = suffix === 'SIDELITE' ? 'DOOR' : suffix as FactoryPartType | undefined;
   return {
-    lineNumber: digits.replace(/^0+(?=\d)/, ''),
+    lineNumber,
     ...(partType ? { partType } : {}),
   };
 }

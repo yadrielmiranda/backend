@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { ROLES_KEY } from '@/auth/roles.decorator';
 import { ExternalPoController } from './external-po.controller';
 import { ExternalPoService } from './external-po.service';
-import { parseExternalPo } from './external-po-parser';
+import { isPanelLabelDescription, parseExternalPo } from './external-po-parser';
 
 const admin = { id: 1, role: { name: 'admin' as const } };
 const line = (line_number = 100, description = 'Horizontal Rolling Window OX Bronze', panels: unknown = 1) => ({
@@ -75,9 +75,28 @@ describe('external PO parser', () => {
     ['sliding door 700', 2, 3, 'SLIDING_DOOR'],
     ['Sliding Window OX', 1, 1, 'WINDOW'],
     ['Window Wall', 4, 4, 'WINDOW'],
+    ['Window Wall 400 - L.M.I O White Right Attachment', 2, 2, 'WINDOW'],
+    ['Window Wall 450 - L.M.I.', 2, 2, 'WINDOW'],
+    ['Series 475 Aluminum Storefront - L.M.I.', 3, 3, 'WINDOW'],
     ['Mullion', 1, 1, 'LINEAR_MATERIAL'],
   ])('counts %s from explicit panels', (description, panels, expectedParts, family) => {
     expect(parseExternalPo(file(document([line(100, description, panels)]))).lines[0]).toMatchObject({ expectedParts, family, needsReview: false });
+  });
+
+  it.each([
+    ['Window Wall 400 - L.M.I O White Right Attachment', true],
+    ['Store Front 475', true],
+    ['475 - Storefront', true],
+    ['Series 475 Aluminum Storefront', true],
+    ['Window Wall 450', true],
+    ['Series 450 Window Wall', true],
+    ['450 - Window Wall', true],
+    ['Window Wall 1450', false],
+    ['Series 1475 Storefront', false],
+    ['Mullion for Window Wall 400', false],
+    ['Window Wall 451\nAccessory: Window Wall 450', false],
+  ])('recognizes PANEL labels from the product title %s', (description: string, eligible: boolean) => {
+    expect(isPanelLabelDescription(description)).toBe(eligible);
   });
 
   it('keeps only agreed data and ignores all financial and optional attribute values', () => {
