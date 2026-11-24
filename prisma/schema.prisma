@@ -4046,3 +4046,16 @@ model EstimateAgreement {
   @@index([estimateId, pricingMode, invalidatedAt])
   @@index([baseAgreementId])
 }
+
+model RegistrationAnalyticsAttempt {
+  id         String   @id @db.Char(36)
+  campaign   String   @db.VarChar(100)
+  ad         String   @db.VarChar(100)
+  stage      Int      @db.UnsignedTinyInt
+  errors     Int      @default(0) @db.UnsignedTinyInt
+  openedAt   DateTime @map("opened_at") @db.DateTime(3)
+  activityAt DateTime @map("activity_at") @db.DateTime(3)
+
+  @@index([openedAt], map: "registration_analytics_opened")
+  @@map("registration_analytics_attempts")
+}

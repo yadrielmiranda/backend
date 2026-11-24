@@ -5,6 +5,8 @@ import {
   Body,
   HttpCode,
   HttpStatus,
+  Headers,
+  Optional,
   Res,
   UseGuards,
   Get,
@@ -13,6 +15,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { readAttributionHeader, registrationErrorBits, RegistrationAnalytics } from './registration-analytics';
 import { AllowBeforePlatformTerms } from '@/platform-terms/platform-terms.decorator';
 import { LoginDto } from './dto/login.dto';
 import { Response, Request, CookieOptions } from 'express';
@@ -33,6 +36,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly usersService: UsersService,
+    @Optional() private readonly registrationAnalytics?: RegistrationAnalytics,
   ) { }
 
   private cookieOptions(maxAgeMs: number): CookieOptions {
@@ -194,8 +198,20 @@ export class AuthController {
   @Public()
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
-  async register(@Body() registerUserDto: RegisterUserDto) {
-    return this.authService.registerUser(registerUserDto);
+  async register(
+    @Body() registerUserDto: RegisterUserDto,
+    @Headers('x-registration-attribution') header?: string,
+  ) {
+    const attribution = readAttributionHeader(header);
+    let result: Awaited<ReturnType<AuthService['registerUser']>>;
+    try {
+      result = await this.authService.registerUser(registerUserDto);
+    } catch (error) {
+      if (attribution) void this.registrationAnalytics?.record(attribution, 3, registrationErrorBits(error));
+      throw error;
+    }
+    if (attribution) void this.registrationAnalytics?.record(attribution, 4);
+    return result;
   }
 
   @UseGuards(JwtAuthGuard)
