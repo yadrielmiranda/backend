@@ -41,7 +41,7 @@ function identifier(value: unknown, label: string) {
 
 export function externalProductFamily(description: string): ExternalPoLine['family'] {
   const name = description.split(/\r?\n/, 1)[0];
-  const french = /\bfrench\s+door\b/i.test(name);
+  const french = /\bfrench\s+door\b/i.test(name) || /\bcommercial\s+alum\.?\s+outswing\s+door\b/i.test(name);
   const sliding = /\bsliding\s+(?:glass\s+)?door\b/i.test(name);
   if (french && sliding) return 'UNKNOWN';
   if (french) return 'FRENCH_DOOR';

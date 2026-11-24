@@ -145,6 +145,25 @@ describe('External PO warehouse inventory', () => {
 });
 
 describe('Mixed internal and external factory pickups', () => {
+  it('collects two door panels and a frame for an already imported Series 800 commercial outswing door', async () => {
+    const f = fixture();
+    const stock = f.stocks.find((row) => row.lineNumber === line)!;
+    stock.description = 'Series 800 Commercial Alum. Outswing Door - L.M.I. XX White Left Active';
+    const run = await f.service.startFactoryPickup({ poNumbers: ['EX100'], technicianIds: [tech.id] }, admin);
+    const scan = (suffix: string) =>
+      f.service.factoryPickupScan(run.id, { ...request(), barcode: `${line}-${suffix}` }, tech);
+
+    await expect(scan('WINDOW')).rejects.toThrow('This part type is not expected');
+    await scan('DOOR');
+    await scan('DOOR');
+    await expect(scan('DOOR')).rejects.toThrow('All expected DOOR parts');
+    expect(await scan('FRAME')).toMatchObject({
+      kind: 'COLLECTED',
+      stock: { inTransit: 3, partTracking: { inTransit: { DOOR: 2, FRAME: 1 } } },
+      pickup: { collectedParts: 3, remainingParts: 0 },
+    });
+  });
+
   it('keeps progress separate by source and supports external close, reopen and collect undo', async () => {
     const f = fixture();
     const preview = await f.service.factoryPickupPo('EX100', admin);

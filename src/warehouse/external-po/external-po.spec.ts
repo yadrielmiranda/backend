@@ -66,6 +66,9 @@ function fixture() {
 describe('external PO parser', () => {
   it.each([
     ['Serie 600 French Door L.M.I. XX', 2, 3, 'FRENCH_DOOR'],
+    ['Series 800 Commercial Alum. Outswing Door - L.M.I. XX White Left Active', 2, 3, 'FRENCH_DOOR'],
+    ['Commercial Alum Outswing Door - X', 1, 2, 'FRENCH_DOOR'],
+    ['Window OX\nAccessory: Commercial Alum. Outswing Door', 1, 1, 'WINDOW'],
     ['Sliding Glass Door 700 - L.M.I. XOX', 3, 4, 'SLIDING_DOOR'],
     ['sliding door 700', 2, 3, 'SLIDING_DOOR'],
     ['Sliding Window OX', 1, 1, 'WINDOW'],
@@ -88,6 +91,8 @@ describe('external PO parser', () => {
 
   it.each([
     line(100, 'Unknown item', 2),
+    line(100, 'Commercial Outswing Door', 2),
+    line(100, 'Commercial Alum. Outswing Door / Sliding Glass Door', 2),
     line(100, 'Sliding Window OX', undefined),
     line(100, 'French Door\nPanels: 1', 2),
     line(100, 'Sliding Glass Door', 200),
