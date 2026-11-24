@@ -145,10 +145,14 @@ describe('External PO warehouse inventory', () => {
 });
 
 describe('Mixed internal and external factory pickups', () => {
-  it('collects two door panels and a frame for an already imported Series 800 commercial outswing door', async () => {
+  it.each([
+    'Series 800 Commercial Alum. Outswing Door - L.M.I. XX White Left Active',
+    'Series 950 Aluminum Outswing Door LMI',
+    'Series 810 Residential Alum. Outswing Door - L.M.I.',
+  ])('collects two door panels and a frame for an already imported %s', async (description) => {
     const f = fixture();
     const stock = f.stocks.find((row) => row.lineNumber === line)!;
-    stock.description = 'Series 800 Commercial Alum. Outswing Door - L.M.I. XX White Left Active';
+    stock.description = description;
     const run = await f.service.startFactoryPickup({ poNumbers: ['EX100'], technicianIds: [tech.id] }, admin);
     const scan = (suffix: string) =>
       f.service.factoryPickupScan(run.id, { ...request(), barcode: `${line}-${suffix}` }, tech);

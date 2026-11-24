@@ -39,9 +39,16 @@ function identifier(value: unknown, label: string) {
   return result.replace(/^0+(?=\d)/, '');
 }
 
+const frenchDoorNames = [
+  /\bfrench\s+door\b/i,
+  /\bcommercial\s+alum\.?\s+outswing\s+door\b/i,
+  /\bseries?\s+810\s+residential\s+alum\.?\s+outswing\s+door\b/i,
+  /\bseries?\s+950\s+aluminum\s+outswing\s+door\b/i,
+];
+
 export function externalProductFamily(description: string): ExternalPoLine['family'] {
   const name = description.split(/\r?\n/, 1)[0];
-  const french = /\bfrench\s+door\b/i.test(name) || /\bcommercial\s+alum\.?\s+outswing\s+door\b/i.test(name);
+  const french = frenchDoorNames.some((pattern) => pattern.test(name));
   const sliding = /\bsliding\s+(?:glass\s+)?door\b/i.test(name);
   if (french && sliding) return 'UNKNOWN';
   if (french) return 'FRENCH_DOOR';
