@@ -9,17 +9,23 @@ import { WelcomeSmsService } from '@/sms/welcome-sms.service';
 
 // Se ejecuta el registro real con almacenamiento transaccional simulado.
 function fixture() {
-  const state: any = { users: [], registration: [], sms: [], events: [], blocks: [], welcome: [], fail: null, roleExists: true };
+  const state: any = { users: [], pending: [], registration: [], sms: [], events: [], blocks: [], welcome: [], fail: null, roleExists: true };
   let transactionOpen = false;
   const clone = (value: any) => structuredClone(value);
   const db: any = {
     platformTermsState: { findUniqueOrThrow: async () => ({ currentVersion: null }) },
     branding: { findFirst: async () => ({ name: 'Authentic Evolution Co', email: 'support@example.com', phone: '+13055550100' }) },
     role: { findUnique: async () => state.roleExists ? { id: 3 } : null },
+    dealerRegistrationRequest: {
+      findUnique: async ({ where }: any) => state.pending.find((request: any) => request.username === where.username) ?? null,
+      findMany: async ({ where }: any) => state.pending.filter((request: any) => where.username.in.includes(request.username)),
+    },
     user: {
+      findMany: async ({ where }: any) => state.users.filter((user: any) => where.username.in.includes(user.username)),
       create: async ({ data, select }: any) => {
-        if (state.users.some((user: any) => ['phone', 'email', 'username'].some((field) => user[field] === data[field]))) {
-          throw Object.assign(new Error('Duplicate user'), { code: 'P2002' });
+        const duplicate = ['email', 'phone', 'username'].find(field => state.users.some((user: any) => user[field] === data[field]));
+        if (duplicate) {
+          throw Object.assign(new Error('Duplicate user'), { code: 'P2002', meta: { target: 'User_' + duplicate + '_key' } });
         }
         for (const field of ['serviceConsent', 'promotionsConsent', 'consentVersion']) assert(!(field in data));
         const user = { ...clone(data), id: state.users.length + 1, idRole: data.role.connect.id, isActive: true, deletedAt: null };
@@ -164,6 +170,56 @@ describe('Registration messaging consent', () => {
     expect(f.coverage.checkAddress).toHaveBeenCalledWith({
       street: '123 Example St', city: 'Miami', state: 'FL', postalCode: '33172',
     });
+  });
+
+  it('accepts the short form, skips delivery coverage, and reserves a unique username', async () => {
+    const f = fixture();
+    const pipe = new ValidationPipe({ transform: true, whitelist: true });
+    const dto = await pipe.transform({
+      firstName: 'José', lastName: 'Pérez', email: 'client@example.com', phone: '+13055551234', password: 'Example-only-123',
+    }, { type: 'body', metatype: RegisterUserDto });
+    f.state.users.push({ username: 'JosePerez', id: 22 });
+    f.state.pending.push({ username: 'JosePerez2', id: 45 });
+    const user = await f.auth.registerUser(dto);
+    expect(user).toMatchObject({ firstName: 'José', lastName: 'Pérez', username: 'JosePerez3', deliveryAvailable: null });
+    expect(f.coverage.checkAddress).not.toHaveBeenCalled();
+    expect(f.welcome.enqueue).toHaveBeenCalledTimes(1);
+    expect(f.state.registration[0]).toMatchObject({ phone: dto.phone, serviceSmsAccepted: false, promotionalSmsAccepted: false });
+  });
+
+  it('retries an automatic username claimed after lookup and returns the assigned variant', async () => {
+    const f = fixture();
+    jest.spyOn(f.db.user, 'create').mockRejectedValueOnce(Object.assign(new Error(), {
+      code: 'P2002', meta: { target: 'User_username_key' },
+    }));
+    const user = await f.register({ username: undefined });
+    expect(user.username).toBe('TestClient2');
+    expect(f.welcome.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an explicit username held by an account or pending dealer and preserves the typed choice', async () => {
+    const f = fixture();
+    f.state.pending.push({ username: 'Reserved', id: 10 });
+    f.state.users.push({ username: 'Taken1', id: 22 });
+    for (const username of ['Reserved', 'Taken1']) {
+      await expect(f.register({ username })).rejects.toMatchObject({ response: { code: 'USERNAME_TAKEN', field: 'username' } });
+    }
+    expect(f.welcome.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('reports duplicate email and phone without retrying username generation', async () => {
+    const f = fixture();
+    await f.register();
+    const creation = jest.spyOn(f.db.user, 'create');
+    await expect(f.register({ username: undefined })).rejects.toMatchObject({ response: { code: 'EMAIL_TAKEN' } });
+    await expect(f.register({ username: undefined, email: 'other@example.com' })).rejects.toMatchObject({ response: { code: 'PHONE_TAKEN' } });
+    expect(creation).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects incomplete addresses without calling delivery coverage', async () => {
+    const f = fixture();
+    await expect(f.register({ street: undefined })).rejects.toThrow('Provide a complete address');
+    expect(f.coverage.checkAddress).not.toHaveBeenCalled();
   });
 
   it('keeps consent booleans strict through the real registration validation pipe', async () => {

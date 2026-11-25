@@ -1,8 +1,8 @@
-import { OmitType, PickType } from '@nestjs/mapped-types';
+import { IntersectionType, OmitType, PickType } from '@nestjs/mapped-types';
 import { IsNumber, Min, Max, MinLength, MaxLength, IsString, IsOptional, IsInt, IsIn, IsBoolean, Matches } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { CreateUserDto } from '@/users/dto/create-user.dto';
-import { RegisterUserDto } from '@/auth/dto/register-user.dto';
+import { RegistrationConsentsDto } from '@/auth/dto/register-user.dto';
 import { trimOrNull } from '@/common/transforms';
 
 export class UpdateDealerInviteDto {
@@ -16,11 +16,10 @@ export class UpdateDealerInviteDto {
   markupPercent: string;
 }
 
-export class SubmitDealerRegistrationDto extends PickType(RegisterUserDto, [
+export class SubmitDealerRegistrationDto extends IntersectionType(PickType(CreateUserDto, [
   'username', 'firstName', 'lastName', 'email', 'phone', 'password',
   'street', 'addressLine2', 'city', 'state', 'postalCode',
-  'platformTermsAccepted', 'platformTermsVersionId', 'serviceConsent', 'promotionsConsent', 'consentVersion',
-] as const) {
+] as const), RegistrationConsentsDto) {
   @MinLength(8)
   declare password: string;
 

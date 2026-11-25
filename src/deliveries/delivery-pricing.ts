@@ -72,3 +72,27 @@ export function calculateDeliveryPricing(input: DeliveryPricingInput) {
     total: subtotal.add(taxAmount).toDecimalPlaces(2, Decimal.ROUND_HALF_UP),
   };
 }
+
+export function estimateStandardDeliveryPrice(distanceMeters: number, rates: {
+  basePrice: string | null; includedMiles: string | null; additionalMilePrice: string | null;
+}) {
+  const { basePrice, includedMiles, additionalMilePrice } = rates;
+  if (basePrice === null || includedMiles === null || additionalMilePrice === null) return null;
+  try {
+    const price = calculateDeliveryPricing({ distanceMeters, basePrice, includedMiles, additionalMilePrice });
+    if (![price.basePrice, price.includedMiles, price.additionalMilePrice, price.total].every(value => value.isFinite())) return null;
+    const displayedBase = price.basePrice.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    return {
+      total: price.total.toFixed(2),
+      basePrice: displayedBase.toFixed(2),
+      includedMiles: price.includedMiles.toString(),
+      additionalMiles: price.additionalMiles.toFixed(2),
+      additionalMilePrice: price.additionalMilePrice.toString(),
+      // Allocate rounding to the mileage charge so the displayed components add up to the actual standard total.
+      additionalMileageCharge: price.subtotal.minus(displayedBase).toFixed(2),
+    };
+  } catch {
+    // Coverage is still known when a warehouse pricing parameter is invalid.
+    return null;
+  }
+}

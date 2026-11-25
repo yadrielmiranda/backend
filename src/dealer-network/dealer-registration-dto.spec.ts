@@ -24,6 +24,10 @@ describe('Public dealer registration fields', () => {
     expect(result.estimatedMonthlySales).toBeUndefined();
   });
 
+  it.each(['username', 'street', 'city', 'state', 'postalCode'])('still requires %s on a dealer application', async field => {
+    await expect(submit({ [field]: undefined })).rejects.toThrow(BadRequestException);
+  });
+
   it.each([undefined, null, '', ' ', -1, 1.5, false])('rejects invalid years of experience (%p)', async (years) => {
     await expect(submit({ yearsOfExperience: years })).rejects.toThrow(BadRequestException);
   });

@@ -52,8 +52,12 @@ describe('PaymentsService reconciliation', () => {
       role?: string;
       existing?: Record<string, unknown>;
       internal?: boolean;
+      selfRegistered?: boolean;
+      confirmedPickup?: boolean;
+      savedAddress?: boolean;
     } = {}) {
       const estimate = materialPayment().estimate;
+      const address = { street: '100 Main St', addressLine2: null, city: 'Miami', state: 'FL', postalCode: '33101' };
       const context = {
         estimate: {
           ...estimate,
@@ -75,8 +79,13 @@ describe('PaymentsService reconciliation', () => {
           findUnique: jest.fn().mockResolvedValue({
             publicTokenEnabled: true, dealerModeSnapshot: DealerMode.INTERNAL,
             publicToken: 'customer-link', publicTotalToken: 'customer-total-link',
+            user: { ...context.estimate.user, registrationConsent: options.selfRegistered ? { consentText: '{"source":"REGISTRATION"}' } : null,
+              ...(options.savedAddress && { id: client.id, ...address, deliveryCoverageCheck: null }) },
+            payments: [], order: null, installationJob: null,
+            deliveryAcknowledgement: options.confirmedPickup ? { choice: 'PICKUP', verificationKey: null } : null,
           }),
         },
+        warehouseDeliverySettings: { findUnique: jest.fn().mockResolvedValue({ revision: 2 }) },
         estimateAgreement: { findFirst: jest.fn().mockResolvedValue(null) },
         payment: {
           findUnique: jest.fn().mockResolvedValue(options.existing ?? null),
@@ -111,6 +120,50 @@ describe('PaymentsService reconciliation', () => {
       expect(tx.payment.update).not.toHaveBeenCalled();
       expect(createSession).not.toHaveBeenCalled();
       expect(retrieveSession).not.toHaveBeenCalled();
+    });
+
+    it.each([PaymentType.MATERIAL, PaymentType.INSTALLMENT])('requires an address or confirmation of pickup before a public client can start %s checkout', async type => {
+      const { service, tx, createSession } = checkoutHarness({ selfRegistered: true });
+      await expect(service.createCheckoutSessionForEstimate({
+        estimateId: 9, user: client, type, materialAccepted: true,
+      })).rejects.toMatchObject({ response: { code: 'CLIENT_DELIVERY_DECISION_REQUIRED' } });
+      expect(tx.payment.upsert).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+    });
+
+    it('allows clients with a saved address to open checkout without a coverage check or a fulfillment decision', async () => {
+      const { service, createSession, tx } = checkoutHarness({ selfRegistered: true, savedAddress: true });
+      await expect(service.createCheckoutSessionForEstimate({
+        estimateId: 9, user: client, materialAccepted: true,
+      })).resolves.toMatchObject({ url: 'https://checkout.stripe.com/new' });
+      expect(createSession).toHaveBeenCalledTimes(1);
+      expect(tx.warehouseDeliverySettings.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('allows a client to pay after confirming Miami pickup without providing a delivery address', async () => {
+      const { service, createSession } = checkoutHarness({ selfRegistered: true, confirmedPickup: true });
+      await expect(service.createCheckoutSessionForEstimate({
+        estimateId: 9, user: client, materialAccepted: true,
+      })).resolves.toMatchObject({ url: 'https://checkout.stripe.com/new' });
+      expect(createSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('rechecks a pending Stripe session but reconciles money collected before delivery was reviewed', async () => {
+      const { service, tx, createSession, retrieveSession } = checkoutHarness({
+        selfRegistered: true, existing: { id: 41, status: PaymentStatus.PENDING, stripeSessionId: 'cs_open' },
+      });
+      const request = { estimateId: 9, user: client, materialAccepted: true };
+      await expect(service.createCheckoutSessionForEstimate(request)).rejects.toMatchObject({
+        response: { code: 'CLIENT_DELIVERY_DECISION_REQUIRED' },
+      });
+      expect(tx.payment.update).not.toHaveBeenCalled();
+      retrieveSession.mockResolvedValueOnce({
+        id: 'cs_open', status: 'complete', payment_status: 'paid', amount_total: 33078,
+      } as Stripe.Response<Stripe.Checkout.Session>);
+      const reconcile = jest.spyOn(service as any, 'processPaidCheckoutSession').mockResolvedValue(true);
+      await expect(service.createCheckoutSessionForEstimate(request)).resolves.toHaveProperty('url');
+      expect(reconcile).toHaveBeenCalledTimes(1);
+      expect(createSession).not.toHaveBeenCalled();
     });
 
     it('stores the displayed text and acceptance time with the pending payment', async () => {

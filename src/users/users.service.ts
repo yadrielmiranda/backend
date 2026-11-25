@@ -15,6 +15,7 @@ import { CreateTechnicianDto, UpdateTechnicianDto } from './dto/create-technicia
 import { LogsService } from '@/logs/logs.service';
 import type { AuthUser } from '@/auth/types/auth-user.type';
 import { getRoleName } from '@/auth/utils/get-role-name';
+import { assertUsernameNotReserved } from '@/auth/client-username';
 import { revokeSmsConsent } from '@/sms/sms-consent.helpers';
 import { networkParentSelect } from '@/dealer-network/network-access';
 import { normalizeAddressLine2 } from '@/common/address-line2';
@@ -434,11 +435,20 @@ export class UsersService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      if (existing.role.name === 'client' && rest.username !== undefined) {
+        // Public client and dealer registrations hold this row exclusively while claiming a name.
+        await tx.$queryRaw`SELECT id FROM PlatformTermsState WHERE id = 1 LOCK IN SHARE MODE`;
+      }
       await tx.$queryRaw`SELECT id FROM User WHERE id = ${existing.id} FOR UPDATE`;
       const current = await tx.user.findUniqueOrThrow({
         where: { id: existing.id },
-        select: { phone: true, dealerEarningsPlanId: true, dealerMode: true, role: { select: { name: true } } },
+        select: { username: true, phone: true, dealerEarningsPlanId: true, dealerMode: true, role: { select: { name: true } } },
       });
+      if (current.role.name === 'client' && rest.username !== undefined && rest.username !== current.username)
+        dataForPrisma.username = await assertUsernameNotReserved(tx, rest.username);
+      // Client profiles can contain the ZIP+4 validated for delivery. Other accounts use the existing five-digit format.
+      if (current.role.name !== 'client' && rest.postalCode?.includes('-'))
+        dataForPrisma.postalCode = rest.postalCode.split('-')[0];
       dataForPrisma.dealerMode = this.resolveDealerMode({
         roleName: idRole ? nextRoleName : current.role.name,
         dealerMode, fallbackMode: current.dealerMode,

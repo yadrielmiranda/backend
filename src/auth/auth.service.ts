@@ -11,6 +11,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '@/prisma/prisma.service';
 import { UsersService } from '@/users/users.service';
 import { RegisterUserDto } from './dto/register-user.dto';
+import { createWithClientUsername, identityConflict } from './client-username';
 import * as bcrypt from 'bcrypt';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -187,15 +188,15 @@ export class AuthService {
       );
     }
 
-    // El registro público valida la dirección residencial contra la misma
-    // cobertura por carretera usada por Delivery. No se guarda el resultado:
-    // el delivery real se vuelve a validar cuando se solicite.
-    const coverage = await this.deliveryCoverage.checkAddress({
-      street: userData.street,
-      city: userData.city,
-      state: userData.state,
-      postalCode: userData.postalCode,
-    });
+    // Older registration forms send a full address and expect the existing coverage result.
+    const { street, city, state, postalCode } = userData;
+    const addressSupplied = [street, city, state, postalCode, userData.addressLine2].some(value => value != null);
+    if (addressSupplied && !(street && city && state && postalCode)) {
+      throw new BadRequestException('Provide a complete address or leave the address out.');
+    }
+    const coverage = addressSupplied
+      ? await this.deliveryCoverage.checkAddress({ street, city, state, postalCode })
+      : null;
     const hashedPassword = await bcrypt.hash(password, this.bcryptRounds);
 
     try {
@@ -209,9 +210,10 @@ export class AuthService {
             throw new ConflictException('SMS is blocked after a STOP request. Leave both SMS options unchecked to create your account, or reply START to the same sending number before subscribing.');
           }
         }
-        const user = await tx.user.create({
+        const user = await createWithClientUsername(tx, userData, username => tx.user.create({
           data: {
             ...userData,
+            username,
             addressLine2: normalizeAddressLine2(userData.addressLine2),
             password: hashedPassword,
             isTaxExempt: false,
@@ -234,7 +236,7 @@ export class AuthService {
             idRole: true,
             role: { select: { id: true, name: true, markup: true } },
           },
-        });
+        }));
         const now = new Date();
         if (referral) await tx.referralAttribution.create({ data: {
           profileId: referral.id, referredUserId: user.id,
@@ -288,21 +290,25 @@ export class AuthService {
         await this.welcome.enqueue(user.id, tx);
         return user;
       });
-      return { ...user, deliveryAvailable: coverage.available };
+      return { ...user, deliveryAvailable: coverage?.available ?? null };
     } catch (error: any) {
       if (error instanceof HttpException) throw error;
       if (error?.code === 'P2002') {
-        throw new ConflictException('El nombre de usuario o el email ya existen.');
+        throw identityConflict(error) ?? new ConflictException('Account details are already in use.');
       }
       throw new InternalServerErrorException('No se pudo crear el usuario.');
     }
   }
 
   async updateProfile(userId: number, data: UpdateProfileDto) {
-    return this.usersService.updateUser({
-      where: { id: userId },
-      data: pickProfileFields(data),
-    });
+    try {
+      return await this.usersService.updateUser({
+        where: { id: userId },
+        data: pickProfileFields(data),
+      });
+    } catch (error) {
+      throw identityConflict(error) ?? error;
+    }
   }
 
   private buildAccessPayload(user: any, sessionId: string) {

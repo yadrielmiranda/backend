@@ -29,6 +29,7 @@ function fixture() {
     ],
   };
   const db: any = {
+    dealerRegistrationRequest: { findUnique: jest.fn(async () => null) },
     platformTermsState: {
       findUniqueOrThrow: jest.fn(async () => ({ currentVersion: state.versions.find(v => v.id === state.currentId) ?? null })),
       update: jest.fn(async ({ data }) => { state.currentId = data.currentVersionId; }),

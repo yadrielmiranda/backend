@@ -53,6 +53,7 @@ import {
   resolveMaterialSaleSubtotal,
 } from '@/orders/order-material-financials';
 import { NotificationsService } from '@/notifications/notifications.service';
+import { assertClientDeliveryDecision } from '@/deliveries/client-delivery-decision';
 import { snapshotReferralReward } from '@/referrals/referral-terms';
 import { MaterialsSalesService } from '@/materials/materials-sales.service';
 import { orderStatusNotification } from '@/orders/order-status-notification';
@@ -1430,6 +1431,7 @@ export class PaymentsService {
         return { url: refreshUrl };
       }
       if (session.status === 'complete') throw new ConflictException('Checkout completed, but payment confirmation is pending.');
+      if (session.status === 'open') await this.requireDeliveryReviewBeforeCheckout(tx, contexts);
       const group = await tx.payment.findMany({ where: { stripeSessionId: sessionId } });
       const matchesSelection = group.length === contexts.length && group.every(p =>
         p.idEst === contexts[0].estimate.id && p.status === PaymentStatus.PENDING &&
@@ -1455,6 +1457,14 @@ export class PaymentsService {
       await this.closeUnpaidCheckoutSession(sessionId, PaymentStatus.CANCELED, tx);
     }
     return null;
+  }
+
+  private async requireDeliveryReviewBeforeCheckout(tx: Prisma.TransactionClient, contexts: SelectedPaymentContext[]) {
+    const context = contexts[0];
+    if (context.estimate.user.role.name === 'client' && !context.job && !context.estimate.order &&
+      contexts.some(item => item.type === PaymentType.MATERIAL || item.type === PaymentType.INSTALLMENT)) {
+      await assertClientDeliveryDecision(context.estimate.id, tx);
+    }
   }
 
   async createCheckoutSessionForEstimate(params: {
@@ -1591,6 +1601,7 @@ export class PaymentsService {
                 'Stripe session has no checkout URL.',
               );
             }
+            await this.requireDeliveryReviewBeforeCheckout(tx, contexts);
             // Conserva la fecha original al reanudar la misma sesión aceptada.
             if (
               requiresMaterialAcceptance &&
@@ -1622,6 +1633,7 @@ export class PaymentsService {
         throw new ConflictException(`${type} payment is already paid.`);
       }
 
+      await this.requireDeliveryReviewBeforeCheckout(tx, contexts);
       if (contexts.some(selected => selected.processingComponents?.installationShare?.basis)) {
         const receipts = await tx.paymentReceipt.findMany({
           where: { payment: { idEst: params.estimateId } }, orderBy: { id: 'asc' },

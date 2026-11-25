@@ -441,6 +441,7 @@ model User {
   smsConsent                        SmsConsent?
   smsConsentEvents                  SmsConsentEvent[]
   registrationConsent               RegistrationConsent?
+  deliveryCoverageCheck             ClientDeliveryCoverageCheck?
   platformTermsAcceptances          PlatformTermsAcceptance[]
   platformTermsPublished            PlatformTermsVersion[]       @relation("PlatformTermsPublisher")
   sessions                          Session[]
@@ -480,6 +481,32 @@ model User {
   @@index([dealerMode])
   @@index([parentDealerId])
   @@index([dealerEarningsPlanId])
+}
+
+model ClientDeliveryCoverageCheck {
+  userId          Int      @id
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verificationKey String   @db.Char(64)
+  locationProof   String?  @db.Char(64)
+  available       Boolean
+
+  @@map("client_delivery_coverage_checks")
+}
+
+enum ClientDeliveryChoice {
+  PICKUP
+  DELIVERY
+}
+
+// Acknowledges the prepayment information; actual fulfillment is selected on the ready order.
+model EstimateDeliveryAcknowledgement {
+  estimateId      Int                  @id
+  estimate        Estimate             @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  choice          ClientDeliveryChoice
+  verificationKey String?              @db.Char(64)
+  acknowledgedAt  DateTime             @default(now())
+
+  @@map("estimate_delivery_acknowledgements")
 }
 
 // Cada publicación conserva su texto y sus aceptaciones por versión.
@@ -1705,6 +1732,7 @@ model Estimate {
 
   pieces            Piece[]
   order             Order?
+  deliveryAcknowledgement EstimateDeliveryAcknowledgement?
   payments          Payment[]
   processingCosts   StripeProcessingCost[]
   installationJob   InstallationJob?

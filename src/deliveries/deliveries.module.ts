@@ -10,15 +10,18 @@ import { GoogleAddressValidationService } from './google-address-validation.serv
 import { WarehouseDeliveryModule } from '@/warehouse-delivery/warehouse-delivery.module';
 import { DeliveryCoverageService } from './delivery-coverage.service';
 import { AddressConfirmationsController } from './address-confirmations.controller';
+import { ClientDeliveryController } from './client-delivery.controller';
+import { ClientDeliveryService } from './client-delivery.service';
 
 @Module({
   imports: [HttpModule, PrismaModule, NotificationsModule, LogsModule, WarehouseDeliveryModule],
-  controllers: [DeliveriesController, AddressConfirmationsController],
+  controllers: [DeliveriesController, AddressConfirmationsController, ClientDeliveryController],
   providers: [
     DeliveriesService,
     GoogleRoutesService,
     GoogleAddressValidationService,
     DeliveryCoverageService,
+    ClientDeliveryService,
   ],
   exports: [DeliveriesService, DeliveryCoverageService],
 })

@@ -159,6 +159,7 @@ describe('Referral registration integration', () => {
     db.smsConsentEvent = { create: jest.fn() };
     db.$queryRaw = jest.fn(async () => [{ id: 1 }]);
     db.platformTermsState = { findUniqueOrThrow: jest.fn(async () => ({ currentVersion: null })) };
+    db.dealerRegistrationRequest = { findUnique: jest.fn(async () => null) };
     db.$transaction = jest.fn(async work => work(db));
     const auth = new AuthService({} as any, db, {} as any, {} as any, {} as any,
       { getProgram: async () => ({ version: 'a'.repeat(64) }) } as any,

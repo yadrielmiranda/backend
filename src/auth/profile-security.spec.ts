@@ -36,6 +36,14 @@ describe('Self-service field authorization (H01)', () => {
     expect(await service.updateProfile(7, { firstName: 'Updated' })).toEqual({ firstName: 'Updated' });
   });
 
+  it('returns a username-specific conflict when a self-service rename races with another account', async () => {
+    const users = { updateUser: jest.fn().mockRejectedValue({ code: 'P2002', meta: { target: 'User_username_key' } }) };
+    const service = new AuthService(users as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    await expect(service.updateProfile(7, { username: 'TakenName' })).rejects.toMatchObject({
+      response: { code: 'USERNAME_TAKEN', field: 'username' }, status: 409,
+    });
+  });
+
   it('allows supplemental address details through registration and profile validation', async () => {
     for (const metatype of [RegisterUserDto, UpdateProfileDto]) {
       const result = await pipe.transform({ ...personal, password: 'Example-password-123', addressLine2: '  Suite 8  ' }, { type: 'body', metatype });
@@ -60,6 +68,7 @@ describe('Self-service field authorization (H01)', () => {
     db.$transaction = work => work(db);
     db.$queryRaw = jest.fn(async () => [{ id: 1 }]);
     db.platformTermsState = { findUniqueOrThrow: jest.fn(async () => ({ currentVersion: null })) };
+    db.dealerRegistrationRequest = { findUnique: jest.fn(async () => null) };
     const service = new AuthService({} as any, db, {} as any, {} as any, {} as any,
       { getProgram: async () => ({ version: 'a'.repeat(64) }) } as any,
       { checkAddress: async () => ({ available: true }) } as any, { enqueue: jest.fn() } as any);

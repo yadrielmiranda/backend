@@ -15,11 +15,12 @@ const personal = {
   street: '100 Original Street', city: 'Miami', state: 'FL', postalCode: '33101', idRole: 2,
 };
 
-function accountFixture() {
-  let account: any = { ...personal, id: 7, role: { name: 'client' }, dealerMode: null, deletedAt: null };
+function accountFixture(role = 'client') {
+  let account: any = { ...personal, id: 7, role: { name: role }, dealerMode: null, deletedAt: null };
   const select = (row: any, fields: any) => Object.fromEntries(Object.keys(fields).map(key => [key, row[key]]));
   const db: any = {
     $queryRaw: jest.fn(async () => []),
+    dealerRegistrationRequest: { findUnique: jest.fn(async () => null) },
     role: { findUnique: jest.fn(async () => ({ id: 2, name: 'client' })) },
     user: {
       findFirst: jest.fn(async ({ select: fields }) => fields ? select(account, fields) : { ...account }),
@@ -39,6 +40,29 @@ function accountFixture() {
 }
 
 describe('Optional account and branding address details', () => {
+  it('preserves ZIP+4 for client profiles and the five-digit ZIP for other roles', async () => {
+    const validation = new ValidationPipe({ transform: true, whitelist: true, transformOptions: { enableImplicitConversion: true } });
+    const dto = await validation.transform({ postalCode: ' 33138-0426 ' }, { type: 'body', metatype: UpdateProfileDto });
+    expect(dto.postalCode).toBe('33138-0426');
+    for (const role of ['client', 'dealer', 'operator']) {
+      const { db, service } = accountFixture(role);
+      const expected = role === 'client' ? '33138-0426' : '33138';
+      await expect(service.updateUser({ where: { id: 7 }, data: dto })).resolves.toMatchObject({ postalCode: expected });
+      const rename = await validation.transform({ username: 'NewUsername' }, { type: 'body', metatype: UpdateProfileDto });
+      await expect(service.updateUser({ where: { id: 7 }, data: rename })).resolves.toMatchObject({ postalCode: expected });
+      expect(db.user.update.mock.lastCall[0].data).not.toHaveProperty('postalCode');
+    }
+  });
+  it('allows a client to change username before adding an address, while respecting pending dealer usernames', async () => {
+    const { db, service } = accountFixture();
+    db.user.findUniqueOrThrow.mockResolvedValue({ username: 'address-user', role: { name: 'client' }, phone: personal.phone });
+    const change = { where: { id: 7 }, data: { username: 'NewUsername' } };
+    db.dealerRegistrationRequest.findUnique.mockResolvedValueOnce({ id: 11 });
+    await expect(service.updateUser(change)).rejects.toMatchObject({ response: { code: 'USERNAME_TAKEN' } });
+    expect(db.user.update).not.toHaveBeenCalled();
+    await expect(service.updateUser(change)).resolves.toMatchObject({ username: 'NewUsername' });
+    expect(db.user.update.mock.calls[0][0].data).not.toHaveProperty('street');
+  });
   it('persists and returns details separately from the street and supports omission versus clearing', async () => {
     const { db, service } = accountFixture();
     const created = await service.createUser({ ...personal, addressLine2: '  Apartment 4B  ' });
