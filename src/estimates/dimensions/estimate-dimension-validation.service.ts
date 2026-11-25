@@ -50,6 +50,19 @@ const MIN_TRANSOM_HEIGHT_IN = 10;
 const MIN_WINDOW_HEIGHT_IN = 24.125;
 const MIN_FIX_HEIGHT_IN = 12;
 
+function validatePentagonLegHeight(
+  confName: string | null | undefined,
+  heightIn: number,
+  legHeightIn: number,
+): void {
+  if (
+    confName?.trim().toLowerCase() === 'pentagon (symmetric)' &&
+    legHeightIn >= heightIn
+  ) {
+    throw new BadRequestException('Leg Height must be less than Height.');
+  }
+}
+
 function resolveShapeHeightIn(
   confName: string | null | undefined,
   widthIn: number,
@@ -247,6 +260,8 @@ export class EstimateDimensionValidationService {
     const lh = cfg?.requiresLegHeight
       ? num(pieceDto.legHeight, 'Leg Height')
       : 0;
+
+    validatePentagonLegHeight(cfg?.conf, h, lh);
 
     const regularHeightIn = Math.max(h, hl, hr, lh);
 
@@ -466,6 +481,8 @@ export class EstimateDimensionValidationService {
       const legHeight = cfg?.requiresLegHeight
         ? num(dto.legHeight, 'Leg Height')
         : 0;
+
+      validatePentagonLegHeight(cfg?.conf, heightIn, legHeight);
 
       if (cfg?.requiresWindowHeight) {
         const windowHeightRaw = (dto as any).windowHeight;
