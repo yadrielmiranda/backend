@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { DealerPreferredLanguage, Prisma } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { WelcomeSmsService } from '@/sms/welcome-sms.service';
 import { WelcomeEmailService } from './welcome-email.service';
@@ -13,9 +13,9 @@ export class AccountWelcomeService {
   ) {}
 
   /** Record welcome messages and the admin notice in the account creation transaction. */
-  async enqueue(userId: number, db: Prisma.TransactionClient, approvalLanguage?: DealerPreferredLanguage): Promise<void> {
-    await this.email.enqueue(userId, db, approvalLanguage);
-    await this.sms.enqueue(userId, db, approvalLanguage);
+  async enqueue(userId: number, db: Prisma.TransactionClient, isDealerApproval = false): Promise<void> {
+    await this.email.enqueue(userId, db, isDealerApproval);
+    await this.sms.enqueue(userId, db, isDealerApproval);
     await this.notifications.notifyAdminsOfAccountCreation(userId, db);
   }
 }

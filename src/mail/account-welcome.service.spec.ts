@@ -26,8 +26,8 @@ describe('account welcome channels', () => {
     const sms = { enqueue: jest.fn().mockResolvedValue(undefined) };
     const notifications = { notifyAdminsOfAccountCreation: jest.fn().mockResolvedValue(undefined) };
     await new AccountWelcomeService(email as never, sms as never, notifications as never).enqueue(7, db as never);
-    expect(email.enqueue).toHaveBeenCalledWith(7, db, undefined);
-    expect(sms.enqueue).toHaveBeenCalledWith(7, db, undefined);
+    expect(email.enqueue).toHaveBeenCalledWith(7, db, false);
+    expect(sms.enqueue).toHaveBeenCalledWith(7, db, false);
     expect(notifications.notifyAdminsOfAccountCreation).toHaveBeenCalledTimes(1);
     expect(notifications.notifyAdminsOfAccountCreation).toHaveBeenCalledWith(7, db);
   });

@@ -36,7 +36,7 @@ function queueFixture() {
   };
   const row = {
     userId: 7, email: address, status: 'PENDING', attempts: 0,
-    approvalLanguage: null as 'Spanish' | 'English' | null,
+    isDealerApproval: false,
     nextAttemptAt: new Date(), attemptedAt: null as Date | null,
     providerMessageId: null as string | null, errorCode: null as string | null,
     createdAt: new Date(), updatedAt: new Date(),
@@ -82,33 +82,33 @@ describe('welcome email', () => {
   });
   afterEach(() => { jest.useRealTimers(); jest.restoreAllMocks(); });
 
-  it('queues the dealer approval language and uses the same welcome delivery', async () => {
+  it('queues the dealer approval and uses the same welcome delivery', async () => {
     const f = queueFixture();
-    await f.service.enqueue(7, f.db as never, 'Spanish');
+    await f.service.enqueue(7, f.db as never, true);
     expect(f.db.accountWelcomeEmail.createMany).toHaveBeenCalledWith({
-      data: [{ userId: 7, email: address, approvalLanguage: 'Spanish' }], skipDuplicates: true,
+      data: [{ userId: 7, email: address, isDealerApproval: true }], skipDuplicates: true,
     });
-    f.row.approvalLanguage = 'Spanish';
+    f.row.isDealerApproval = true;
     await f.service.processPending();
-    expect(f.email.sendAccountWelcome).toHaveBeenCalledWith(expect.objectContaining({ to: address, approvalLanguage: 'Spanish' }));
+    expect(f.email.sendAccountWelcome).toHaveBeenCalledWith(expect.objectContaining({ to: address, isDealerApproval: true }));
     expect(f.row.status).toBe('ACCEPTED');
   });
 
   it('does not enqueue an approval when local or delivery is disabled', async () => {
     const f = queueFixture();
     f.email.canSendAccountWelcomeEmail.mockReturnValue(false);
-    await f.service.enqueue(7, f.db as never, 'English');
+    await f.service.enqueue(7, f.db as never, true);
     expect(f.db.accountWelcomeEmail.createMany).not.toHaveBeenCalled();
   });
 
   it('delivers rejection through notification SMTP and honors the local transport gate', async () => {
     const f = deliveryFixture();
     f.values.NODE_ENV = 'development';
-    expect((await f.service.sendDealerRegistrationRejection(address, 'Spanish')).status).toBe('UNAVAILABLE');
+    expect((await f.service.sendDealerRegistrationRejection(address)).status).toBe('UNAVAILABLE');
     expect(sendMail).not.toHaveBeenCalled();
     f.values.NODE_ENV = 'production';
-    expect((await f.service.sendDealerRegistrationRejection(address, 'Spanish')).status).toBe('ACCEPTED');
-    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ to: address, subject: expect.stringContaining('no fue aprobada') }));
+    expect((await f.service.sendDealerRegistrationRejection(address)).status).toBe('ACCEPTED');
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ to: address, subject: expect.stringContaining('was not approved') }));
   });
 
   describe('content', () => {
@@ -231,7 +231,7 @@ describe('welcome email', () => {
     it.each(['client', 'dealer', 'admin', 'operator', 'warehouse'])('queues a %s only once per user, without sending inside the transaction', async role => {
       const f = queueFixture(); f.user.role.name = role;
       await f.service.enqueue(7, f.db as never);
-      expect(f.db.accountWelcomeEmail.createMany).toHaveBeenCalledWith({ data: [{ userId: 7, email: address }], skipDuplicates: true });
+      expect(f.db.accountWelcomeEmail.createMany).toHaveBeenCalledWith({ data: [{ userId: 7, email: address, isDealerApproval: false }], skipDuplicates: true });
       expect(f.email.sendAccountWelcome).not.toHaveBeenCalled();
       expect(f.email.canSendAccountWelcomeEmail).not.toHaveBeenCalled();
     });
@@ -239,7 +239,7 @@ describe('welcome email', () => {
       const f = queueFixture(); await f.service.enqueue(7, f.db as never);
       f.user.role.name = 'technician'; f.user.email = null; f.user.contactEmail = ' Shared@Example.com ';
       await f.service.enqueue(8, f.db as never);
-      expect(f.db.accountWelcomeEmail.createMany).toHaveBeenNthCalledWith(2, { data: [{ userId: 8, email: address }], skipDuplicates: true });
+      expect(f.db.accountWelcomeEmail.createMany).toHaveBeenNthCalledWith(2, { data: [{ userId: 8, email: address, isDealerApproval: false }], skipDuplicates: true });
       await f.service.processPending();
       expect(f.email.sendAccountWelcome).toHaveBeenCalledWith(expect.objectContaining({ roleName: 'technician', to: address }));
     });

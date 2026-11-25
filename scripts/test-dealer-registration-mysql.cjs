@@ -179,9 +179,10 @@ async function exerciseFlow(db, http, jwt) {
       assert.deepEqual(branded.body, { level, inviter: brand });
     }
     const person = {
-      username: 'applicant.' + index, password: 'example-password', firstName: 'Example', lastName: level,
+      ...(index === 0 ? {} : { username: 'applicant.' + index }),
+      password: 'example-password', firstName: 'Example', lastName: level,
       email: 'applicant' + index + '@example.com', phone: '+1305555010' + index, street: '100 Example St',
-      city: 'Miami', state: 'FL', postalCode: '33101', yearsOfExperience: index, preferredLanguage: index ? 'English' : 'Spanish',
+      city: 'Miami', state: 'FL', postalCode: '33101', yearsOfExperience: index,
       platformTermsAccepted: true, platformTermsVersionId: currentTerms.id,
       serviceConsent: index === 0, promotionsConsent: index === 1, consentVersion: program.dealerRegistration.version,
       ...(index ? {} : { companyName: 'Glass Company', estimatedMonthlySales: 1234.56 }),
@@ -191,16 +192,19 @@ async function exerciseFlow(db, http, jwt) {
       await http.post(publicPath).send({ ...person, platformTermsVersionId: currentTerms.id + 1 }).expect(409);
       await http.post(publicPath).send({ ...person, consentVersion: '0'.repeat(64) }).expect(409);
     }
-    await http.post(publicPath).send(person).expect(201);
+    const { body: submitted } = await http.post(publicPath).send(person).expect(201);
+    const expectedUsername = person.username ?? 'Example' + level;
+    assert.equal(submitted.username, expectedUsername);
     await http.post(publicPath).send(person).expect(409);
-    assert.equal(await db.user.count({ where: { username: person.username } }), 0);
-    assert.equal(await db.notification.count({ where: { ...accountEvents, message: { contains: person.username } } }), 0);
+    assert.equal(await db.user.count({ where: { username: expectedUsername } }), 0);
+    assert.equal(await db.notification.count({ where: { ...accountEvents, message: { contains: expectedUsername } } }), 0);
     assert.equal(await db.accountWelcomeEmail.count({ where: { email: person.email } }), 0);
     const [pending] = await list(reviewer);
-    assert.equal(pending.username, person.username);
+    assert.equal(pending.id, submitted.id);
+    assert.equal(pending.username, expectedUsername);
     assert.equal(pending.level, level);
     assert.equal(pending.markupPercent, submittedMarkup);
-    assert.equal(pending.preferredLanguage, person.preferredLanguage);
+    assert(!Object.hasOwn(pending, 'preferredLanguage'));
     assert.equal(pending.yearsOfExperience, person.yearsOfExperience);
     assert.equal(pending.estimatedMonthlySales, index ? null : '1234.56');
     assert.equal(pending.companyName, person.companyName ?? null);
@@ -238,14 +242,14 @@ async function exerciseFlow(db, http, jwt) {
     assert.equal(outcomes.filter(result => result.status === 200).length, 1, 'A concurrent approval succeeds once: ' + observed);
     assert(outcomes.some(result => [404, 409].includes(result.status)), 'The repeated approval must give a controlled response: ' + observed);
     assert.deepEqual(await list(reviewer), []);
-    const account = await db.user.findUniqueOrThrow({ where: { username: person.username }, include: { role: true } });
+    const account = await db.user.findUniqueOrThrow({ where: { username: expectedUsername }, include: { role: true } });
     await checkAccountNotice(account, level, 'External');
     assert.equal(account.parentDealerId, parentId);
     assert.equal(account.dealerMode, 'EXTERNAL');
     assert.equal(account.role.name, 'dealer');
     assert.equal(account.companyName, person.companyName ?? null);
     assert.equal(account.yearsOfExperience, person.yearsOfExperience);
-    assert.equal(account.preferredLanguage, person.preferredLanguage);
+    assert(!Object.hasOwn(account, 'preferredLanguage'));
     assert.equal(await require('bcrypt').compare(person.password, account.password), true);
     assert.equal(account.paymentPlanId, null);
     assert.equal((await resolveNewPlan(db, account.id)).planId, plan.id);

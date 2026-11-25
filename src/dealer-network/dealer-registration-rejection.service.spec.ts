@@ -3,12 +3,12 @@ import { renderRegistrationResultEmail, renderRegistrationResultSms } from './de
 import { renderWelcomeEmail } from '@/mail/welcome-email-template';
 
 const applicant = {
-  id: 84, phone: '+13055550114', email: 'applicant@example.test', preferredLanguage: 'Spanish' as const,
+  id: 84, phone: '+13055550114', email: 'applicant@example.test',
   serviceSmsAccepted: true, smsConsentedAt: new Date(), smsConsentVersion: 'test-version', smsConsentText: 'Service notice.',
 };
 
 function fixture() {
-  const delivery = { requestId: applicant.id, channel: 'SMS', language: applicant.preferredLanguage, destination: applicant.phone,
+  const delivery = { requestId: applicant.id, channel: 'SMS', destination: applicant.phone,
     smsConsentVersion: applicant.smsConsentVersion, smsConsentText: applicant.smsConsentText,
     smsConsentedAt: applicant.smsConsentedAt, attempts: 0 };
   const queue = {
@@ -23,18 +23,18 @@ function fixture() {
 }
 
 describe('dealer registration outcomes', () => {
-  it.each(['English', 'Spanish'] as const)('sends one localized welcome with sign-in and a separate rejection template in %s', language => {
-    const welcome = renderWelcomeEmail({ firstName: 'Test', username: 'applicant', roleName: 'dealer', approvalLanguage: language,
+  it('sends an English approval with sign-in and a separate English rejection', () => {
+    const welcome = renderWelcomeEmail({ firstName: 'Test', username: 'applicant', roleName: 'dealer', isDealerApproval: true,
       origin: 'https://portal.example.test', companyName: 'Fixture Company', supportEmail: 'support@example.test' });
-    const rejected = renderRegistrationResultEmail(language, false, 'Fixture Company', 'https://portal.example.test');
-    expect(welcome.subject).toContain(language === 'Spanish' ? 'fue aprobada' : 'was approved');
+    const rejected = renderRegistrationResultEmail(false, 'Fixture Company', 'https://portal.example.test');
+    expect(welcome.subject).toContain('was approved');
     expect(welcome.text).toContain('https://portal.example.test/login');
-    expect(welcome.html).toContain(language === 'Spanish' ? 'Iniciar sesión' : 'Sign in');
-    expect(rejected.text).toContain(language === 'Spanish' ? 'no fue aprobada' : 'was not approved');
+    expect(welcome.html).toContain('Sign in');
+    expect(rejected.text).toContain('was not approved');
     expect(rejected.html).not.toContain('/login');
-    expect(renderRegistrationResultSms(language, true, 'https://portal.example.test')).toContain('https://portal.example.test/login');
-    expect(renderRegistrationResultSms(language, false)).toContain(language === 'Spanish' ? 'no fue aprobada' : 'was not approved');
-    expect(renderRegistrationResultSms(language, false)).toContain('STOP');
+    expect(renderRegistrationResultSms(true, 'https://portal.example.test')).toContain('https://portal.example.test/login');
+    expect(renderRegistrationResultSms(false)).toContain('was not approved');
+    expect(renderRegistrationResultSms(false)).toContain('STOP');
   });
 
   it('does not queue or process local email or SMS, even for an opted-in applicant', async () => {
@@ -53,8 +53,8 @@ describe('dealer registration outcomes', () => {
     const f = fixture();
     await f.service.enqueue(applicant, f.db as never);
     expect(f.queue.createMany).toHaveBeenCalledWith({ skipDuplicates: true, data: [
-      { requestId: applicant.id, channel: 'EMAIL', destination: applicant.email, language: 'Spanish' },
-      { requestId: applicant.id, channel: 'SMS', destination: applicant.phone, language: 'Spanish',
+      { requestId: applicant.id, channel: 'EMAIL', destination: applicant.email },
+      { requestId: applicant.id, channel: 'SMS', destination: applicant.phone,
         smsConsentedAt: applicant.smsConsentedAt, smsConsentVersion: applicant.smsConsentVersion, smsConsentText: applicant.smsConsentText },
     ] });
   });
@@ -81,7 +81,7 @@ describe('dealer registration outcomes', () => {
     f.queue.findMany.mockResolvedValue([{ ...f.delivery, channel: 'EMAIL', destination: applicant.email }]);
     f.email.sendDealerRegistrationRejection.mockResolvedValue({ status: 'ACCEPTED', providerMessageId: '<mail>' });
     await f.service.processPending();
-    expect(f.email.sendDealerRegistrationRejection).toHaveBeenCalledWith(applicant.email, applicant.preferredLanguage);
+    expect(f.email.sendDealerRegistrationRejection).toHaveBeenCalledWith(applicant.email);
     expect(f.sms.sendDealerRegistrationRejectionSms).not.toHaveBeenCalled();
     expect(f.queue.updateMany.mock.calls.at(-1)![0].data).toEqual({ status: 'ACCEPTED', errorCode: null, providerMessageId: '<mail>' });
   });
@@ -91,7 +91,7 @@ describe('dealer registration outcomes', () => {
       const f = fixture();
       f.sms.sendDealerRegistrationRejectionSms.mockResolvedValue({ status: outcome, errorCode: 'provider-status' });
       await f.service.processPending();
-      expect(f.sms.sendDealerRegistrationRejectionSms).toHaveBeenCalledWith(applicant.phone, 'Spanish');
+      expect(f.sms.sendDealerRegistrationRejectionSms).toHaveBeenCalledWith(applicant.phone);
       const transition = f.queue.updateMany.mock.calls.at(-1)![0];
       expect(transition.data.status).toBe(status);
       expect(transition.where).toEqual({ requestId: applicant.id, channel: 'SMS', status: 'SENDING', attempts: 1 });

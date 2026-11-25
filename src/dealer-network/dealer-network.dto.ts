@@ -1,4 +1,4 @@
-import { IntersectionType, OmitType, PickType } from '@nestjs/mapped-types';
+import { IntersectionType, OmitType, PartialType, PickType } from '@nestjs/mapped-types';
 import { IsNumber, Min, Max, MinLength, MaxLength, IsString, IsOptional, IsInt, IsIn, IsBoolean, Matches } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { CreateUserDto } from '@/users/dto/create-user.dto';
@@ -17,9 +17,9 @@ export class UpdateDealerInviteDto {
 }
 
 export class SubmitDealerRegistrationDto extends IntersectionType(PickType(CreateUserDto, [
-  'username', 'firstName', 'lastName', 'email', 'phone', 'password',
+  'firstName', 'lastName', 'email', 'phone', 'password',
   'street', 'addressLine2', 'city', 'state', 'postalCode',
-] as const), RegistrationConsentsDto) {
+] as const), PartialType(PickType(CreateUserDto, ['username'] as const), { skipNullProperties: false }), RegistrationConsentsDto) {
   @MinLength(8)
   declare password: string;
 
@@ -45,9 +45,6 @@ export class SubmitDealerRegistrationDto extends IntersectionType(PickType(Creat
   @Min(0)
   @Max(2147483647)
   yearsOfExperience: number;
-
-  @IsIn(['English', 'Spanish'])
-  preferredLanguage: 'English' | 'Spanish';
 }
 
 export class ReviewDealerRegistrationDto {

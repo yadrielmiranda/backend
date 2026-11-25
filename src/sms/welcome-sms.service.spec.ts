@@ -18,6 +18,7 @@ function fixture(withPending = true) {
   };
   const row = {
     userId: 7, phone, consentedAt: user.smsConsent.consentedAt!, status: 'PENDING', attempts: 0,
+    isDealerApproval: false,
     nextAttemptAt: new Date(), attemptedAt: null as Date | null,
     providerMessageSid: null as string | null, errorCode: null as string | null,
     createdAt: new Date(), updatedAt: new Date(),
@@ -75,13 +76,13 @@ describe('welcome SMS outbox', () => {
   });
   afterEach(() => { jest.useRealTimers(); jest.restoreAllMocks(); });
 
-  it('sends one approved-account welcome in the language chosen at application time', async () => {
+  it('sends one dealer approval welcome per account', async () => {
     const f = fixture(false);
-    await f.service.enqueue(7, f.db as never, 'Spanish');
-    await f.service.enqueue(7, f.db as never, 'Spanish');
+    await f.service.enqueue(7, f.db as never, true);
+    await f.service.enqueue(7, f.db as never, true);
     await f.service.processPending();
     expect(f.sms.sendAccountWelcomeSms).toHaveBeenCalledTimes(1);
-    expect(f.sms.sendAccountWelcomeSms).toHaveBeenCalledWith({ phone, firstName: 'Jordan', approvalLanguage: 'Spanish' });
+    expect(f.sms.sendAccountWelcomeSms).toHaveBeenCalledWith({ phone, firstName: 'Jordan', isDealerApproval: true });
   });
 
   it.each(['client', 'dealer', 'admin', 'operator', 'warehouse', 'technician'])(
@@ -91,7 +92,7 @@ describe('welcome SMS outbox', () => {
       f.user.dealerMode = 'INTERNAL';
       await f.service.enqueue(7, f.db as never);
       expect(f.db.accountWelcomeSms.createMany).toHaveBeenCalledWith({
-        data: [{ userId: 7, phone, consentedAt: f.user.smsConsent.consentedAt }], skipDuplicates: true,
+        data: [{ userId: 7, phone, consentedAt: f.user.smsConsent.consentedAt, isDealerApproval: false }], skipDuplicates: true,
       });
       expect(f.rows.size).toBe(1);
       expect(f.sms.sendAccountWelcomeSms).not.toHaveBeenCalled();
@@ -183,7 +184,7 @@ describe('welcome SMS outbox', () => {
     await f.service.processPending();
     await f.createService().processPending();
     expect(f.sms.sendAccountWelcomeSms).toHaveBeenCalledTimes(1);
-    expect(f.sms.sendAccountWelcomeSms).toHaveBeenCalledWith({ phone, firstName: 'Jordan' });
+    expect(f.sms.sendAccountWelcomeSms).toHaveBeenCalledWith({ phone, firstName: 'Jordan', isDealerApproval: false });
     expect(f.row).toMatchObject({ status: 'ACCEPTED', providerMessageSid: sid, attempts: 1 });
     expect(f.db.accountWelcomeSms.createMany).not.toHaveBeenCalled();
   });

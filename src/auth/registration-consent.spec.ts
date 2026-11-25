@@ -106,10 +106,10 @@ describe('Registration messaging consent', () => {
     const welcomes = new AccountWelcomeService(email as never, new WelcomeSmsService(f.db, sender as never), notifications as never);
     f.welcome.enqueue.mockImplementation((id, tx) => welcomes.enqueue(id, tx as never));
     const account = await f.register({ serviceConsent, promotionsConsent });
-    expect(email.enqueue).toHaveBeenCalledWith(account.id, f.db, undefined);
+    expect(email.enqueue).toHaveBeenCalledWith(account.id, f.db, false);
     expect(notifications.notifyAdminsOfAccountCreation).toHaveBeenCalledWith(account.id, f.db);
     expect(f.state.welcomeSms).toEqual(serviceConsent ? [{
-      userId: account.id, phone: account.phone, consentedAt: f.state.sms[0].consentedAt,
+      userId: account.id, phone: account.phone, consentedAt: f.state.sms[0].consentedAt, isDealerApproval: false,
     }] : []);
     expect(sender.sendAccountWelcomeSms).not.toHaveBeenCalled();
   });

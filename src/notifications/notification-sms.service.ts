@@ -14,7 +14,6 @@ import { isSmsDeliveryEnabled } from '@/sms/sms-delivery-policy';
 import { hasActiveServiceSmsConsent } from '@/sms/sms-recipient-policy';
 import { deliverSms, SmsDeliveryResult, SmsSettings } from '@/sms/sms-transport';
 import { renderWelcomeSms } from '@/sms/welcome-sms-template';
-import type { DealerPreferredLanguage } from '@prisma/client';
 import { renderRegistrationResultSms } from '@/dealer-network/dealer-registration-result-template';
 import {
   allowsStaffNotificationDelivery,
@@ -91,15 +90,15 @@ export class NotificationSmsService {
   }
 
   /** The welcome outbox has already rechecked the account's current service consent. */
-  async sendAccountWelcomeSms(input: { phone: string; firstName: string | null; approvalLanguage?: DealerPreferredLanguage }): Promise<SmsDeliveryResult> {
-    const message = input.approvalLanguage
-      ? renderRegistrationResultSms(input.approvalLanguage, true, this.config.get<string>('PUBLIC_FRONTEND_URL'))
+  async sendAccountWelcomeSms(input: { phone: string; firstName: string | null; isDealerApproval?: boolean }): Promise<SmsDeliveryResult> {
+    const message = input.isDealerApproval
+      ? renderRegistrationResultSms(true, this.config.get<string>('PUBLIC_FRONTEND_URL'))
       : renderWelcomeSms(input.firstName);
     return this.sendAccountSms(input.phone, message);
   }
 
-  async sendDealerRegistrationRejectionSms(phone: string, language: DealerPreferredLanguage): Promise<SmsDeliveryResult> {
-    return this.sendAccountSms(phone, renderRegistrationResultSms(language, false));
+  async sendDealerRegistrationRejectionSms(phone: string): Promise<SmsDeliveryResult> {
+    return this.sendAccountSms(phone, renderRegistrationResultSms(false));
   }
 
   private async sendAccountSms(phone: string, message: string): Promise<SmsDeliveryResult> {

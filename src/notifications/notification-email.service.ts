@@ -18,7 +18,6 @@ import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { PrismaService } from '@/prisma/prisma.service';
 import { ESTIMATE_EMAIL_RECIPIENTS_ERROR, parseEstimateEmailRecipients } from './estimate-email-recipients';
 import { AccountWelcomeEmailContent, renderWelcomeEmail } from '@/mail/welcome-email-template';
-import type { DealerPreferredLanguage } from '@prisma/client';
 import { renderRegistrationResultEmail } from '@/dealer-network/dealer-registration-result-template';
 import { isEmailDeliveryEnabled } from '@/mail/email-delivery-policy';
 import { allowsStaffNotificationDelivery, isOwnerProjectNotification, isStaffNotification, isSuppressedInstallationNotification, registrationReviewerRole } from './notification-delivery-policy';
@@ -276,8 +275,8 @@ export class NotificationEmailService {
       renderWelcomeEmail({ ...input, companyName: settings.name, origin: settings.origin, supportEmail }));
   }
 
-  async sendDealerRegistrationRejection(to: string, language: DealerPreferredLanguage): Promise<MaterialPurchaseEmailResult> {
-    return this.sendAccountEmail(to, settings => renderRegistrationResultEmail(language, false, settings.name, settings.origin));
+  async sendDealerRegistrationRejection(to: string): Promise<MaterialPurchaseEmailResult> {
+    return this.sendAccountEmail(to, settings => renderRegistrationResultEmail(false, settings.name, settings.origin));
   }
 
   private async sendAccountEmail(address: string,

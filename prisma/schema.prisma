@@ -209,11 +209,6 @@ enum DealerMode {
   INTERNAL
 }
 
-enum DealerPreferredLanguage {
-  English
-  Spanish
-}
-
 model DealerRegistrationInvite {
   id             Int                         @id @default(autoincrement())
   scopeKey       String                      @unique @db.VarChar(64)
@@ -247,7 +242,6 @@ model DealerRegistrationRequest {
   companyName           String?                 @db.VarChar(150)
   estimatedMonthlySales Decimal?                @db.Decimal(14, 2)
   yearsOfExperience     Int
-  preferredLanguage     DealerPreferredLanguage
   serviceSmsAccepted    Boolean                 @default(false)
   promotionalSmsAccepted Boolean                @default(false)
   smsConsentVersion     String?                 @db.VarChar(64)
@@ -273,7 +267,6 @@ model DealerRegistrationRejectionDelivery {
   requestId         Int
   channel           DealerRegistrationDeliveryChannel
   destination       String                       @db.VarChar(254)
-  language          DealerPreferredLanguage
   smsConsentVersion String?                      @db.VarChar(64)
   smsConsentText    String?                      @db.Text
   smsConsentedAt    DateTime?
@@ -372,7 +365,6 @@ model User {
   companyName                    String?                 @db.VarChar(150)
   estimatedMonthlySales          Decimal?                @db.Decimal(14, 2)
   yearsOfExperience              Int?
-  preferredLanguage              DealerPreferredLanguage?
   referralProfile                ReferralProfile?
   referredBy                     ReferralAttribution?    @relation("ReferredClient")
   parentDealerId                 Int?
@@ -2852,7 +2844,7 @@ model NotificationEmail {
 model AccountWelcomeEmail {
   userId            Int                     @id
   email             String                  @db.VarChar(254)
-  approvalLanguage  DealerPreferredLanguage?
+  isDealerApproval  Boolean                 @default(false)
   status            NotificationEmailStatus @default(PENDING)
   attempts          Int                     @default(0)
   nextAttemptAt     DateTime                @default(now())
@@ -2870,7 +2862,7 @@ model AccountWelcomeEmail {
 model AccountWelcomeSms {
   userId             Int                   @id
   phone              String                @db.VarChar(20)
-  approvalLanguage   DealerPreferredLanguage?
+  isDealerApproval   Boolean               @default(false)
   consentedAt        DateTime
   status             NotificationSmsStatus @default(PENDING)
   attempts           Int                   @default(0)

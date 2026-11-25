@@ -5,7 +5,7 @@ const form = {
   username: 'dealer.test', password: 'example-password', firstName: 'Test', lastName: 'Installer',
   phone: '+13055551234', email: 'dealer@example.test',
   street: '100 Example St', city: 'Miami', state: 'FL', postalCode: '33101',
-  yearsOfExperience: 0, preferredLanguage: 'Spanish',
+  yearsOfExperience: 0,
 };
 
 const pipe = new ValidationPipe({
@@ -17,14 +17,22 @@ function submit(overrides: Record<string, unknown> = {}): Promise<SubmitDealerRe
 }
 
 describe('Public dealer registration fields', () => {
-  it.each(['English', 'Spanish'])('accepts %s and zero years of experience without company or sales', async (language) => {
-    const result = await submit({ preferredLanguage: language });
-    expect(result).toMatchObject({ preferredLanguage: language, yearsOfExperience: 0 });
+  it('accepts zero years of experience without company or sales', async () => {
+    const result = await submit();
+    expect(result.yearsOfExperience).toBe(0);
     expect(result.companyName).toBeUndefined();
     expect(result.estimatedMonthlySales).toBeUndefined();
   });
 
-  it.each(['username', 'street', 'city', 'state', 'postalCode'])('still requires %s on a dealer application', async field => {
+  it('allows omitting the username but validates a customized username', async () => {
+    expect((await submit({ username: undefined })).username).toBeUndefined();
+    expect((await submit({ username: 'custom.dealer' })).username).toBe('custom.dealer');
+    for (const username of ['', null, 'no', 'not an account']) {
+      await expect(submit({ username })).rejects.toThrow(BadRequestException);
+    }
+  });
+
+  it.each(['street', 'city', 'state', 'postalCode'])('still requires %s on a dealer application', async field => {
     await expect(submit({ [field]: undefined })).rejects.toThrow(BadRequestException);
   });
 
@@ -32,8 +40,8 @@ describe('Public dealer registration fields', () => {
     await expect(submit({ yearsOfExperience: years })).rejects.toThrow(BadRequestException);
   });
 
-  it.each([undefined, '', 'Español'])('requires one of the displayed language choices (%p)', async (language) => {
-    await expect(submit({ preferredLanguage: language })).rejects.toThrow(BadRequestException);
+  it('discards the obsolete language preference from older forms', async () => {
+    expect(await submit({ preferredLanguage: 'Spanish' })).not.toHaveProperty('preferredLanguage');
   });
 
   it('accepts USD with cents and retains an explicit zero', async () => {

@@ -8,7 +8,7 @@ import { supportsSmsPhone } from '@/sms/sms-phone-support';
 import { dealerRegistrationSmsStopped } from './dealer-registration-consent';
 
 type Applicant = Pick<DealerRegistrationRequest,
-  'id' | 'email' | 'phone' | 'preferredLanguage' | 'serviceSmsAccepted' |
+  'id' | 'email' | 'phone' | 'serviceSmsAccepted' |
   'smsConsentedAt' | 'smsConsentVersion' | 'smsConsentText'>;
 
 const MAX_ATTEMPTS = 3;
@@ -26,12 +26,11 @@ export class DealerRegistrationRejectionService {
   /** Snapshot only the address and consent needed after the reviewed request is removed. */
   async enqueue(applicant: Applicant, tx: Prisma.TransactionClient) {
     const rows: Prisma.DealerRegistrationRejectionDeliveryCreateManyInput[] = [];
-    const base = { requestId: applicant.id, language: applicant.preferredLanguage };
-    if (this.email.canSendAccountWelcomeEmail()) rows.push({ ...base, channel: 'EMAIL', destination: applicant.email });
+    if (this.email.canSendAccountWelcomeEmail()) rows.push({ requestId: applicant.id, channel: 'EMAIL', destination: applicant.email });
     if (this.sms.canSendAccountWelcomeSms() && applicant.serviceSmsAccepted && supportsSmsPhone(applicant.phone) &&
       applicant.smsConsentedAt && applicant.smsConsentVersion && applicant.smsConsentText &&
       !await dealerRegistrationSmsStopped(tx, applicant.phone, applicant.smsConsentedAt)) {
-      rows.push({ ...base, channel: 'SMS', destination: applicant.phone, smsConsentedAt: applicant.smsConsentedAt,
+      rows.push({ requestId: applicant.id, channel: 'SMS', destination: applicant.phone, smsConsentedAt: applicant.smsConsentedAt,
         smsConsentVersion: applicant.smsConsentVersion, smsConsentText: applicant.smsConsentText });
     }
     if (rows.length) await tx.dealerRegistrationRejectionDelivery.createMany({ data: rows, skipDuplicates: true });
@@ -81,8 +80,8 @@ export class DealerRegistrationRejectionService {
       return;
     }
     const result = row.channel === 'SMS'
-      ? await this.sms.sendDealerRegistrationRejectionSms(row.destination, row.language)
-      : await this.email.sendDealerRegistrationRejection(row.destination, row.language);
+      ? await this.sms.sendDealerRegistrationRejectionSms(row.destination)
+      : await this.email.sendDealerRegistrationRejection(row.destination);
     const providerMessageId = 'providerMessageSid' in result ? result.providerMessageSid
       : 'providerMessageId' in result ? result.providerMessageId : undefined;
     if (result.status === 'ACCEPTED') {

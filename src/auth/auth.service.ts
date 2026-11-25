@@ -11,7 +11,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '@/prisma/prisma.service';
 import { UsersService } from '@/users/users.service';
 import { RegisterUserDto } from './dto/register-user.dto';
-import { createWithClientUsername, identityConflict } from './client-username';
+import { createWithRegistrationUsername, identityConflict } from './client-username';
 import * as bcrypt from 'bcrypt';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -210,7 +210,7 @@ export class AuthService {
             throw new ConflictException('SMS is blocked after a STOP request. Leave both SMS options unchecked to create your account, or reply START to the same sending number before subscribing.');
           }
         }
-        const user = await createWithClientUsername(tx, userData, username => tx.user.create({
+        const user = await createWithRegistrationUsername(tx, userData, username => tx.user.create({
           data: {
             ...userData,
             username,

@@ -6,6 +6,7 @@ import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'node:crypto';
 import type { AuthUser } from '@/auth/types/auth-user.type';
+import { createWithRegistrationUsername, identityConflict, UsernameTakenConflict } from '@/auth/client-username';
 import { LogsService } from '@/logs/logs.service';
 import { AccountWelcomeService } from '@/mail/account-welcome.service';
 import { NotificationsService } from '@/notifications/notifications.service';
@@ -21,7 +22,7 @@ const invitationSelect = { id: true, token: true, parentDealerId: true, markupPe
 const applicantSelect = {
   username: true, firstName: true, lastName: true, email: true, phone: true,
   street: true, addressLine2: true, city: true, state: true, postalCode: true,
-  companyName: true, estimatedMonthlySales: true, yearsOfExperience: true, preferredLanguage: true,
+  companyName: true, estimatedMonthlySales: true, yearsOfExperience: true,
 } as const;
 const pendingSelect = {
   ...applicantSelect, id: true, createdAt: true, invite: { select: { markupPercent: true } },
@@ -167,24 +168,31 @@ export class DealerRegistrationService {
         const invite = await tx.dealerRegistrationInvite.findUnique({ where: { token }, select: invitationSelect });
         if (!invite || invite.parentDealerId !== initial.parentDealerId) throw new NotFoundException('Invitation unavailable.');
         const consent = await captureDealerRegistrationConsent(tx, dto);
-        const request = await tx.dealerRegistrationRequest.create({
-          data: {
-            ...consent,
-            inviteId: invite.id, markupPercent: invite.markupPercent, passwordHash,
-            username: dto.username, firstName: dto.firstName, lastName: dto.lastName, email: dto.email, phone: dto.phone,
-            street: dto.street, addressLine2: dto.addressLine2, city: dto.city, state: dto.state, postalCode: dto.postalCode,
-            companyName: dto.companyName, estimatedMonthlySales: dto.estimatedMonthlySales,
-            yearsOfExperience: dto.yearsOfExperience, preferredLanguage: dto.preferredLanguage,
-          },
-          select: { id: true },
-        });
-        // Check after acquiring the pending identity keys: a concurrent approval may have just consumed them.
-        const account = await tx.user.findFirst({
-          where: { OR: [{ username: dto.username }, { email: dto.email }, { phone: dto.phone }] }, select: { id: true },
-        });
-        if (account) throw new ConflictException('The username, email or phone is already in use.');
+        const request = await createWithRegistrationUsername(tx, dto, async username => {
+          const pending = await tx.dealerRegistrationRequest.create({
+            data: {
+              ...consent,
+              inviteId: invite.id, markupPercent: invite.markupPercent, passwordHash,
+              username, firstName: dto.firstName, lastName: dto.lastName, email: dto.email, phone: dto.phone,
+              street: dto.street, addressLine2: dto.addressLine2, city: dto.city, state: dto.state, postalCode: dto.postalCode,
+              companyName: dto.companyName, estimatedMonthlySales: dto.estimatedMonthlySales,
+              yearsOfExperience: dto.yearsOfExperience,
+            },
+            select: { id: true, username: true },
+          });
+          // Check after claiming the pending identity keys: an account may have just taken them.
+          const contact = await tx.user.findFirst({
+            where: { OR: [{ email: dto.email }, { phone: dto.phone }] }, select: { id: true },
+          });
+          if (contact) throw new ConflictException('The email or phone is already in use.');
+          const account = await tx.user.findUnique({ where: { username }, select: { id: true } });
+          if (!account) return pending;
+          // Release only this uncommitted attempt before the allocator tries the next name.
+          if (dto.username === undefined) await tx.dealerRegistrationRequest.delete({ where: { id: pending.id } });
+          throw new UsernameTakenConflict();
+        }, 'Dealer');
         const notice = {
-          message: `${dto.username} submitted a ${level.toLowerCase()} application.`,
+          message: `${request.username} submitted a ${level.toLowerCase()} application.`,
           actionUrl: `/dealers?registrationRequest=${request.id}`,
           actionLabel: 'Review application',
           dedupeKey: `dealer-registration:${request.id}:submitted:${invite.parentDealerId === null ? 'admin' : 'inviter'}`,
@@ -196,7 +204,11 @@ export class DealerRegistrationService {
         }
         return request;
       }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
-    } catch (error) { contactConflict(error); }
+    } catch (error) {
+      const conflict = identityConflict(error);
+      if (conflict) throw conflict;
+      contactConflict(error);
+    }
   }
 
   async listPending(actor: AuthUser) {
@@ -243,24 +255,21 @@ export class DealerRegistrationService {
             street: request.street, addressLine2: request.addressLine2, city: request.city,
             state: request.state, postalCode: request.postalCode, companyName: request.companyName,
             estimatedMonthlySales: request.estimatedMonthlySales, yearsOfExperience: request.yearsOfExperience,
-            preferredLanguage: request.preferredLanguage,
             idRole: (await this.dealerRole(tx)).id, dealerMode: 'EXTERNAL', parentDealerId,
             ...(parentDealerId === null ? { markupOverride: markup } : { networkMarkup: markup }),
             networkTaxRate: new Prisma.Decimal('0.07'),
           });
           accountId = account.id;
           await applyDealerRegistrationConsent(tx, account.id, request);
-          await this.welcome.enqueue(account.id, tx, request.preferredLanguage);
+          await this.welcome.enqueue(account.id, tx, true);
           await this.notifications.createAndSend({
             recipientId: account.id, inAppOnly: true,
-            message: request.preferredLanguage === 'Spanish'
-              ? 'Tu solicitud de registro fue aprobada. Tu cuenta ya está activa.'
-              : 'Your registration was approved. Your account is now active.',
+            message: 'Your registration was approved. Your account is now active.',
             dedupeKey: `dealer-registration:${id}:approved:applicant`,
           }, tx);
         } else {
           await this.rejections.enqueue({
-            id, email: request.email, phone: request.phone, preferredLanguage: request.preferredLanguage,
+            id, email: request.email, phone: request.phone,
             serviceSmsAccepted: request.serviceSmsAccepted, smsConsentVersion: request.smsConsentVersion,
             smsConsentText: request.smsConsentText, smsConsentedAt: request.smsConsentedAt,
           }, tx);

@@ -18,7 +18,6 @@ const person = {
   phone: '+13055551234', street: '100 Example St', addressLine2: 'Suite 2', city: 'Miami',
   state: 'FL', postalCode: '33101', password: 'example-password',
   companyName: 'Example Glass', estimatedMonthlySales: 2500.25, yearsOfExperience: 0,
-  preferredLanguage: 'Spanish' as const,
 };
 
 function fixture(parentDealerId: number | null) {
@@ -42,8 +41,9 @@ function fixture(parentDealerId: number | null) {
     $transaction: jest.fn(), $queryRaw: jest.fn().mockResolvedValue([{ id: 20 }]),
     role: { findUnique: jest.fn().mockResolvedValue(role) },
     user: {
-      findUnique: jest.fn(async ({ where }) => members.get(where.id) ?? null),
+      findUnique: jest.fn().mockImplementation(async ({ where }) => members.get(where.id) ?? null),
       findUniqueOrThrow: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 80, username: person.username, parentDealerId }),
     },
@@ -52,8 +52,8 @@ function fixture(parentDealerId: number | null) {
       upsert: jest.fn().mockResolvedValue(invite),
     },
     dealerRegistrationRequest: {
-      create: jest.fn().mockResolvedValue({ id: request.id }),
-      findUnique: jest.fn().mockResolvedValue(request),
+      create: jest.fn(async ({ data }) => ({ id: request.id, username: data.username })),
+      findUnique: jest.fn().mockImplementation(async ({ where }) => where.id === request.id ? request : null),
       findMany: jest.fn().mockResolvedValue([]),
       delete: jest.fn().mockResolvedValue(request),
     },
@@ -122,10 +122,10 @@ describe('Dealer invitation registration', () => {
 
   it('saves the submitted terms and a password hash without creating an account', async () => {
     const { service, db, invite, welcome } = fixture(1);
-    await expect(service.submit(invite.token, person)).resolves.toEqual({ id: 20 });
+    await expect(service.submit(invite.token, person)).resolves.toEqual({ id: 20, username: person.username });
     const [{ data }] = db.dealerRegistrationRequest.create.mock.calls[0];
     expect(data).toMatchObject({
-      inviteId: invite.id, preferredLanguage: 'Spanish', companyName: 'Example Glass', yearsOfExperience: 0,
+      inviteId: invite.id, companyName: 'Example Glass', yearsOfExperience: 0,
     });
     expect(String(data.estimatedMonthlySales)).toBe('2500.25');
     expect(String(data.markupPercent)).toBe('12.5');
@@ -134,6 +134,74 @@ describe('Dealer invitation registration', () => {
     expect(captureDealerRegistrationConsent).toHaveBeenCalledWith(db, person);
     expect(db.user.create).not.toHaveBeenCalled();
     expect(welcome.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('keeps the available name through submission and approval under the inviting dealer', async () => {
+    const { db, service, invite, request, notifications } = fixture(1);
+    db.dealerRegistrationRequest.findMany.mockResolvedValueOnce([{ username: 'TESTINSTALLER2' }]);
+    db.user.findMany.mockResolvedValueOnce([{ username: 'TestInstaller' }]);
+    const submitted = await service.submit(invite.token, { ...person, username: undefined });
+    expect(submitted).toEqual({ id: request.id, username: 'TestInstaller3' });
+    expect(db.dealerRegistrationRequest.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ username: submitted.username, inviteId: invite.id }),
+    }));
+    expect(notifications.createAndSend).toHaveBeenCalledWith(expect.objectContaining({
+      recipientId: 1, message: expect.stringContaining('TestInstaller3'),
+    }), db);
+    request.username = submitted.username;
+    await service.review(actor(1), submitted.id, true);
+    expect(db.user.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ username: submitted.username, password: request.passwordHash, parentDealerId: 1 }),
+    }));
+  });
+
+  it('chooses the next name when another request claimed the first available candidate', async () => {
+    const { db, service, invite } = fixture(null);
+    db.dealerRegistrationRequest.create.mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError('Already claimed', {
+      code: 'P2002', clientVersion: 'test', meta: { target: 'DealerRegistrationRequest_username_key' },
+    }));
+    const saved = await service.submit(invite.token, { ...person, username: undefined });
+    expect(saved.username).toBe('TestInstaller2');
+    expect(db.dealerRegistrationRequest.create.mock.calls.map(([{ data }]) => data.username)).toEqual(['TestInstaller', 'TestInstaller2']);
+  });
+
+  it('still sees a name moved from pending requests to accounts by a concurrent approval', async () => {
+    const { db, service, invite } = fixture(null);
+    let approved = false;
+    db.dealerRegistrationRequest.findMany.mockImplementationOnce(async () => {
+      approved = true;
+      return [];
+    });
+    db.user.findMany.mockImplementationOnce(async () => approved ? [{ username: 'TestInstaller' }] : []);
+    const saved = await service.submit(invite.token, { ...person, username: undefined });
+    expect(saved.username).toBe('TestInstaller2');
+  });
+
+  it('retries a generated name claimed by an unrelated account before the pending request commits', async () => {
+    const { db, service, invite, notifications } = fixture(null);
+    db.user.findUnique.mockResolvedValueOnce({ id: 21 });
+    const saved = await service.submit(invite.token, { ...person, username: undefined });
+    expect(saved.username).toBe('TestInstaller2');
+    expect(db.dealerRegistrationRequest.delete).toHaveBeenCalledWith({ where: { id: 20 } });
+    expect(notifications.createAndSendToRoles).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not generate usernames again for a conflicting email or phone', async () => {
+    const { db, service, invite } = fixture(null);
+    db.user.findFirst.mockResolvedValueOnce({ id: 21 });
+    await expect(service.submit(invite.token, { ...person, username: undefined })).rejects.toThrow('email or phone');
+    expect(db.dealerRegistrationRequest.create).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['pending request', 'account'])('identifies a custom username conflict with an existing %s', async source => {
+    const { db, service, invite, notifications } = fixture(null);
+    if (source === 'pending request') db.dealerRegistrationRequest.findUnique.mockResolvedValueOnce({ id: 19 });
+    else db.user.findUnique.mockResolvedValueOnce({ id: 21 });
+    await expect(service.submit(invite.token, person)).rejects.toMatchObject({
+      response: { code: 'USERNAME_TAKEN', field: 'username' },
+    });
+    expect(notifications.createAndSendToRoles).not.toHaveBeenCalled();
+    expect(db.user.create).not.toHaveBeenCalled();
   });
 
   it('keeps consent and terms evidence private to the approval transaction', async () => {
@@ -185,7 +253,7 @@ describe('Dealer invitation registration', () => {
     const [{ data }] = db.user.create.mock.calls[0];
     expect(data).toMatchObject({
       dealerMode: 'EXTERNAL', password: request.passwordHash, isTaxExempt: false,
-      companyName: 'Example Glass', preferredLanguage: 'Spanish', yearsOfExperience: 0,
+      companyName: 'Example Glass', yearsOfExperience: 0,
     });
     expect(data.parentDealerId ?? null).toBe(parentId);
     expect(String(parentId === null ? data.markupOverride : data.networkMarkup)).toBe(expectedRatio);
@@ -196,9 +264,9 @@ describe('Dealer invitation registration', () => {
     expect(applyDealerRegistrationConsent).toHaveBeenCalledWith(db, 80, request);
     expect(jest.mocked(applyDealerRegistrationConsent).mock.invocationCallOrder[0])
       .toBeLessThan(welcome.enqueue.mock.invocationCallOrder[0]);
-    expect(welcome.enqueue).toHaveBeenCalledWith(80, db, 'Spanish');
+    expect(welcome.enqueue).toHaveBeenCalledWith(80, db, true);
     expect(notifications.createAndSend).toHaveBeenCalledWith(expect.objectContaining({
-      inAppOnly: true, recipientId: 80, message: expect.stringContaining('aprobada'),
+      inAppOnly: true, recipientId: 80, message: expect.stringContaining('approved'),
       dedupeKey: 'dealer-registration:' + request.id + ':approved:applicant',
     }), db);
     expect(rejections.enqueue).not.toHaveBeenCalled();
@@ -222,7 +290,7 @@ describe('Dealer invitation registration', () => {
     expect(welcome.enqueue).not.toHaveBeenCalled();
     expect(notifications.createAndSend).not.toHaveBeenCalled();
     expect(rejections.enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      id: request.id, email: request.email, phone: request.phone, preferredLanguage: 'Spanish',
+      id: request.id, email: request.email, phone: request.phone,
     }), db);
     expect(rejections.enqueue.mock.invocationCallOrder[0])
       .toBeLessThan(db.dealerRegistrationRequest.delete.mock.invocationCallOrder[0]);
