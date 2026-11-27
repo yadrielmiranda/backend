@@ -431,6 +431,7 @@ export class EstimatesController {
     @Query('view') viewParam: string | undefined,
     @Req() req: Request,
     @Res() res: Response,
+    @Query('lang') lang?: string,
   ) {
     const user = req.user as AuthUser;
 
@@ -473,6 +474,7 @@ export class EstimatesController {
         user,
         view,
         req.headers.cookie,
+        lang === 'es' ? 'es' : 'en',
       );
 
     res.setHeader('Content-Type', 'application/pdf');

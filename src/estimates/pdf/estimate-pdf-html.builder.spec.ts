@@ -232,6 +232,53 @@ describe('solid garage design output in PDFs', () => {
 });
 
 describe('EstimatePdfHtmlBuilder', () => {
+  it('localizes the document and footer while preserving catalog values, free text and the customer price', () => {
+    const estimate = withExternalDealerCustomerCharges();
+    estimate.name = 'Material subtotal & Installation';
+    const customCharge = estimate.customerChargesSummary!.lines.find(line => line.origin === 'DEALER')!;
+    customCharge.description = 'Installation';
+    const before = JSON.stringify(estimate);
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'dealer_public', {}, 1, 'admin', true, 'es');
+    expect(html).toContain('<html lang="es">');
+    expect(html).toContain('>Cotización</h1>');
+    expect(html).toContain('Proyecto: Material subtotal &amp; Installation');
+    expect(html).toContain('Subtotal de materiales');
+    expect(html).toContain('Patrón de barras: Ninguno');
+    expect(html).toContain('Medidas: 35 x 62 pulg');
+    expect(html).toContain('Single Hung');
+    expect(html).toContain('Eco Windows');
+    expect(html).toContain('Concrete Cutting');
+    expect(html).toContain('<span>Instalación</span>');
+    expect(html).toContain('<span>Installation</span>');
+    expect(html).toContain('$650.00');
+    expect(html).not.toContain('$400.00');
+    expect(html).not.toContain('Tu costo');
+    expect(html).toContain('>Activa</span>');
+    const footer = EstimatePdfHtmlBuilder.buildFooterTemplate(estimate, 'dealer_public', true, 'es');
+    expect(footer).toContain('Página <span class="pageNumber"></span> de ');
+    expect(footer).toContain('septiembre');
+    expect(footer).toContain('Gracias por su preferencia.');
+    expect(JSON.stringify(estimate)).toBe(before);
+  });
+
+  it('localizes generated payment milestones and clarification messages with their original amounts', () => {
+    const estimate = Object.assign(estimateFixture(false), {
+      paymentSchedule: {
+        provisional: true,
+        rows: [{
+          title: 'Place order · 50% material',
+          description: 'Required to place the order with the manufacturer.',
+          amount: '121.86',
+        }],
+      },
+    });
+    const html = EstimatePdfHtmlBuilder.build(estimate, 'client', {}, undefined, undefined, false, 'es');
+    expect(html).toContain('Realizar la orden · 50% de los materiales');
+    expect(html).toContain('Se requiere este pago para realizar la orden con el fabricante.');
+    expect(html).toContain('Los importes son preliminares');
+    expect(html).toContain('$121.86');
+  });
+
   it('shows customer, branding and installation details in their respective addresses', () => {
     const estimate = estimateFixture();
     estimate.customerAddressLine2 = 'Suite 401';

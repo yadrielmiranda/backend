@@ -1,3 +1,5 @@
+import { estimatePdfText, estimateReportStatus, type EstimatePdfText, type EstimatePdfLocale } from './estimate-pdf-language';
+import { paymentRowDescription, paymentRowTitle, paymentScheduleNotice } from './estimate-pdf-payment-language';
 import { matchingPieceDesignSnapshot, pieceFrameColorName } from '@/pieces/piece-frame-color';
 import { pieceHasSolidGarageDesign } from '@/pieces/piece-design';
 import { publicDoorDesignContent } from '@/door-designs/door-design-presentation';
@@ -129,12 +131,12 @@ const estimatedMaterialProfitability = (
   };
 };
 
-const formatDate = (value: unknown) => {
+const formatDate = (value: unknown, locale: EstimatePdfLocale) => {
   if (!value) return '';
   const date = new Date(String(value));
   if (Number.isNaN(date.getTime())) return '';
 
-  return date.toLocaleDateString('en-US', {
+  return date.toLocaleDateString(locale === 'es' ? 'es-US' : 'en-US', {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
@@ -183,9 +185,9 @@ const optionName = (value: unknown) => {
     : null;
 };
 
-const buildGridLine = (piece: any) => {
+const buildGridLine = (piece: any, t: EstimatePdfText) => {
   const muntin = piece.pieceMuntin ?? piece.muntin ?? null;
-  if (!muntin) return 'Grid: None';
+  if (!muntin) return `${t('Grid')}: ${t('None')}`;
 
   const patternName = [
     muntin.pattern?.name,
@@ -196,10 +198,10 @@ const buildGridLine = (piece: any) => {
   ].find((value) => typeof value === 'string' && value.trim());
   const panels = Array.isArray(muntin.panels) ? muntin.panels : [];
 
-  if (!patternName) return 'Grid: Yes';
+  if (!patternName) return `${t('Grid')}: ${t('Yes')}`;
   const typeName = optionName(muntin.type);
   const patternDescription = typeName ? `${patternName} · ${typeName}` : patternName;
-  if (panels.length === 0) return `Grid: ${patternDescription}`;
+  if (panels.length === 0) return `${t('Grid')}: ${patternDescription}`;
 
   const panelDetails = panels
     .map((panel: any) => {
@@ -214,23 +216,23 @@ const buildGridLine = (piece: any) => {
     })
     .join(' | ');
 
-  return `Grid: ${patternDescription} - ${panelDetails}`;
+  return `${t('Grid')}: ${patternDescription} - ${panelDetails}`;
 };
 
 const optionalDimension = (value: unknown) =>
   value == null || value === '' ? null : formatInchesFromEighthStep(value);
 
-const buildSizeLabel = (piece: any) => {
+const buildSizeLabel = (piece: any, t: EstimatePdfText) => {
   const width = optionalDimension(piece.width);
   const height = optionalDimension(piece.height);
 
-  if (width && height) return `${width} x ${height} in`;
-  if (width) return `${width} in`;
-  if (height) return `${height} in`;
-  return 'Not specified';
+  if (width && height) return `${width} x ${height} ${t('in')}`;
+  if (width) return `${width} ${t('in')}`;
+  if (height) return `${height} ${t('in')}`;
+  return t('Not specified');
 };
 
-const buildSpecialDimensionLines = (piece: any) => {
+const buildSpecialDimensionLines = (piece: any, t: EstimatePdfText) => {
   const lines: string[] = [];
   const dimensionParts: string[] = [];
   const heightLeft = optionalDimension(piece.heightLeft);
@@ -239,18 +241,18 @@ const buildSpecialDimensionLines = (piece: any) => {
   const sashHeight = optionalDimension(piece.sashHeight);
   const windowHeight = optionalDimension(piece.windowHeight);
 
-  if (heightLeft) dimensionParts.push(`HL: ${heightLeft} in`);
-  if (heightRight) dimensionParts.push(`HR: ${heightRight} in`);
-  if (legHeight) dimensionParts.push(`Leg: ${legHeight} in`);
-  if (sashHeight) dimensionParts.push(`Sash: ${sashHeight} in`);
-  if (windowHeight) dimensionParts.push(`Window: ${windowHeight} in`);
+  if (heightLeft) dimensionParts.push(`${t('HL')}: ${heightLeft} ${t('in')}`);
+  if (heightRight) dimensionParts.push(`${t('HR')}: ${heightRight} ${t('in')}`);
+  if (legHeight) dimensionParts.push(`${t('Leg')}: ${legHeight} ${t('in')}`);
+  if (sashHeight) dimensionParts.push(`${t('Sash')}: ${sashHeight} ${t('in')}`);
+  if (windowHeight) dimensionParts.push(`${t('Window')}: ${windowHeight} ${t('in')}`);
   if (dimensionParts.length > 0) lines.push(dimensionParts.join(' | '));
 
   const doorWidth = optionalDimension(piece.doorWidth);
   const doorHeight = optionalDimension(piece.doorHeight);
   if (doorWidth || doorHeight) {
     lines.push(
-      `Door: ${doorWidth ?? '?'}${doorHeight ? ` x ${doorHeight}` : ''} in`,
+      `${t('Door')}: ${doorWidth ?? '?'}${doorHeight ? ` x ${doorHeight}` : ''} ${t('in')}`,
     );
   }
 
@@ -258,21 +260,21 @@ const buildSpecialDimensionLines = (piece: any) => {
   const leftSideliteWidth = optionalDimension(piece.leftSideliteWidth);
   const rightSideliteWidth = optionalDimension(piece.rightSideliteWidth);
   if (leftSideliteWidth) {
-    sideliteParts.push(`Left Sidelite: ${leftSideliteWidth} in`);
+    sideliteParts.push(`${t('Left Sidelite')}: ${leftSideliteWidth} ${t('in')}`);
   }
   if (rightSideliteWidth) {
-    sideliteParts.push(`Right Sidelite: ${rightSideliteWidth} in`);
+    sideliteParts.push(`${t('Right Sidelite')}: ${rightSideliteWidth} ${t('in')}`);
   }
   if (sideliteParts.length > 0) lines.push(sideliteParts.join(' | '));
 
   const panelParts: string[] = [];
   if (piece.leftPanels != null) {
-    panelParts.push(`Left Panels: ${piece.leftPanels}`);
+    panelParts.push(`${t('Left Panels')}: ${piece.leftPanels}`);
   }
   if (piece.rightPanels != null) {
-    panelParts.push(`Right Panels: ${piece.rightPanels}`);
+    panelParts.push(`${t('Right Panels')}: ${piece.rightPanels}`);
   }
-  if (piece.panelCount != null) panelParts.push(`Panels: ${piece.panelCount}`);
+  if (piece.panelCount != null) panelParts.push(`${t('Panels')}: ${piece.panelCount}`);
   if (panelParts.length > 0) lines.push(panelParts.join(' | '));
 
   if (
@@ -280,8 +282,8 @@ const buildSpecialDimensionLines = (piece: any) => {
     piece.horizontalHeights.length > 0
   ) {
     lines.push(
-      `Horizontal Heights: ${piece.horizontalHeights
-        .map((value: unknown) => `${formatInchesFromEighthStep(value)} in`)
+      `${t('Horizontal Heights')}: ${piece.horizontalHeights
+        .map((value: unknown) => `${formatInchesFromEighthStep(value)} ${t('in')}`)
         .join(' | ')}`,
     );
   }
@@ -289,7 +291,7 @@ const buildSpecialDimensionLines = (piece: any) => {
   return lines;
 };
 
-const buildPieceReportDetails = (piece: any): PieceReportDetails => {
+const buildPieceReportDetails = (piece: any, t: EstimatePdfText): PieceReportDetails => {
   const hasSolidDesign = pieceHasSolidGarageDesign(piece);
   const active =
     optionName(piece.activeOption) ??
@@ -303,9 +305,9 @@ const buildPieceReportDetails = (piece: any): PieceReportDetails => {
   const reinforcement =
     optionName(piece.reinforcementOption) ?? optionName(piece.reinforcement);
   const summaryParts = [
-    piece.conf?.conf ? `Config: ${piece.conf.conf}` : null,
-    `Size: ${buildSizeLabel(piece)}`,
-    active ? `Active: ${active}` : null,
+    piece.conf?.conf ? `${t('Config')}: ${piece.conf.conf}` : null,
+    `${t('Size')}: ${buildSizeLabel(piece, t)}`,
+    active ? `${t('Active')}: ${active}` : null,
   ].filter((value): value is string => Boolean(value));
   const glass = [piece.cryst?.glass, piece.tin?.color, piece.coat?.name]
     .filter(
@@ -316,28 +318,31 @@ const buildPieceReportDetails = (piece: any): PieceReportDetails => {
     )
     .join(' + ');
   const detailLines = [
-    `Frame Color: ${pieceFrameColorName(piece) ?? 'Not specified'}`,
+    `${t('Frame Color')}: ${pieceFrameColorName(piece) ?? t('Not specified')}`,
   ];
   const design = matchingPieceDesignSnapshot(piece);
   const frenchDesign = publicDoorDesignContent(piece).doorDesignSnapshot;
-  if (frenchDesign) detailLines.push(`Door Design: ${frenchDesign.code}`);
+  if (frenchDesign) detailLines.push(`${t('Door Design')}: ${frenchDesign.code}`);
   if (design) {
-    detailLines.push(`Design: ${design.design.name}`);
-    detailLines.push(`Design Color: ${design.color.name}`);
+    detailLines.push(`${t('Design')}: ${design.design.name}`);
+    detailLines.push(`${t('Design Color')}: ${design.color.name}`);
   }
 
-  if (!hasSolidDesign && glass) detailLines.push(`Glass: ${glass}`);
-  if (preparation) detailLines.push(`Preparation: ${preparation}`);
-  if (sill) detailLines.push(`Sill: ${sill}`);
-  if (reinforcement) detailLines.push(`Reinforcement: ${reinforcement}`);
-  detailLines.push(...buildSpecialDimensionLines(piece));
+  if (!hasSolidDesign && glass) detailLines.push(`${t('Glass')}: ${glass}`);
+  if (preparation) detailLines.push(`${t('Preparation')}: ${preparation}`);
+  if (sill) detailLines.push(`${t('Sill')}: ${sill}`);
+  if (reinforcement) detailLines.push(`${t('Reinforcement')}: ${reinforcement}`);
+  detailLines.push(...buildSpecialDimensionLines(piece, t));
 
   const optionParts = [
-    `Screen: ${piece.screen ? 'Yes' : 'No'}`,
-    buildGridLine(piece),
-    ...(!hasSolidDesign ? [`Privacy: ${piece.privacyOption?.name ?? 'None'}`] : []),
+    `${t('Screen')}: ${piece.screen ? t('Yes') : 'No'}`,
+    buildGridLine(piece, t),
   ];
-  if (piece.highBottom) optionParts.push('High Bottom: Yes');
+  if (!hasSolidDesign) {
+    const privacyName = piece.privacyOption?.name;
+    optionParts.push(privacyName == null ? t('Privacy: None') : `${t('Privacy')}: ${privacyName}`);
+  }
+  if (piece.highBottom) optionParts.push(`${t('High Bottom')}: ${t('Yes')}`);
   detailLines.push(optionParts.join(' | '));
 
   if (piece.dpPosPsf != null && piece.dpNegPsf != null) {
@@ -354,12 +359,12 @@ const buildPieceReportDetails = (piece: any): PieceReportDetails => {
       return Number.isFinite(number) && number >= 0 ? number.toFixed(3) : null;
     });
     detailLines.push(energy?.status === 'AVAILABLE' && values.every((value) => value !== null)
-      ? `NFRC: U-factor: ${values[0]} | SHGC: ${values[1]} | VLT: ${values[2]}`
-      : 'Energy performance: Data unavailable');
+      ? `NFRC: ${t('U-factor')}: ${values[0]} | SHGC: ${values[1]} | VLT: ${values[2]}`
+      : t('Energy performance: Data unavailable'));
   }
 
   return {
-    productName: String(piece.prod?.name ?? '').trim() || 'Product',
+    productName: String(piece.prod?.name ?? '').trim() || t('Product'),
     systemLine: [piece.bran?.name, piece.syst?.name]
       .filter(Boolean)
       .join(' - '),
@@ -375,10 +380,10 @@ const reportKindFor = (view: PdfView): ReportKind => {
   return view;
 };
 
-const reportLabelFor = (kind: ReportKind) => {
-  if (kind === 'admin') return 'Admin Report';
-  if (kind === 'dealer') return 'Dealer Report';
-  return 'Customer Report';
+const reportLabelFor = (kind: ReportKind, t: EstimatePdfText) => {
+  if (kind === 'admin') return t('Admin Report');
+  if (kind === 'dealer') return t('Dealer Report');
+  return t('Customer Report');
 };
 
 const originalPrice = (amount: number) =>
@@ -426,38 +431,47 @@ export class EstimatePdfHtmlBuilder {
     estimate: EstimateWithRelations,
     view: PdfView = 'client',
     showExternalDealerPresentation = false,
+    locale: EstimatePdfLocale = 'en',
   ): string {
+    const t = estimatePdfText(locale);
     const issuer = showExternalDealerPresentation
       ? estimate.externalDealerPresentation !== undefined
         ? estimate.externalDealerPresentation
         : buildExternalDealerPresentation(estimate, estimate.branding)
       : null;
-    const footerText = escapeHtml(this.buildFooterText(estimate, view));
+    const issuerNotice = issuer
+      ? locale === 'es'
+        ? `Cotización emitida por ${escapeHtml(issuer.name)}, distribuidor independiente.`
+        : `This estimate is issued by ${escapeHtml(issuer.name)}, an independent distributor.`
+      : '';
+    const footerText = escapeHtml(this.buildFooterText(estimate, view, locale));
     return `
           <div style="box-sizing:border-box;width:100%;padding:0 14mm;color:#64748b;font-family:Arial,Helvetica,sans-serif;font-size:8px;text-align:center;">
-            ${issuer ? `<div style="padding-bottom:6px;overflow-wrap:anywhere;">This estimate is issued by ${escapeHtml(issuer.name)}, an independent distributor.</div>` : ''}
-            <div style="border-top:1px solid #dbe3ee;padding-top:6px;">${issuer ? '<div style="margin-bottom:6px;">Generated with Authentic Evolution | <a href="http://www.authenticevolutionco.com" style="color:#64748b;text-decoration:none;">www.authenticevolutionco.com</a></div>' : ''}${footerText}</div>
-            <div style="margin-top:3px;">Estimate #${escapeHtml(estimate.number)} - Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>
+            ${issuer ? `<div style="padding-bottom:6px;overflow-wrap:anywhere;">${issuerNotice}</div>` : ''}
+            <div style="border-top:1px solid #dbe3ee;padding-top:6px;">${issuer ? `<div style="margin-bottom:6px;">${t('Generated with Authentic Evolution')} | <a href="http://www.authenticevolutionco.com" style="color:#64748b;text-decoration:none;">www.authenticevolutionco.com</a></div>` : ''}${footerText}</div>
+            <div style="margin-top:3px;">${t('Estimate')} #${escapeHtml(estimate.number)} - ${t('Page')} <span class="pageNumber"></span> ${t('of')} <span class="totalPages"></span></div>
           </div>`;
   }
 
   static buildFooterText(
     estimate: EstimateWithRelations,
     view: PdfView = 'client',
+    locale: EstimatePdfLocale = 'en',
   ): string {
+    const t = estimatePdfText(locale);
     const hideDealerPromotions =
       (view === 'dealer_public' || view === 'dealer_public_total') &&
       isExternalDealerEstimate(estimate);
     const manualLocked = estimateDiscountConfig(estimate.manualDiscount)?.lockedAt;
     const expirationText = estimate.promotionLockedAt || manualLocked
       ? hideDealerPromotions || !estimate.promotionLockedAt
-        ? 'The agreed terms are preserved after payment.'
-        : 'The agreed promotion is preserved after payment.'
+        ? t('The agreed terms are preserved after payment.')
+        : t('The agreed promotion is preserved after payment.')
       : estimate.expiresAt
-        ? `This estimate is valid through ${estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString('en-US') : formatDate(estimate.expiresAt)}.`
-        : 'This estimate is valid for 30 days.';
+        ? `${t('This estimate is valid through')} ${estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString(locale === 'es' ? 'es-US' : 'en-US') : formatDate(estimate.expiresAt, locale)}.`
+        : t('This estimate is valid for 30 days.');
 
-    return `${expirationText} Thank you for your business.`;
+    return `${expirationText} ${t('Thank you for your business.')}`;
   }
 
   static build(
@@ -467,7 +481,9 @@ export class EstimatePdfHtmlBuilder {
     viewerId?: number,
     viewerRole?: string,
     showExternalDealerPresentation = false,
+    locale: EstimatePdfLocale = 'en',
   ): string {
+    const t = estimatePdfText(locale);
     const reportKind = reportKindFor(view);
     const ownerIsDealer =
       String(estimate.user?.role?.name ?? '')
@@ -635,7 +651,7 @@ export class EstimatePdfHtmlBuilder {
 
     const pieceBreakdown = new Map<string, number>();
     const totalPieces = estimate.pieces.reduce((total, piece) => {
-      const productName = String(piece.prod?.name ?? '').trim() || 'Product';
+      const productName = String(piece.prod?.name ?? '').trim() || t('Product');
       const qty = numberValue(piece.qty);
       pieceBreakdown.set(productName, (pieceBreakdown.get(productName) ?? 0) + qty);
       return total + qty;
@@ -643,12 +659,12 @@ export class EstimatePdfHtmlBuilder {
     const piecesBreakdownHtml = `
       <div class="pieces-breakdown keep-together">
         <div class="pieces-breakdown-header">
-          <h3>Pieces Breakdown</h3>
-          <div class="pieces-breakdown-qty"><span>Qty</span><strong>${totalPieces}</strong></div>
+          <h3>${t('Pieces Breakdown')}</h3>
+          <div class="pieces-breakdown-qty"><span>${t('Qty')}</span><strong>${totalPieces}</strong></div>
         </div>
         <div class="pieces-breakdown-items">${pieceBreakdown.size
           ? Array.from(pieceBreakdown, ([name, qty]) => `${escapeHtml(name)}: ${qty}`).join(' | ')
-          : '<span class="pieces-breakdown-empty">No calculated pieces yet.</span>'}</div>
+          : `<span class="pieces-breakdown-empty">${t('No calculated pieces yet.')}</span>`}</div>
       </div>`;
 
     const productCards = estimate.pieces.length
@@ -679,7 +695,7 @@ export class EstimatePdfHtmlBuilder {
               originalUnitPrice == null
                 ? undefined
                 : originalUnitPrice * numberValue(piece.qty);
-            const details = buildPieceReportDetails(piece);
+            const details = buildPieceReportDetails(piece, t);
             const detailLines = details.detailLines
               .map(
                 (line) => `<div class="piece-detail">${line.startsWith('NFRC: ')
@@ -690,12 +706,12 @@ export class EstimatePdfHtmlBuilder {
             const diagramSrc =
               piece.id == null ? null : diagramRenders[String(piece.id)];
             const diagram = diagramSrc
-              ? `<img src="${escapeHtml(diagramSrc)}" alt="Diagram for ${escapeHtml(displayMark)}" />`
-              : '<div class="diagram-placeholder">Diagram unavailable</div>';
+              ? `<img src="${escapeHtml(diagramSrc)}" alt="${t('Diagram for')} ${escapeHtml(displayMark)}" />`
+              : `<div class="diagram-placeholder">${t('Diagram unavailable')}</div>`;
             const dealerMarkup = piece.dealerMarkup == null ? null : Number(piece.dealerMarkup);
             const markupHtml = showMarkup
               ? `<div class="price-block markup-block">
-                  <div class="price-label">Markup</div>
+                  <div class="price-label">${t('Markup')}</div>
                   <div class="price-value">${dealerMarkup !== null && Number.isFinite(dealerMarkup)
                     ? `${(dealerMarkup * 100).toFixed(2)}%`
                     : '—'}</div>
@@ -705,7 +721,7 @@ export class EstimatePdfHtmlBuilder {
               ? ''
               : `
                 <div class="price-block">
-                  <div class="price-label">Unit Price</div>
+                  <div class="price-label">${t('Unit Price')}</div>
                   <div class="price-value">${promotionPrice(unitPrice, originalUnitPrice)}</div>
                 </div>
                 ${markupHtml}
@@ -725,7 +741,7 @@ export class EstimatePdfHtmlBuilder {
                 </div>
                 <div class="piece-pricing">
                   <div class="price-block">
-                    <div class="price-label">Qty</div>
+                    <div class="price-label">${t('Qty')}</div>
                     <div class="price-value">${escapeHtml(piece.qty)}</div>
                   </div>
                   ${pricing}
@@ -733,43 +749,52 @@ export class EstimatePdfHtmlBuilder {
               </article>`;
           })
           .join('')
-      : '<div class="empty">No products included.</div>';
+      : `<div class="empty">${t('No products included.')}</div>`;
 
     const materialSummary = comparisonView
       ? `
         <div class="card keep-together">
           <table class="comparison-table">
             <thead><tr>
-              <th>Material pricing</th>
-              <th class="right">${reportKind === 'admin' ? 'Dealer Price' : 'Your Cost'}</th>
-              <th class="right">Customer Price</th>
+              <th>${t('Material pricing')}</th>
+              <th class="right">${reportKind === 'admin' ? t('Dealer Price') : t('Your Cost')}</th>
+              <th class="right">${t('Customer Price')}</th>
             </tr></thead>
             <tbody>
-              ${internalMaterial.discount || customerMaterial.discount ? `<tr><td>Before promotion</td><td class="right">${originalMaterialSubtotal(internalMaterial)}</td><td class="right">${originalMaterialSubtotal(customerMaterial)}</td></tr><tr class="promotion-discount"><td>Promotion discount</td><td class="right">−${formatMoney(internalMaterial.discount ?? 0)}</td><td class="right">−${formatMoney(customerMaterial.discount ?? 0)}</td></tr>` : ''}
-              <tr><td>Material subtotal</td><td class="right">${materialSubtotal(internalMaterial)}</td><td class="right">${materialSubtotal(customerMaterial)}</td></tr>
-              ${internalMaterial.manualNetDiscount || customerMaterial.manualNetDiscount ? `<tr><td>Additional discount</td><td class="right">−${formatMoney(internalMaterial.manualNetDiscount ?? 0)}</td><td class="right">−${formatMoney(customerMaterial.manualNetDiscount ?? 0)}</td></tr><tr><td>Subtotal after discount</td><td class="right"><span class="promotion-current">${formatMoney(internalMaterial.subtotal - (internalMaterial.manualNetDiscount ?? 0))}</span></td><td class="right"><span class="promotion-current">${formatMoney(customerMaterial.subtotal - (customerMaterial.manualNetDiscount ?? 0))}</span></td></tr>` : ''}
-              <tr><td>Sales Tax</td><td class="right">${formatMoney(internalMaterial.taxAmount)}<small>${(internalMaterial.taxRate * 100).toFixed(2)}%</small></td><td class="right">${formatMoney(customerMaterial.taxAmount)}<small>${(customerMaterial.taxRate * 100).toFixed(2)}%</small></td></tr>
-              <tr class="table-total"><td>Material total</td><td class="right">${formatMoney(internalMaterial.total)}</td><td class="right">${formatMoney(customerMaterial.total)}</td></tr>
+              ${internalMaterial.discount || customerMaterial.discount ? `<tr><td>${t('Before promotion')}</td><td class="right">${originalMaterialSubtotal(internalMaterial)}</td><td class="right">${originalMaterialSubtotal(customerMaterial)}</td></tr><tr class="promotion-discount"><td>${t('Promotion discount')}</td><td class="right">−${formatMoney(internalMaterial.discount ?? 0)}</td><td class="right">−${formatMoney(customerMaterial.discount ?? 0)}</td></tr>` : ''}
+              <tr><td>${t('Material subtotal')}</td><td class="right">${materialSubtotal(internalMaterial)}</td><td class="right">${materialSubtotal(customerMaterial)}</td></tr>
+              ${internalMaterial.manualNetDiscount || customerMaterial.manualNetDiscount ? `<tr><td>${t('Additional discount')}</td><td class="right">−${formatMoney(internalMaterial.manualNetDiscount ?? 0)}</td><td class="right">−${formatMoney(customerMaterial.manualNetDiscount ?? 0)}</td></tr><tr><td>${t('Subtotal after discount')}</td><td class="right"><span class="promotion-current">${formatMoney(internalMaterial.subtotal - (internalMaterial.manualNetDiscount ?? 0))}</span></td><td class="right"><span class="promotion-current">${formatMoney(customerMaterial.subtotal - (customerMaterial.manualNetDiscount ?? 0))}</span></td></tr>` : ''}
+              <tr><td>${t('Sales Tax')}</td><td class="right">${formatMoney(internalMaterial.taxAmount)}<small>${(internalMaterial.taxRate * 100).toFixed(2)}%</small></td><td class="right">${formatMoney(customerMaterial.taxAmount)}<small>${(customerMaterial.taxRate * 100).toFixed(2)}%</small></td></tr>
+              <tr class="table-total"><td>${t('Material total')}</td><td class="right">${formatMoney(internalMaterial.total)}</td><td class="right">${formatMoney(customerMaterial.total)}</td></tr>
             </tbody>
           </table>
         </div>`
       : `
         <div class="card keep-together">
-          <div class="card-title">Materials</div>
+          <div class="card-title">${t('Materials')}</div>
           <div class="card-body">
-            ${selectedMaterial.discount ? summaryRow('Before promotion', originalMaterialSubtotal(selectedMaterial)) + summaryRow('Promotion discount', '−' + formatMoney(selectedMaterial.discount), { extraClass: 'promotion-discount' }) : ''}
-            ${summaryRow('Material subtotal', materialSubtotal(selectedMaterial))}
-            ${selectedMaterial.manualNetDiscount ? summaryRow('Additional discount', '−' + formatMoney(selectedMaterial.manualNetDiscount)) + summaryRow('Subtotal after discount', formatMoney(selectedMaterial.subtotal - selectedMaterial.manualNetDiscount), { strong: true, extraClass: 'promotion-subtotal' }) : ''}
-            ${summaryRow(`Sales Tax (${(selectedMaterial.taxRate * 100).toFixed(2)}%)`, formatMoney(selectedMaterial.taxAmount))}
-            <div class="row-divider">${summaryRow('Material total', formatMoney(selectedMaterial.total), { strong: true })}</div>
+            ${selectedMaterial.discount ? summaryRow(t('Before promotion'), originalMaterialSubtotal(selectedMaterial)) + summaryRow(t('Promotion discount'), '−' + formatMoney(selectedMaterial.discount), { extraClass: 'promotion-discount' }) : ''}
+            ${summaryRow(t('Material subtotal'), materialSubtotal(selectedMaterial))}
+            ${selectedMaterial.manualNetDiscount ? summaryRow(t('Additional discount'), '−' + formatMoney(selectedMaterial.manualNetDiscount)) + summaryRow(t('Subtotal after discount'), formatMoney(selectedMaterial.subtotal - selectedMaterial.manualNetDiscount), { strong: true, extraClass: 'promotion-subtotal' }) : ''}
+            ${summaryRow(`${t('Sales Tax')} (${(selectedMaterial.taxRate * 100).toFixed(2)}%)`, formatMoney(selectedMaterial.taxAmount))}
+            <div class="row-divider">${summaryRow(t('Material total'), formatMoney(selectedMaterial.total), { strong: true })}</div>
           </div>
         </div>`;
 
-    const notIncludedInstallation = (title = 'Installation &amp; services') => `
+    const notIncludedInstallation = (title = t('Installation &amp; services')) => `
       <div class="card keep-together">
         <div class="card-title">${title}</div>
-        <div class="card-body">${summaryRow('Installation', 'Not included')}</div>
+        <div class="card-body">${summaryRow(t('Installation'), t('Not included'))}</div>
       </div>`;
+
+    const chargeDescription = (line: NonNullable<typeof customerCharges>['lines'][number]) => {
+      if (line.origin === 'SYSTEM' && locale === 'es') {
+        if (line.source === 'INSTALLATION' && line.description === 'Installation') return t('Installation');
+        if (line.source === 'PERMIT' && line.description === 'Permit Fee') return t('Permit Fee');
+        if (line.source === 'CITY_FEE' && line.description === 'City Fee') return t('City Fee');
+      }
+      return line.description;
+    };
 
     const installationSummaryHtml = (() => {
       if (customerCharges) {
@@ -784,9 +809,9 @@ export class EstimatePdfHtmlBuilder {
             .map(
               (line) => `
                 <tr>
-                  <td>${escapeHtml(line.description)}${line.origin === 'DEALER' ? '<small>Dealer-created</small>' : ''}</td>
-                  <td class="right">${line.origin === 'DEALER' ? '&mdash;' : line.systemAmount == null ? 'Pending' : manualDiscount?.payer === 'ACCOUNT_OWNER' && line.sourceKey === 'INSTALLATION' && Number(manualDiscount?.installation.discount) > 0 ? originalPrice(numberValue(line.systemAmount)) : formatMoney(line.systemAmount)}</td>
-                  <td class="right">${!line.usedInCustomerQuote ? 'Not used' : line.customerAmount == null ? 'Pending' : manualDiscount?.payer === 'CUSTOMER' && line.sourceKey === 'INSTALLATION' && Number(manualDiscount?.installation.discount) > 0 ? originalPrice(numberValue(line.customerAmount)) : formatMoney(line.customerAmount)}</td>
+                  <td>${escapeHtml(chargeDescription(line))}${line.origin === 'DEALER' ? `<small>${t('Dealer-created')}</small>` : ''}</td>
+                  <td class="right">${line.origin === 'DEALER' ? '&mdash;' : line.systemAmount == null ? t('Pending') : manualDiscount?.payer === 'ACCOUNT_OWNER' && line.sourceKey === 'INSTALLATION' && Number(manualDiscount?.installation.discount) > 0 ? originalPrice(numberValue(line.systemAmount)) : formatMoney(line.systemAmount)}</td>
+                  <td class="right">${!line.usedInCustomerQuote ? t('Not used') : line.customerAmount == null ? t('Pending') : manualDiscount?.payer === 'CUSTOMER' && line.sourceKey === 'INSTALLATION' && Number(manualDiscount?.installation.discount) > 0 ? originalPrice(numberValue(line.customerAmount)) : formatMoney(line.customerAmount)}</td>
                 </tr>`,
             )
             .join('');
@@ -794,25 +819,25 @@ export class EstimatePdfHtmlBuilder {
           return `
             <div class="card keep-together">
               <table class="comparison-table">
-                <thead><tr><th>Installation &amp; services</th><th class="right">Your Cost</th><th class="right">Customer Price</th></tr></thead>
-                <tbody>${!hasCharges ? '<tr><td>Installation</td><td class="right">Not included</td><td class="right">Not included</td></tr>' : ''}${rows}${serviceDiscount > 0 ? `<tr><td>Additional discount</td><td class="right">${manualDiscount?.payer === 'ACCOUNT_OWNER' ? '−' + formatMoney(serviceDiscount) : '&mdash;'}</td><td class="right">${manualDiscount?.payer === 'CUSTOMER' ? '−' + formatMoney(serviceDiscount) : '&mdash;'}</td></tr>` : ''}${hasCharges ? `<tr class="table-total"><td>Services total</td><td class="right">${formatMoney(internalCharges)}</td><td class="right">${formatMoney(customerServiceCharges)}</td></tr>` : ''}</tbody>
+                <thead><tr><th>${t('Installation &amp; services')}</th><th class="right">${t('Your Cost')}</th><th class="right">${t('Customer Price')}</th></tr></thead>
+                <tbody>${!hasCharges ? `<tr><td>${t('Installation')}</td><td class="right">${t('Not included')}</td><td class="right">${t('Not included')}</td></tr>` : ''}${rows}${serviceDiscount > 0 ? `<tr><td>${t('Additional discount')}</td><td class="right">${manualDiscount?.payer === 'ACCOUNT_OWNER' ? '−' + formatMoney(serviceDiscount) : '&mdash;'}</td><td class="right">${manualDiscount?.payer === 'CUSTOMER' ? '−' + formatMoney(serviceDiscount) : '&mdash;'}</td></tr>` : ''}${hasCharges ? `<tr class="table-total"><td>${t('Services total')}</td><td class="right">${formatMoney(internalCharges)}</td><td class="right">${formatMoney(customerServiceCharges)}</td></tr>` : ''}</tbody>
               </table>
             </div>`;
         }
 
         return `
           <div class="card keep-together">
-            <div class="card-title">Installation &amp; services</div>
-            <div class="card-body">${!hasCharges ? summaryRow('Installation', 'Not included') : ''}${displayedLines
+            <div class="card-title">${t('Installation &amp; services')}</div>
+            <div class="card-body">${!hasCharges ? summaryRow(t('Installation'), t('Not included')) : ''}${displayedLines
               .map((line) =>
                 summaryRow(
-                  line.description,
+                  chargeDescription(line),
                   line.customerAmount == null
-                    ? 'Pending'
+                    ? t('Pending')
                     : formatMoney(line.customerAmount),
                 ),
               )
-              .join('')}${manualDiscount?.payer === 'CUSTOMER' && serviceDiscount > 0 ? summaryRow('Additional discount · Installation & services', '−' + formatMoney(serviceDiscount)) + summaryRow('Services total', formatMoney(customerServiceCharges), { strong: true }) : ''}</div>
+              .join('')}${manualDiscount?.payer === 'CUSTOMER' && serviceDiscount > 0 ? summaryRow(t('Additional discount · Installation & services'), '−' + formatMoney(serviceDiscount)) + summaryRow(t('Services total'), formatMoney(customerServiceCharges), { strong: true }) : ''}</div>
           </div>`;
       }
 
@@ -822,19 +847,19 @@ export class EstimatePdfHtmlBuilder {
 
       const installationValue =
         installationSummary.installationAmount == null
-          ? 'Pending'
+          ? t('Pending')
           : Number(manualDiscount?.installation.discount) > 0
             ? originalPrice(numberValue(installationSummary.installationAmount) - numberValue(installationSummary.installationSurcharge))
             : formatMoney(numberValue(installationSummary.installationAmount) - numberValue(installationSummary.installationSurcharge));
       const rows = [
         summaryRow(
-          'Installation',
+          t('Installation'),
           installationValue,
         ),
       ];
 
       if (numberValue(installationSummary.installationSurcharge) > 0) {
-        rows.push(summaryRow('Installation surcharge', formatMoney(installationSummary.installationSurcharge)));
+        rows.push(summaryRow(t('Installation surcharge'), formatMoney(installationSummary.installationSurcharge)));
       }
       if (installationSummary.quoteStatus !== null) {
         if (installationSummary.additionalServices.length > 0) {
@@ -842,39 +867,39 @@ export class EstimatePdfHtmlBuilder {
             rows.push(summaryRow(service.name, formatMoney(service.amount)));
           }
         } else {
-          rows.push(summaryRow('Additional services', 'None included'));
+          rows.push(summaryRow(t('Additional services'), t('None included')));
         }
 
         if (numberValue(manualDiscount?.installation.discount) > 0) {
           rows.push(
-            summaryRow('Additional discount · Installation', '−' + formatMoney(manualDiscount!.installation.discount)),
-            summaryRow('Installation total', formatMoney(numberValue(installationSummary.installationTotal) - numberValue(manualDiscount!.installation.discount)), { strong: true }),
+            summaryRow(t('Additional discount · Installation'), '−' + formatMoney(manualDiscount!.installation.discount)),
+            summaryRow(t('Installation total'), formatMoney(numberValue(installationSummary.installationTotal) - numberValue(manualDiscount!.installation.discount)), { strong: true }),
           );
         }
 
         if (installationSummary.permitIncluded) {
           rows.push(
             summaryRow(
-              'Permit Fee',
+              t('Permit Fee'),
               formatMoney(installationSummary.permitFee),
             ),
             summaryRow(
-              'City Fee',
+              t('City Fee'),
               installationSummary.cityFee == null
-                ? 'Pending'
+                ? t('Pending')
                 : formatMoney(installationSummary.cityFee),
             ),
           );
         } else {
           rows.push(
-            summaryRow('Permit management', 'Not included'),
+            summaryRow(t('Permit management'), t('Not included')),
           );
         }
       }
 
       return `
         <div class="card keep-together">
-          <div class="card-title">Installation &amp; services</div>
+          <div class="card-title">${t('Installation &amp; services')}</div>
           <div class="card-body">${rows.join('')}</div>
         </div>`;
     })();
@@ -885,54 +910,54 @@ export class EstimatePdfHtmlBuilder {
         const rows = customerVisibleServiceLines
           .map((line) =>
             summaryRow(
-              line.description,
-              line.customerAmount == null ? 'Pending' : 'Included',
+              chargeDescription(line),
+              line.customerAmount == null ? t('Pending') : t('Included'),
             ),
           )
           .join('');
 
         return `
           <div class="card keep-together">
-            <div class="card-title">Project scope</div>
-            <div class="card-body">${!hasCharges ? summaryRow('Installation', 'Not included') : ''}${rows}</div>
+            <div class="card-title">${t('Project scope')}</div>
+            <div class="card-body">${!hasCharges ? summaryRow(t('Installation'), t('Not included')) : ''}${rows}</div>
           </div>`;
       }
 
       if (!installationSummary) {
-        return notIncludedInstallation('Project scope');
+        return notIncludedInstallation(t('Project scope'));
       }
 
       const rows = [
         summaryRow(
-          'Installation',
+          t('Installation'),
           '',
         ),
       ];
 
       if (numberValue(installationSummary.installationSurcharge) > 0) {
-        rows.push(summaryRow('Installation surcharge', formatMoney(installationSummary.installationSurcharge)));
+        rows.push(summaryRow(t('Installation surcharge'), formatMoney(installationSummary.installationSurcharge)));
       }
       if (installationSummary.quoteStatus !== null) {
         if (installationSummary.additionalServices.length > 0) {
           for (const service of installationSummary.additionalServices) {
-            rows.push(summaryRow(service.name, 'Included'));
+            rows.push(summaryRow(service.name, t('Included')));
           }
         } else {
-          rows.push(summaryRow('Additional services', 'None included'));
+          rows.push(summaryRow(t('Additional services'), t('None included')));
         }
 
         rows.push(
           summaryRow(
-            'Permit service',
-            installationSummary.permitIncluded ? 'Included' : 'Not included',
+            t('Permit service'),
+            installationSummary.permitIncluded ? t('Included') : t('Not included'),
           ),
         );
 
         if (installationSummary.permitIncluded) {
           rows.push(
             summaryRow(
-              'City Fee',
-              installationSummary.cityFee == null ? 'Pending' : 'Included',
+              t('City Fee'),
+              installationSummary.cityFee == null ? t('Pending') : t('Included'),
             ),
           );
         }
@@ -940,68 +965,68 @@ export class EstimatePdfHtmlBuilder {
 
       return `
         <div class="card keep-together">
-          <div class="card-title">Project scope</div>
+          <div class="card-title">${t('Project scope')}</div>
           <div class="card-body">${rows.join('')}</div>
         </div>`;
     })();
 
     const notices = `
-      ${!customerCharges && installationAmountPending ? '<p class="notice warning">Installation amount is pending.</p>' : ''}
-      ${(!customerCharges || comparisonView) && cityFeePending ? '<p class="notice warning">Final total is pending the City Fee.</p>' : ''}
-      ${!customerCharges && preliminaryInstallation && !installationAmountPending ? '<p class="notice">Installation is proposed and is not yet confirmed.</p>' : ''}
-      ${customerCharges?.customerTotalIncomplete && customerFacing ? '<p class="notice warning">Customer service pricing is incomplete.</p>' : ''}`;
+      ${!customerCharges && installationAmountPending ? `<p class="notice warning">${t('Installation amount is pending.')}</p>` : ''}
+      ${(!customerCharges || comparisonView) && cityFeePending ? `<p class="notice warning">${t('Final total is pending the City Fee.')}</p>` : ''}
+      ${!customerCharges && preliminaryInstallation && !installationAmountPending ? `<p class="notice">${t('Installation is proposed and is not yet confirmed.')}</p>` : ''}
+      ${customerCharges?.customerTotalIncomplete && customerFacing ? `<p class="notice warning">${t('Customer service pricing is incomplete.')}</p>` : ''}`;
     const projectTotalHtml = comparisonView
       ? `
         <div class="project-total keep-together">
-          ${summaryRow('Customer Project Total', formatMoney(customerProjectTotal), { strong: true })}
-          ${summaryRow('Your Project Cost', formatMoney(internalProjectTotal), { strong: true })}
+          ${summaryRow(t('Customer Project Total'), formatMoney(customerProjectTotal), { strong: true })}
+          ${summaryRow(t('Your Project Cost'), formatMoney(internalProjectTotal), { strong: true })}
           ${notices}
         </div>`
       : `
         <div class="project-total project-total-success keep-together">
-          ${summaryRow(incompleteTotal ? 'Current Project Total' : 'Project Total', formatMoney(selectedProjectTotal), { strong: true })}
+          ${summaryRow(incompleteTotal ? t('Current Project Total') : t('Project Total'), formatMoney(selectedProjectTotal), { strong: true })}
           ${notices}
         </div>`;
     const earningsAmount = (earnings: { amount: string | null; status: string }) =>
       earnings.amount != null ? formatMoney(earnings.amount)
-        : earnings.status === 'PENDING_COST' ? 'Earnings pending confirmation' : 'Pending real factory cost';
+        : earnings.status === 'PENDING_COST' ? t('Earnings pending confirmation') : t('Pending real factory cost');
     const ownServiceCharges = estimate.customerChargesSummary;
     const ownServiceProfit = ownServiceCharges && !ownServiceCharges.systemTotalIncomplete &&
       !ownServiceCharges.customerTotalIncomplete && !ownServiceCharges.lines.some(line => line.needsReview)
       ? roundMoney(numberValue(ownServiceCharges.customerTotal) - numberValue(ownServiceCharges.systemTotal)) : null;
     const earningsCard = (earnings: { amount: string | null; status: string }, label: 'Dealer' | 'Subdealer', includeOwnServices: boolean) => {
       if (!includeOwnServices) return `
-        <section class="dealer-profit keep-together" aria-label="${label} material earnings">
-          <div class="dealer-profit-heading"><strong>${label} material earnings</strong><span class="dealer-profit-total${Number(earnings.amount) < 0 ? ' loss' : ''}">${earningsAmount(earnings)}</span></div>
-          <p>Sales tax, installation and services excluded.</p>
+        <section class="dealer-profit keep-together" aria-label="${t(`${label} material earnings`)}">
+          <div class="dealer-profit-heading"><strong>${t(`${label} material earnings`)}</strong><span class="dealer-profit-total${Number(earnings.amount) < 0 ? ' loss' : ''}">${earningsAmount(earnings)}</span></div>
+          <p>${t('Sales tax, installation and services excluded.')}</p>
         </section>`;
       const total = earnings.amount == null || ownServiceProfit == null ? null : roundMoney(Number(earnings.amount) + ownServiceProfit);
-      const totalText = total == null ? 'Earnings pending confirmation' : formatMoney(total);
-      const servicesText = ownServiceProfit == null ? 'Pending confirmation' : formatMoney(ownServiceProfit);
+      const totalText = total == null ? t('Earnings pending confirmation') : formatMoney(total);
+      const servicesText = ownServiceProfit == null ? t('Pending confirmation') : formatMoney(ownServiceProfit);
       return `
-        <section class="dealer-profit keep-together" aria-label="${label} Profit">
-          <div class="dealer-profit-heading"><strong>${label} Profit</strong><span class="dealer-profit-total${total != null && total < 0 ? ' loss' : ''}">${totalText}</span></div>
+        <section class="dealer-profit keep-together" aria-label="${t(`${label} Profit`)}">
+          <div class="dealer-profit-heading"><strong>${t(`${label} Profit`)}</strong><span class="dealer-profit-total${total != null && total < 0 ? ' loss' : ''}">${totalText}</span></div>
           <div class="dealer-profit-breakdown">
-            <span>Material: <strong${Number(earnings.amount) < 0 ? ' class="loss"' : ''}>${earningsAmount(earnings)}</strong></span>
+            <span>${t('Material')}: <strong${Number(earnings.amount) < 0 ? ' class="loss"' : ''}>${earningsAmount(earnings)}</strong></span>
             <span aria-hidden="true">+</span>
-            <span>Installation &amp; services: <strong${ownServiceProfit != null && ownServiceProfit < 0 ? ' class="loss"' : ''}>${servicesText}</strong></span>
+            <span>${t('Installation &amp; services')}: <strong${ownServiceProfit != null && ownServiceProfit < 0 ? ' class="loss"' : ''}>${servicesText}</strong></span>
           </div>
-          <p>Sales tax excluded. Installation &amp; services shown before card processing fees.</p>
+          <p>${t('Sales tax excluded. Installation &amp; services shown before card processing fees.')}</p>
         </section>`;
     };
     const dealerProfitHtml = comparisonView && !networkProfitBreakdown
       ? dealerEarnings ? earningsCard(dealerEarnings, 'Dealer', internalDealer && (!network || viewerId === estimate.idUser)) : `
-        <section class="dealer-profit keep-together" aria-label="Dealer Profit">
+        <section class="dealer-profit keep-together" aria-label="${t('Dealer Profit')}">
           <div class="dealer-profit-heading">
-            <strong>Dealer Profit</strong>
+            <strong>${t('Dealer Profit')}</strong>
             <span class="dealer-profit-total${dealerProjectProfit < 0 ? ' loss' : ''}">${formatMoney(dealerProjectProfit)}</span>
           </div>
           <div class="dealer-profit-breakdown">
-            <span>Material: <strong${dealerMaterialProfit < 0 ? ' class="loss"' : ''}>${formatMoney(dealerMaterialProfit)}</strong></span>
+            <span>${t('Material')}: <strong${dealerMaterialProfit < 0 ? ' class="loss"' : ''}>${formatMoney(dealerMaterialProfit)}</strong></span>
             <span aria-hidden="true">+</span>
-            <span>Installation &amp; services: <strong${dealerServiceProfit < 0 ? ' class="loss"' : ''}>${formatMoney(dealerServiceProfit)}</strong></span>
+            <span>${t('Installation &amp; services')}: <strong${dealerServiceProfit < 0 ? ' class="loss"' : ''}>${formatMoney(dealerServiceProfit)}</strong></span>
           </div>
-          <p>Sales tax excluded.</p>
+          <p>${t('Sales tax excluded.')}</p>
         </section>`
       : '';
 
@@ -1011,61 +1036,64 @@ export class EstimatePdfHtmlBuilder {
 
     const profitAmountHtml = (profit: { amount: string | null; status: string }) => {
       if (profit.amount == null) {
-        const pending = profit.status === 'PENDING_REAL_COST' ? 'Pending real factory cost'
-          : profit.status === 'PENDING_COST' ? 'Pending processing cost confirmation'
-            : 'Pending review';
+        const pending = profit.status === 'PENDING_REAL_COST' ? t('Pending real factory cost')
+          : profit.status === 'PENDING_COST' ? t('Pending processing cost confirmation')
+            : t('Pending review');
         return `<span class="profit-pending">${pending}</span>`;
       }
       return `<span${numberValue(profit.amount) < 0 ? ' class="loss"' : ''}>${formatMoney(profit.amount)}</span>`;
     };
-    const participantLabels = { DEALER: 'Dealer', SUBDEALER: 'Subdealer', DISTRIBUTOR: 'Distributor' };
+    const participantLabels = { DEALER: t('Dealer'), SUBDEALER: t('Subdealer'), DISTRIBUTOR: t('Distributor') };
     const networkProfitHtml = networkProfitBreakdown ? `
-      <section class="card network-profit keep-together" aria-label="Profit by participant">
-        <div class="profit-heading"><strong>Profit by participant</strong><small>Each participant's own earnings are shown separately.</small></div>
+      <section class="card network-profit keep-together" aria-label="${t('Profit by participant')}">
+        <div class="profit-heading"><strong>${t('Profit by participant')}</strong><small>${t('Each participant\'s own earnings are shown separately.')}</small></div>
         <table class="network-profit-table">
-          <thead><tr><th scope="col">Participant</th><th scope="col" class="right">Material</th><th scope="col" class="right">Installation &amp; services</th><th scope="col" class="right">Total</th></tr></thead>
+          <thead><tr><th scope="col">${t('Participant')}</th><th scope="col" class="right">${t('Material')}</th><th scope="col" class="right">${t('Installation &amp; services')}</th><th scope="col" class="right">Total</th></tr></thead>
           <tbody>
             ${networkProfitBreakdown.members.map(member => `<tr>
               <th scope="row"><strong>${participantLabels[member.level]}</strong><span class="participant-name">${escapeHtml(member.username)}</span></th>
               <td class="right">${profitAmountHtml(member.material)}</td><td class="right">${profitAmountHtml(member.services)}</td><td class="right profit-total">${profitAmountHtml(member.total)}</td>
             </tr>`).join('')}
-            <tr class="company-profit-row"><th scope="row"><strong>Company</strong><span class="participant-name">Estimated</span></th>
+            <tr class="company-profit-row"><th scope="row"><strong>${t('Company')}</strong><span class="participant-name">${t('Estimated')}</span></th>
               <td class="right">${profitAmountHtml(networkProfitBreakdown.company.materialExpected)}</td><td class="right">${profitAmountHtml(networkProfitBreakdown.company.installation)}</td><td class="right profit-total">${profitAmountHtml(networkProfitBreakdown.company.expectedTotal)}</td>
             </tr>
           </tbody>
         </table>
-        <div class="network-profit-notes"><p>Sales tax excluded. Installation &amp; services shown before card processing fees.</p><p>Company totals include material and installation margin; other service margins are not included.</p></div>
+        <div class="network-profit-notes"><p>${t('Sales tax excluded. Installation &amp; services shown before card processing fees.')}</p><p>${t('Company totals include material and installation margin; other service margins are not included.')}</p></div>
       </section>` : '';
 
     const profitability = estimatedMaterialProfitability(
       manualDiscount ? { ...estimate, ...(manualDiscount.payer === 'CUSTOMER' ? { customerPriceT: manualDiscount.material.subtotal } : { priceT: manualDiscount.material.subtotal }) } as unknown as EstimateWithRelations : estimate,
       ownerIsDealer,
     );
+    const saleChannelLabel = locale === 'en' ? profitability.saleChannel
+      : !ownerIsDealer ? t('Direct client')
+        : internalDealer ? t('Internal dealer') : t('External dealer');
     const hasProcessingCost = materialProfits?.processingCostStatus != null;
     const processingPending = materialProfits?.processingCostStatus === 'PENDING';
-    const pendingNetProfit = processingPending ? 'Pending processing cost confirmation' : 'Pending real factory cost';
+    const pendingNetProfit = processingPending ? t('Pending processing cost confirmation') : t('Pending real factory cost');
     const pendingCompanyProfit = processingPending ? pendingNetProfit
-      : materialProfits?.realProfit == null ? 'Pending real factory cost' : 'Pending dealer earnings';
+      : materialProfits?.realProfit == null ? t('Pending real factory cost') : t('Pending dealer earnings');
     const showDealerEarnings = internalDealer || Boolean(earningsReport?.dealerEarnings || subdealerEarnings);
     const adminProfitability =
       reportKind === 'admin'
         ? `
           <div class="card profitability keep-together">
-            <div class="profit-heading"><strong>Material financial summary</strong><small>Installation profit is not included in these figures.</small></div>
+            <div class="profit-heading"><strong>${t('Material financial summary')}</strong><small>${t('Installation profit is not included in these figures.')}</small></div>
             <div class="profit-grid">
-              <div class="profit-metric"><span>Sale channel</span><strong>${escapeHtml(profitability.saleChannel)}</strong></div>
-              <div class="profit-metric"><span>Material sale subtotal</span><strong>${formatMoney(network ? estimate.order?.saleSubtotal ?? manualDiscount?.material.subtotal ?? estimate.networkBillingPriceT : materialProfits ? estimate.order?.saleSubtotal ?? profitability.saleSubtotal : profitability.saleSubtotal)}</strong></div>
-              <div class="profit-metric"><span>${internalDealer ? 'App base price (before markups)' : 'Estimated factory cost'}</span><strong>${formatMoney(materialProfits ? estimate.order?.rate ?? estimate.rateT : estimate.rateT)}</strong></div>
-              <div class="profit-metric"><span>${internalDealer ? 'Expected material profit' : 'Estimated material profit'}</span><strong>${formatMoney(materialProfits?.expectedProfit ?? profitability.estimatedProfit)}</strong></div>
+              <div class="profit-metric"><span>${t('Sale channel')}</span><strong>${escapeHtml(saleChannelLabel)}</strong></div>
+              <div class="profit-metric"><span>${t('Material sale subtotal')}</span><strong>${formatMoney(network ? estimate.order?.saleSubtotal ?? manualDiscount?.material.subtotal ?? estimate.networkBillingPriceT : materialProfits ? estimate.order?.saleSubtotal ?? profitability.saleSubtotal : profitability.saleSubtotal)}</strong></div>
+              <div class="profit-metric"><span>${internalDealer ? t('App base price (before markups)') : t('Estimated factory cost')}</span><strong>${formatMoney(materialProfits ? estimate.order?.rate ?? estimate.rateT : estimate.rateT)}</strong></div>
+              <div class="profit-metric"><span>${internalDealer ? t('Expected material profit') : t('Estimated material profit')}</span><strong>${formatMoney(materialProfits?.expectedProfit ?? profitability.estimatedProfit)}</strong></div>
               ${materialProfits ? `
-                <div class="profit-metric"><span>${hasProcessingCost ? 'Gross real material profit' : 'Real material profit'}</span><strong>${materialProfits.realProfit == null ? 'Pending real factory cost' : formatMoney(materialProfits.realProfit)}</strong></div>
+                <div class="profit-metric"><span>${hasProcessingCost ? t('Gross real material profit') : t('Real material profit')}</span><strong>${materialProfits.realProfit == null ? t('Pending real factory cost') : formatMoney(materialProfits.realProfit)}</strong></div>
                 ${hasProcessingCost ? `
-                  <div class="profit-metric"><span>Material processing cost</span><strong>${processingPending || materialProfits.processingCost == null ? 'Pending processing cost confirmation' : formatMoney(materialProfits.processingCost)}</strong></div>
-                  <div class="profit-metric"><span>Net real material profit</span><strong>${processingPending || materialProfits.netRealProfit == null ? pendingNetProfit : formatMoney(materialProfits.netRealProfit)}</strong></div>
+                  <div class="profit-metric"><span>${t('Material processing cost')}</span><strong>${processingPending || materialProfits.processingCost == null ? t('Pending processing cost confirmation') : formatMoney(materialProfits.processingCost)}</strong></div>
+                  <div class="profit-metric"><span>${t('Net real material profit')}</span><strong>${processingPending || materialProfits.netRealProfit == null ? pendingNetProfit : formatMoney(materialProfits.netRealProfit)}</strong></div>
                 ` : ''}
                 ${showDealerEarnings ? `
-                <div class="profit-metric"><span>Company expected profit after dealer earnings</span><strong>${materialProfits.authenticExpectedProfit == null ? 'Pending dealer earnings' : formatMoney(materialProfits.authenticExpectedProfit)}</strong></div>
-                <div class="profit-metric"><span>${hasProcessingCost ? 'Company real profit after processing costs and dealer earnings' : 'Company real profit after dealer earnings'}</span><strong>${materialProfits.authenticRealProfit == null ? pendingCompanyProfit : formatMoney(materialProfits.authenticRealProfit)}</strong></div>
+                <div class="profit-metric"><span>${t('Company expected profit after dealer earnings')}</span><strong>${materialProfits.authenticExpectedProfit == null ? t('Pending dealer earnings') : formatMoney(materialProfits.authenticExpectedProfit)}</strong></div>
+                <div class="profit-metric"><span>${hasProcessingCost ? t('Company real profit after processing costs and dealer earnings') : t('Company real profit after dealer earnings')}</span><strong>${materialProfits.authenticRealProfit == null ? pendingCompanyProfit : formatMoney(materialProfits.authenticRealProfit)}</strong></div>
                 ` : ''}
               ` : ''}
             </div>
@@ -1080,39 +1108,39 @@ export class EstimatePdfHtmlBuilder {
       const rows = manualDiscount.scope === 'MULTIPLE'
         ? [
             numberValue(manualDiscount.material.netDiscount) > 0
-              ? summaryRow('Additional discount · Material', '−' + formatMoney(manualDiscount.material.netDiscount))
+              ? summaryRow(t('Additional discount · Material'), '−' + formatMoney(manualDiscount.material.netDiscount))
               : '',
             numberValue(manualDiscount.installation.discount) > 0
-              ? summaryRow('Additional discount · Installation', '−' + formatMoney(manualDiscount.installation.discount))
+              ? summaryRow(t('Additional discount · Installation'), '−' + formatMoney(manualDiscount.installation.discount))
               : '',
-            summaryRow('Total additional discount', '−' + formatMoney(manualDiscount.discount), { strong: true }),
+            summaryRow(t('Total additional discount'), '−' + formatMoney(manualDiscount.discount), { strong: true }),
           ].join('')
-        : summaryRow('Additional discount · ' + ({ PROJECT: 'Project total', MATERIAL: 'Material', INSTALLATION: 'Installation' }[manualDiscount.scope]), '−' + formatMoney(manualDiscount.discount), { strong: true }) +
-          (serviceDiscount ? summaryRow('Included installation & services discount', '−' + formatMoney(serviceDiscount)) : '');
+        : summaryRow(t('Additional discount') + ' · ' + ({ PROJECT: t('Project total'), MATERIAL: t('Material'), INSTALLATION: t('Installation') }[manualDiscount.scope]), '−' + formatMoney(manualDiscount.discount), { strong: true }) +
+          (serviceDiscount ? summaryRow(t('Included installation & services discount'), '−' + formatMoney(serviceDiscount)) : '');
       return `<div class="card keep-together"><div class="card-body">${rows}</div></div>`;
     })();
     const schedule = canViewNetworkBilling ? (estimate as any).paymentSchedule : null;
     const scheduleHtml = schedule && !(customerFacing && isExternalDealerEstimate(estimate))
-      ? `<section class="card keep-together" style="margin-top:16px"><div class="card-title">Payment Schedule</div><div class="card-body">
-          ${schedule.provisional ? `<p class="notice warning">${escapeHtml(schedule.provisionalMessage ?? 'Amounts are preliminary until the included charges are finalized.')}</p>` : ''}
-          ${schedule.rows.map((row: any) => `<div style="padding:7px 0;border-bottom:1px solid #e2e8f0">${summaryRow(row.title, formatMoney(row.amount))}<small>${escapeHtml(row.description)}</small></div>`).join('')}
-          <p style="font-size:10px;margin-top:10px">The installation deposit and any permit fee paid in advance are credited toward the first order installment. Remaining credit carries forward and is counted once. Delivery and separate extra charges are excluded.</p>
+      ? `<section class="card keep-together" style="margin-top:16px"><div class="card-title">${t('Payment Schedule')}</div><div class="card-body">
+          ${schedule.provisional ? `<p class="notice warning">${escapeHtml(paymentScheduleNotice(locale, schedule.provisionalMessage ?? 'Amounts are preliminary until the included charges are finalized.'))}</p>` : ''}
+          ${schedule.rows.map((row: any) => `<div style="padding:7px 0;border-bottom:1px solid #e2e8f0">${summaryRow(paymentRowTitle(locale, row), formatMoney(row.amount))}<small>${escapeHtml(paymentRowDescription(locale, row))}</small></div>`).join('')}
+          <p style="font-size:10px;margin-top:10px">${t('The installation deposit and any permit fee paid in advance are credited toward the first order installment. Remaining credit carries forward and is counted once. Delivery and separate extra charges are excluded.')}</p>
         </div></section>` : '';
     const projectSummaryHtml = projectTotalOnly
-      ? `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div>${projectScopeHtml}${projectTotalHtml}${scheduleHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`
-      : `<div class="summary-start"><h2 class="section-heading">Project Summary</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${manualDiscountHtml}${projectTotalHtml}${dealerProfitHtml}${subdealerEarningsHtml}${networkProfitHtml}${adminProfitability}${scheduleHtml}<p class="illustration-footer">Product illustrations are visual references and are not to scale; written specifications govern.</p>`;
+      ? `<div class="summary-start"><h2 class="section-heading">${t('Project Summary')}</h2></div>${projectScopeHtml}${projectTotalHtml}${scheduleHtml}<p class="illustration-footer">${t('Product illustrations are visual references and are not to scale; written specifications govern.')}</p>`
+      : `<div class="summary-start"><h2 class="section-heading">${t('Project Summary')}</h2></div><div class="${summaryGridClass}">${materialSummary}${installationSummaryHtml}</div>${manualDiscountHtml}${projectTotalHtml}${dealerProfitHtml}${subdealerEarningsHtml}${networkProfitHtml}${adminProfitability}${scheduleHtml}<p class="illustration-footer">${t('Product illustrations are visual references and are not to scale; written specifications govern.')}</p>`;
 
     const statusBadge = estimate.status?.name
-      ? `<span class="status-badge ${estimateStatusBadgeClassName(estimate.status.name)}">${escapeHtml(estimate.status.name)}</span>`
+      ? `<span class="status-badge ${estimateStatusBadgeClassName(estimate.status.name)}">${escapeHtml(estimateReportStatus(locale, estimate.status.name))}</span>`
       : '';
     const internalBadge = internalReport
-      ? `<span class="internal-badge">Internal - ${escapeHtml(reportLabelFor(reportKind))}</span>`
+      ? `<span class="internal-badge">${t('Internal')} - ${escapeHtml(reportLabelFor(reportKind, t))}</span>`
       : '';
     return `<!doctype html>
-<html lang="en"><head>
+<html lang="${locale}"><head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Estimate ${escapeHtml(estimate.number)} - ${escapeHtml(reportLabelFor(reportKind))}</title>
+  <title>${t('Estimate')} ${escapeHtml(estimate.number)} - ${escapeHtml(reportLabelFor(reportKind, t))}</title>
   <style>
     :root { --branding-color: ${brandingColor}; --branding-contrast-color: ${brandingContrastColor}; --report-text-color: #000000; }
     @page { size: Letter portrait; margin: 12mm 12mm ${issuer ? '28mm' : '18mm'}; }
@@ -1258,16 +1286,16 @@ export class EstimatePdfHtmlBuilder {
   </style>
 </head><body><main class="report">
   <header class="document-header">
-    <div><h1>Estimate</h1><div class="number-label">Number</div><div class="estimate-number-row"><span class="estimate-number">${escapeHtml(estimate.number)}</span>${statusBadge}</div><div class="header-badges">${internalBadge}</div></div>
-    <div class="logo-wrap${issuer ? ' with-attribution' : ''}">${logo}${issuer ? '<div class="platform-attribution">Generated with Authentic Evolution</div>' : ''}</div>
-    <div class="brand${issuer ? ' external-issuer' : ''}">${brandingName ? `<div class="brand-name">${escapeHtml(brandingName)}</div>` : ''}${issuer ? '<div class="brand-line">Independent Distributor</div>' : ''}${brandingPhone ? `<div class="brand-line">${escapeHtml(brandingPhone)}</div>` : ''}${brandingEmail ? `<div class="brand-line">${escapeHtml(brandingEmail)}</div>` : ''}${brandingAddress ? `<div class="brand-line">${escapeHtml(brandingAddress)}</div>` : ''}${!issuer && branding?.website ? `<div class="brand-line">${escapeHtml(branding.website)}</div>` : ''}</div>
+    <div><h1>${t('Estimate')}</h1><div class="number-label">${t('Number')}</div><div class="estimate-number-row"><span class="estimate-number">${escapeHtml(estimate.number)}</span>${statusBadge}</div><div class="header-badges">${internalBadge}</div></div>
+    <div class="logo-wrap${issuer ? ' with-attribution' : ''}">${logo}${issuer ? `<div class="platform-attribution">${t('Generated with Authentic Evolution')}</div>` : ''}</div>
+    <div class="brand${issuer ? ' external-issuer' : ''}">${brandingName ? `<div class="brand-name">${escapeHtml(brandingName)}</div>` : ''}${issuer ? `<div class="brand-line">${t('Independent Distributor')}</div>` : ''}${brandingPhone ? `<div class="brand-line">${escapeHtml(brandingPhone)}</div>` : ''}${brandingEmail ? `<div class="brand-line">${escapeHtml(brandingEmail)}</div>` : ''}${brandingAddress ? `<div class="brand-line">${escapeHtml(brandingAddress)}</div>` : ''}${!issuer && branding?.website ? `<div class="brand-line">${escapeHtml(branding.website)}</div>` : ''}</div>
   </header>
   <section class="prepared-section">
-    <div class="prepared-details"><div class="eyebrow">Prepared for</div><div class="prepared-name">${escapeHtml(preparedFor)}</div>${projectName ? `<div class="project-name">Project: ${escapeHtml(projectName)}</div>` : ''}</div>
-    <div class="contact">${contactPhone ? `<div>${escapeHtml(contactPhone)}</div>` : ''}${contactEmail ? `<div>${escapeHtml(contactEmail)}</div>` : ''}${contactAddress ? `<div>${escapeHtml(contactAddress)}</div>` : ''}${installationSummary?.installationAddress ? `<div><strong>Installation address:</strong> ${escapeHtml(Object.values(installationSummary.installationAddress).filter(Boolean).join(', '))}</div>` : ''}</div>
-    <div class="dates"><div class="date-group"><div class="date-label">Date</div><div class="date-value">${escapeHtml(formatDate(estimate.date))}</div></div>${estimate.expiresAt && !estimate.promotionLockedAt && !estimateDiscountConfig(estimate.manualDiscount)?.lockedAt ? `<div class="date-group"><div class="date-label">Valid through</div><div class="date-value">${escapeHtml(estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString('en-US') : formatDate(estimate.expiresAt))}</div></div>` : ''}</div>
+    <div class="prepared-details"><div class="eyebrow">${t('Prepared for')}</div><div class="prepared-name">${escapeHtml(preparedFor)}</div>${projectName ? `<div class="project-name">${t('Project')}: ${escapeHtml(projectName)}</div>` : ''}</div>
+    <div class="contact">${contactPhone ? `<div>${escapeHtml(contactPhone)}</div>` : ''}${contactEmail ? `<div>${escapeHtml(contactEmail)}</div>` : ''}${contactAddress ? `<div>${escapeHtml(contactAddress)}</div>` : ''}${installationSummary?.installationAddress ? `<div><strong>${t('Installation address')}:</strong> ${escapeHtml(Object.values(installationSummary.installationAddress).filter(Boolean).join(', '))}</div>` : ''}</div>
+    <div class="dates"><div class="date-group"><div class="date-label">${t('Date')}</div><div class="date-value">${escapeHtml(formatDate(estimate.date, locale))}</div></div>${estimate.expiresAt && !estimate.promotionLockedAt && !estimateDiscountConfig(estimate.manualDiscount)?.lockedAt ? `<div class="date-group"><div class="date-label">${t('Valid through')}</div><div class="date-value">${escapeHtml(estimate.promotionExpiresAt ? new Date(estimate.expiresAt).toLocaleString(locale === 'es' ? 'es-US' : 'en-US') : formatDate(estimate.expiresAt, locale))}</div></div>` : ''}</div>
   </section>
-  <section class="products-section"><div class="products-heading"><h2 class="section-heading">Product Details</h2><div class="illustration-note">Illustrations are visual references; written specifications govern.</div></div><div class="product-list">${productCards}</div></section>
+  <section class="products-section"><div class="products-heading"><h2 class="section-heading">${t('Product Details')}</h2><div class="illustration-note">${t('Illustrations are visual references; written specifications govern.')}</div></div><div class="product-list">${productCards}</div></section>
   <section class="summary-section">${piecesBreakdownHtml}${projectSummaryHtml}</section>
 </main></body></html>`;
   }

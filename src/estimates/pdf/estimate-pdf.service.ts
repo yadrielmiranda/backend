@@ -42,8 +42,9 @@ export class EstimatePdfService {
     user: AuthUser;
     view: PdfView;
     cookieHeader?: string;
+    locale?: 'en' | 'es';
   }): Promise<Buffer> {
-    const { estimate, user, view, cookieHeader } = params;
+    const { estimate, user, view, cookieHeader, locale = 'en' } = params;
 
     const viewerRole = user.role?.name ?? null;
 
@@ -63,8 +64,9 @@ export class EstimatePdfService {
         browser,
         estimate,
         cookieHeader,
+        locale,
       });
-      const html = EstimatePdfHtmlBuilder.build(estimate, view, diagramRenders, user.id, viewerRole ?? undefined, true);
+      const html = EstimatePdfHtmlBuilder.build(estimate, view, diagramRenders, user.id, viewerRole ?? undefined, true, locale);
       const page = await browser.newPage();
 
       // Esperamos el documento y sus recursos (incluido el logo por URL), sin
@@ -97,7 +99,7 @@ export class EstimatePdfService {
         displayHeaderFooter: true,
         preferCSSPageSize: true,
         headerTemplate: '<span></span>',
-        footerTemplate: EstimatePdfHtmlBuilder.buildFooterTemplate(estimate, view, true),
+        footerTemplate: EstimatePdfHtmlBuilder.buildFooterTemplate(estimate, view, true, locale),
       });
 
       return Buffer.from(pdf);
@@ -127,6 +129,7 @@ export class EstimatePdfService {
     browser: Awaited<ReturnType<typeof puppeteer.launch>>;
     estimate: EstimateWithRelations;
     cookieHeader?: string;
+    locale: 'en' | 'es';
   }): Promise<Record<string, string>> {
     const { browser, estimate, cookieHeader } = params;
     const frontendUrl = this.resolveFrontendUrl();
@@ -144,7 +147,9 @@ export class EstimatePdfService {
 
       if (cookieHeader) {
         const pageOrigin = `${frontendUrl.protocol}//${frontendUrl.host}/`;
-        const cookies = Object.entries(parseCookieHeader(cookieHeader)).map(
+        // The export uses its requested language even if the browser cookie was saved earlier.
+        const cookies = Object.entries(parseCookieHeader(cookieHeader))
+          .filter(([name]) => name !== 'company_language').map(
           ([name, value]) => ({ name, value, url: pageOrigin }),
         );
 
@@ -155,6 +160,7 @@ export class EstimatePdfService {
 
       const reportUrl = new URL(`/estimates/${estimate.id}`, frontendUrl);
       reportUrl.searchParams.set('pdfDiagramCapture', '1');
+      await page.setExtraHTTPHeaders({ 'Accept-Language': params.locale });
 
       await page.goto(reportUrl.toString(), {
         waitUntil: 'networkidle2',

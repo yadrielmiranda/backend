@@ -3062,6 +3062,7 @@ export class EstimatesService {
     user: AuthUser,
     view: PdfView,
     cookieHeader?: string,
+    locale: 'en' | 'es' = 'en',
   ): Promise<Buffer> {
     const estimate = await this.findOneForUser(estimateId, user);
     const ownerIsDealer =
@@ -3093,6 +3094,7 @@ export class EstimatesService {
       user,
       view,
       cookieHeader,
+      locale,
     });
   }
 }
